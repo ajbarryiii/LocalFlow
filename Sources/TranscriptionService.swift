@@ -15,7 +15,7 @@ class TranscriptionService {
     ]
 
     private let apiKey: String
-    private let baseURL: URL
+    private let baseURL: URL?
     private let transcriptionModel: String
     private let language: String?
     private var transcriptionResponseFormat: String {
@@ -33,9 +33,9 @@ class TranscriptionService {
         language: String? = nil
     ) throws {
         self.apiKey = apiKey
-        self.baseURL = try Self.normalizedBaseURL(from: baseURL)
         let trimmedModel = transcriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
         self.transcriptionModel = trimmedModel.isEmpty ? "whisper-large-v3" : trimmedModel
+        self.baseURL = LocalParakeetCore.isLocalModel(trimmedModel) ? nil : try Self.normalizedBaseURL(from: baseURL)
         let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.language = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
     }
@@ -68,6 +68,10 @@ class TranscriptionService {
     func transcribe(fileURL: URL) async throws -> String {
         guard !Task.isCancelled else {
             throw CancellationError()
+        }
+
+        if LocalParakeetCore.isLocalModel(transcriptionModel) {
+            return try await LocalParakeetService.shared.transcribe(fileURL: fileURL, language: language)
         }
 
         let timeoutSeconds = transcriptionTimeoutSeconds
@@ -115,6 +119,7 @@ class TranscriptionService {
     }
 
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
+        guard let baseURL else { throw LocalParakeetError.invalid("Local models cannot use provider uploads.") }
         let url = baseURL
             .appendingPathComponent("audio")
             .appendingPathComponent("transcriptions")
@@ -172,7 +177,7 @@ class TranscriptionService {
             )
             throw TranscriptionError.submissionFailed(Self.friendlyHTTPMessage(
                 status: httpResponse.statusCode,
-                host: baseURL.host
+                host: baseURL?.host
             ))
         }
 

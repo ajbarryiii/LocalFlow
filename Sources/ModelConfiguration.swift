@@ -25,6 +25,7 @@ public struct ModelConfiguration {
     ]
 
     public static let transcriptionModels = [
+        "parakeet-v2-ternary",
         "whisper-large-v3",
         "whisper-large-v3-turbo"
     ]

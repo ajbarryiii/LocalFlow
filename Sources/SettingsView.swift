@@ -251,7 +251,7 @@ struct ProviderSettingsFields: View {
 
             ModelDropdownView(
                 title: "Transcription Model",
-                subtitle: "Used for speech-to-text transcription.",
+                subtitle: "Parakeet v2 ternary runs English dictation on this Mac. Cloud cleanup, translation, Edit Mode, and context analysis are bypassed while it is selected.",
                 predefinedModels: ModelConfiguration.transcriptionModels,
                 defaultModel: AppState.defaultTranscriptionModel,
                 textDraft: $transcriptionModelDraft,
@@ -261,6 +261,14 @@ struct ProviderSettingsFields: View {
                     appState.transcriptionModel = AppState.defaultTranscriptionModel
                 }
             )
+
+            if appState.usesLocalTranscription {
+                Text(LocalParakeetService.isAvailable
+                     ? "Bundled model ready. The first transcription may take several minutes while macOS prepares the Neural Engine model. Recordings over 15 seconds are decoded in separate chunks."
+                     : "This build does not contain the local model, or this Mac is unsupported. Requires Apple Silicon and macOS 26 or newer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Transcription Language")

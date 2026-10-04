@@ -319,6 +319,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var transcriptionModel: String {
         didSet {
             UserDefaults.standard.set(transcriptionModel, forKey: transcriptionModelStorageKey)
+            if LocalParakeetCore.isLocalModel(transcriptionModel) {
+                tearDownRealtimeService()
+                contextCaptureTask?.cancel()
+                contextCaptureTask = nil
+                capturedContext = nil
+            }
         }
     }
 
@@ -1040,6 +1046,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
+    var usesLocalTranscription: Bool {
+        LocalParakeetCore.isLocalModel(transcriptionModel)
+    }
+
     private var resolvedTranscriptionLanguage: String? {
         let normalized = Self.normalizeTranscriptionLanguage(transcriptionLanguage)
         return normalized.isEmpty ? nil : normalized
@@ -1199,10 +1209,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         let capturedCustomVocabulary = customVocabulary
         let capturedCustomSystemPrompt = customSystemPrompt
+        let localTranscription = usesLocalTranscription
+        let transcriptionService = Result { try makeTranscriptionService() }
 
         Task {
             do {
-                let transcriptionService = try makeTranscriptionService()
+                let transcriptionService = try transcriptionService.get()
                 let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
                 let parsedTranscript = Self.parseTranscriptCommands(
                     from: rawTranscript,
@@ -1224,7 +1236,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     customVocabulary: capturedCustomVocabulary,
                     customSystemPrompt: capturedCustomSystemPrompt,
                     outputLanguage: self.outputLanguage,
-                    preserveExactWording: self.preserveExactWording
+                    preserveExactWording: self.preserveExactWording,
+                    localTranscription: localTranscription
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -2464,7 +2477,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         customVocabulary: String,
         customSystemPrompt: String,
         outputLanguage: String = "",
-        preserveExactWording: Bool
+        preserveExactWording: Bool,
+        localTranscription: Bool
     ) async -> (finalTranscript: String, outcome: TranscriptProcessingOutcome, prompt: String) {
         let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -2473,6 +2487,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if case .command(let invocation, let selectedText) = intent {
+            if localTranscription {
+                return (selectedText, .commandModeFailedFallback(invocation: invocation), "")
+            }
             do {
                 let result = try await postProcessingService.commandTransform(
                     selectedText: selectedText,
@@ -2491,6 +2508,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if let macro = findMatchingMacro(for: trimmedRawTranscript) {
             os_log(.info, log: recordingLog, "Voice macro triggered: %{public}@", macro.command)
             return (macro.payload, .voiceMacro(command: macro.command), "")
+        }
+
+        if localTranscription {
+            return (trimmedRawTranscript, .preservedExactWording, "")
         }
 
         // Preserve-exact-wording mode. Two sub-cases so translation
@@ -2578,6 +2599,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         audioLevelCancellable = nil
         debugStatusMessage = "Preparing audio"
         let sessionContext = capturedContext
+        let localTranscription = usesLocalTranscription
+        let transcriptionService = Result { try makeTranscriptionService() }
         let inFlightContextTask = contextCaptureTask
         capturedContext = nil
         contextCaptureTask = nil
@@ -2618,7 +2641,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let savedAudioFile = Self.saveAudioFile(from: fileURL)
             let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
             self.transcribingAudioFileName = savedAudioFile?.fileName
-            self.statusText = "Transcribing..."
+            self.statusText = localTranscription ? "Transcribing locally (first run may take minutes)..." : "Transcribing..."
             self.debugStatusMessage = "Transcribing audio"
 
         let postProcessingService = PostProcessingService(
@@ -2649,7 +2672,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     activeRealtime?.cancel()
                 }
                 do {
-                    let transcriptionService = try self.makeTranscriptionService()
+                    let transcriptionService = try transcriptionService.get()
                     async let transcript = Self.resolveRawTranscript(
                         realtimeService: activeRealtime,
                         fileService: transcriptionService,
@@ -2691,7 +2714,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         customVocabulary: self.customVocabulary,
                         customSystemPrompt: self.customSystemPrompt,
                         outputLanguage: self.outputLanguage,
-                        preserveExactWording: self.preserveExactWording
+                        preserveExactWording: self.preserveExactWording,
+                        localTranscription: localTranscription
                     )
                     try Task.checkCancellation()
 
@@ -2883,7 +2907,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startRealtimeStreamingIfEnabled() {
-        guard realtimeStreamingEnabled else { return }
+        guard realtimeStreamingEnabled, !usesLocalTranscription else { return }
         let trimmedBase = resolvedTranscriptionBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBase.isEmpty else {
             os_log(.info, log: recordingLog, "realtime streaming requested but base URL is empty — skipping")
@@ -2916,6 +2940,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startContextCapture() {
+        guard !usesLocalTranscription else { return }
         contextCaptureTask?.cancel()
         capturedContext = nil
         lastContextSummary = "Collecting app context..."
@@ -2926,6 +2951,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
             let context = await self.contextService.collectContext()
+            guard !Task.isCancelled, !self.usesLocalTranscription else { return nil }
             await MainActor.run {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary

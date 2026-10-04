@@ -397,6 +397,19 @@ struct SetupView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
+                if LocalParakeetService.isAvailable {
+                    Button("Use bundled Parakeet model (English, on-device)") {
+                        appState.transcriptionModel = LocalParakeetCore.modelID
+                        appState.transcriptionLanguage = "en"
+                        appState.isCommandModeEnabled = false
+                        withAnimation { currentStep = nextStep(currentStep) }
+                    }
+                    Text("No API key needed. Dictation runs locally; cloud cleanup, translation, and Edit Mode are bypassed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
                 Text("Enter an API key for your OpenAI-compatible provider. If you are not using Groq, expand the advanced provider settings and enter that provider's base URL and model IDs before continuing.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

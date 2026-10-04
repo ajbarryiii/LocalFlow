@@ -1,4 +1,5 @@
 APP_NAME ?= FreeFlow Dev
+.DEFAULT_GOAL := all
 BUNDLE_ID ?= com.zachlatta.freeflow.dev
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
@@ -18,6 +19,13 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/LLMAPITransport.swift \
 	Sources/LLMCooldownManager.swift \
 	Sources/ModelConfiguration.swift \
+	Sources/Parakeet/LocalParakeetCore.swift \
+	Sources/Parakeet/LocalParakeetService.swift \
+	Sources/Parakeet/ParakeetAudioReader.swift \
+	Sources/Parakeet/ParakeetDecoder.swift \
+	Sources/Parakeet/ParakeetFrames.swift \
+	Sources/Parakeet/ParakeetFrontEnd.swift \
+	Sources/TranscriptionService.swift \
 	Sources/TranscriptionErrorPresentationCore.swift \
 	Sources/TranscriptTextCore.swift \
 	Sources/UpdateManager.swift \
@@ -29,6 +37,24 @@ SHELL_SCRIPTS = $(shell find .github/scripts .agents/skills -name '*.sh' -type f
 YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
+PARAKEET_BUNDLE_DIR ?=
+SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
+PARAKEET_BUNDLE_STAMP = $(BUILD_DIR)/parakeet-bundle-selection
+
+# Rebuild when switching between model bundles (including back to no bundle).
+# Weights remain outside Git and are copied only into the local app bundle.
+.PHONY: parakeet-selection
+parakeet-selection:
+	@mkdir -p "$(BUILD_DIR)"
+	@printf '%s\n' "$(PARAKEET_BUNDLE_DIR)" > "$(PARAKEET_BUNDLE_STAMP).tmp"
+	@printf '%s\n' "$(SWIFT_OPTIMIZATION)" >> "$(PARAKEET_BUNDLE_STAMP).tmp"
+ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
+	@shasum -a 256 "$(PARAKEET_BUNDLE_DIR)/bundle.json" >> "$(PARAKEET_BUNDLE_STAMP).tmp"
+endif
+	@cmp -s "$(PARAKEET_BUNDLE_STAMP).tmp" "$(PARAKEET_BUNDLE_STAMP)" || mv "$(PARAKEET_BUNDLE_STAMP).tmp" "$(PARAKEET_BUNDLE_STAMP)"
+	@rm -f "$(PARAKEET_BUNDLE_STAMP).tmp"
+
+$(PARAKEET_BUNDLE_STAMP): parakeet-selection
 
 # Pick the icon source based on which bundle we are building. Dev builds get
 # a distinct hammer-on-waveform icon so a developer's dock shows at a glance
@@ -43,19 +69,21 @@ endif
 
 .PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate
 
-all: $(APP_EXECUTABLE_TARGET)
+all: parakeet-selection $(APP_EXECUTABLE_TARGET)
 
-$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS)
+$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(PARAKEET_BUNDLE_STAMP) $(wildcard Resources/Parakeet/*)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
 ifeq ($(ARCH),universal)
 	swiftc \
 		-parse-as-library \
+		$(SWIFT_OPTIMIZATION) \
 		-o "$(MACOS_DIR)/$(APP_NAME)-arm64" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target arm64-apple-macosx13.0 \
 		$(SOURCES)
 	swiftc \
 		-parse-as-library \
+		$(SWIFT_OPTIMIZATION) \
 		-o "$(MACOS_DIR)/$(APP_NAME)-x86_64" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target x86_64-apple-macosx13.0 \
@@ -67,6 +95,7 @@ ifeq ($(ARCH),universal)
 else
 	swiftc \
 		-parse-as-library \
+		$(SWIFT_OPTIMIZATION) \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target $(ARCH)-apple-macosx13.0 \
@@ -78,6 +107,14 @@ endif
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/AppIcon.icns"
+	@rm -rf "$(RESOURCES)/Parakeet"
+ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
+	@test -f "$(PARAKEET_BUNDLE_DIR)/bundle.json" || { echo "Missing Parakeet bundle.json"; exit 1; }
+	@mkdir -p "$(RESOURCES)/Parakeet"
+	@cp -R "$(PARAKEET_BUNDLE_DIR)/Encoder.mlmodelc" "$(RESOURCES)/Parakeet/"
+	@cp "$(PARAKEET_BUNDLE_DIR)/bundle.json" "$(PARAKEET_BUNDLE_DIR)/frontend.json" "$(PARAKEET_BUNDLE_DIR)/frontend.f32bin" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.json" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.f32bin" "$(PARAKEET_BUNDLE_DIR)/vocabulary.json" "$(RESOURCES)/Parakeet/"
+	@cp Resources/Parakeet/* "$(RESOURCES)/Parakeet/"
+endif
 	@plutil -replace NSMicrophoneUsageDescription -string "$(APP_NAME) needs microphone access to transcribe your speech." "$(CONTENTS)/Info.plist"
 	@plutil -replace NSSpeechRecognitionUsageDescription -string "$(APP_NAME) needs speech recognition to convert your voice to text." "$(CONTENTS)/Info.plist"
 	@plutil -replace NSAccessibilityUsageDescription -string "$(APP_NAME) needs accessibility access to detect the text cursor position and paste transcribed text." "$(CONTENTS)/Info.plist"
