@@ -71,6 +71,13 @@ synthetic stereo AIFF resampling through EOF. The separate synthetic speech
 smoke check exercises the converted final model without launching FreeFlow
 or requesting microphone access.
 
+All four encoder buckets transcribed the invented phrase exactly. An
+18-second synthetic recording with the phrase in both chunks also matched
+exactly. First-use smoke runs took 98–109 seconds including model preparation;
+the subsequent 18-second run completed in about one second. These are
+functional checks, not a controlled performance benchmark or real-world
+accuracy evaluation.
+
 Before merge, manually test microphone dictation, global shortcuts,
 Accessibility paste, cancellation, switching providers, and offline operation
 in the built app. These app-level checks remain pending; the local build is
