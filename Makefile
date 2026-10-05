@@ -55,7 +55,7 @@ endif
 $(PARAKEET_BUNDLE_STAMP): parakeet-selection
 
 # Pick the icon source based on which bundle we are building. Dev builds get
-# a distinct hammer-on-waveform icon so a developer's dock shows at a glance
+# a small amber badge on the waveform so a developer's dock shows at a glance
 # which LocalFlow they are running when both are installed side by side.
 ifeq ($(APP_NAME),LocalFlow Dev)
 ICON_SOURCE = Resources/AppIcon-Dev-Source.png

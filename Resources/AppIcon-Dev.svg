@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">LocalFlow development waveform</title>
+  <desc id="description">A mint audio waveform with two rounded pulses on a midnight blue rounded square, with a small amber development badge.</desc>
+  <defs>
+    <linearGradient id="tile" x1="160" y1="80" x2="860" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#233B49"/>
+      <stop offset="0.58" stop-color="#142632"/>
+      <stop offset="1" stop-color="#0A1722"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="512" y1="300" x2="512" y2="764" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D8FFF1"/>
+      <stop offset="0.5" stop-color="#9AF2D4"/>
+      <stop offset="1" stop-color="#57CBAE"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="250" y1="58" x2="750" y2="966" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.2"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.08"/>
+    </linearGradient>
+  </defs>
+  <rect x="56" y="64" width="912" height="912" rx="208" fill="#051019" fill-opacity="0.12"/>
+  <rect x="56" y="56" width="912" height="912" rx="208" fill="url(#tile)"/>
+  <rect x="58" y="58" width="908" height="908" rx="206" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <g fill="url(#wave)">
+    <rect x="154" y="466" width="60" height="128" rx="30"/>
+    <rect x="236" y="380" width="60" height="300" rx="30"/>
+    <rect x="318" y="316" width="60" height="428" rx="30"/>
+    <rect x="400" y="354" width="60" height="352" rx="30"/>
+    <rect x="482" y="414" width="60" height="232" rx="30"/>
+    <rect x="564" y="354" width="60" height="352" rx="30"/>
+    <rect x="646" y="316" width="60" height="428" rx="30"/>
+    <rect x="728" y="380" width="60" height="300" rx="30"/>
+    <rect x="810" y="466" width="60" height="128" rx="30"/>
+  </g>
+  <circle cx="786" cy="240" r="43" fill="#132632"/>
+  <circle cx="786" cy="240" r="31" fill="#FFC56C"/>
+</svg>
