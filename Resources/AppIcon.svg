@@ -33,7 +33,7 @@
     <rect x="810" y="466" width="60" height="128" rx="30"/>
   </g>
   <g fill="#142632">
-    <circle cx="348" cy="530" r="16"/>
-    <circle cx="676" cy="530" r="16"/>
+    <circle cx="348" cy="530" r="24"/>
+    <circle cx="676" cy="530" r="24"/>
   </g>
 </svg>
