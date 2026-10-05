@@ -26,7 +26,7 @@ documentation is `finetune/parakeet-ternary/ios/README.md`, sections WP4 and
 WP7. Only inference code is included; diagnostic capture and benchmark
 record writing are excluded.
 
-In FreeFlow, select `parakeet-v2-ternary` under Settings → Models →
+In FreeFlow, select `parakeet-v2-ternary` under Settings → Advanced Provider Settings →
 Transcription Model, with English or Auto-detect. Setup also offers the
 bundled model without an API key. Dictation bypasses cloud transcription,
 realtime streaming, context analysis, cleanup, translation, and Edit Mode.
@@ -34,8 +34,16 @@ Existing local history and paste behavior still apply. There is no automatic
 cloud fallback when local inference fails. Other explicit provider tests in
 Settings retain their existing behavior.
 
-The first use of each bucket may take several minutes while Core ML prepares
-the model for the device. Subsequent uses reuse the loaded model. Recordings
+When the local model is selected, startup prepares all four buckets on a
+background serial queue. Selecting the local model in Settings also starts
+preparation. It loads the encoder functions and runs a synthetic zero-input
+prediction for each one, without accessing the microphone or user content.
+Settings and the menu show preparation status. First-time device preparation
+may still take several minutes; dictation submitted before it finishes waits
+behind preparation. The runtime and loaded models stay in memory for the
+session, including across provider changes, so subsequent dictations reuse
+them. The model's file size is not its runtime RAM footprint: loaded models
+and working buffers require additional memory. Recordings
 longer than 15 seconds are split into independent chunks; words crossing a
 chunk boundary can lose context. Cancellation is checked between audio
 buffers, Core ML calls, and decoder steps; an in-progress Core ML load or
@@ -77,6 +85,16 @@ exactly. First-use smoke runs took 98–109 seconds including model preparation;
 the subsequent 18-second run completed in about one second. These are
 functional checks, not a controlled performance benchmark or real-world
 accuracy evaluation.
+
+Startup-preparation validation on the same Mac: preparing all four buckets
+using the existing Core ML device cache took 2.605 seconds, repeating
+preparation took less than a millisecond, and the synthetic 18-second
+two-chunk recording still matched exactly in 0.140 seconds after preparation.
+The guarded process group peaked at about 153 MiB RSS; this does not include
+all memory used by system Core ML/Neural Engine services. A fresh device cache
+was not measured in this follow-up. Deterministic cache tests verify that
+preparation and transcription reuse loaded models, preparation is idempotent,
+and a failed warmup retries without reloading successful buckets.
 
 Before merge, manually test microphone dictation, global shortcuts,
 Accessibility paste, cancellation, switching providers, and offline operation

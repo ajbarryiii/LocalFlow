@@ -20,6 +20,35 @@ final class LocalParakeetService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "freeflow.local-parakeet", qos: .userInitiated)
     private var runtime: LocalParakeetRuntime?
 
+    func prepare() async throws {
+        guard Self.isAvailable, let directory = Self.bundleDirectory else {
+            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Build with PARAKEET_BUNDLE_DIR to include it.")
+        }
+        try await prepare(directory: directory)
+    }
+
+    // Synthetic inputs only: preparation never records audio or accesses context.
+    func prepare(directory: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try self.runtime(for: directory).prepare()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Try selecting the model again."))
+                }
+            }
+        }
+    }
+
+    // Call only on queue. Keep the runtime and all four loaded models alive.
+    private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
+        if let runtime, runtime.directory == directory { return runtime }
+        let runtime = try LocalParakeetRuntime(directory: directory)
+        self.runtime = runtime
+        return runtime
+    }
+
     func transcribe(fileURL: URL, language: String?) async throws -> String {
         guard language == nil || language == "en" else {
             throw LocalParakeetError.invalid("Parakeet v2 supports English. Select English or Auto-detect.")
@@ -40,10 +69,7 @@ final class LocalParakeetService: @unchecked Sendable {
                 queue.async {
                     do {
                         try cancellation.check()
-                        if self.runtime?.directory != directory {
-                            self.runtime = try LocalParakeetRuntime(directory: directory)
-                        }
-                        let text = try self.runtime!.transcribe(fileURL: fileURL, check: cancellation.check)
+                        let text = try self.runtime(for: directory).transcribe(fileURL: fileURL, check: cancellation.check)
                         try cancellation.check()
                         continuation.resume(returning: text)
                     } catch {
@@ -77,7 +103,7 @@ private final class LocalParakeetRuntime {
     let frontend: VDSPFrontEnd
     let math: NativeMath
     let vocabulary: [String]
-    var models: [Int: MLModel] = [:]
+    private let models = ParakeetModelCache<MLModel>()
 
     init(directory: URL) throws {
         self.directory = directory
@@ -104,6 +130,27 @@ private final class LocalParakeetRuntime {
         vocabulary = (0..<1024).map { vocab[String($0)]! }
     }
 
+    func prepare() throws {
+        try models.prepare(load: loadModel) { bucket, model in
+            // Force device specialization and first prediction before dictation.
+            // A zero mel input is invented and its output is discarded.
+            let size = bucket * 100 + 1
+            let mel = try MLMultiArray(shape: [1, 128, NSNumber(value: size)], dataType: .float32)
+            mel.dataPointer.bindMemory(to: Float.self, capacity: mel.count).initialize(repeating: 0, count: mel.count)
+            let length = try MLMultiArray(shape: [1], dataType: .int32)
+            length[0] = NSNumber(value: size)
+            _ = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["mel": mel, "mel_length": length]))
+        }
+    }
+
+    private func loadModel(bucket: Int) throws -> MLModel {
+        let config = MLModelConfiguration()
+        config.computeUnits = .cpuAndNeuralEngine
+        if #available(macOS 15, *) { config.functionName = "b\(bucket)" }
+        else { throw LocalParakeetError.invalid("Parakeet requires macOS 26 or newer.") }
+        return try MLModel(contentsOf: directory.appendingPathComponent("Encoder.mlmodelc"), configuration: config)
+    }
+
     func transcribe(fileURL: URL, check: () throws -> Void) throws -> String {
         var pending: [Float] = [], pieces: [String] = []
         try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
@@ -124,16 +171,7 @@ private final class LocalParakeetRuntime {
         // NeMo's unbiased per-feature normalization needs at least two frames.
         let pcm = input.count < 480 ? input + [Float](repeating: 0, count: 480 - input.count) : input
         let bucket = try LocalParakeetCore.bucket(samples: pcm.count)
-        let model: MLModel
-        if let cached = models[bucket] { model = cached }
-        else {
-            let config = MLModelConfiguration()
-            config.computeUnits = .cpuAndNeuralEngine
-            if #available(macOS 15, *) { config.functionName = "b\(bucket)" }
-            else { throw LocalParakeetError.invalid("Parakeet requires macOS 26 or newer.") }
-            model = try MLModel(contentsOf: directory.appendingPathComponent("Encoder.mlmodelc"), configuration: config)
-            models[bucket] = model
-        }
+        let model = try models.model(for: bucket, load: loadModel)
         try check()
         let features = frontend.compute(pcm)
         let size = bucket * 100 + 1

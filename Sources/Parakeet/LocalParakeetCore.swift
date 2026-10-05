@@ -12,6 +12,7 @@ enum LocalParakeetCore {
     static let modelID = "parakeet-v2-ternary"
     static let sampleRate = 16_000
     static let maxSamples = 15 * sampleRate
+    static let buckets = [2, 4, 8, 15]
 
     static func isLocalModel(_ model: String) -> Bool {
         model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == modelID
@@ -25,7 +26,7 @@ enum LocalParakeetCore {
         guard samples > 0, samples <= maxSamples else {
             throw LocalParakeetError.invalid("Local transcription chunk must contain 1–240000 samples.")
         }
-        return [2, 4, 8, 15].first { samples <= $0 * sampleRate }!
+        return buckets.first { samples <= $0 * sampleRate }!
     }
 
     static func detokenize(_ tokens: [Int], vocabulary: [String]) throws -> String {
@@ -60,5 +61,40 @@ enum LocalParakeetCore {
             frame += advance
         }
         return tokens
+    }
+}
+
+/// Used only on the service's serial queue. Failed warmups can be retried,
+/// while successful preparation and transcription reuse the same model.
+final class ParakeetModelCache<Model> {
+    private var models: [Int: Model] = [:]
+    private var prepared: Set<Int> = []
+
+    func model(for bucket: Int, load: (Int) throws -> Model) throws -> Model {
+        if let model = models[bucket] { return model }
+        let model = try load(bucket)
+        models[bucket] = model
+        return model
+    }
+
+    func prepare(load: (Int) throws -> Model, warm: (Int, Model) throws -> Void) throws {
+        for bucket in LocalParakeetCore.buckets where !prepared.contains(bucket) {
+            let model = try model(for: bucket, load: load)
+            try warm(bucket, model)
+            prepared.insert(bucket)
+        }
+    }
+}
+
+enum LocalParakeetPreparationState {
+    case idle, preparing, ready, failed
+
+    var message: String {
+        switch self {
+        case .idle: return "Local model has not been prepared yet."
+        case .preparing: return "Preparing local model… First-time preparation may take several minutes."
+        case .ready: return "Local model ready. Kept in memory for this session."
+        case .failed: return "Local model preparation failed. Select the model again to retry."
+        }
     }
 }

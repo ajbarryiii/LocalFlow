@@ -324,6 +324,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 contextCaptureTask?.cancel()
                 contextCaptureTask = nil
                 capturedContext = nil
+                prepareLocalTranscriptionIfNeeded()
             }
         }
     }
@@ -562,6 +563,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
     @Published var isTranscribing = false
+    @Published private(set) var localModelPreparationState: LocalParakeetPreparationState = .idle
+    private var localModelPreparationTask: Task<Void, Never>?
     @Published var retryingItemIDs: Set<UUID> = []
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
@@ -819,6 +822,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         // Clear any stale recording flag left over from an unclean exit.
         AppState.writeRecordingStateFlag(false)
+        prepareLocalTranscriptionIfNeeded()
+    }
+
+    private func prepareLocalTranscriptionIfNeeded() {
+        guard usesLocalTranscription, LocalParakeetService.isAvailable,
+              localModelPreparationTask == nil,
+              localModelPreparationState != .ready else { return }
+        localModelPreparationState = .preparing
+        localModelPreparationTask = Task { @MainActor [weak self] in
+            do {
+                try await LocalParakeetService.shared.prepare()
+                self?.localModelPreparationState = .ready
+            } catch {
+                self?.localModelPreparationState = .failed
+            }
+            self?.localModelPreparationTask = nil
+        }
     }
 
     deinit {

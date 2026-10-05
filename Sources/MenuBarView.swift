@@ -56,6 +56,15 @@ struct MenuBarView: View {
 
             Divider()
 
+            if appState.usesLocalTranscription, LocalParakeetService.isAvailable {
+                Text(appState.localModelPreparationState.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                Divider()
+            }
+
             if !appState.hasScreenRecordingPermission {
                 Button {
                     appState.requestScreenCapturePermission()

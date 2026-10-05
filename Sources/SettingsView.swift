@@ -264,7 +264,7 @@ struct ProviderSettingsFields: View {
 
             if appState.usesLocalTranscription {
                 Text(LocalParakeetService.isAvailable
-                     ? "Bundled model ready. The first transcription may take several minutes while macOS prepares the Neural Engine model. Recordings over 15 seconds are decoded in separate chunks."
+                     ? appState.localModelPreparationState.message + " Recordings over 15 seconds are decoded in separate chunks."
                      : "This build does not contain the local model, or this Mac is unsupported. Requires Apple Silicon and macOS 26 or newer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

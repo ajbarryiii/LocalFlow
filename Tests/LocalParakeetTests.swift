@@ -41,6 +41,39 @@ enum LocalParakeetTests {
         TestSupport.expect(silence.features.allSatisfy { $0.isFinite && $0 == 0 }, "Silence features must remain zero")
         testSyntheticAudioEOF()
         testBlobBounds()
+        testPreparedModelReuse()
+    }
+
+    private static func testPreparedModelReuse() {
+        final class SyntheticModel {}
+        let cache = ParakeetModelCache<SyntheticModel>()
+        var loads: [Int] = [], warmed: [Int] = []
+        func load(_ bucket: Int) -> SyntheticModel {
+            loads.append(bucket)
+            return SyntheticModel()
+        }
+        // A transcription can load one bucket before startup preparation runs.
+        let existing = try! cache.model(for: 4, load: load)
+        try! cache.prepare(load: load) { bucket, _ in warmed.append(bucket) }
+        TestSupport.expectEqual(loads, [4, 2, 8, 15])
+        TestSupport.expectEqual(warmed, LocalParakeetCore.buckets)
+        TestSupport.expect(try! cache.model(for: 4, load: load) === existing,
+                           "Startup preparation must reuse an already loaded model")
+        try! cache.prepare(load: load) { _, _ in fatalError("Prepared models must not warm twice") }
+        for bucket in LocalParakeetCore.buckets { _ = try! cache.model(for: bucket, load: load) }
+        TestSupport.expectEqual(loads, [4, 2, 8, 15])
+
+        let retry = ParakeetModelCache<SyntheticModel>()
+        loads = []; warmed = []
+        expectFailure {
+            try retry.prepare(load: load) { bucket, _ in
+                if bucket == 4 { throw LocalParakeetError.invalid("Synthetic failure") }
+                warmed.append(bucket)
+            }
+        }
+        try! retry.prepare(load: load) { bucket, _ in warmed.append(bucket) }
+        TestSupport.expectEqual(loads, LocalParakeetCore.buckets)
+        TestSupport.expectEqual(warmed, LocalParakeetCore.buckets)
     }
 
     private static func testSyntheticAudioEOF() {
