@@ -32,10 +32,13 @@ Edit Mode, or app/screenshot context capture is included. English dictation,
 deterministic voice macros, local history/retry, and paste behavior remain.
 Microphone and Accessibility are the only dictation permissions.
 
-Startup prepares only the 15-second function on a
-background serial queue, then reuses it for every chunk length. Smaller functions
-are not prepared in the background because their active Core ML calls could
-stall dictation on that queue. Settings offers a retry when preparation fails.
+Startup prepares the 15-second function first on the
+dictation queue. Once ready, a separate utility queue prepares the 2/4/8-second
+functions one at a time and hands each successfully warmed model to the
+dictation queue. Each chunk then uses the smallest ready function that fits;
+unavailable smaller functions fall back to a larger ready function. Background
+warmup failure preserves readiness, and obsolete runtimes cannot install results.
+Settings offers a retry when initial preparation fails.
 Preparation loads the 15-second encoder function and runs a synthetic zero-input
 prediction, without accessing the microphone or user content.
 Settings and the menu show preparation status. First-time device preparation
@@ -100,10 +103,10 @@ was not measured in this follow-up. Deterministic cache tests verify that
 preparation and transcription reuse loaded models, preparation is idempotent,
 and a failed warmup retries without reloading successful buckets.
 
-The canonical 15-second-first startup was tested by the user in an isolated
+The earlier 15-second-only startup was tested by the user in an isolated
 app: approximately 90 seconds to readiness, with only 10–15 seconds of setup.
 The Core ML comparison and synthetic short/long transcript checks are documented
-in `Benchmarks/ParakeetStartup.md`. No smaller-function warmups run after readiness.
+in `Benchmarks/ParakeetStartup.md`. The new progressive preparation/handoff needs manual app-level testing.
 
 Before merge, manually test microphone dictation, global shortcuts,
 Accessibility paste, cancellation, local retries, and offline operation

@@ -18,7 +18,7 @@ import time
 
 
 REPO = Path(__file__).resolve().parents[1]
-ARMS = ("all", "fifteen-first")
+ARMS = ("all", "fifteen-first", "fifteen-background")
 
 
 def verify_bundle(directory):

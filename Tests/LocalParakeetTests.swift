@@ -38,6 +38,7 @@ enum LocalParakeetTests {
         testBlobBounds()
         testPreparedModelReuse()
         testFifteenSecondBootstrap()
+        ParakeetBackgroundPreparationTests.run()
     }
 
     private static func testFifteenSecondBootstrap() {
@@ -45,6 +46,7 @@ enum LocalParakeetTests {
         var loads: [Int] = []
         let strategy = ParakeetStartupStrategy.applicationDefault
         TestSupport.expectEqual(strategy.initialBuckets, [15])
+        TestSupport.expectEqual(strategy.backgroundBuckets, [2, 4, 8])
         func load(_ bucket: Int) -> Int { loads.append(bucket); return bucket }
         // Before bootstrap, retain normal lazy loading rather than selecting an
         // unavailable fallback. Every chunk length is valid for the 15s bucket.

@@ -63,12 +63,17 @@ enum LocalParakeetCore {
 enum ParakeetStartupStrategy: String {
     case allBuckets = "all"
     case fifteenSecondsFirst = "fifteen-first"
+    case fifteenSecondsThenSmaller = "fifteen-background"
 
     // Dictation becomes usable after one function rather than all four.
-    static let applicationDefault: Self = .fifteenSecondsFirst
+    static let applicationDefault: Self = .fifteenSecondsThenSmaller
 
     var initialBuckets: [Int] {
-        self == .fifteenSecondsFirst ? [15] : LocalParakeetCore.buckets
+        self == .allBuckets ? LocalParakeetCore.buckets : [15]
+    }
+
+    var backgroundBuckets: [Int] {
+        self == .fifteenSecondsThenSmaller ? [2, 4, 8] : []
     }
 }
 
@@ -77,6 +82,15 @@ enum ParakeetStartupStrategy: String {
 final class ParakeetModelCache<Model> {
     private var models: [Int: Model] = [:]
     private var prepared: Set<Int> = []
+
+    var preparedBuckets: [Int] { prepared.sorted() }
+
+    // Install only after prediction succeeds, and only on the owning queue.
+    func installPrepared(_ model: Model, for bucket: Int) {
+        guard !prepared.contains(bucket) else { return }
+        models[bucket] = model
+        prepared.insert(bucket)
+    }
 
     func model(for bucket: Int, load: (Int) throws -> Model) throws -> Model {
         if let model = models[bucket] { return model }
@@ -87,8 +101,10 @@ final class ParakeetModelCache<Model> {
 
     func transcriptionBucket(samples: Int, strategy: ParakeetStartupStrategy) throws -> Int {
         let preferred = try LocalParakeetCore.bucket(samples: samples)
-        if strategy == .fifteenSecondsFirst, !prepared.contains(preferred), prepared.contains(15) {
-            return 15
+        if strategy != .allBuckets {
+            // Use the smallest ready function that can hold the input. A failed
+            // 2s warmup can still benefit from a ready 4s or 8s function.
+            return LocalParakeetCore.buckets.first { $0 >= preferred && prepared.contains($0) } ?? preferred
         }
         return preferred
     }
@@ -101,6 +117,76 @@ final class ParakeetModelCache<Model> {
             prepared.insert(bucket)
         }
     }
+}
+
+struct ParakeetPreparationProgress: Sendable {
+    let preparedBuckets: [Int]
+    let isOptimizing: Bool
+}
+
+/// Control state and installation belong exclusively to ownerQueue. Only
+/// makeReady runs on workerQueue, with a fresh model that is not yet in use.
+/// A completed model crosses queues once, after its synchronous warmup returns.
+final class ParakeetBackgroundPreparation<Model>: @unchecked Sendable {
+    private let ownerQueue: DispatchQueue
+    private let workerQueue: DispatchQueue
+    private let buckets: [Int]
+    private let makeReady: (Int) throws -> Model
+    private let install: (Int, Model) -> Void
+    private var completed: Set<Int> = []
+    private var pending: [Int] = []
+    private var cancelled = false
+    private(set) var isPreparing = false
+
+    init(ownerQueue: DispatchQueue, workerQueue: DispatchQueue, buckets: [Int],
+         makeReady: @escaping (Int) throws -> Model, install: @escaping (Int, Model) -> Void) {
+        self.ownerQueue = ownerQueue
+        self.workerQueue = workerQueue
+        self.buckets = buckets
+        self.makeReady = makeReady
+        self.install = install
+    }
+
+    // Both calls must be made on ownerQueue. Each start attempts failed buckets
+    // once; repeated starts during an active pass do not duplicate work.
+    func start() {
+        dispatchPrecondition(condition: .onQueue(ownerQueue))
+        guard !cancelled, !isPreparing else { return }
+        pending = buckets.filter { !completed.contains($0) }
+        scheduleNext()
+    }
+
+    func cancel() {
+        dispatchPrecondition(condition: .onQueue(ownerQueue))
+        cancelled = true
+        pending.removeAll()
+        // An active synchronous load/prediction must finish. Its result is
+        // discarded, and subsequent jobs are never scheduled for this runtime.
+    }
+
+    private func scheduleNext() {
+        guard !cancelled, !pending.isEmpty else { isPreparing = false; return }
+        isPreparing = true
+        let bucket = pending.removeFirst()
+        workerQueue.async {
+            let transfer = ParakeetPreparedTransfer(Result { try self.makeReady(bucket) })
+            self.ownerQueue.async {
+                if !self.cancelled, case .success(let model) = transfer.result {
+                    self.install(bucket, model)
+                    self.completed.insert(bucket)
+                }
+                // A failed optimization never changes readiness of other models.
+                self.scheduleNext()
+            }
+        }
+    }
+}
+
+// Immutable handoff envelope. The background worker stops accessing the model
+// before the owning queue adopts it; the model is never predicted concurrently.
+private final class ParakeetPreparedTransfer<Model>: @unchecked Sendable {
+    let result: Result<Model, Error>
+    init(_ result: Result<Model, Error>) { self.result = result }
 }
 
 enum LocalParakeetPreparationState {

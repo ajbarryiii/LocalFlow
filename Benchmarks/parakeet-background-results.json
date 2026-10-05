@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "export_sha256": "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503",
+  "encoder": "C6s8 plain",
+  "hardware": "Apple M1 Pro",
+  "macOS": "27.0",
+  "repeats": 1,
+  "cache_evidence": "new copied bundle path then same-path fresh process; no cache deletion or Instruments cache events",
+  "limitations": [
+    "Synthetic smoke on a shared Mac; no accuracy or controlled performance claim.",
+    "First-path loads are not proven uncached specialization.",
+    "Mixed 2/4/7/14/18-second padded synthetic fixtures; not continuous real-user speech or a controlled latency study.",
+    "The background loop samples once per second; completion time includes polling delay.",
+    "RSS excludes system Core ML/ANE services; only same-path reuse, not reboot behavior, was tested."
+  ],
+  "runs": [
+    {
+      "during_optimization": {
+        "all_expected_matches": true,
+        "bucket_counts": {
+          "2": 31,
+          "4": 32,
+          "15": 219
+        },
+        "max_seconds": 0.192900958,
+        "median_seconds": 0.089827042,
+        "p95_seconds": 0.153836792,
+        "samples": 235
+      },
+      "final_prepared_buckets": [
+        2,
+        4,
+        8,
+        15
+      ],
+      "first_transcript_ready_seconds": 92.108080792,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.065614416
+        },
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.062472708
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.0635185
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.0687625
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15,
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.1297365
+        }
+      ],
+      "initial_prepared_buckets": [
+        15
+      ],
+      "optimization_finished_seconds": 360.720097792,
+      "optimized_fixtures": [
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            2
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.054902709
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            4
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.069492667
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            8
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.043902709
+        },
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.1108645
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15,
+            4
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.103509625
+        }
+      ],
+      "preparation_seconds": 92.042423709,
+      "repeated_preparation_seconds": 4.9833e-05,
+      "schema": 1,
+      "strategy": "fifteen-background",
+      "phase": "new-path",
+      "repeat": 1,
+      "process_wall_seconds": 361.59508320805617,
+      "guard_peak_group_rss_kib": 566944,
+      "guard_swap_growth_kib": 0
+    },
+    {
+      "during_optimization": {
+        "all_expected_matches": true,
+        "bucket_counts": {
+          "15": 1
+        },
+        "max_seconds": 0.059110584,
+        "median_seconds": 0.059110584,
+        "p95_seconds": 0.059110584,
+        "samples": 1
+      },
+      "final_prepared_buckets": [
+        2,
+        4,
+        8,
+        15
+      ],
+      "first_transcript_ready_seconds": 0.787488083,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.065248459
+        },
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.057008
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.060470833
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.062297458
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15,
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.1277675
+        }
+      ],
+      "initial_prepared_buckets": [
+        15
+      ],
+      "optimization_finished_seconds": 2.171745792,
+      "optimized_fixtures": [
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            2
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.065884666
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            4
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.072522291
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            8
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.054147583
+        },
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.107032917
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15,
+            4
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.111168667
+        }
+      ],
+      "preparation_seconds": 0.72219325,
+      "repeated_preparation_seconds": 3.4625e-05,
+      "schema": 1,
+      "strategy": "fifteen-background",
+      "phase": "same-path-fresh-process",
+      "repeat": 1,
+      "process_wall_seconds": 3.263576625031419,
+      "guard_peak_group_rss_kib": 247136,
+      "guard_swap_growth_kib": 0
+    }
+  ]
+}

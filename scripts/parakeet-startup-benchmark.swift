@@ -19,14 +19,16 @@ struct ParakeetStartupBenchmark {
             }
             let directory = URL(fileURLWithPath: args[1])
             let fixtures = URL(fileURLWithPath: args[2])
-            let service = LocalParakeetService(startupStrategy: strategy)
+            let trace = BucketTrace()
+            let service = LocalParakeetService(startupStrategy: strategy, onBucketUsed: { trace.record($0) })
             let clock = ContinuousClock()
             let start = clock.now
             try await service.prepare(directory: directory)
             let preparation = seconds(start.duration(to: clock.now))
+            let initialProgress = try await service.preparationProgress(directory: directory)
             var timings: [[String: Any]] = []
             var firstTranscriptReady = 0.0
-            for duration in [14, 4, 7, 18] {
+            for duration in [14, 2, 4, 7, 18] {
                 let predictionStart = clock.now
                 let text = try await service.transcribe(
                     fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"), directory: directory)
@@ -35,17 +37,66 @@ struct ParakeetStartupBenchmark {
                 let expected = duration == 18 ? phrase + " " + phrase : phrase
                 let normalized = text.lowercased().filter { $0.isLetter || $0.isWhitespace }
                 let match = normalized == expected
-                timings.append(["audio_seconds": duration, "transcription_seconds": elapsed, "expected_match": match])
+                timings.append(["audio_seconds": duration, "transcription_seconds": elapsed,
+                                "expected_match": match, "buckets_used": trace.take()])
                 guard match else { throw LocalParakeetError.invalid("Synthetic benchmark mismatch") }
+            }
+            var backgroundTimes: [Double] = []
+            var backgroundMatches = true
+            var backgroundBucketCounts: [String: Int] = [:]
+            let durations = [2, 4, 7, 14, 18]
+            while try await service.preparationProgress(directory: directory).isOptimizing {
+                let duration = durations[backgroundTimes.count % durations.count]
+                let predictionStart = clock.now
+                let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
+                                                        directory: directory)
+                backgroundTimes.append(seconds(predictionStart.duration(to: clock.now)))
+                let expected = duration == 18 ? phrase + " " + phrase : phrase
+                backgroundMatches = backgroundMatches && text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
+                guard backgroundMatches else { throw LocalParakeetError.invalid("Synthetic background mismatch") }
+                for bucket in trace.take() { backgroundBucketCounts[String(bucket), default: 0] += 1 }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            let backgroundCompletion = seconds(start.duration(to: clock.now))
+            let finalProgress = try await service.preparationProgress(directory: directory)
+            var optimized: [[String: Any]] = []
+            if !strategy.backgroundBuckets.isEmpty {
+                guard finalProgress.preparedBuckets == LocalParakeetCore.buckets else {
+                    throw LocalParakeetError.invalid("Synthetic optimization did not finish")
+                }
+                for duration in [2, 4, 7, 14, 18] {
+                    let predictionStart = clock.now
+                    let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
+                                                            directory: directory)
+                    let elapsed = seconds(predictionStart.duration(to: clock.now))
+                    let expected = duration == 18 ? phrase + " " + phrase : phrase
+                    let match = text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
+                    let buckets = trace.take()
+                    let expectedBuckets = duration == 18 ? [15, 4] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
+                    guard match, buckets == expectedBuckets else { throw LocalParakeetError.invalid("Synthetic handoff mismatch") }
+                    optimized.append(["audio_seconds": duration, "transcription_seconds": elapsed,
+                                      "expected_match": match, "buckets_used": buckets])
+                }
             }
             let repeatedStart = clock.now
             try await service.prepare(directory: directory)
-            let report: [String: Any] = [
+            var report: [String: Any] = [
                 "schema": 1, "strategy": strategy.rawValue, "preparation_seconds": preparation,
                 "first_transcript_ready_seconds": firstTranscriptReady,
                 "repeated_preparation_seconds": seconds(repeatedStart.duration(to: clock.now)),
-                "fixtures": timings
+                "fixtures": timings, "initial_prepared_buckets": initialProgress.preparedBuckets,
+                "final_prepared_buckets": finalProgress.preparedBuckets
             ]
+            if !strategy.backgroundBuckets.isEmpty {
+                let sorted = backgroundTimes.sorted()
+                report["optimization_finished_seconds"] = backgroundCompletion
+                report["optimized_fixtures"] = optimized
+                report["during_optimization"] = ["samples": sorted.count, "all_expected_matches": backgroundMatches,
+                    "bucket_counts": backgroundBucketCounts,
+                    "median_seconds": sorted.isEmpty ? NSNull() : sorted[sorted.count / 2] as Any,
+                    "p95_seconds": sorted.isEmpty ? NSNull() : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))] as Any,
+                    "max_seconds": sorted.last.map { $0 as Any } ?? NSNull()]
+            }
             let json = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
             print(String(decoding: json, as: UTF8.self))
         } catch {
@@ -63,13 +114,13 @@ struct ParakeetStartupBenchmark {
     private static func makeFixtures(source: URL, directory: URL) throws {
         let file = try AVAudioFile(forReading: source)
         guard file.length > 0, file.processingFormat.channelCount == 1,
-              Double(file.length) / file.processingFormat.sampleRate < 2.9 else {
-            throw LocalParakeetError.invalid("Synthetic speech must be mono and under 2.9 seconds")
+              Double(file.length) / file.processingFormat.sampleRate < 1.9 else {
+            throw LocalParakeetError.invalid("Synthetic speech must be mono and under 1.9 seconds")
         }
         let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
         try file.read(into: input)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for duration in [4, 7, 14, 18] {
+        for duration in [2, 4, 7, 14, 18] {
             let count = Int(Double(duration) * file.processingFormat.sampleRate)
             let padded = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(count))!
             padded.frameLength = padded.frameCapacity
@@ -87,6 +138,16 @@ struct ParakeetStartupBenchmark {
             settings[AVLinearPCMIsNonInterleaved] = false
             let output = try AVAudioFile(forWriting: directory.appendingPathComponent("synthetic-\(duration).aiff"), settings: settings)
             try output.write(from: padded)
+        }
+    }
+
+    private final class BucketTrace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var buckets: [Int] = []
+        func record(_ bucket: Int) { lock.lock(); buckets.append(bucket); lock.unlock() }
+        func take() -> [Int] {
+            lock.lock(); defer { lock.unlock() }
+            let result = buckets; buckets.removeAll(); return result
         }
     }
 }
