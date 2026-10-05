@@ -3,11 +3,6 @@ import Foundation
 
 enum LocalParakeetTests {
     static func run() {
-        TestSupport.expect(LocalParakeetCore.isLocalModel(" PARAKEET-V2-TERNARY\n"), "Local model aliases must stay local")
-        TestSupport.expect(!LocalParakeetCore.isLocalModel("whisper-large-v3"), "Hosted model must retain provider routing")
-        // Local initialization must not require a provider URL or API key.
-        _ = try! TranscriptionService(apiKey: "", baseURL: "invalid", transcriptionModel: " PARAKEET-V2-TERNARY ")
-        expectFailure { _ = try TranscriptionService(apiKey: "", baseURL: "invalid", transcriptionModel: "whisper-large-v3") }
         for (samples, bucket) in [(1, 2), (32000, 2), (32001, 4), (64000, 4), (64001, 8), (128000, 8), (128001, 15), (240000, 15)] {
             TestSupport.expectEqual(try! LocalParakeetCore.bucket(samples: samples), bucket)
         }

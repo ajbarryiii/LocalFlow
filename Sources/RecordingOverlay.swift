@@ -7,7 +7,6 @@ final class RecordingOverlayState: ObservableObject {
     @Published var phase: OverlayPhase = .recording
     @Published var audioLevel: Float = 0.0
     @Published var recordingTriggerMode: RecordingTriggerMode = .hold
-    @Published var isCommandMode = false
     @Published var updateVersion: String = ""
     @Published var errorMessage: String?
     @Published var toastID: UUID?
@@ -128,33 +127,30 @@ final class RecordingOverlayManager {
             || overlayState.phase == .updateAvailable
     }
 
-    func showInitializing(mode: RecordingTriggerMode = .hold, isCommandMode: Bool = false) {
+    func showInitializing(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
-            self.overlayState.isCommandMode = isCommandMode
             self.overlayState.phase = .initializing
             self.overlayState.audioLevel = 0
             self.showOverlayPanel(animatedResize: false)
         }
     }
 
-    func showRecording(mode: RecordingTriggerMode = .hold, isCommandMode: Bool = false) {
+    func showRecording(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
-            self.overlayState.isCommandMode = isCommandMode
             self.overlayState.phase = .recording
             self.overlayState.audioLevel = 0
             self.showOverlayPanel(animatedResize: true)
         }
     }
 
-    func transitionToRecording(mode: RecordingTriggerMode = .hold, isCommandMode: Bool = false) {
+    func transitionToRecording(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
-            self.overlayState.isCommandMode = isCommandMode
             self.overlayState.phase = .recording
             self.updateOverlayLayout(animated: true)
         }
@@ -226,7 +222,6 @@ final class RecordingOverlayManager {
     func showUpdateAvailable(version: String) {
         DispatchQueue.main.async {
             self.lockedOverlayWidth = nil
-            self.overlayState.isCommandMode = false
             self.overlayState.updateVersion = version
             self.overlayState.phase = .updateAvailable
             self.showOverlayPanel(animatedResize: true)
@@ -427,14 +422,11 @@ final class RecordingOverlayManager {
             return max(notchWidth, updateWidth)
         }
 
-        let commandModeWidth: CGFloat = 180
         let toggleWidth: CGFloat = 150
         let defaultWidth: CGFloat = 92
         let baseWidth: CGFloat
 
-        if overlayState.isCommandMode {
-            baseWidth = commandModeWidth
-        } else if overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle {
+        if overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle {
             baseWidth = toggleWidth
         } else {
             baseWidth = defaultWidth
@@ -452,7 +444,6 @@ final class RecordingOverlayManager {
 
     private func dismissAll() {
         lockedOverlayWidth = nil
-        overlayState.isCommandMode = false
         overlayState.updateVersion = ""
         if let panel = overlayWindow {
             panel.orderOut(nil)
@@ -504,18 +495,7 @@ struct WingedRecordingView: View {
                         InitializingDotsView()
                             .transition(.opacity)
                     } else if showsLiveRecordingContent {
-                        // Command-mode pencil sits directly above and centered
-                        // over the compact waveform inside the same wing
-                        // rectangle. Closes the gap between pill and winged
-                        // layouts: pill users already see a pencil during
-                        // command-mode dictation; winged users now do too.
                         VStack(spacing: 1) {
-                            if state.isCommandMode {
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.92))
-                                    .transition(.opacity)
-                            }
                             CompactWaveformView(
                                 audioLevel: state.audioLevel,
                                 showsActivityPulse: state.phase == .recording
@@ -977,10 +957,6 @@ struct RecordingOverlayView: View {
 
                     HStack {
                         Group {
-                            if state.isCommandMode {
-                                CommandModeIndicator()
-                                    .transition(.opacity)
-                            }
                         }
                         .frame(width: leadingAccessoryWidth, alignment: .center)
                         .frame(maxHeight: .infinity, alignment: .center)
@@ -1009,20 +985,10 @@ struct RecordingOverlayView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.spring(response: 0.28, dampingFraction: 1.0), value: state.phase)
         .animation(.spring(response: 0.28, dampingFraction: 1.0), value: state.recordingTriggerMode)
-        .animation(.spring(response: 0.28, dampingFraction: 1.0), value: state.isCommandMode)
     }
 }
 
 // MARK: - Transcribing Indicator
-
-struct CommandModeIndicator: View {
-    var body: some View {
-        Image(systemName: "pencil")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.92))
-            .frame(width: 16, height: 16, alignment: .center)
-    }
-}
 
 struct FailureIndicatorView: View {
     var body: some View {

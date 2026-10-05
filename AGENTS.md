@@ -9,10 +9,8 @@ that architecture unless the user explicitly approves a migration.
 - `Sources/App.swift` and `Sources/AppDelegate.swift`: app lifecycle.
 - `Sources/AppState.swift`: central pipeline orchestration and shared state.
 - `Sources/AudioRecorder.swift`: microphone capture and audio conversion.
-- `Sources/TranscriptionService.swift` and
-  `Sources/RealtimeTranscriptionService.swift`: transcription providers.
-- `Sources/PostProcessingService.swift`: transcript cleanup and edit mode.
-- `Sources/AppContextService.swift`: foreground-app metadata and screenshots.
+- `Sources/Parakeet/`: bundled local speech recognition and model preparation.
+- `Sources/LocalDictationCore.swift`: deterministic voice macros and commands.
 - `Sources/ShortcutCore/`: shortcut models, matching, and session behavior.
 - `Sources/PipelineHistoryStore.swift`: local pipeline history.
 - `Sources/UpdateManager.swift`: update and release behavior.

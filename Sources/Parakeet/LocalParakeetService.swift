@@ -22,7 +22,7 @@ final class LocalParakeetService: @unchecked Sendable {
 
     func prepare() async throws {
         guard Self.isAvailable, let directory = Self.bundleDirectory else {
-            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Build with PARAKEET_BUNDLE_DIR to include it.")
+            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
         }
         try await prepare(directory: directory)
     }
@@ -35,7 +35,7 @@ final class LocalParakeetService: @unchecked Sendable {
                     try self.runtime(for: directory).prepare()
                     continuation.resume()
                 } catch {
-                    continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Try selecting the model again."))
+                    continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))
                 }
             }
         }
@@ -49,12 +49,9 @@ final class LocalParakeetService: @unchecked Sendable {
         return runtime
     }
 
-    func transcribe(fileURL: URL, language: String?) async throws -> String {
-        guard language == nil || language == "en" else {
-            throw LocalParakeetError.invalid("Parakeet v2 supports English. Select English or Auto-detect.")
-        }
+    func transcribe(fileURL: URL) async throws -> String {
         guard Self.isAvailable, let directory = Self.bundleDirectory else {
-            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Build with PARAKEET_BUNDLE_DIR to include it.")
+            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
         }
         return try await transcribe(fileURL: fileURL, directory: directory)
     }
@@ -73,7 +70,7 @@ final class LocalParakeetService: @unchecked Sendable {
                         try cancellation.check()
                         continuation.resume(returning: text)
                     } catch {
-                        // Core ML/provider exceptions may carry input details;
+                        // Core ML exceptions may carry input details;
                         // expose only our content-free errors or cancellation.
                         if error is CancellationError || error is LocalParakeetError {
                             continuation.resume(throwing: error)

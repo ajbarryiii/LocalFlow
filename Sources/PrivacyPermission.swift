@@ -3,7 +3,7 @@ import Foundation
 /// User-facing pane names change across macOS versions, while the Settings
 /// URL anchors remain compatible (including Accessibility on macOS 27).
 enum PrivacyPermission: CaseIterable {
-    case microphone, accessibility, screenRecording
+    case microphone, accessibility
 
     func settingsTitle(macOSMajorVersion: Int) -> String {
         switch self {
@@ -11,8 +11,6 @@ enum PrivacyPermission: CaseIterable {
             return "Microphone"
         case .accessibility:
             return macOSMajorVersion >= 27 ? "Device Control and Data Access" : "Accessibility"
-        case .screenRecording:
-            return macOSMajorVersion >= 14 ? "Screen & System Audio Recording" : "Screen Recording"
         }
     }
 
@@ -33,7 +31,6 @@ enum PrivacyPermission: CaseIterable {
         switch self {
         case .microphone: anchor = "Privacy_Microphone"
         case .accessibility: anchor = "Privacy_Accessibility"
-        case .screenRecording: anchor = "Privacy_ScreenCapture"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!
     }
