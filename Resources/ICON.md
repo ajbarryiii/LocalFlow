@@ -1,7 +1,8 @@
 # LocalFlow app icon
 
 `AppIcon.svg` is the editable vector source. Nine rounded audio bars form two
-soft pulses, with a restrained mint gradient on a midnight blue tile. The
+soft pulses, with a restrained mint gradient on a midnight blue tile. Small
+pupil dots inside the two tallest bars give the waveform a subtle pair of eyes. The
 development variant, `AppIcon-Dev.svg`, adds a small amber badge. Both use a
 1024-square viewBox, transparent outer margins, and no external assets or fonts.
 
