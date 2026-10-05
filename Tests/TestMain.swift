@@ -6,6 +6,7 @@ struct FreeFlowTests {
         AppContextServiceTests.run()
         ModelConfigurationTests.run()
         LocalParakeetTests.run()
+        PrivacyPermissionTests.run()
         ShortcutCoreTests.run()
         SemanticVersionTests.run()
         LLMCooldownManagerTests.run()

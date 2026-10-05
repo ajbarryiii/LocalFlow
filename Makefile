@@ -19,6 +19,8 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/LLMAPITransport.swift \
 	Sources/LLMCooldownManager.swift \
 	Sources/ModelConfiguration.swift \
+	Sources/PrivacyPermission.swift \
+	Sources/SetupFlowCore.swift \
 	Sources/Parakeet/LocalParakeetCore.swift \
 	Sources/Parakeet/LocalParakeetService.swift \
 	Sources/Parakeet/ParakeetAudioReader.swift \

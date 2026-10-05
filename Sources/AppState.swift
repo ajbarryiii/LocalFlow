@@ -1370,12 +1370,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
-            openPrivacySettingsPane("Privacy_Accessibility")
+            openPrivacySettingsPane(.accessibility)
         }
     }
 
     func openMicrophoneSettings() {
-        openPrivacySettingsPane("Privacy_Microphone")
+        openPrivacySettingsPane(.microphone)
     }
 
     func requestMicrophoneAccess(completion: @escaping (Bool) -> Void) {
@@ -1429,14 +1429,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func openScreenCaptureSettings() {
-        openPrivacySettingsPane("Privacy_ScreenCapture")
+        openPrivacySettingsPane(.screenRecording)
     }
 
-    private func openPrivacySettingsPane(_ pane: String) {
-        let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")
-        if let url = settingsURL {
-            NSWorkspace.shared.open(url)
+    private func openPrivacySettingsPane(_ permission: PrivacyPermission) {
+        if !NSWorkspace.shared.open(permission.settingsURL) {
+            NSWorkspace.shared.open(PrivacyPermission.privacySettingsURL)
         }
+    }
+
+    func revealAppForPermissionRepair() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -2029,7 +2032,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let isAccessibilityTrusted = AXIsProcessTrusted()
         hasAccessibility = isAccessibilityTrusted
         guard isAccessibilityTrusted else {
-            errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
+            errorMessage = "\(PrivacyPermission.accessibility.settingsTitle) permission required. \(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))"
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
@@ -2068,7 +2071,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let granted = hasScreenCapturePermission()
         hasScreenRecordingPermission = granted
         guard granted else {
-            let message = "Screen recording permission not granted. Enable in System Settings > Privacy & Security > Screen Recording."
+            let message = "Screen recording permission not granted. \(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))"
             errorMessage = message
             statusText = "Screenshot Required"
             activeRecordingTriggerMode = nil
@@ -2130,7 +2133,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             )
                         }
                     } else {
-                        strongSelf.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+                        strongSelf.errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
                         strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.currentSessionIntent = .dictation
@@ -2141,7 +2144,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
             return false
         default:
-            errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+            errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
             statusText = "No Microphone"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
@@ -2352,7 +2355,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable \(AppName.displayName)."
+        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\n\(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -2366,8 +2369,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func showAccessibilityAlert() {
         let alert = NSAlert()
-        alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable \(AppName.displayName)."
+        alert.messageText = "\(PrivacyPermission.accessibility.settingsTitle) Permission Required"
+        alert.informativeText = "\(AppName.displayName) needs this access for global shortcuts and pasting transcribed text.\n\n\(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))\n\n\(PrivacyPermission.accessibilityRepairInstructions)"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -3099,8 +3102,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func showScreenshotPermissionAlert(message: String) {
         let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "\(message)\n\n\(AppName.displayName) requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable \(AppName.displayName)."
+        alert.messageText = "\(PrivacyPermission.screenRecording.settingsTitle) Permission Required"
+        alert.informativeText = "\(message)\n\n\(AppName.displayName) needs this permission to capture screenshots for context-aware transcription.\n\n\(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
