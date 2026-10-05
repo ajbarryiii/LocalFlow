@@ -1,7 +1,7 @@
 import Foundation
 
 /// Build with Sources/Parakeet/*.swift only. Takes a model bundle and invented
-/// synthetic audio; never launches FreeFlow or reads its settings or history.
+/// synthetic audio; never launches LocalFlow or reads its settings or history.
 @main
 struct ParakeetSmoke {
     static func main() async throws {

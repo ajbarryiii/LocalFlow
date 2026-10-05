@@ -1,3 +1,7 @@
+> This directory preserves the original FreeFlow website as upstream reference.
+> It is not the LocalFlow website or current LocalFlow documentation.
+> See the repository README for LocalFlow features and local build instructions.
+
 # freeflow.zachlatta.com
 
 Static landing page for FreeFlow.

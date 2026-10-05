@@ -43,7 +43,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
 enum AppBuild {
     static var isDevBundle: Bool {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) == "FreeFlow Dev"
+        Bundle.main.bundleIdentifier == "com.zachlatta.freeflow.dev" ||
+        ["LocalFlow Dev", "FreeFlow Dev"].contains(AppName.displayName)
     }
 }
 
@@ -530,7 +531,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     static func audioStorageDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = AppName.displayName
+        let appName = AppName.supportDirectoryName
         let audioDir = appSupport.appendingPathComponent("\(appName)/audio", isDirectory: true)
         if !FileManager.default.fileExists(atPath: audioDir.path) {
             try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
@@ -538,7 +539,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return audioDir
     }
 
-    /// URL of the flag file written while FreeFlow is actively recording.
+    /// URL of the flag file written while LocalFlow is actively recording.
     ///
     /// External tools (voice assistants, TTS barge-in pipelines, conversation
     /// apps) can poll this file to know when the user is dictating. The file
@@ -550,7 +551,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// (or `FreeFlow Dev/is-recording` when running the dev bundle).
     static func recordingStateFlagURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+        let appName = AppName.supportDirectoryName
         return appSupport.appendingPathComponent("\(appName)/is-recording")
     }
 
@@ -1224,13 +1225,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func beginCriticalDictationActivity() {
         guard !automaticTerminationDisabled else { return }
-        ProcessInfo.processInfo.disableAutomaticTermination("FreeFlow dictation in progress")
+        ProcessInfo.processInfo.disableAutomaticTermination("LocalFlow dictation in progress")
         automaticTerminationDisabled = true
     }
 
     private func endCriticalDictationActivity() {
         guard automaticTerminationDisabled else { return }
-        ProcessInfo.processInfo.enableAutomaticTermination("FreeFlow dictation in progress")
+        ProcessInfo.processInfo.enableAutomaticTermination("LocalFlow dictation in progress")
         automaticTerminationDisabled = false
     }
 

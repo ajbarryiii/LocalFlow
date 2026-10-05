@@ -1,6 +1,6 @@
-# Bundled Parakeet v2 ternary
+# Bundled LocalFlow speech model
 
-The model is the completed `main-M1-P2-lr5e-4` training run from
+LocalFlow is the ternary derivative of NVIDIA Parakeet v2 from the completed `main-M1-P2-lr5e-4` training run from
 `ajbarryiii/wilderness-labs-stt`, selected at step 250,000. Its packed export
 SHA-256 is `a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503`.
 The full development-set mean WER reported after rebuilding that export is
@@ -53,6 +53,11 @@ upstream's allowed artifact area. It verifies the export hash and writes a
 bundle manifest with per-file SHA-256 hashes. Runtime verifies those hashes
 before loading. Preserve the generated bundle outside the checkout.
 
+The bundle model ID is `localflow`, with display name LocalFlow and
+`parakeet-v2-ternary` recorded as its base model. The build can relabel a
+previous Parakeet bundle after verifying its existing hashes; only metadata
+and the corresponding hashes change. Encoder and decoder weights are unchanged.
+
 Build locally with:
 
 ```sh
@@ -72,7 +77,7 @@ Local validation on 2026-10-04: full Swift type-check and deterministic
 tests, including token boundaries, duration-zero progress, symbol caps,
 cancellation, native blob bounds, silent features, and
 synthetic stereo AIFF resampling through EOF. The separate synthetic speech
-smoke check exercises the converted final model without launching FreeFlow
+smoke check exercises the converted final model without launching LocalFlow
 or requesting microphone access.
 
 All four encoder buckets transcribed the invented phrase exactly. An

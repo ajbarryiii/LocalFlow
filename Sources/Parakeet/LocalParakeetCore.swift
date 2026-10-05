@@ -9,7 +9,7 @@ enum LocalParakeetError: LocalizedError {
 }
 
 enum LocalParakeetCore {
-    static let modelID = "parakeet-v2-ternary"
+    static let modelID = "localflow"
     static let sampleRate = 16_000
     static let maxSamples = 15 * sampleRate
     static let buckets = [2, 4, 8, 15]

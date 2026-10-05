@@ -1,3 +1,7 @@
+LocalFlow speech model
+Derived from parakeet-tdt-0.6b-v2-ternary. Renaming does not change the
+trained weights, original model attribution, or CC-BY-4.0 license below.
+
 parakeet-tdt-0.6b-v2-ternary
 
 Model weights and model card (export.safetensors, manifest.json,

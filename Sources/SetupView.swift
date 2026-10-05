@@ -41,7 +41,7 @@ struct SetupView: View {
                     Button("Skip") { currentStep = .ready }
                 }
                 if currentStep == .ready {
-                    Button("Start Using FreeFlow", action: onComplete).keyboardShortcut(.defaultAction)
+                    Button("Start Using LocalFlow", action: onComplete).keyboardShortcut(.defaultAction)
                 } else {
                     Button("Continue") { currentStep = currentStep.next }
                         .keyboardShortcut(.defaultAction).disabled(!canContinue)
@@ -78,7 +78,7 @@ struct SetupView: View {
         case .ready:
             Image(systemName: "checkmark.circle.fill").font(.system(size: 60)).foregroundStyle(.green)
             Text("You're All Set!").font(.title).fontWeight(.bold)
-            Text("FreeFlow lives in your menu bar. Dictation stays on this Mac.")
+            Text("LocalFlow lives in your menu bar. Dictation stays on this Mac.")
             Text(appState.shortcutStatusText).foregroundStyle(.secondary)
         }
     }
