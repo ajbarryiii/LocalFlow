@@ -319,6 +319,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var transcriptionModel: String {
         didSet {
             UserDefaults.standard.set(transcriptionModel, forKey: transcriptionModelStorageKey)
+            if LocalParakeetCore.isLocalModel(transcriptionModel) {
+                tearDownRealtimeService()
+                contextCaptureTask?.cancel()
+                contextCaptureTask = nil
+                capturedContext = nil
+                prepareLocalTranscriptionIfNeeded()
+            }
         }
     }
 
@@ -556,6 +563,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
     @Published var isTranscribing = false
+    @Published private(set) var localModelPreparationState: LocalParakeetPreparationState = .idle
+    private var localModelPreparationTask: Task<Void, Never>?
     @Published var retryingItemIDs: Set<UUID> = []
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
@@ -813,6 +822,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         // Clear any stale recording flag left over from an unclean exit.
         AppState.writeRecordingStateFlag(false)
+        prepareLocalTranscriptionIfNeeded()
+    }
+
+    private func prepareLocalTranscriptionIfNeeded() {
+        guard usesLocalTranscription, LocalParakeetService.isAvailable,
+              localModelPreparationTask == nil,
+              localModelPreparationState != .ready else { return }
+        localModelPreparationState = .preparing
+        localModelPreparationTask = Task { @MainActor [weak self] in
+            do {
+                try await LocalParakeetService.shared.prepare()
+                self?.localModelPreparationState = .ready
+            } catch {
+                self?.localModelPreparationState = .failed
+            }
+            self?.localModelPreparationTask = nil
+        }
     }
 
     deinit {
@@ -1040,6 +1066,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
+    var usesLocalTranscription: Bool {
+        LocalParakeetCore.isLocalModel(transcriptionModel)
+    }
+
     private var resolvedTranscriptionLanguage: String? {
         let normalized = Self.normalizeTranscriptionLanguage(transcriptionLanguage)
         return normalized.isEmpty ? nil : normalized
@@ -1199,10 +1229,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         let capturedCustomVocabulary = customVocabulary
         let capturedCustomSystemPrompt = customSystemPrompt
+        let localTranscription = usesLocalTranscription
+        let transcriptionService = Result { try makeTranscriptionService() }
 
         Task {
             do {
-                let transcriptionService = try makeTranscriptionService()
+                let transcriptionService = try transcriptionService.get()
                 let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
                 let parsedTranscript = Self.parseTranscriptCommands(
                     from: rawTranscript,
@@ -1224,7 +1256,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     customVocabulary: capturedCustomVocabulary,
                     customSystemPrompt: capturedCustomSystemPrompt,
                     outputLanguage: self.outputLanguage,
-                    preserveExactWording: self.preserveExactWording
+                    preserveExactWording: self.preserveExactWording,
+                    localTranscription: localTranscription
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -1337,12 +1370,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
-            openPrivacySettingsPane("Privacy_Accessibility")
+            openPrivacySettingsPane(.accessibility)
         }
     }
 
     func openMicrophoneSettings() {
-        openPrivacySettingsPane("Privacy_Microphone")
+        openPrivacySettingsPane(.microphone)
     }
 
     func requestMicrophoneAccess(completion: @escaping (Bool) -> Void) {
@@ -1396,14 +1429,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func openScreenCaptureSettings() {
-        openPrivacySettingsPane("Privacy_ScreenCapture")
+        openPrivacySettingsPane(.screenRecording)
     }
 
-    private func openPrivacySettingsPane(_ pane: String) {
-        let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")
-        if let url = settingsURL {
-            NSWorkspace.shared.open(url)
+    private func openPrivacySettingsPane(_ permission: PrivacyPermission) {
+        if !NSWorkspace.shared.open(permission.settingsURL) {
+            NSWorkspace.shared.open(PrivacyPermission.privacySettingsURL)
         }
+    }
+
+    func revealAppForPermissionRepair() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -1996,7 +2032,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let isAccessibilityTrusted = AXIsProcessTrusted()
         hasAccessibility = isAccessibilityTrusted
         guard isAccessibilityTrusted else {
-            errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
+            errorMessage = "\(PrivacyPermission.accessibility.settingsTitle) permission required. \(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))"
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
@@ -2035,7 +2071,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let granted = hasScreenCapturePermission()
         hasScreenRecordingPermission = granted
         guard granted else {
-            let message = "Screen recording permission not granted. Enable in System Settings > Privacy & Security > Screen Recording."
+            let message = "Screen recording permission not granted. \(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))"
             errorMessage = message
             statusText = "Screenshot Required"
             activeRecordingTriggerMode = nil
@@ -2097,7 +2133,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             )
                         }
                     } else {
-                        strongSelf.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+                        strongSelf.errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
                         strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.currentSessionIntent = .dictation
@@ -2108,7 +2144,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
             return false
         default:
-            errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+            errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
             statusText = "No Microphone"
             activeRecordingTriggerMode = nil
             currentSessionIntent = .dictation
@@ -2319,7 +2355,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable \(AppName.displayName)."
+        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\n\(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -2333,8 +2369,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func showAccessibilityAlert() {
         let alert = NSAlert()
-        alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable \(AppName.displayName)."
+        alert.messageText = "\(PrivacyPermission.accessibility.settingsTitle) Permission Required"
+        alert.informativeText = "\(AppName.displayName) needs this access for global shortcuts and pasting transcribed text.\n\n\(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))\n\n\(PrivacyPermission.accessibilityRepairInstructions)"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -2464,7 +2500,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         customVocabulary: String,
         customSystemPrompt: String,
         outputLanguage: String = "",
-        preserveExactWording: Bool
+        preserveExactWording: Bool,
+        localTranscription: Bool
     ) async -> (finalTranscript: String, outcome: TranscriptProcessingOutcome, prompt: String) {
         let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -2473,6 +2510,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if case .command(let invocation, let selectedText) = intent {
+            if localTranscription {
+                return (selectedText, .commandModeFailedFallback(invocation: invocation), "")
+            }
             do {
                 let result = try await postProcessingService.commandTransform(
                     selectedText: selectedText,
@@ -2491,6 +2531,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if let macro = findMatchingMacro(for: trimmedRawTranscript) {
             os_log(.info, log: recordingLog, "Voice macro triggered: %{public}@", macro.command)
             return (macro.payload, .voiceMacro(command: macro.command), "")
+        }
+
+        if localTranscription {
+            return (trimmedRawTranscript, .preservedExactWording, "")
         }
 
         // Preserve-exact-wording mode. Two sub-cases so translation
@@ -2578,6 +2622,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         audioLevelCancellable = nil
         debugStatusMessage = "Preparing audio"
         let sessionContext = capturedContext
+        let localTranscription = usesLocalTranscription
+        let transcriptionService = Result { try makeTranscriptionService() }
         let inFlightContextTask = contextCaptureTask
         capturedContext = nil
         contextCaptureTask = nil
@@ -2618,7 +2664,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let savedAudioFile = Self.saveAudioFile(from: fileURL)
             let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
             self.transcribingAudioFileName = savedAudioFile?.fileName
-            self.statusText = "Transcribing..."
+            self.statusText = localTranscription ? "Transcribing locally (first run may take minutes)..." : "Transcribing..."
             self.debugStatusMessage = "Transcribing audio"
 
         let postProcessingService = PostProcessingService(
@@ -2649,7 +2695,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     activeRealtime?.cancel()
                 }
                 do {
-                    let transcriptionService = try self.makeTranscriptionService()
+                    let transcriptionService = try transcriptionService.get()
                     async let transcript = Self.resolveRawTranscript(
                         realtimeService: activeRealtime,
                         fileService: transcriptionService,
@@ -2691,7 +2737,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         customVocabulary: self.customVocabulary,
                         customSystemPrompt: self.customSystemPrompt,
                         outputLanguage: self.outputLanguage,
-                        preserveExactWording: self.preserveExactWording
+                        preserveExactWording: self.preserveExactWording,
+                        localTranscription: localTranscription
                     )
                     try Task.checkCancellation()
 
@@ -2883,7 +2930,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startRealtimeStreamingIfEnabled() {
-        guard realtimeStreamingEnabled else { return }
+        guard realtimeStreamingEnabled, !usesLocalTranscription else { return }
         let trimmedBase = resolvedTranscriptionBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedBase.isEmpty else {
             os_log(.info, log: recordingLog, "realtime streaming requested but base URL is empty — skipping")
@@ -2916,6 +2963,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startContextCapture() {
+        guard !usesLocalTranscription else { return }
         contextCaptureTask?.cancel()
         capturedContext = nil
         lastContextSummary = "Collecting app context..."
@@ -2926,6 +2974,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
             let context = await self.contextService.collectContext()
+            guard !Task.isCancelled, !self.usesLocalTranscription else { return nil }
             await MainActor.run {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary
@@ -3053,8 +3102,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func showScreenshotPermissionAlert(message: String) {
         let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "\(message)\n\n\(AppName.displayName) requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable \(AppName.displayName)."
+        alert.messageText = "\(PrivacyPermission.screenRecording.settingsTitle) Permission Required"
+        alert.informativeText = "\(message)\n\n\(AppName.displayName) needs this permission to capture screenshots for context-aware transcription.\n\n\(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))"
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")

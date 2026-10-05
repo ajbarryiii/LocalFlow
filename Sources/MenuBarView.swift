@@ -56,11 +56,20 @@ struct MenuBarView: View {
 
             Divider()
 
-            if !appState.hasScreenRecordingPermission {
+            if appState.usesLocalTranscription, LocalParakeetService.isAvailable {
+                Text(appState.localModelPreparationState.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                Divider()
+            }
+
+            if !appState.usesLocalTranscription && !appState.hasScreenRecordingPermission {
                 Button {
                     appState.requestScreenCapturePermission()
                 } label: {
-                    Label("Screen Recording Permission Needed", systemImage: "camera.viewfinder")
+                    Label("\(PrivacyPermission.screenRecording.settingsTitle) Permission Needed", systemImage: "camera.viewfinder")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
@@ -78,7 +87,7 @@ struct MenuBarView: View {
                 Button {
                     appState.showAccessibilityAlert()
                 } label: {
-                    Label("Accessibility Required", systemImage: "exclamationmark.triangle.fill")
+                    Label("\(PrivacyPermission.accessibility.settingsTitle) Required", systemImage: "exclamationmark.triangle.fill")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)

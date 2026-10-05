@@ -55,22 +55,7 @@ struct SetupView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
-    private enum SetupStep: Int, CaseIterable {
-        case welcome = 0
-        case apiKey
-        case micPermission
-        case accessibility
-        case screenRecording
-        case holdShortcut
-        case toggleShortcut
-        case copyAgainShortcut
-        case commandMode
-        case vocabulary
-        case launchAtLogin
-        case overlayStyle
-        case testTranscription
-        case ready
-    }
+    private typealias SetupStep = SetupFlowStep
 
     @State private var currentStep = SetupStep.welcome
     @State private var micPermissionGranted = false
@@ -107,7 +92,9 @@ struct SetupView: View {
     @StateObject private var testHotkeyHarness = SetupTestHotkeyHarness()
     @AppStorage("use_compact_overlay") private var useCompactOverlay = true
 
-    private let totalSteps: [SetupStep] = SetupStep.allCases
+    private var totalSteps: [SetupStep] {
+        SetupStep.steps(usesLocalTranscription: appState.usesLocalTranscription)
+    }
     private var isCapturingShortcut: Bool {
         isCapturingHoldShortcut || isCapturingToggleShortcut || isCapturingCopyAgainShortcut
     }
@@ -397,6 +384,19 @@ struct SetupView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
+                if LocalParakeetService.isAvailable {
+                    Button("Use bundled Parakeet model (English, on-device)") {
+                        appState.transcriptionModel = LocalParakeetCore.modelID
+                        appState.transcriptionLanguage = "en"
+                        appState.isCommandModeEnabled = false
+                        withAnimation { currentStep = nextStep(currentStep) }
+                    }
+                    Text("No API key needed. Dictation runs locally; cloud cleanup, translation, and Edit Mode are bypassed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
                 Text("Enter an API key for your OpenAI-compatible provider. If you are not using Groq, expand the advanced provider settings and enter that provider's base URL and model IDs before continuing.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -513,6 +513,13 @@ struct SetupView: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
 
+            if !micPermissionGranted {
+                Text(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
         }
     }
 
@@ -522,11 +529,11 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Accessibility Access")
+            Text(PrivacyPermission.accessibility.settingsTitle)
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("\(AppName.displayName) needs Accessibility access to paste transcribed text into your apps.")
+            Text("\(AppName.displayName) needs this access for global shortcuts and pasting transcribed text into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -535,7 +542,7 @@ struct SetupView: View {
                 Image(systemName: "hand.raised.fill")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Text("Accessibility")
+                Text(PrivacyPermission.accessibility.settingsTitle)
                 Spacer()
                 if accessibilityGranted {
                     Image(systemName: "checkmark.circle.fill")
@@ -552,6 +559,13 @@ struct SetupView: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
 
+            if !accessibilityGranted {
+                Text(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
         }
         .onAppear {
             startAccessibilityPolling()
@@ -567,7 +581,7 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Screen Recording")
+            Text(PrivacyPermission.screenRecording.settingsTitle)
                 .font(.title)
                 .fontWeight(.bold)
 
@@ -586,7 +600,7 @@ struct SetupView: View {
                 Image(systemName: "camera.viewfinder")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Text("Screen Recording")
+                Text(PrivacyPermission.screenRecording.settingsTitle)
                 Spacer()
                 if appState.hasScreenRecordingPermission {
                     Image(systemName: "checkmark.circle.fill")
@@ -602,6 +616,13 @@ struct SetupView: View {
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
+
+            if !appState.hasScreenRecordingPermission {
+                Text(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
 
         }
         .onAppear {
@@ -1165,13 +1186,11 @@ struct SetupView: View {
     }
 
     private func previousStep(_ step: SetupStep) -> SetupStep {
-        let previous = SetupStep(rawValue: step.rawValue - 1)
-        return previous ?? .welcome
+        step.previous(usesLocalTranscription: appState.usesLocalTranscription)
     }
 
     private func nextStep(_ step: SetupStep) -> SetupStep {
-        let next = SetupStep(rawValue: step.rawValue + 1)
-        return next ?? .ready
+        step.next(usesLocalTranscription: appState.usesLocalTranscription)
     }
 
     func checkMicPermission() {

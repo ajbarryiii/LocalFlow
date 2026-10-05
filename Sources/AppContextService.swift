@@ -427,7 +427,7 @@ Selected text: \(selectedText ?? "None")
             return (
                 nil,
                 nil,
-                "Screen recording permission not granted. Enable in System Settings > Privacy & Security > Screen Recording."
+                "Screen recording permission not granted. \(PrivacyPermission.screenRecording.enableInstructions(appName: AppName.displayName))"
             )
         }
 

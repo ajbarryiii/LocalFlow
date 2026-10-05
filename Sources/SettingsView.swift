@@ -251,7 +251,7 @@ struct ProviderSettingsFields: View {
 
             ModelDropdownView(
                 title: "Transcription Model",
-                subtitle: "Used for speech-to-text transcription.",
+                subtitle: "Parakeet v2 ternary runs English dictation on this Mac. Cloud cleanup, translation, Edit Mode, and context analysis are bypassed while it is selected.",
                 predefinedModels: ModelConfiguration.transcriptionModels,
                 defaultModel: AppState.defaultTranscriptionModel,
                 textDraft: $transcriptionModelDraft,
@@ -261,6 +261,14 @@ struct ProviderSettingsFields: View {
                     appState.transcriptionModel = AppState.defaultTranscriptionModel
                 }
             )
+
+            if appState.usesLocalTranscription {
+                Text(LocalParakeetService.isAvailable
+                     ? appState.localModelPreparationState.message + " Recordings over 15 seconds are decoded in separate chunks."
+                     : "This build does not contain the local model, or this Mac is unsupported. Requires Apple Silicon and macOS 26 or newer.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Transcription Language")
@@ -1425,7 +1433,7 @@ struct GeneralSettingsView: View {
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             permissionRow(
-                title: "Microphone",
+                permission: .microphone,
                 icon: "mic.fill",
                 granted: micPermissionGranted,
                 action: {
@@ -1436,7 +1444,7 @@ struct GeneralSettingsView: View {
             )
 
             permissionRow(
-                title: "Accessibility",
+                permission: .accessibility,
                 icon: "hand.raised.fill",
                 granted: appState.hasAccessibility,
                 action: {
@@ -1445,9 +1453,10 @@ struct GeneralSettingsView: View {
             )
 
             permissionRow(
-                title: "Screen Recording",
+                permission: .screenRecording,
                 icon: "camera.viewfinder",
                 granted: appState.hasScreenRecordingPermission,
+                required: !appState.usesLocalTranscription,
                 action: {
                     appState.requestScreenCapturePermission()
                 }
@@ -1455,24 +1464,43 @@ struct GeneralSettingsView: View {
         }
     }
 
-    private func permissionRow(title: String, icon: String, granted: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
-            Image(systemName: icon)
-                .frame(width: 20)
-                .foregroundStyle(.blue)
-            Text(title)
-            Spacer()
-            if granted {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Granted")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            } else {
-                Button("Grant Access") {
-                    action()
+    private func permissionRow(permission: PrivacyPermission, icon: String, granted: Bool, required: Bool = true, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: icon)
+                    .frame(width: 20)
+                    .foregroundStyle(.blue)
+                Text(permission.settingsTitle)
+                Spacer()
+                if !required {
+                    Text("Not needed for local dictation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if granted {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Granted")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Grant Access", action: action)
+                        .font(.caption)
                 }
-                .font(.caption)
+            }
+            if required && !granted {
+                Text(permission.enableInstructions(appName: AppName.displayName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if permission == .accessibility {
+                    Text(PrivacyPermission.accessibilityRepairInstructions)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Show This App in Finder") {
+                        appState.revealAppForPermissionRepair()
+                    }
+                    .font(.caption)
+                    .accessibilityLabel("Show This App in Finder")
+                }
             }
         }
         .padding(10)
