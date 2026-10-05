@@ -19,4 +19,10 @@ make icon APP_NAME=LocalFlow
 
 Commit the SVGs, PNG exports, and both ICNS files together. Check the actual
 rendering at 16, 32, 64, and 128 pixels on light and dark backgrounds. The app
-icon is independent of the existing monochrome menu-bar status symbol.
+icon's matching menu-bar glyph is drawn as a resolution-independent AppKit
+template in `Sources/MenuBarIcon.swift`. It uses the same nine bar heights and
+paired pupil proportions, with transparent pupil cutouts so macOS can tint it
+for light, dark, and highlighted backgrounds. The development glyph has a small
+upper-right badge. Recording and transcription retain their existing status
+symbols. `MenuBarIcon.svg` and `MenuBarIcon-Dev.svg` are vector previews of the
+idle glyph; no SVG renderer or resource loading is needed at runtime.
