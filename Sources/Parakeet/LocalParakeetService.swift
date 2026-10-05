@@ -21,8 +21,8 @@ final class LocalParakeetService: @unchecked Sendable {
     private var runtime: LocalParakeetRuntime?
     private let startupStrategy: ParakeetStartupStrategy
 
-    // The app keeps its existing all-bucket startup. Benchmarks opt in explicitly.
-    init(startupStrategy: ParakeetStartupStrategy = .allBuckets) {
+    // The canonical app prepares only 15s; benchmarks can still compare all four.
+    init(startupStrategy: ParakeetStartupStrategy = .applicationDefault) {
         self.startupStrategy = startupStrategy
     }
 
@@ -35,24 +35,10 @@ final class LocalParakeetService: @unchecked Sendable {
 
     // Synthetic inputs only: preparation never records audio or accesses context.
     func prepare(directory: URL) async throws {
-        try await prepare(directory: directory, buckets: startupStrategy.initialBuckets)
-    }
-
-    // Each warmup yields the queue between buckets so queued transcription can
-    // use the already prepared 15-second function. An active Core ML call cannot
-    // be preempted. Benchmark-only opt-in; the app does not call this method.
-    func prepareRemainingBuckets(directory: URL) async throws {
-        for bucket in LocalParakeetCore.buckets {
-            try Task.checkCancellation()
-            try await prepare(directory: directory, buckets: [bucket])
-        }
-    }
-
-    private func prepare(directory: URL, buckets: [Int]) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    try self.runtime(for: directory).prepare(buckets: buckets)
+                    try self.runtime(for: directory).prepare(buckets: self.startupStrategy.initialBuckets)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))

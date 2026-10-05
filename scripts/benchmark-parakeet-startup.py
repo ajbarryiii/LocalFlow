@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run synthetic startup comparisons without changing the app or its caches.
 
-Use the upstream pinned Mac Python and macguard. All generated model copies,
+Use Python 3.9 or later and the upstream macguard launcher. All generated model copies,
 synthetic fixtures, binary outputs and timings stay outside the repository.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -15,11 +16,34 @@ import subprocess
 import sys
 import time
 
-from parakeet_weight_index import verify_bundle
-
 
 REPO = Path(__file__).resolve().parents[1]
-ARMS = ("all", "fifteen-first", "mlx", "mlx-with-ane")
+ARMS = ("all", "fifteen-first")
+
+
+def verify_bundle(directory):
+    directory = Path(directory).resolve()
+    manifest = json.loads((directory / "bundle.json").read_text())
+    if (manifest.get("export_sha256") != "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503"
+            or manifest.get("encoder") != "C6s8" or manifest.get("layout") != "plain"):
+        raise ValueError("Expected the pinned final C6s8 export")
+    required = {"frontend.json", "frontend.f32bin", "decoder_joint.json", "decoder_joint.f32bin",
+                "vocabulary.json", "Encoder.mlmodelc/model.mil", "Encoder.mlmodelc/weights/weight.bin"}
+    if not required.issubset(manifest["files"]):
+        raise ValueError("Missing required inference assets")
+    for name, digest in manifest["files"].items():
+        relative = Path(name)
+        path = directory / relative
+        if relative.is_absolute() or ".." in relative.parts or not path.resolve().is_relative_to(directory):
+            raise ValueError("Unsafe bundle asset path")
+        with path.open("rb") as stream:
+            hasher = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+            computed = hasher.hexdigest()
+        if computed != digest:
+            raise ValueError("Bundle integrity check failed")
+    return manifest
 
 
 class GuardFailure(Exception):
@@ -51,7 +75,6 @@ def main():
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new experiment directory outside Git")
     parser.add_argument("--guard", type=Path, required=True, help="upstream ios/macguard")
-    parser.add_argument("--python", type=Path, default=Path(sys.executable), help="upstream pinned Mac Python with MLX")
     parser.add_argument("--arms", nargs="+", choices=ARMS, default=list(ARMS))
     parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()
@@ -93,8 +116,6 @@ def main():
               "macOS": platform.mac_ver()[0], "repeats": args.repeats,
               "cache_evidence": "new copied bundle path then same-path fresh process; no cache deletion or Instruments cache events",
               "limitations": ["Synthetic smoke on a shared Mac; no accuracy or controlled performance claim.",
-                              "Python MLX feasibility prototype; Swift packaging size and production handoff not measured.",
-                              "MLX bridge includes file IPC overhead; memory reported by MLX excludes system services.",
                               "First-path loads are not proven uncached specialization."], "runs": []}
     def save():
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -108,13 +129,7 @@ def main():
             copy_bundle(source, bundle, manifest)
             for phase in ("new-path", "same-path-fresh-process"):
                 print(f"Starting {arm}: {phase}, repeat {repeat + 1}", flush=True)
-                if arm.startswith("mlx"):
-                    command = [args.python, REPO / "scripts/parakeet-mlx-benchmark.py", "--bundle", bundle,
-                               "--fixtures", fixtures, "--scratch", work / "scratch", "--native", executable]
-                    if arm == "mlx-with-ane":
-                        command.append("--background-ane")
-                else:
-                    command = [executable, arm, bundle, fixtures]
+                command = [executable, arm, bundle, fixtures]
                 start = time.perf_counter()
                 stdout, metrics = run(command)
                 records = [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]

@@ -64,6 +64,9 @@ enum ParakeetStartupStrategy: String {
     case allBuckets = "all"
     case fifteenSecondsFirst = "fifteen-first"
 
+    // Dictation becomes usable after one function rather than all four.
+    static let applicationDefault: Self = .fifteenSecondsFirst
+
     var initialBuckets: [Int] {
         self == .fifteenSecondsFirst ? [15] : LocalParakeetCore.buckets
     }

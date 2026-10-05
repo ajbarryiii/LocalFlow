@@ -32,9 +32,12 @@ Edit Mode, or app/screenshot context capture is included. English dictation,
 deterministic voice macros, local history/retry, and paste behavior remain.
 Microphone and Accessibility are the only dictation permissions.
 
-Startup prepares all four buckets on a
-background serial queue. Settings offers a retry when preparation fails. It loads the encoder functions and runs a synthetic zero-input
-prediction for each one, without accessing the microphone or user content.
+Startup prepares only the 15-second function on a
+background serial queue, then reuses it for every chunk length. Smaller functions
+are not prepared in the background because their active Core ML calls could
+stall dictation on that queue. Settings offers a retry when preparation fails.
+Preparation loads the 15-second encoder function and runs a synthetic zero-input
+prediction, without accessing the microphone or user content.
 Settings and the menu show preparation status. First-time device preparation
 may still take several minutes; dictation submitted before it finishes waits
 behind preparation. The runtime and loaded models stay in memory for the
@@ -87,7 +90,7 @@ the subsequent 18-second run completed in about one second. These are
 functional checks, not a controlled performance benchmark or real-world
 accuracy evaluation.
 
-Startup-preparation validation on the same Mac: preparing all four buckets
+Previous all-function startup validation on the same Mac: preparing all four buckets
 using the existing Core ML device cache took 2.605 seconds, repeating
 preparation took less than a millisecond, and the synthetic 18-second
 two-chunk recording still matched exactly in 0.140 seconds after preparation.
@@ -96,6 +99,11 @@ all memory used by system Core ML/Neural Engine services. A fresh device cache
 was not measured in this follow-up. Deterministic cache tests verify that
 preparation and transcription reuse loaded models, preparation is idempotent,
 and a failed warmup retries without reloading successful buckets.
+
+The canonical 15-second-first startup was tested by the user in an isolated
+app: approximately 90 seconds to readiness, with only 10–15 seconds of setup.
+The Core ML comparison and synthetic short/long transcript checks are documented
+in `Benchmarks/ParakeetStartup.md`. No smaller-function warmups run after readiness.
 
 Before merge, manually test microphone dictation, global shortcuts,
 Accessibility paste, cancellation, local retries, and offline operation
