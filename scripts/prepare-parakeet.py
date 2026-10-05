@@ -2,7 +2,7 @@
 """Convert a verified final export with the existing wilderness-labs-stt toolchain.
 
 Run with its pinned Mac Python through ios/macguard. All output stays in the
-upstream artifact area; the FreeFlow build copies only the inference bundle.
+upstream artifact area; the LocalFlow build copies only the inference bundle.
 """
 import argparse
 import hashlib
@@ -43,7 +43,7 @@ def main():
     native.cmd_weights(SimpleNamespace(model="mp2", out=str(output)))
     manifest = build.build_encoder(
         "mp2", "C6s8", "multi", output / "conversion", plan=False,
-        tag="-freeflow", precision="fp16", layout="plain",
+        tag="-localflow", precision="fp16", layout="plain",
     )
     shutil.copytree(manifest["paths"]["mlmodelc"], output / "Encoder.mlmodelc", dirs_exist_ok=True)
     # NeMo's vocab.txt is the legacy WordPiece view and omits <unk>.
@@ -55,13 +55,13 @@ def main():
     for stem in ("frontend", "decoder_joint"):
         path = output / f"{stem}.json"
         data = json.loads(path.read_text())
-        data["provenance"] = {"model": "parakeet-v2-ternary", "export_sha256": export_sha}
+        data["provenance"] = {"model": "localflow", "base_model": "parakeet-v2-ternary", "export_sha256": export_sha}
         path.write_text(json.dumps(data, indent=2) + "\n")
     files = ["frontend.json", "frontend.f32bin", "decoder_joint.json",
              "decoder_joint.f32bin", "vocabulary.json"]
     files += [str(p.relative_to(output)) for p in sorted((output / "Encoder.mlmodelc").rglob("*")) if p.is_file()]
     bundle = {
-        "model": "parakeet-v2-ternary", "training_step": 250000,
+        "model": "localflow", "display_name": "LocalFlow", "base_model": "parakeet-v2-ternary", "training_step": 250000,
         "export_sha256": export_sha, "encoder": "C6s8", "layout": "plain",
         "compute_units": "cpuAndNeuralEngine", "decoder": "native-fp32",
         "buckets_seconds": [2, 4, 8, 15], "sample_rate": 16000,

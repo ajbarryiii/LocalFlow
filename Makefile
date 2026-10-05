@@ -1,4 +1,4 @@
-APP_NAME ?= FreeFlow Dev
+APP_NAME ?= LocalFlow Dev
 .DEFAULT_GOAL := all
 BUNDLE_ID ?= com.zachlatta.freeflow.dev
 BUILD_DIR = build
@@ -12,7 +12,7 @@ APP_EXECUTABLE = $(MACOS_DIR)/$(APP_NAME)
 APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
 
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
-TEST_RUNNER = $(BUILD_DIR)/FreeFlowTests
+TEST_RUNNER = $(BUILD_DIR)/LocalFlowTests
 TEST_PRODUCTION_SOURCES = \
 	Sources/AppName.swift \
 	Sources/PrivacyPermission.swift \
@@ -55,9 +55,9 @@ endif
 $(PARAKEET_BUNDLE_STAMP): parakeet-selection
 
 # Pick the icon source based on which bundle we are building. Dev builds get
-# a distinct hammer-on-waveform icon so a developer's dock shows at a glance
-# which FreeFlow they are running when both are installed side by side.
-ifeq ($(APP_NAME),FreeFlow Dev)
+# a small amber badge on the waveform so a developer's dock shows at a glance
+# which LocalFlow they are running when both are installed side by side.
+ifeq ($(APP_NAME),LocalFlow Dev)
 ICON_SOURCE = Resources/AppIcon-Dev-Source.png
 ICON_ICNS = Resources/AppIcon-Dev.icns
 else
@@ -69,7 +69,7 @@ endif
 
 all: parakeet-selection $(APP_EXECUTABLE_TARGET)
 
-$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(PARAKEET_BUNDLE_STAMP) $(wildcard Resources/Parakeet/*)
+$(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(PARAKEET_BUNDLE_STAMP) $(wildcard Resources/Parakeet/*) Resources/Attribution.txt LICENSE scripts/label-localflow-model.py
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
 ifeq ($(ARCH),universal)
 	swiftc \
@@ -105,6 +105,8 @@ endif
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/AppIcon.icns"
+	@cp Resources/Attribution.txt "$(RESOURCES)/Attribution.txt"
+	@cp LICENSE "$(RESOURCES)/FreeFlow-LICENSE"
 	@rm -rf "$(RESOURCES)/Parakeet"
 ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@test -f "$(PARAKEET_BUNDLE_DIR)/bundle.json" || { echo "Missing Parakeet bundle.json"; exit 1; }
@@ -112,6 +114,7 @@ ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@cp -R "$(PARAKEET_BUNDLE_DIR)/Encoder.mlmodelc" "$(RESOURCES)/Parakeet/"
 	@cp "$(PARAKEET_BUNDLE_DIR)/bundle.json" "$(PARAKEET_BUNDLE_DIR)/frontend.json" "$(PARAKEET_BUNDLE_DIR)/frontend.f32bin" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.json" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.f32bin" "$(PARAKEET_BUNDLE_DIR)/vocabulary.json" "$(RESOURCES)/Parakeet/"
 	@cp Resources/Parakeet/* "$(RESOURCES)/Parakeet/"
+	@python3 scripts/label-localflow-model.py "$(RESOURCES)/Parakeet"
 endif
 	@plutil -replace NSMicrophoneUsageDescription -string "$(APP_NAME) needs microphone access to transcribe your speech." "$(CONTENTS)/Info.plist"
 	@plutil -replace NSSpeechRecognitionUsageDescription -string "$(APP_NAME) needs speech recognition to convert your voice to text." "$(CONTENTS)/Info.plist"
@@ -141,6 +144,7 @@ test:
 		$(TEST_PRODUCTION_SOURCES) \
 		$(TEST_SOURCES)
 	@$(TEST_RUNNER)
+	@python3 -m unittest discover -s Tests -p 'test_*.py'
 
 validate:
 	plutil -lint Info.plist FreeFlow.entitlements

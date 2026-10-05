@@ -17,12 +17,12 @@ final class LocalParakeetService: @unchecked Sendable {
         #endif
         return false
     }
-    private let queue = DispatchQueue(label: "freeflow.local-parakeet", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "localflow.local-model", qos: .userInitiated)
     private var runtime: LocalParakeetRuntime?
 
     func prepare() async throws {
         guard Self.isAvailable, let directory = Self.bundleDirectory else {
-            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
+            throw LocalParakeetError.invalid("The bundled LocalFlow model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
         }
         try await prepare(directory: directory)
     }
@@ -51,7 +51,7 @@ final class LocalParakeetService: @unchecked Sendable {
 
     func transcribe(fileURL: URL) async throws -> String {
         guard Self.isAvailable, let directory = Self.bundleDirectory else {
-            throw LocalParakeetError.invalid("The bundled Parakeet model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
+            throw LocalParakeetError.invalid("The bundled LocalFlow model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
         }
         return try await transcribe(fileURL: fileURL, directory: directory)
     }
@@ -110,12 +110,12 @@ private final class LocalParakeetRuntime {
               let files = manifest["files"] as? [String: String],
               ["frontend.json", "frontend.f32bin", "decoder_joint.json", "decoder_joint.f32bin", "vocabulary.json"].allSatisfy({ files[$0] != nil }),
               files.keys.contains(where: { $0.hasPrefix("Encoder.mlmodelc/") }) else {
-            throw LocalParakeetError.invalid("Invalid bundled Parakeet manifest.")
+            throw LocalParakeetError.invalid("Invalid bundled LocalFlow manifest.")
         }
         for (name, digest) in files {
             guard !name.hasPrefix("/"), !name.split(separator: "/").contains(".."),
                   LocalParakeetCore.sha256(try Data(contentsOf: directory.appendingPathComponent(name))) == digest else {
-                throw LocalParakeetError.invalid("Bundled Parakeet integrity check failed. Rebuild the app.")
+                throw LocalParakeetError.invalid("Bundled LocalFlow integrity check failed. Rebuild the app.")
             }
         }
         frontend = try VDSPFrontEnd(constantsDir: directory)
@@ -144,7 +144,7 @@ private final class LocalParakeetRuntime {
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
         if #available(macOS 15, *) { config.functionName = "b\(bucket)" }
-        else { throw LocalParakeetError.invalid("Parakeet requires macOS 26 or newer.") }
+        else { throw LocalParakeetError.invalid("LocalFlow requires macOS 26 or newer.") }
         return try MLModel(contentsOf: directory.appendingPathComponent("Encoder.mlmodelc"), configuration: config)
     }
 

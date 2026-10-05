@@ -1,0 +1,12 @@
+LocalFlow
+
+LocalFlow is based on FreeFlow by Zach Latta and contributors.
+FreeFlow source: https://github.com/zachlatta/freeflow
+FreeFlow is licensed under the MIT License. Its original copyright and
+license are preserved in FreeFlow-LICENSE in this application's resources.
+No endorsement by the FreeFlow authors is implied.
+
+The LocalFlow speech model is a ternary derivative of NVIDIA Parakeet v2.
+Its CC-BY-4.0 license, NVIDIA attribution, training-data attribution, and
+adapted inference-code MIT license are included in the Parakeet resource
+directory. The LocalFlow name does not change those licenses or provenance.

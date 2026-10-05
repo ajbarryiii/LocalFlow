@@ -6,7 +6,9 @@ struct LocalModelSettingsView: View {
     @EnvironmentObject var appState: AppState
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Parakeet v2 ternary").font(.headline)
+            Text("LocalFlow").font(.headline)
+            Text("Ternary speech model derived from NVIDIA Parakeet v2.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("English dictation processed entirely on this Mac. Audio and transcripts are never sent to a model provider.")
                 .foregroundStyle(.secondary)
             Text(appState.localModelPreparationState.message).font(.caption)
@@ -81,7 +83,7 @@ struct GeneralSettingsView: View {
                 }
                 SettingsCard("Clipboard", icon: "doc.on.clipboard") {
                     Toggle("Preserve clipboard after paste", isOn: $appState.preserveClipboard)
-                    Text("FreeFlow restores the previous clipboard unless you copy something else before restoration.")
+                    Text("LocalFlow restores the previous clipboard unless you copy something else before restoration.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Keep dictations in clipboard history", isOn: $appState.keepDictationInClipboardHistory)
                     Toggle("Say ‘press enter’ to submit after paste", isOn: $appState.isPressEnterVoiceCommandEnabled)
@@ -98,6 +100,8 @@ struct GeneralSettingsView: View {
                 SettingsCard("Build", icon: "info.circle.fill") {
                     Text("\(AppName.displayName) \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
                     Text("macOS \(ProcessInfo.processInfo.operatingSystemVersionString)").font(.caption).foregroundStyle(.secondary)
+                    Link("Based on FreeFlow by Zach Latta and contributors · MIT license", destination: URL(string: "https://github.com/zachlatta/freeflow")!)
+                        .font(.caption)
                 }
             }.padding(24)
         }

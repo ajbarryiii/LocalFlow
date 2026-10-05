@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in FreeFlow
+description: Report reproducible incorrect behavior in LocalFlow
 title: "[Bug]: "
 labels:
   - bug
@@ -41,7 +41,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: FreeFlow version and build
+      label: LocalFlow version and build
       description: Use the version and build shown by the app. Say "unknown" if unavailable.
     validations:
       required: true

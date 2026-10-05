@@ -1,12 +1,52 @@
 # Changelog
 
-All notable changes to FreeFlow are documented here.
+All notable changes to LocalFlow are documented here. Earlier entries describe
+the upstream FreeFlow releases this fork is based on.
 
 This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATCH`, where:
 
 - `MAJOR` changes include breaking behavior or major compatibility changes.
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
+
+## [2.0.0] - 2026-10-04
+
+This is the first LocalFlow beta. Requires an Apple Silicon Mac running macOS
+26 or later. The beta is signed with the maintainer's Developer ID and notarized
+by Apple for distribution outside the Mac App Store.
+
+### Added
+
+- Bundled LocalFlow English speech recognition, derived from NVIDIA Parakeet
+  v2, with no API key, provider account, or model download required.
+- Model preparation at startup and reuse throughout the session. First-time
+  preparation can take several minutes; Settings shows progress and offers a
+  retry if preparation fails.
+- LocalFlow app and menu-bar icons, with attribution to FreeFlow and the model's
+  original authors included in the application.
+
+### Changed
+
+- Speech recognition runs entirely on the Mac. Cloud transcription, LLM
+  cleanup, translation, Edit Mode, and screenshot/app context capture have
+  been removed.
+- Microphone and Accessibility are the only dictation permissions. Setup
+  guidance reflects macOS 27's Device Control and Data Access permission pane.
+- Hold to Talk, Tap to Toggle, Paste Again, deterministic voice macros, and
+  local history/retry remain available. Existing preferences and local history
+  keep their compatible storage locations.
+- Update checks use the LocalFlow fork's releases. The updater may contact
+  GitHub; audio and transcripts remain local.
+
+### Beta limitations
+
+- English dictation only; Intel Macs and macOS versions earlier than 26 are
+  not supported by this model bundle.
+- Dictations longer than 15 seconds use independent chunks and can lose
+  context at chunk boundaries. There is no LLM cleanup or cloud fallback.
+- Live microphone dictation and paste worked in the preceding local build;
+  the packaged beta still needs tester verification of shortcuts, permissions,
+  and installation on other Macs.
 
 ## [1.2.1] - 2026-08-11
 

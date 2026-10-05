@@ -1,7 +1,19 @@
-# FreeFlow — local Parakeet fork
+<p align="center">
+  <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="LocalFlow icon">
+</p>
 
-A native macOS menu-bar dictation app using the bundled **Parakeet v2 ternary**
-English speech model. This fork runs speech recognition on the Mac, with no
+<h1 align="center">LocalFlow</h1>
+
+<p align="center">
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.0.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <sub>Apple Silicon · macOS 26 or later</sub><br>
+  <sub>Developer ID signed · Apple-notarized beta</sub>
+</p>
+
+---
+
+A native macOS menu-bar dictation app using the bundled **LocalFlow**
+English speech model, derived from NVIDIA Parakeet v2. This fork runs speech recognition on the Mac, with no
 API key, provider account, network transcription, LLM cleanup, translation,
 Edit Mode, or screenshot/app context capture.
 
@@ -16,7 +28,7 @@ are not supported by this model bundle yet. The app and model are about
    permission pane is named **Device Control and Data Access** under
    System Settings → Privacy & Security. Screen Recording is not needed.
 3. Choose Hold to Talk, Tap to Toggle, and optional Paste Again shortcuts.
-4. Dictate into any text field. FreeFlow transcribes locally and pastes at
+4. Dictate into any text field. LocalFlow transcribes locally and pastes at
    the cursor, optionally restoring the previous clipboard.
 
 The model prepares in the background at startup and stays in memory for the
@@ -36,7 +48,7 @@ credentials are ignored and are not read or automatically erased.
 
 ## Build locally
 
-FreeFlow uses `swiftc` and Make, without Swift Package Manager or an Xcode
+LocalFlow uses `swiftc` and Make, without Swift Package Manager or an Xcode
 project. Install Xcode and its command-line tools. Model weights are kept
 outside Git; obtain or prepare the pinned model bundle as described in
 [the integration notes](Resources/Parakeet/INTEGRATION.md).
@@ -46,20 +58,27 @@ SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" make check
 git diff --check
 SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" make \
   ARCH="$(uname -m)" CODESIGN_IDENTITY=- PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"
-open "build/FreeFlow Dev.app"
+open "build/LocalFlow Dev.app"
 ```
 
 The ad hoc development build may need its existing system approval refreshed
 when its executable changes. The app's permission guidance can reveal the
 exact running bundle in Finder for this repair.
 
-The existing software updater remains available and may contact GitHub when
+The existing FreeFlow bundle identifiers and Application Support directories
+are retained for preferences, history, audio, and recording-state compatibility.
+The LocalFlow name does not require moving or duplicating existing user data.
+
+The software updater checks [this fork](https://github.com/ajbarryiii/LocalFlow)
+and may contact GitHub when
 checking or downloading app updates. Audio and transcripts are not sent by
 the updater. Turn off automatic update checks in Settings if desired.
 
 ## Credits and licensing
 
-This fork is based on [zachlatta/freeflow](https://github.com/zachlatta/freeflow).
+LocalFlow is based on [FreeFlow](https://github.com/zachlatta/freeflow) by
+Zach Latta and contributors. The original copyright and MIT license are
+preserved, with attribution included in Settings and every built app bundle.
 Application code retains the [MIT license](LICENSE). Model and adapted
 inference-code licenses and attribution are included in
 [Resources/Parakeet](Resources/Parakeet).

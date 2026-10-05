@@ -11,7 +11,7 @@ final class PipelineHistoryStore {
 
         var storeURL: URL?
         if !inMemory, let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let appName = AppName.displayName
+            let appName = AppName.supportDirectoryName
             let baseURL = appSupport.appendingPathComponent(appName, isDirectory: true)
             try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
             storeURL = baseURL.appendingPathComponent("PipelineHistory.sqlite")
