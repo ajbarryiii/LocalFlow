@@ -15,7 +15,12 @@ enum PrivacyPermissionTests {
         )
         for (permission, anchor) in [(PrivacyPermission.microphone, "Privacy_Microphone"), (.accessibility, "Privacy_Accessibility")] {
             TestSupport.expectEqual(permission.settingsURL.scheme, "x-apple.systempreferences")
-            TestSupport.expectEqual(permission.settingsURL.query, anchor)
+            // Foundation versions differ in whether opaque custom-scheme URLs
+            // expose a query. Settings receives the complete serialized URL.
+            TestSupport.expectEqual(
+                permission.settingsURL.absoluteString,
+                "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
+            )
         }
 
         let steps = SetupFlowStep.allCases
