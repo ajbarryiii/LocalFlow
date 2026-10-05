@@ -1,4 +1,16 @@
-# LocalFlow
+<p align="center">
+  <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="LocalFlow icon">
+</p>
+
+<h1 align="center">LocalFlow</h1>
+
+<p align="center">
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases"><b>⬇ LocalFlow DMG downloads</b></a><br>
+  <sub>Apple Silicon · macOS 26 or later</sub><br>
+  <sub>No packaged release is available yet. <a href="#build-locally">Build locally</a> to try LocalFlow today.</sub>
+</p>
+
+---
 
 A native macOS menu-bar dictation app using the bundled **LocalFlow**
 English speech model, derived from NVIDIA Parakeet v2. This fork runs speech recognition on the Mac, with no
