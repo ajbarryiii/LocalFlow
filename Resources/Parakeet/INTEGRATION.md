@@ -26,23 +26,19 @@ documentation is `finetune/parakeet-ternary/ios/README.md`, sections WP4 and
 WP7. Only inference code is included; diagnostic capture and benchmark
 record writing are excluded.
 
-In FreeFlow, select `parakeet-v2-ternary` under Settings → Advanced Provider Settings →
-Transcription Model, with English or Auto-detect. Setup also offers the
-bundled model without an API key. Dictation bypasses cloud transcription,
-realtime streaming, context analysis, cleanup, translation, and Edit Mode.
-Existing local history and paste behavior still apply. There is no automatic
-cloud fallback when local inference fails. Other explicit provider tests in
-Settings retain their existing behavior.
+This fork uses the bundled Parakeet model exclusively. No provider credentials,
+model selector, network transcription, realtime socket, LLM cleanup, translation,
+Edit Mode, or app/screenshot context capture is included. English dictation,
+deterministic voice macros, local history/retry, and paste behavior remain.
+Microphone and Accessibility are the only dictation permissions.
 
-When the local model is selected, startup prepares all four buckets on a
-background serial queue. Selecting the local model in Settings also starts
-preparation. It loads the encoder functions and runs a synthetic zero-input
+Startup prepares all four buckets on a
+background serial queue. Settings offers a retry when preparation fails. It loads the encoder functions and runs a synthetic zero-input
 prediction for each one, without accessing the microphone or user content.
 Settings and the menu show preparation status. First-time device preparation
 may still take several minutes; dictation submitted before it finishes waits
 behind preparation. The runtime and loaded models stay in memory for the
-session, including across provider changes, so subsequent dictations reuse
-them. The model's file size is not its runtime RAM footprint: loaded models
+session, so subsequent dictations reuse them. The model's file size is not its runtime RAM footprint: loaded models
 and working buffers require additional memory. Recordings
 longer than 15 seconds are split into independent chunks; words crossing a
 chunk boundary can lose context. Cancellation is checked between audio
@@ -74,7 +70,7 @@ into `Contents/Resources/Parakeet` before the existing signing step.
 
 Local validation on 2026-10-04: full Swift type-check and deterministic
 tests, including token boundaries, duration-zero progress, symbol caps,
-cancellation, native blob bounds, provider routing, silent features, and
+cancellation, native blob bounds, silent features, and
 synthetic stereo AIFF resampling through EOF. The separate synthetic speech
 smoke check exercises the converted final model without launching FreeFlow
 or requesting microphone access.
@@ -97,6 +93,6 @@ preparation and transcription reuse loaded models, preparation is idempotent,
 and a failed warmup retries without reloading successful buckets.
 
 Before merge, manually test microphone dictation, global shortcuts,
-Accessibility paste, cancellation, switching providers, and offline operation
+Accessibility paste, cancellation, local retries, and offline operation
 in the built app. These app-level checks remain pending; the local build is
 ad hoc signed and has not been notarized or released.

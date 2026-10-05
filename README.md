@@ -1,114 +1,65 @@
-<p align="center">
-  <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="FreeFlow icon">
-</p>
+# FreeFlow — local Parakeet fork
 
-<h1 align="center">FreeFlow</h1>
+A native macOS menu-bar dictation app using the bundled **Parakeet v2 ternary**
+English speech model. This fork runs speech recognition on the Mac, with no
+API key, provider account, network transcription, LLM cleanup, translation,
+Edit Mode, or screenshot/app context capture.
 
-<p align="center">
-  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
-</p>
+Requires an **Apple Silicon Mac running macOS 26 or later**. Other devices
+are not supported by this model bundle yet. The app and model are about
+359 MB together; runtime memory use can exceed the model's disk size.
 
-<p align="center">
-  <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
-  <sub>Works on all Macs (Apple Silicon + Intel)</sub>
-</p>
+## Dictation
 
----
+1. Open the bundled app and complete local setup.
+2. Grant Microphone and Accessibility access. On macOS 27, the Accessibility
+   permission pane is named **Device Control and Data Access** under
+   System Settings → Privacy & Security. Screen Recording is not needed.
+3. Choose Hold to Talk, Tap to Toggle, and optional Paste Again shortcuts.
+4. Dictate into any text field. FreeFlow transcribes locally and pastes at
+   the cursor, optionally restoring the previous clipboard.
 
-<p align="center">
-  <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
-</p>
+The model prepares in the background at startup and stays in memory for the
+session. First device preparation can take several minutes; Settings and the
+menu show its state. Settings provides a retry if preparation fails.
+Recordings longer than 15 seconds use independent chunks and can lose context
+at boundaries. There is no cloud fallback.
 
-<p align="center">
-  <i>Thank you to <a href="https://github.com/marcbodea">@marcbodea</a> for maintaining FreeFlow!</i>
-</p>
+Voice macros match complete phrases locally and paste predefined text. An
+optional trailing “press enter” command submits after pasting. Neither feature
+uses an LLM. Dictated instructions otherwise remain literal text.
 
-## Overview
+The latest 20 recordings and transcripts are retained locally for playback
+and local retry. Clear or delete them from Run Log. Existing history and
+shortcut preferences remain compatible; old provider preferences and
+credentials are ignored and are not read or automatically erased.
 
-FreeFlow is a free Mac dictation app inspired by [Wispr Flow](https://wisprflow.ai/), [Superwhisper](https://superwhisper.com/), and [Monologue](https://www.monologue.to/). It gives you fast AI transcription, context-aware cleanup, and voice-driven text editing without a monthly subscription.
+## Build locally
 
-## Quick Start
+FreeFlow uses `swiftc` and Make, without Swift Package Manager or an Xcode
+project. Install Xcode and its command-line tools. Model weights are kept
+outside Git; obtain or prepare the pinned model bundle as described in
+[the integration notes](Resources/Parakeet/INTEGRATION.md).
 
-1. Download the app from above or [click here](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)
-2. Get a free Groq API key from [groq.com](https://groq.com/)
-3. Hold `Fn` to talk, or tap `Command-Fn` to start and stop dictation, and have whatever you say pasted into the current text field
-
-## Features
-
-- **Custom shortcuts:** Customize both hold-to-talk and toggle dictation shortcuts. If your toggle shortcut extends your hold shortcut, you can start in hold mode and press the extra modifier keys to latch into tap mode without stopping the recording.
-- **Context-aware cleanup:** FreeFlow can read nearby app context so names, terms, and phrases are spelled correctly when you dictate into email, terminals, docs, and other apps.
-- **Custom vocabulary:** Add names, jargon, and project-specific words that FreeFlow should preserve during cleanup.
-- **OpenAI-compatible providers:** Use Groq by default, or configure a custom model and API URL in settings.
-
-## Edit Mode
-
-Edit Mode lets you highlight existing text and transform it with a spoken instruction, like "make this shorter" or "turn this into bullets." Enable it in settings, then use your normal dictation shortcut on selected text, or choose Manual mode to require an extra modifier key.
-
-## Privacy
-
-There is no FreeFlow server, so FreeFlow does not store or retain your data. The only information that leaves your computer are API calls to your configured transcription and LLM provider.
-
-## Custom Cleanup
-
-If you'd rather keep cleanup more literal and less context-aware, you can paste this simpler prompt into the custom system prompt setting:
-
-<details>
-  <summary>Simple post-processing prompt</summary>
-
-  <pre><code>You are a dictation post-processor. You receive raw speech-to-text output and return clean text ready to be typed into an application.
-
-Your job:
-- Remove filler words (um, uh, you know, like) unless they carry meaning.
-- Fix spelling, grammar, and punctuation errors.
-- When the transcript already contains a word that is a close misspelling of a name or term from the context or custom vocabulary, correct the spelling. Never insert names or terms from context that the speaker did not say.
-- Preserve the speaker's intent, tone, and meaning exactly.
-
-Output rules:
-- Return ONLY the cleaned transcript text, nothing else. So NEVER output words like "Here is the cleaned transcript text:"
-- If the transcription is empty, return exactly: EMPTY
-- Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
-- Do not change the meaning of what was said.
-
-Example:
-RAW_TRANSCRIPTION: "hey um so i just wanted to like follow up on the meating from yesterday i think we should definately move the dedline to next friday becuz the desine team still needs more time to finish the mock ups and um yeah let me know if that works for you ok thanks"
-
-Then your response would be ONLY the cleaned up text, so here your response is ONLY:
-"Hey, I just wanted to follow up on the meeting from yesterday. I think we should definitely move the deadline to next Friday because the design team still needs more time to finish the mockups. Let me know if that works for you. Thanks."</code></pre>
-</details>
-
-## Using a Local Model
-
-FreeFlow can use OpenAI-compatible local or self-hosted providers instead of Groq. In settings, configure the API base URL and model IDs for your local LLM provider, such as Ollama, LM Studio, or another OpenAI-compatible server. If your transcription backend uses a different endpoint from your LLM backend, set the transcription API URL separately.
-
-Local models are often slower than hosted providers, especially on cold start, long recordings, or busy hardware.
-
-<details>
-  <summary>Configure longer timeouts for local models</summary>
-
-  FreeFlow keeps the default network timeout at 20 seconds, but you can extend it with macOS defaults:
-
-```bash
-defaults write com.zachlatta.freeflow transcription_timeout_seconds -float 120
-defaults write com.zachlatta.freeflow post_processing_timeout_seconds -float 120
-defaults write com.zachlatta.freeflow context_request_timeout_seconds -float 120
+```sh
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" make check
+git diff --check
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" make \
+  ARCH="$(uname -m)" CODESIGN_IDENTITY=- PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"
+open "build/FreeFlow Dev.app"
 ```
 
-The timeout keys are:
+The ad hoc development build may need its existing system approval refreshed
+when its executable changes. The app's permission guidance can reveal the
+exact running bundle in Finder for this repair.
 
-- `transcription_timeout_seconds`: audio transcription requests
-- `post_processing_timeout_seconds`: transcript cleanup and edit mode requests
-- `context_request_timeout_seconds`: nearby app context requests
+The existing software updater remains available and may contact GitHub when
+checking or downloading app updates. Audio and transcripts are not sent by
+the updater. Turn off automatic update checks in Settings if desired.
 
-Only positive values are used. Remove a custom timeout to return to the 20-second default:
+## Credits and licensing
 
-```bash
-defaults delete com.zachlatta.freeflow transcription_timeout_seconds
-defaults delete com.zachlatta.freeflow post_processing_timeout_seconds
-defaults delete com.zachlatta.freeflow context_request_timeout_seconds
-```
-
-</details>
-
-## License
-
-Licensed under the MIT license.
+This fork is based on [zachlatta/freeflow](https://github.com/zachlatta/freeflow).
+Application code retains the [MIT license](LICENSE). Model and adapted
+inference-code licenses and attribution are included in
+[Resources/Parakeet](Resources/Parakeet).

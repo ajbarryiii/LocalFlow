@@ -5,12 +5,12 @@ final class PipelineHistoryStore {
     private let container: NSPersistentContainer
     private let isStoreLoaded: Bool
 
-    init() {
+    init(inMemory: Bool = false) {
         let model = Self.makeModel()
         container = NSPersistentContainer(name: "PipelineHistory", managedObjectModel: model)
 
         var storeURL: URL?
-        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+        if !inMemory, let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let appName = AppName.displayName
             let baseURL = appSupport.appendingPathComponent(appName, isDirectory: true)
             try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
@@ -23,7 +23,9 @@ final class PipelineHistoryStore {
             description.shouldInferMappingModelAutomatically = true
             container.persistentStoreDescriptions = [description]
         } else {
-            container.persistentStoreDescriptions = [NSPersistentStoreDescription()]
+            let description = NSPersistentStoreDescription()
+            if inMemory { description.type = NSInMemoryStoreType }
+            container.persistentStoreDescriptions = [description]
         }
 
         if Self.loadPersistentStoresSynchronously(container: container) == nil {
@@ -88,19 +90,9 @@ final class PipelineHistoryStore {
                 let request = pipelineHistoryRequest()
                 request.predicate = NSPredicate(format: "id == %@", item.id as CVarArg)
                 guard let entity = try container.viewContext.fetch(request).first else { return }
-                entity.intent = item.intent.rawValue
-                entity.selectedText = item.selectedText
-                entity.capturedSelection = item.capturedSelection
                 entity.rawTranscript = item.rawTranscript
-                entity.postProcessedTranscript = item.postProcessedTranscript
-                entity.postProcessingPrompt = item.postProcessingPrompt
-                entity.systemPrompt = item.systemPrompt
-                entity.contextSystemPrompt = item.contextSystemPrompt
-                entity.postProcessingStatus = item.postProcessingStatus
-                entity.debugStatus = item.debugStatus
-                entity.contextAppName = item.contextAppName
-                entity.contextBundleIdentifier = item.contextBundleIdentifier
-                entity.contextWindowTitle = item.contextWindowTitle
+                entity.postProcessedTranscript = item.transcript
+                entity.postProcessingStatus = item.status
                 try saveContext()
             } catch {
                 thrownError = error
@@ -190,26 +182,17 @@ final class PipelineHistoryStore {
                 let context = container.viewContext
                 let entity = PipelineHistoryEntry(context: context)
                 entity.id = item.id
-                entity.intent = item.intent.rawValue
-                entity.selectedText = item.selectedText
-                entity.capturedSelection = item.capturedSelection
                 entity.timestamp = item.timestamp
                 entity.rawTranscript = item.rawTranscript
-                entity.postProcessedTranscript = item.postProcessedTranscript
-                entity.postProcessingPrompt = item.postProcessingPrompt
-                entity.systemPrompt = item.systemPrompt
-                entity.contextSummary = item.contextSummary
-                entity.contextSystemPrompt = item.contextSystemPrompt
-                entity.contextPrompt = item.contextPrompt
-                entity.contextScreenshotDataURL = item.contextScreenshotDataURL
-                entity.contextScreenshotStatus = item.contextScreenshotStatus
-                entity.postProcessingStatus = item.postProcessingStatus
-                entity.debugStatus = item.debugStatus
-                entity.customVocabulary = item.customVocabulary
+                entity.postProcessedTranscript = item.transcript
+                entity.postProcessingStatus = item.status
                 entity.audioFileName = item.audioFileName
-                entity.contextAppName = item.contextAppName
-                entity.contextBundleIdentifier = item.contextBundleIdentifier
-                entity.contextWindowTitle = item.contextWindowTitle
+                // Required legacy columns remain empty for new local dictations.
+                entity.intent = "dictation"
+                entity.contextSummary = ""
+                entity.contextScreenshotStatus = ""
+                entity.debugStatus = ""
+                entity.customVocabulary = ""
                 try saveContext()
             } catch {
                 thrownError = error
@@ -266,31 +249,15 @@ final class PipelineHistoryStore {
     }
 
     private static func makeHistoryItem(from entity: PipelineHistoryEntry) -> PipelineHistoryItem {
-        PipelineHistoryItem(
-            intent: PipelineHistoryItemIntent(rawValue: entity.intent ?? "") ?? .dictation,
-            selectedText: entity.selectedText,
-            capturedSelection: entity.capturedSelection,
-            id: entity.id,
-            timestamp: entity.timestamp ?? Date(),
-            rawTranscript: entity.rawTranscript ?? "",
-            postProcessedTranscript: entity.postProcessedTranscript ?? "",
-            postProcessingPrompt: entity.postProcessingPrompt,
-            systemPrompt: entity.systemPrompt,
-            contextSummary: entity.contextSummary ?? "",
-            contextSystemPrompt: entity.contextSystemPrompt,
-            contextPrompt: entity.contextPrompt,
-            contextScreenshotDataURL: entity.contextScreenshotDataURL,
-            contextScreenshotStatus: entity.contextScreenshotStatus ?? "available (image)",
-            postProcessingStatus: entity.postProcessingStatus ?? "",
-            debugStatus: entity.debugStatus ?? "",
-            customVocabulary: entity.customVocabulary ?? "",
-            audioFileName: entity.audioFileName,
-            contextAppName: entity.contextAppName,
-            contextBundleIdentifier: entity.contextBundleIdentifier,
-            contextWindowTitle: entity.contextWindowTitle
-        )
+        PipelineHistoryItem(id: entity.id, timestamp: entity.timestamp ?? Date(),
+                            rawTranscript: entity.rawTranscript ?? "",
+                            transcript: entity.postProcessedTranscript ?? "",
+                            status: entity.postProcessingStatus ?? "", audioFileName: entity.audioFileName)
     }
 
+    // Retain the previous schema verbatim so existing local history needs no
+    // destructive migration. Legacy context/prompt columns are not read into
+    // the app's history model or populated by new dictations.
     private static func makeModel() -> NSManagedObjectModel {
         let model = NSManagedObjectModel()
 

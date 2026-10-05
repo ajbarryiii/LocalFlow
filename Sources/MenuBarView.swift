@@ -13,7 +13,7 @@ struct MenuBarView: View {
     }
 
     private func transcriptText(for item: PipelineHistoryItem) -> String {
-        let cleaned = item.postProcessedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = item.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleaned.isEmpty {
             return cleaned
         }
@@ -21,8 +21,8 @@ struct MenuBarView: View {
     }
 
     private func transcriptFull(for item: PipelineHistoryItem) -> String {
-        if !item.postProcessedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return item.postProcessedTranscript
+        if !item.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return item.transcript
         }
         return item.rawTranscript
     }
@@ -56,29 +56,12 @@ struct MenuBarView: View {
 
             Divider()
 
-            if appState.usesLocalTranscription, LocalParakeetService.isAvailable {
+            if LocalParakeetService.isAvailable {
                 Text(appState.localModelPreparationState.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 4)
-                Divider()
-            }
-
-            if !appState.usesLocalTranscription && !appState.hasScreenRecordingPermission {
-                Button {
-                    appState.requestScreenCapturePermission()
-                } label: {
-                    Label("\(PrivacyPermission.screenRecording.settingsTitle) Permission Needed", systemImage: "camera.viewfinder")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(Color.orange)
-
                 Divider()
             }
 
@@ -184,14 +167,6 @@ struct MenuBarView: View {
 
                 Button("Open Run Log") {
                     openRunLog()
-                }
-            }
-
-            Divider()
-
-            Button("Paste Custom Word to Vocabulary") {
-                if appState.pasteWordToVocabulary() != nil {
-                    VocabularyNotificationManager.shared.flashCheckmark()
                 }
             }
 

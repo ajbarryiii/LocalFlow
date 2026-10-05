@@ -95,26 +95,11 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
     var onRecordingReady: (() -> Void)?
     var onRecordingFailure: ((Error) -> Void)?
-    /// Fires on the sample-buffer queue with a 24 kHz mono PCM16 chunk for
-    /// each incoming audio buffer (matching OpenAI Realtime's default PCM
-    /// input rate). Set before ``startRecording`` to stream audio out-of-band
-    /// to a realtime transcription socket. The recorder writes a normalized
-    /// 16 kHz mono PCM16 WAV file independently for upload-based transcription.
-    var onPCM16Samples: ((Data) -> Void)?
     private let recordingConverterLock = OSAllocatedUnfairLock<AVAudioConverter?>(initialState: nil)
-    private let pcm16ConverterLock = OSAllocatedUnfairLock<AVAudioConverter?>(initialState: nil)
     private let recordingTargetFormat: AVAudioFormat = {
         AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 16_000,
-            channels: 1,
-            interleaved: true
-        )!
-    }()
-    private let pcm16TargetFormat: AVAudioFormat = {
-        AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 24_000,
             channels: 1,
             interleaved: true
         )!
@@ -617,7 +602,6 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         activeAudioFile = nil
         activeAudioFormat = nil
         recordingConverterLock.withLock { $0 = nil }
-        pcm16ConverterLock.withLock { $0 = nil }
         recordedFrameCount = 0
         loggedCaptureFormat = false
         fileWriteErrorLock.withLock { _ in
@@ -803,54 +787,6 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         return Float(sqrt(sumOfSquares / Double(totalSamples)))
     }
 
-    private func emitPCM16IfNeeded(from sampleBuffer: CMSampleBuffer) {
-        guard let handler = onPCM16Samples else { return }
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
-            return
-        }
-        guard let validatedSourceFormat = try? validatedPCMBufferFormat(
-            AVAudioFormat(cmAudioFormatDescription: formatDescription),
-            context: "realtime transcription sample buffer"
-        ) else {
-            return
-        }
-        let sourceFormat = validatedSourceFormat
-        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frameCount > 0 else { return }
-
-        guard let inputBuffer = try? makePCMBuffer(
-            from: sampleBuffer,
-            format: sourceFormat,
-            frameCount: frameCount
-        ) else { return }
-
-        let converter = pcm16ConverterLock.withLock { existing -> AVAudioConverter? in
-            if let existing, existing.inputFormat == sourceFormat {
-                return existing
-            }
-            let new = AVAudioConverter(from: sourceFormat, to: pcm16TargetFormat)
-            existing = new
-            return new
-        }
-        guard let converter else { return }
-
-        guard let conversion = try? convertBuffer(
-            inputBuffer,
-            from: sourceFormat,
-            using: converter,
-            to: pcm16TargetFormat
-        ) else { return }
-        let outputBuffer = conversion.buffer
-
-        let outputFrames = Int(outputBuffer.frameLength)
-        guard outputFrames > 0, let int16Ptr = outputBuffer.int16ChannelData?[0] else {
-            return
-        }
-        let byteCount = outputFrames * MemoryLayout<Int16>.size
-        let data = Data(bytes: int16Ptr, count: byteCount)
-        handler(data)
-    }
-
     func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
@@ -869,7 +805,6 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             return
         }
 
-        emitPCM16IfNeeded(from: sampleBuffer)
 
         let count = _bufferCount.withLock { value -> Int in
             value += 1

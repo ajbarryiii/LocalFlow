@@ -14,12 +14,11 @@ APP_EXECUTABLE_TARGET := $(subst $(space),\ ,$(APP_EXECUTABLE))
 SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 TEST_RUNNER = $(BUILD_DIR)/FreeFlowTests
 TEST_PRODUCTION_SOURCES = \
-	Sources/AppContextService.swift \
 	Sources/AppName.swift \
-	Sources/LLMAPITransport.swift \
-	Sources/LLMCooldownManager.swift \
-	Sources/ModelConfiguration.swift \
 	Sources/PrivacyPermission.swift \
+	Sources/LocalDictationCore.swift \
+	Sources/PipelineHistoryItem.swift \
+	Sources/PipelineHistoryStore.swift \
 	Sources/SetupFlowCore.swift \
 	Sources/Parakeet/LocalParakeetCore.swift \
 	Sources/Parakeet/LocalParakeetService.swift \
@@ -27,9 +26,6 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Parakeet/ParakeetDecoder.swift \
 	Sources/Parakeet/ParakeetFrames.swift \
 	Sources/Parakeet/ParakeetFrontEnd.swift \
-	Sources/TranscriptionService.swift \
-	Sources/TranscriptionErrorPresentationCore.swift \
-	Sources/TranscriptTextCore.swift \
 	Sources/UpdateManager.swift \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
