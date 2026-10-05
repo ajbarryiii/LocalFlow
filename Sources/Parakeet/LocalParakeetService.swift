@@ -19,6 +19,12 @@ final class LocalParakeetService: @unchecked Sendable {
     }
     private let queue = DispatchQueue(label: "localflow.local-model", qos: .userInitiated)
     private var runtime: LocalParakeetRuntime?
+    private let startupStrategy: ParakeetStartupStrategy
+
+    // The app keeps its existing all-bucket startup. Benchmarks opt in explicitly.
+    init(startupStrategy: ParakeetStartupStrategy = .allBuckets) {
+        self.startupStrategy = startupStrategy
+    }
 
     func prepare() async throws {
         guard Self.isAvailable, let directory = Self.bundleDirectory else {
@@ -29,10 +35,24 @@ final class LocalParakeetService: @unchecked Sendable {
 
     // Synthetic inputs only: preparation never records audio or accesses context.
     func prepare(directory: URL) async throws {
+        try await prepare(directory: directory, buckets: startupStrategy.initialBuckets)
+    }
+
+    // Each warmup yields the queue between buckets so queued transcription can
+    // use the already prepared 15-second function. An active Core ML call cannot
+    // be preempted. Benchmark-only opt-in; the app does not call this method.
+    func prepareRemainingBuckets(directory: URL) async throws {
+        for bucket in LocalParakeetCore.buckets {
+            try Task.checkCancellation()
+            try await prepare(directory: directory, buckets: [bucket])
+        }
+    }
+
+    private func prepare(directory: URL, buckets: [Int]) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    try self.runtime(for: directory).prepare()
+                    try self.runtime(for: directory).prepare(buckets: buckets)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))
@@ -41,10 +61,10 @@ final class LocalParakeetService: @unchecked Sendable {
         }
     }
 
-    // Call only on queue. Keep the runtime and all four loaded models alive.
+    // Call only on queue. Keep the runtime and any loaded models alive.
     private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
         if let runtime, runtime.directory == directory { return runtime }
-        let runtime = try LocalParakeetRuntime(directory: directory)
+        let runtime = try LocalParakeetRuntime(directory: directory, startupStrategy: startupStrategy)
         self.runtime = runtime
         return runtime
     }
@@ -101,9 +121,11 @@ private final class LocalParakeetRuntime {
     let math: NativeMath
     let vocabulary: [String]
     private let models = ParakeetModelCache<MLModel>()
+    private let startupStrategy: ParakeetStartupStrategy
 
-    init(directory: URL) throws {
+    init(directory: URL, startupStrategy: ParakeetStartupStrategy) throws {
         self.directory = directory
+        self.startupStrategy = startupStrategy
         let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
         guard let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               manifest["model"] as? String == LocalParakeetCore.modelID,
@@ -127,8 +149,8 @@ private final class LocalParakeetRuntime {
         vocabulary = (0..<1024).map { vocab[String($0)]! }
     }
 
-    func prepare() throws {
-        try models.prepare(load: loadModel) { bucket, model in
+    func prepare(buckets: [Int]) throws {
+        try models.prepare(buckets: buckets, load: loadModel) { bucket, model in
             // Force device specialization and first prediction before dictation.
             // A zero mel input is invented and its output is discarded.
             let size = bucket * 100 + 1
@@ -167,7 +189,7 @@ private final class LocalParakeetRuntime {
         if input.allSatisfy({ $0 == 0 }) { return "" }
         // NeMo's unbiased per-feature normalization needs at least two frames.
         let pcm = input.count < 480 ? input + [Float](repeating: 0, count: 480 - input.count) : input
-        let bucket = try LocalParakeetCore.bucket(samples: pcm.count)
+        let bucket = try models.transcriptionBucket(samples: pcm.count, strategy: startupStrategy)
         let model = try models.model(for: bucket, load: loadModel)
         try check()
         let features = frontend.compute(pcm)

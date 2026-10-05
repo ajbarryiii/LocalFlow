@@ -37,6 +37,36 @@ enum LocalParakeetTests {
         testSyntheticAudioEOF()
         testBlobBounds()
         testPreparedModelReuse()
+        testFifteenSecondBootstrap()
+    }
+
+    private static func testFifteenSecondBootstrap() {
+        let cache = ParakeetModelCache<Int>()
+        var loads: [Int] = []
+        let strategy = ParakeetStartupStrategy.fifteenSecondsFirst
+        func load(_ bucket: Int) -> Int { loads.append(bucket); return bucket }
+        // Before bootstrap, retain normal lazy loading rather than selecting an
+        // unavailable fallback. Every chunk length is valid for the 15s bucket.
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 2)
+        try! cache.prepare(buckets: strategy.initialBuckets, load: load) { _, _ in }
+        TestSupport.expectEqual(loads, [15])
+        for samples in [1, 32000, 32001, 64001, 128001, 240000] {
+            TestSupport.expectEqual(try! cache.transcriptionBucket(samples: samples, strategy: strategy), 15)
+        }
+        expectFailure { _ = try cache.transcriptionBucket(samples: 240001, strategy: strategy) }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: .allBuckets), 2)
+        // A loaded but failed warmup must not displace the usable fallback.
+        expectFailure {
+            try cache.prepare(buckets: [2], load: load) { _, _ in throw CancellationError() }
+        }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 15)
+        try! cache.prepare(buckets: [2], load: load) { _, _ in }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 2)
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 32001, strategy: strategy), 15)
+        try! cache.prepare(load: load) { _, _ in }
+        TestSupport.expectEqual(loads, [15, 2, 4, 8])
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 32001, strategy: strategy), 4)
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 64001, strategy: strategy), 8)
     }
 
     private static func testPreparedModelReuse() {

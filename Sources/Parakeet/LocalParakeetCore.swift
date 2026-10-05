@@ -60,6 +60,15 @@ enum LocalParakeetCore {
     }
 }
 
+enum ParakeetStartupStrategy: String {
+    case allBuckets = "all"
+    case fifteenSecondsFirst = "fifteen-first"
+
+    var initialBuckets: [Int] {
+        self == .fifteenSecondsFirst ? [15] : LocalParakeetCore.buckets
+    }
+}
+
 /// Used only on the service's serial queue. Failed warmups can be retried,
 /// while successful preparation and transcription reuse the same model.
 final class ParakeetModelCache<Model> {
@@ -73,8 +82,17 @@ final class ParakeetModelCache<Model> {
         return model
     }
 
-    func prepare(load: (Int) throws -> Model, warm: (Int, Model) throws -> Void) throws {
-        for bucket in LocalParakeetCore.buckets where !prepared.contains(bucket) {
+    func transcriptionBucket(samples: Int, strategy: ParakeetStartupStrategy) throws -> Int {
+        let preferred = try LocalParakeetCore.bucket(samples: samples)
+        if strategy == .fifteenSecondsFirst, !prepared.contains(preferred), prepared.contains(15) {
+            return 15
+        }
+        return preferred
+    }
+
+    func prepare(buckets: [Int] = LocalParakeetCore.buckets,
+                 load: (Int) throws -> Model, warm: (Int, Model) throws -> Void) throws {
+        for bucket in buckets where !prepared.contains(bucket) {
             let model = try model(for: bucket, load: load)
             try warm(bucket, model)
             prepared.insert(bucket)
