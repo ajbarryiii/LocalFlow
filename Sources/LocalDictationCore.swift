@@ -51,11 +51,13 @@ enum LocalDictationCore {
 }
 
 /// Converts matched spoken delimiter pairs ("quote … end quote", "open paren …
-/// close paren") into punctuation. A closer pairs with the nearest opener of
-/// its kind; unmatched or empty pairs stay literal text.
+/// close paren") into punctuation, and "all caps on … all caps off" style pairs
+/// into a case change. A closer pairs with the nearest opener of its kind;
+/// unmatched or empty pairs stay literal text. An unmatched case command that
+/// opens the dictation ("All caps, do not merge") applies to all of it.
 enum SpokenDelimiterFormatter {
     private enum Kind {
-        case quote, paren, bracket, brace, backtick, bold
+        case quote, paren, bracket, brace, backtick, bold, upper, lower
 
         var delimiters: (opening: String, closing: String) {
             switch self {
@@ -65,7 +67,17 @@ enum SpokenDelimiterFormatter {
             case .brace: return ("{", "}")
             case .backtick: return ("`", "`")
             case .bold: return ("**", "**")
+            case .upper, .lower: return ("", "")
             }
+        }
+
+        var changesCase: Bool { self == .upper || self == .lower }
+
+        /// Only a quotation ("He said, "…"") or a case change reads naturally after a comma.
+        var keepsCommaBefore: Bool { self == .quote || changesCase }
+
+        func applyCase(_ text: Substring) -> String {
+            self == .upper ? text.uppercased() : text.lowercased()
         }
     }
 
@@ -117,6 +129,11 @@ enum SpokenDelimiterFormatter {
             ("close backtick", .backtick, false), ("close back tick", .backtick, false),
             ("double asterisk", .bold, true), ("open double asterisk", .bold, true),
             ("close double asterisk", .bold, false), ("end double asterisk", .bold, false),
+            ("all caps on", .upper, true), ("all caps", .upper, true),
+            ("all caps off", .upper, false), ("end all caps", .upper, false),
+            ("no caps on", .lower, true), ("no caps", .lower, true),
+            ("all lowercase", .lower, true), ("all lower case", .lower, true),
+            ("no caps off", .lower, false), ("end lowercase", .lower, false), ("end lower case", .lower, false),
         ]
         let parsed = entries.map { Phrase(words: $0.0.split(separator: " ").map(String.init), kind: $0.1, opens: $0.2) }
         let misheardEnds = parsed.filter { !$0.opens && $0.words[0] == "end" }.map {
@@ -182,7 +199,13 @@ enum SpokenDelimiterFormatter {
                 break
             }
         }
-        guard !paired.isEmpty else { return text }
+        // An unpaired case command that opens the dictation applies to all of it.
+        var casePrefix: Kind?
+        if items.count > 1, !paired.contains(0), case .marker(let phrase, _) = items[0],
+           phrase.opens, phrase.kind.changesCase {
+            casePrefix = phrase.kind
+        }
+        guard !paired.isEmpty || casePrefix != nil else { return text }
 
         var output = ""
         var contentStarts: [Int] = []
@@ -192,6 +215,10 @@ enum SpokenDelimiterFormatter {
             afterOpening = false
         }
         for (itemIndex, item) in items.enumerated() {
+            if itemIndex == 0, casePrefix != nil {
+                afterOpening = true
+                continue
+            }
             switch item {
             case .word(let wordIndex):
                 append(words[wordIndex])
@@ -201,8 +228,7 @@ enum SpokenDelimiterFormatter {
                     continue
                 }
                 if phrase.opens {
-                    // Only a quotation reads naturally after a comma ("He said, "…"").
-                    if phrase.kind != .quote, output.last == "," { output.removeLast() }
+                    if !phrase.kind.keepsCommaBefore, output.last == "," { output.removeLast() }
                     output += (afterOpening ? "" : words[range.lowerBound].separator) + phrase.kind.delimiters.opening
                     contentStarts.append(output.utf8.count)
                     afterOpening = true
@@ -211,11 +237,15 @@ enum SpokenDelimiterFormatter {
                     while output.utf8.count > contentStart, let last = output.last, strippedBeforeClosing.contains(last) {
                         output.removeLast()
                     }
+                    if phrase.kind.changesCase {
+                        let start = output.utf8.index(output.utf8.startIndex, offsetBy: contentStart)
+                        output.replaceSubrange(start..., with: phrase.kind.applyCase(output[start...]))
+                    }
                     output += phrase.kind.delimiters.closing + words[range.upperBound - 1].trailing
                 }
             }
         }
-        return output
+        return casePrefix?.applyCase(output[...]) ?? output
     }
 
     private static func matches(_ phrase: Phrase, at index: Int, in words: [Word]) -> Bool {

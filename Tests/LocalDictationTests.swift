@@ -95,6 +95,23 @@ enum LocalDictationTests {
             ("Add a double asterisk here and double asterisk.", "Add a double asterisk here and double asterisk."),
             ("This is, double asterisk, really important, close double asterisk.", "This is **really important**."),
             ("Add a double asterisk here, end double asterisk.", "Add a double asterisk here, end double asterisk."),
+            ("Set the label to all caps on do not merge all caps off.", "Set the label to DO NOT MERGE."),
+            ("This is all caps urgent end all caps, please read it.", "This is URGENT, please read it."),
+            ("My handle is no caps on Blue Bird no caps off.", "My handle is blue bird."),
+            ("Run backtick no caps on Make Check no caps off end backtick.", "Run `make check`."),
+            ("He said, all caps on quote stop end quote all caps off.", "He said, \"STOP\"."),
+            ("Call it all lowercase Big Red Box end lower case today", "Call it big red box today"),
+            ("Say all caps on hi and all caps", "Say HI"),
+            ("She always texts in all caps.", "She always texts in all caps."),
+            ("Turn all caps off now", "Turn all caps off now"),
+            ("All caps, do not merge.", "DO NOT MERGE."),
+            ("All caps urgent", "URGENT"),
+            ("No caps, Blue Bird", "blue bird"),
+            ("All lowercase Hello World.", "hello world."),
+            ("All caps quote stop end quote", "\"STOP\""),
+            ("All caps text is hard to read.", "TEXT IS HARD TO READ."),
+            ("No caps on Hello no caps off World", "hello World"),
+            ("All caps.", "All caps."),
             ("", ""),
         ]
         for (input, expected) in cases {
@@ -105,6 +122,9 @@ enum LocalDictationTests {
         let submitted = process("quote ship it end quote press enter")
         TestSupport.expectEqual(submitted.output, "\"ship it\"")
         TestSupport.expect(submitted.shouldPressEnter, "Spoken delimiters must compose with press enter")
+        let lowercaseSubmitted = process("No caps Make Check, press enter.")
+        TestSupport.expectEqual(lowercaseSubmitted.output, "make check")
+        TestSupport.expect(lowercaseSubmitted.shouldPressEnter, "A leading case command must compose with press enter")
         TestSupport.expectEqual(submitted.rawTranscript, "quote ship it end quote")
         let quotedMacro = VoiceMacro(command: "Quote hello end quote", payload: "Synthetic macro payload.")
         let macroResult = process("Quote hello, end quote.", macros: [quotedMacro])
