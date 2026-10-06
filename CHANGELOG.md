@@ -9,6 +9,37 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.0] - 2026-10-06
+
+Second LocalFlow beta. Requires an Apple Silicon Mac running macOS 26 or later.
+
+**Upgrading from 2.0.0:** LocalFlow now uses its own app identifier, so macOS
+treats this version as a new app. Grant Microphone and Accessibility again,
+re-enable Launch at Login if you use it, and re-create any voice macros.
+Preferences and history from 2.0.0 are left untouched in the old FreeFlow
+location; they are not shared with or deleted by this version.
+
+### Added
+
+- Spoken quotes, brackets, and code marks. Say "quote … end quote",
+  "paren … close paren", "open bracket … close bracket", "open brace … close
+  brace", "backtick … end backtick", or "double asterisk … close double
+  asterisk" to insert `"…"`, `(…)`, `[…]`, `{…}`, `` `…` ``, or `**…**`. Only
+  matched pairs convert; a lone "quote" or "the paren" stays as spoken.
+- Spoken capitalization. "all caps on … all caps off" uppercases the words in
+  between and "all lowercase … end lowercase" lowercases them. Starting a
+  dictation with "all caps" or "all lowercase" changes the whole dictation.
+- A setting to turn these spoken commands off, under Settings → Clipboard. It
+  is on by default.
+
+### Changed
+
+- LocalFlow uses its own bundle identifiers and stores its data under
+  Application Support/LocalFlow, so it never shares preferences, permissions,
+  or history with an installed copy of FreeFlow.
+- Rebuilding the app no longer forces the several-minute model preparation
+  when the model itself has not changed.
+
 ## [2.0.0] - 2026-10-04
 
 This is the first LocalFlow beta. Requires an Apple Silicon Mac running macOS

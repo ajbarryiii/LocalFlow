@@ -5,7 +5,7 @@
 <h1 align="center">LocalFlow</h1>
 
 <p align="center">
-  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.0.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
   <sub>Apple Silicon · macOS 26 or later</sub><br>
   <sub>Developer ID signed · Apple-notarized beta</sub>
 </p>
