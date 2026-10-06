@@ -51,8 +51,8 @@ enum LocalDictationCore {
 }
 
 /// Converts matched spoken delimiter pairs ("quote … end quote", "open paren …
-/// close paren") into punctuation. A closer pairs with the nearest non-empty
-/// opener of its kind; unmatched or empty pairs stay literal text.
+/// close paren") into punctuation. A closer pairs with the nearest opener of
+/// its kind; unmatched or empty pairs stay literal text.
 enum SpokenDelimiterFormatter {
     private enum Kind {
         case quote, paren
@@ -128,9 +128,11 @@ enum SpokenDelimiterFormatter {
             while let position = openers.lastIndex(where: { $0.kind == phrase.kind }) {
                 let opener = openers[position].item
                 if opener == itemIndex - 1 {
-                    // Empty pair ("quote unquote"): leave this opener literal and keep looking.
+                    // Empty pairs stay literal. A bare "quote" may be the noun ("a price quote,
+                    // end quote"), so keep looking for an earlier opener; otherwise the closer is spent.
                     openers.remove(at: position)
-                    continue
+                    if case .marker(let openerPhrase, _) = items[opener], openerPhrase.words == ["quote"] { continue }
+                    break
                 }
                 paired.formUnion([opener, itemIndex])
                 // Openers of another kind left inside the pair become literal text.
