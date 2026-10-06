@@ -9,11 +9,12 @@ enum AppName {
         supportDirectoryName(bundleIdentifier: Bundle.main.bundleIdentifier, bundleName: displayName)
     }
 
-    // Branding must not move existing history, audio, or the recording-state flag.
+    // Storage follows the bundle identifier so a display-name change never moves history,
+    // audio, or the recording-state flag, and never shares them with upstream FreeFlow.
     static func supportDirectoryName(bundleIdentifier: String?, bundleName: String) -> String {
         switch bundleIdentifier {
-        case "com.zachlatta.freeflow.dev": return "FreeFlow Dev"
-        case "com.zachlatta.freeflow": return "FreeFlow"
+        case "com.ajbarryiii.localflow.dev": return "LocalFlow Dev"
+        case "com.ajbarryiii.localflow": return "LocalFlow"
         default: return bundleName
         }
     }

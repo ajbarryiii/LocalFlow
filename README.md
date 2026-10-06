@@ -5,7 +5,7 @@
 <h1 align="center">LocalFlow</h1>
 
 <p align="center">
-  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.0.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
   <sub>Apple Silicon · macOS 26 or later</sub><br>
   <sub>Developer ID signed · Apple-notarized beta</sub>
 </p>
@@ -65,9 +65,11 @@ The ad hoc development build may need its existing system approval refreshed
 when its executable changes. The app's permission guidance can reveal the
 exact running bundle in Finder for this repair.
 
-The existing FreeFlow bundle identifiers and Application Support directories
-are retained for preferences, history, audio, and recording-state compatibility.
-The LocalFlow name does not require moving or duplicating existing user data.
+LocalFlow uses its own bundle identifiers (`com.ajbarryiii.localflow`, and
+`com.ajbarryiii.localflow.dev` for development builds), so it never shares
+preferences, permissions, history, or audio with an installed copy of FreeFlow.
+Its data lives in `~/Library/Application Support/LocalFlow` (or `LocalFlow Dev`),
+and external tools can poll `is-recording` in that directory.
 
 The software updater checks [this fork](https://github.com/ajbarryiii/LocalFlow)
 and may contact GitHub when

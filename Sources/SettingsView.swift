@@ -89,6 +89,9 @@ struct GeneralSettingsView: View {
                     Toggle("Say ‘press enter’ to submit after paste", isOn: $appState.isPressEnterVoiceCommandEnabled)
                     Text("A trailing ‘press enter’ is removed from the transcript and presses Return after pasting.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Convert spoken quotes, brackets, code marks, and caps", isOn: $appState.isSpokenDelimitersEnabled)
+                    Text("Say ‘quote … end quote’, ‘paren … close paren’, ‘open bracket/brace … close bracket/brace’, ‘backtick … end backtick’, ‘double asterisk … close double asterisk’, or ‘all caps on … all caps off’ / ‘all lowercase … end lowercase’. Start with ‘all caps’ or ‘all lowercase’ to change a whole dictation. Unpaired words stay as spoken.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionRow(.microphone, granted: micGranted) {
