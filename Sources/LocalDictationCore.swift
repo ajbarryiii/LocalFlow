@@ -98,6 +98,11 @@ enum SpokenDelimiterFormatter {
     /// Recognizer punctuation dropped just inside a closing delimiter; "?" and "!" are kept.
     private static let strippedBeforeClosing: Set<Character> = [",", ";", ":", "."]
 
+    /// A bare "quote" directly after one of these is the noun ("the quote"), never an opener.
+    private static let determiners: Set<String> = [
+        "a", "an", "the", "this", "that", "my", "your", "his", "her", "our", "their", "its",
+    ]
+
     static func format(_ text: String) -> String {
         let words = Self.words(in: text)
         var items: [Item] = []
@@ -170,6 +175,10 @@ enum SpokenDelimiterFormatter {
 
     private static func matches(_ phrase: Phrase, at index: Int, in words: [Word]) -> Bool {
         guard index + phrase.words.count <= words.count else { return false }
+        if phrase.words == ["quote"], index > 0, words[index - 1].trailing.isEmpty,
+           determiners.contains(words[index - 1].core) {
+            return false
+        }
         return phrase.words.indices.allSatisfy { offset in
             let word = words[index + offset]
             return word.core == phrase.words[offset] && !word.hasLeadingPunctuation
