@@ -93,7 +93,8 @@ enum SpokenDelimiterFormatter {
         case marker(Phrase, Range<Int>)
     }
 
-    private static let phrases: [Phrase] = {
+    /// Keyed by first word so each transcript word costs one lookup, not a scan of every phrase.
+    private static let phrasesByFirstWord: [String: [Phrase]] = {
         let entries: [(String, Kind, Bool)] = [
             ("quote", .quote, true), ("open quote", .quote, true), ("begin quote", .quote, true),
             ("end quote", .quote, false), ("close quote", .quote, false), ("unquote", .quote, false),
@@ -122,7 +123,7 @@ enum SpokenDelimiterFormatter {
             Phrase(words: ["and"] + $0.words.dropFirst(), kind: $0.kind, opens: false, needsOpener: true)
         }
         // Longest phrases first so "end quote" is never read as "end" plus an opening "quote".
-        return (parsed + misheardEnds).sorted { $0.words.count > $1.words.count }
+        return Dictionary(grouping: (parsed + misheardEnds).sorted { $0.words.count > $1.words.count }) { $0.words[0] }
     }()
 
     /// Recognizer punctuation dropped just inside a closing delimiter; "?" and "!" are kept.
@@ -135,7 +136,9 @@ enum SpokenDelimiterFormatter {
 
     /// The speech recognizer spells "paren" many ways in manual testing (paran, peren, peran, perran, …).
     private static func recognizerSpelling(_ core: String) -> String {
-        core.range(of: #"^p[ae]r{1,2}[ae]n$"#, options: .regularExpression) != nil ? "paren" : core
+        // Cheap guard first: the regex runs for every word otherwise.
+        guard core.first == "p", (5...6).contains(core.count) else { return core }
+        return core.range(of: #"^p[ae]r{1,2}[ae]n$"#, options: .regularExpression) != nil ? "paren" : core
     }
 
     static func format(_ text: String) -> String {
@@ -144,7 +147,7 @@ enum SpokenDelimiterFormatter {
         var unclosed: [Kind: Int] = [:]
         var index = 0
         while index < words.count {
-            if let phrase = phrases.first(where: {
+            if let phrase = phrasesByFirstWord[words[index].core]?.first(where: {
                 (!$0.needsOpener || unclosed[$0.kind, default: 0] > 0) && matches($0, at: index, in: words)
             }) {
                 unclosed[phrase.kind] = max(0, unclosed[phrase.kind, default: 0] + (phrase.opens ? 1 : -1))
