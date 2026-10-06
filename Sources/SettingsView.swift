@@ -89,6 +89,9 @@ struct GeneralSettingsView: View {
                     Toggle("Say ‘press enter’ to submit after paste", isOn: $appState.isPressEnterVoiceCommandEnabled)
                     Text("A trailing ‘press enter’ is removed from the transcript and presses Return after pasting.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Say ‘quote … end quote’ or ‘open paren … close paren’", isOn: $appState.isSpokenDelimitersEnabled)
+                    Text("Matched pairs become quotation marks or parentheses. An unpaired ‘quote’ stays as spoken.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionRow(.microphone, granted: micGranted) {

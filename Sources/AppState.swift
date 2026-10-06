@@ -129,6 +129,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let keepDictationInClipboardHistoryStorageKey = "keep_dictation_in_clipboard_history"
     private let pressEnterVoiceCommandStorageKey = "press_enter_voice_command_enabled"
+    private let spokenDelimitersStorageKey = "spoken_delimiters_enabled"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
     private let soundVolumeStorageKey = "sound_volume"
     private let voiceMacrosStorageKey = "voice_macros"
@@ -212,6 +213,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var isPressEnterVoiceCommandEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isPressEnterVoiceCommandEnabled, forKey: pressEnterVoiceCommandStorageKey)
+        }
+    }
+
+    @Published var isSpokenDelimitersEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isSpokenDelimitersEnabled, forKey: spokenDelimitersStorageKey)
         }
     }
 
@@ -324,6 +331,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let isPressEnterVoiceCommandEnabled = UserDefaults.standard.object(forKey: pressEnterVoiceCommandStorageKey) == nil
             ? true
             : UserDefaults.standard.bool(forKey: pressEnterVoiceCommandStorageKey)
+        let isSpokenDelimitersEnabled = UserDefaults.standard.object(forKey: spokenDelimitersStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: spokenDelimitersStorageKey)
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
@@ -364,6 +374,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.keepDictationInClipboardHistory = keepDictationInClipboardHistory
         self.dictationAudioInterruptionEnabled = dictationAudioInterruptionEnabled
         self.isPressEnterVoiceCommandEnabled = isPressEnterVoiceCommandEnabled
+        self.isSpokenDelimitersEnabled = isSpokenDelimitersEnabled
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
         self.voiceMacros = initialMacros
@@ -643,7 +654,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             do {
                 let raw = try await LocalParakeetService.shared.transcribe(fileURL: audioURL)
                 let result = LocalDictationCore.process(raw, macros: voiceMacros,
-                                                       pressEnterEnabled: isPressEnterVoiceCommandEnabled)
+                                                       pressEnterEnabled: isPressEnterVoiceCommandEnabled,
+                                                       spokenDelimitersEnabled: isSpokenDelimitersEnabled)
                 updated.rawTranscript = result.rawTranscript
                 updated.transcript = result.output
                 updated.status = "\(result.status) (retried)"
@@ -1451,7 +1463,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     await MainActor.run {
                         guard self.isTranscribing else { return }
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
-                                                               pressEnterEnabled: self.isPressEnterVoiceCommandEnabled)
+                                                               pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
+                                                               spokenDelimitersEnabled: self.isSpokenDelimitersEnabled)
                         self.lastRawTranscript = result.rawTranscript
                         self.lastOutputTranscript = result.output
                         self.lastTranscriptionStatus = result.status
