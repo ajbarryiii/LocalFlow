@@ -73,6 +73,8 @@ enum SpokenDelimiterFormatter {
         let words: [String]
         let kind: Kind
         let opens: Bool
+        /// The recognizer often hears "end" as "and"; that reading only closes an open pair.
+        var needsOpener = false
 
         /// Openers without an "open"/"begin"/"left" prefix can also be ordinary nouns ("the quote").
         var isBare: Bool { opens && !["open", "begin", "left"].contains(words[0]) }
@@ -115,9 +117,12 @@ enum SpokenDelimiterFormatter {
             ("double asterisk", .bold, true), ("open double asterisk", .bold, true),
             ("close double asterisk", .bold, false), ("end double asterisk", .bold, false),
         ]
+        let parsed = entries.map { Phrase(words: $0.0.split(separator: " ").map(String.init), kind: $0.1, opens: $0.2) }
+        let misheardEnds = parsed.filter { !$0.opens && $0.words[0] == "end" }.map {
+            Phrase(words: ["and"] + $0.words.dropFirst(), kind: $0.kind, opens: false, needsOpener: true)
+        }
         // Longest phrases first so "end quote" is never read as "end" plus an opening "quote".
-        return entries.map { Phrase(words: $0.0.split(separator: " ").map(String.init), kind: $0.1, opens: $0.2) }
-            .sorted { $0.words.count > $1.words.count }
+        return (parsed + misheardEnds).sorted { $0.words.count > $1.words.count }
     }()
 
     /// Recognizer punctuation dropped just inside a closing delimiter; "?" and "!" are kept.
@@ -136,9 +141,13 @@ enum SpokenDelimiterFormatter {
     static func format(_ text: String) -> String {
         let words = Self.words(in: text)
         var items: [Item] = []
+        var unclosed: [Kind: Int] = [:]
         var index = 0
         while index < words.count {
-            if let phrase = phrases.first(where: { matches($0, at: index, in: words) }) {
+            if let phrase = phrases.first(where: {
+                (!$0.needsOpener || unclosed[$0.kind, default: 0] > 0) && matches($0, at: index, in: words)
+            }) {
+                unclosed[phrase.kind] = max(0, unclosed[phrase.kind, default: 0] + (phrase.opens ? 1 : -1))
                 items.append(.marker(phrase, index..<index + phrase.words.count))
                 index += phrase.words.count
             } else {
