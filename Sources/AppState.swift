@@ -6,7 +6,7 @@ import ServiceManagement
 import ApplicationServices
 import Carbon
 import os.log
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+private let recordingLog = OSLog(subsystem: "com.ajbarryiii.localflow", category: "Recording")
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
@@ -43,7 +43,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
 enum AppBuild {
     static var isDevBundle: Bool {
-        Bundle.main.bundleIdentifier == "com.zachlatta.freeflow.dev" ||
+        Bundle.main.bundleIdentifier == "com.ajbarryiii.localflow.dev" ||
         ["LocalFlow Dev", "FreeFlow Dev"].contains(AppName.displayName)
     }
 }
@@ -558,8 +558,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// Contents are the UNIX timestamp (seconds, float) of when recording
     /// started — useful for stale-flag detection after an unclean exit.
     ///
-    /// Path: `~/Library/Application Support/FreeFlow/is-recording`
-    /// (or `FreeFlow Dev/is-recording` when running the dev bundle).
+    /// Path: `~/Library/Application Support/LocalFlow/is-recording`
+    /// (or `LocalFlow Dev/is-recording` when running the dev bundle).
     static func recordingStateFlagURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appName = AppName.supportDirectoryName
@@ -569,7 +569,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// Serial queue that owns every flag-file I/O so the recording
     /// start/stop hot path never blocks on disk.
     private static let recordingStateFlagQueue = DispatchQueue(
-        label: "com.zachlatta.freeflow.recording-state-flag"
+        label: "com.ajbarryiii.localflow.recording-state-flag"
     )
 
     /// Write or clear the `is-recording` flag file. Called from the

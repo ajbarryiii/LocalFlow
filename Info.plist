@@ -7,7 +7,7 @@
     <key>CFBundleDisplayName</key>
     <string>LocalFlow</string>
     <key>CFBundleIdentifier</key>
-    <string>com.zachlatta.freeflow</string>
+    <string>com.ajbarryiii.localflow</string>
     <key>CFBundleVersion</key>
     <string>2.0.0</string>
     <key>CFBundleShortVersionString</key>

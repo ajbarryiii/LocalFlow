@@ -1,6 +1,6 @@
 APP_NAME ?= LocalFlow Dev
 .DEFAULT_GOAL := all
-BUNDLE_ID ?= com.zachlatta.freeflow.dev
+BUNDLE_ID ?= com.ajbarryiii.localflow.dev
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 CODESIGN_IDENTITY ?= FreeFlow Dev
