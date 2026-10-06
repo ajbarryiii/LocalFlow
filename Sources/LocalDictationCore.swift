@@ -133,10 +133,10 @@ enum SpokenDelimiterFormatter {
         "a", "an", "the", "this", "that", "my", "your", "his", "her", "our", "their", "its",
     ]
 
-    /// Spellings the speech recognizer has produced for "paren" in manual testing.
-    private static let recognizerSpellings: [String: String] = [
-        "paran": "paren", "peren": "paren", "perren": "paren", "perran": "paren",
-    ]
+    /// The speech recognizer spells "paren" many ways in manual testing (paran, peren, peran, perran, …).
+    private static func recognizerSpelling(_ core: String) -> String {
+        core.range(of: #"^p[ae]r{1,2}[ae]n$"#, options: .regularExpression) != nil ? "paren" : core
+    }
 
     static func format(_ text: String) -> String {
         let words = Self.words(in: text)
@@ -255,7 +255,7 @@ enum SpokenDelimiterFormatter {
             end = text.index(before: end)
         }
         let core = text[start..<end].lowercased()
-        return Word(separator: separator, text: text, core: recognizerSpellings[core] ?? core,
+        return Word(separator: separator, text: text, core: recognizerSpelling(core),
                     hasLeadingPunctuation: start != text.startIndex, trailing: String(text[end...]))
     }
 }
