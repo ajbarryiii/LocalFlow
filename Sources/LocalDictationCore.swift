@@ -132,9 +132,8 @@ enum SpokenDelimiterFormatter {
             ("close double asterisk", .bold, false), ("end double asterisk", .bold, false),
             ("all caps on", .upper, true), ("all caps", .upper, true),
             ("all caps off", .upper, false), ("end all caps", .upper, false),
-            ("no caps on", .lower, true), ("no caps", .lower, true),
             ("all lowercase", .lower, true), ("all lower case", .lower, true),
-            ("no caps off", .lower, false), ("end lowercase", .lower, false), ("end lower case", .lower, false),
+            ("end lowercase", .lower, false), ("end lower case", .lower, false),
         ]
         let parsed = entries.map { Phrase(words: $0.0.split(separator: " ").map(String.init), kind: $0.1, opens: $0.2) }
         let misheardEnds = parsed.filter { !$0.opens && $0.words[0] == "end" }.map {

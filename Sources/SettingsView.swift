@@ -90,7 +90,7 @@ struct GeneralSettingsView: View {
                     Text("A trailing ‘press enter’ is removed from the transcript and presses Return after pasting.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Convert spoken quotes, brackets, code marks, and caps", isOn: $appState.isSpokenDelimitersEnabled)
-                    Text("Say ‘quote … end quote’, ‘paren … close paren’, ‘open bracket/brace … close bracket/brace’, ‘backtick … end backtick’, ‘double asterisk … close double asterisk’, or ‘all caps on … all caps off’ / ‘no caps on … no caps off’. Start with ‘all caps’ or ‘no caps’ to change a whole dictation. Unpaired words stay as spoken.")
+                    Text("Say ‘quote … end quote’, ‘paren … close paren’, ‘open bracket/brace … close bracket/brace’, ‘backtick … end backtick’, ‘double asterisk … close double asterisk’, or ‘all caps on … all caps off’ / ‘all lowercase … end lowercase’. Start with ‘all caps’ or ‘all lowercase’ to change a whole dictation. Unpaired words stay as spoken.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {

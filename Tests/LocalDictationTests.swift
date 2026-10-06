@@ -97,8 +97,8 @@ enum LocalDictationTests {
             ("Add a double asterisk here, end double asterisk.", "Add a double asterisk here, end double asterisk."),
             ("Set the label to all caps on do not merge all caps off.", "Set the label to DO NOT MERGE."),
             ("This is all caps urgent end all caps, please read it.", "This is URGENT, please read it."),
-            ("My handle is no caps on Blue Bird no caps off.", "My handle is blue bird."),
-            ("Run backtick no caps on Make Check no caps off end backtick.", "Run `make check`."),
+            ("My handle is all lowercase Blue Bird end lowercase.", "My handle is blue bird."),
+            ("Run backtick all lowercase Make Check end lowercase end backtick.", "Run `make check`."),
             ("He said, all caps on quote stop end quote all caps off.", "He said, \"STOP\"."),
             ("Call it all lowercase Big Red Box end lower case today", "Call it big red box today"),
             ("Say all caps on hi and all caps", "Say HI"),
@@ -106,15 +106,17 @@ enum LocalDictationTests {
             ("Turn all caps off now", "Turn all caps off now"),
             ("All caps, do not merge.", "DO NOT MERGE."),
             ("All caps urgent", "URGENT"),
-            ("No caps, Blue Bird", "blue bird"),
+            ("All lowercase, Blue Bird", "blue bird"),
+            ("No caps, Blue Bird", "No caps, Blue Bird"),
+            ("My handle is no caps on Blue Bird no caps off.", "My handle is no caps on Blue Bird no caps off."),
             ("All lowercase Hello World.", "hello world."),
             ("All caps quote stop end quote", "\"STOP\""),
             ("All caps text is hard to read.", "TEXT IS HARD TO READ."),
-            ("No caps on Hello no caps off World", "hello World"),
+            ("All lowercase Hello end lowercase World", "hello World"),
             ("All caps.", "All caps."),
             ("Make this all caps on urgent all caps off.", "Make this URGENT."),
             ("All caps on all caps off.", "All caps on all caps off."),
-            ("No caps on no caps off.", "No caps on no caps off."),
+            ("All lowercase end lowercase.", "All lowercase end lowercase."),
             ("Quote I need a price quote end quote and quote send it tomorrow end quote",
              "\"I need a price quote\" and \"send it tomorrow\""),
             ("", ""),
@@ -127,7 +129,7 @@ enum LocalDictationTests {
         let submitted = process("quote ship it end quote press enter")
         TestSupport.expectEqual(submitted.output, "\"ship it\"")
         TestSupport.expect(submitted.shouldPressEnter, "Spoken delimiters must compose with press enter")
-        let lowercaseSubmitted = process("No caps Make Check, press enter.")
+        let lowercaseSubmitted = process("All lowercase Make Check, press enter.")
         TestSupport.expectEqual(lowercaseSubmitted.output, "make check")
         TestSupport.expect(lowercaseSubmitted.shouldPressEnter, "A leading case command must compose with press enter")
         TestSupport.expectEqual(submitted.rawTranscript, "quote ship it end quote")
