@@ -116,7 +116,7 @@ ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@if [ -f "$(RESOURCES)/Parakeet/bundle.json" ] && cmp -s "$(PARAKEET_INSTALL_KEY).tmp" "$(PARAKEET_INSTALL_KEY)"; then \
 		echo "Reusing installed model files"; \
 	else \
-		rm -rf "$(RESOURCES)/Parakeet" && mkdir -p "$(RESOURCES)/Parakeet" && \
+		rm -f "$(PARAKEET_INSTALL_KEY)" && rm -rf "$(RESOURCES)/Parakeet" && mkdir -p "$(RESOURCES)/Parakeet" && \
 		cp -R "$(PARAKEET_BUNDLE_DIR)/Encoder.mlmodelc" "$(RESOURCES)/Parakeet/" && \
 		cp "$(PARAKEET_BUNDLE_DIR)/bundle.json" "$(PARAKEET_BUNDLE_DIR)/frontend.json" "$(PARAKEET_BUNDLE_DIR)/frontend.f32bin" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.json" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.f32bin" "$(PARAKEET_BUNDLE_DIR)/vocabulary.json" "$(RESOURCES)/Parakeet/" && \
 		cp Resources/Parakeet/* "$(RESOURCES)/Parakeet/" && \
