@@ -38,6 +38,7 @@ ARCH ?= $(shell uname -m)
 PARAKEET_BUNDLE_DIR ?=
 SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
 PARAKEET_BUNDLE_STAMP = $(BUILD_DIR)/parakeet-bundle-selection
+PARAKEET_INSTALL_KEY = $(BUILD_DIR)/$(APP_NAME).parakeet-installed
 
 # Rebuild when switching between model bundles (including back to no bundle).
 # Weights remain outside Git and are copied only into the local app bundle.
@@ -107,14 +108,24 @@ endif
 	@cp $(ICON_ICNS) "$(RESOURCES)/AppIcon.icns"
 	@cp Resources/Attribution.txt "$(RESOURCES)/Attribution.txt"
 	@cp LICENSE "$(RESOURCES)/FreeFlow-LICENSE"
-	@rm -rf "$(RESOURCES)/Parakeet"
 ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@test -f "$(PARAKEET_BUNDLE_DIR)/bundle.json" || { echo "Missing Parakeet bundle.json"; exit 1; }
-	@mkdir -p "$(RESOURCES)/Parakeet"
-	@cp -R "$(PARAKEET_BUNDLE_DIR)/Encoder.mlmodelc" "$(RESOURCES)/Parakeet/"
-	@cp "$(PARAKEET_BUNDLE_DIR)/bundle.json" "$(PARAKEET_BUNDLE_DIR)/frontend.json" "$(PARAKEET_BUNDLE_DIR)/frontend.f32bin" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.json" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.f32bin" "$(PARAKEET_BUNDLE_DIR)/vocabulary.json" "$(RESOURCES)/Parakeet/"
-	@cp Resources/Parakeet/* "$(RESOURCES)/Parakeet/"
-	@python3 scripts/label-localflow-model.py "$(RESOURCES)/Parakeet"
+	@{ cat "$(PARAKEET_BUNDLE_STAMP)"; shasum -a 256 Resources/Parakeet/* scripts/label-localflow-model.py; } > "$(PARAKEET_INSTALL_KEY).tmp"
+	@# Re-copying gives the model new files, which forces a full Neural Engine
+	@# specialization on next launch. Keep the installed copy while it is unchanged.
+	@if [ -f "$(RESOURCES)/Parakeet/bundle.json" ] && cmp -s "$(PARAKEET_INSTALL_KEY).tmp" "$(PARAKEET_INSTALL_KEY)"; then \
+		echo "Reusing installed model files"; \
+	else \
+		rm -rf "$(RESOURCES)/Parakeet" && mkdir -p "$(RESOURCES)/Parakeet" && \
+		cp -R "$(PARAKEET_BUNDLE_DIR)/Encoder.mlmodelc" "$(RESOURCES)/Parakeet/" && \
+		cp "$(PARAKEET_BUNDLE_DIR)/bundle.json" "$(PARAKEET_BUNDLE_DIR)/frontend.json" "$(PARAKEET_BUNDLE_DIR)/frontend.f32bin" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.json" "$(PARAKEET_BUNDLE_DIR)/decoder_joint.f32bin" "$(PARAKEET_BUNDLE_DIR)/vocabulary.json" "$(RESOURCES)/Parakeet/" && \
+		cp Resources/Parakeet/* "$(RESOURCES)/Parakeet/" && \
+		python3 scripts/label-localflow-model.py "$(RESOURCES)/Parakeet" && \
+		cp "$(PARAKEET_INSTALL_KEY).tmp" "$(PARAKEET_INSTALL_KEY)"; \
+	fi
+	@rm -f "$(PARAKEET_INSTALL_KEY).tmp"
+else
+	@rm -rf "$(RESOURCES)/Parakeet" "$(PARAKEET_INSTALL_KEY)"
 endif
 	@plutil -replace NSMicrophoneUsageDescription -string "$(APP_NAME) needs microphone access to transcribe your speech." "$(CONTENTS)/Info.plist"
 	@plutil -replace NSSpeechRecognitionUsageDescription -string "$(APP_NAME) needs speech recognition to convert your voice to text." "$(CONTENTS)/Info.plist"
