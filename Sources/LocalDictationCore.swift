@@ -89,7 +89,8 @@ enum SpokenDelimiterFormatter {
         var needsOpener = false
 
         /// Openers without an "open"/"begin"/"left" prefix can also be ordinary nouns ("the quote").
-        var isBare: Bool { opens && !["open", "begin", "left"].contains(words[0]) }
+        /// Case commands are never nouns ("make this all caps on …").
+        var isBare: Bool { opens && !kind.changesCase && !["open", "begin", "left"].contains(words[0]) }
     }
 
     private struct Word {
@@ -161,25 +162,21 @@ enum SpokenDelimiterFormatter {
     static func format(_ text: String) -> String {
         let words = Self.words(in: text)
         var items: [Item] = []
-        var unclosed: [Kind: Int] = [:]
+        var paired = Set<Int>()
+        // Pairing happens during the scan so "and …" closers see exactly which openers are still open.
+        var openers: [(item: Int, kind: Kind)] = []
         var index = 0
         while index < words.count {
-            if let phrase = phrasesByFirstWord[words[index].core]?.first(where: {
-                (!$0.needsOpener || unclosed[$0.kind, default: 0] > 0) && matches($0, at: index, in: words)
-            }) {
-                unclosed[phrase.kind] = max(0, unclosed[phrase.kind, default: 0] + (phrase.opens ? 1 : -1))
-                items.append(.marker(phrase, index..<index + phrase.words.count))
-                index += phrase.words.count
-            } else {
+            guard let phrase = phrasesByFirstWord[words[index].core]?.first(where: { phrase in
+                (!phrase.needsOpener || openers.contains { $0.kind == phrase.kind }) && matches(phrase, at: index, in: words)
+            }) else {
                 items.append(.word(index))
                 index += 1
+                continue
             }
-        }
-
-        var paired = Set<Int>()
-        var openers: [(item: Int, kind: Kind)] = []
-        for (itemIndex, item) in items.enumerated() {
-            guard case .marker(let phrase, _) = item else { continue }
+            let itemIndex = items.count
+            items.append(.marker(phrase, index..<index + phrase.words.count))
+            index += phrase.words.count
             if phrase.opens {
                 openers.append((itemIndex, phrase.kind))
                 continue
@@ -199,9 +196,10 @@ enum SpokenDelimiterFormatter {
                 break
             }
         }
-        // An unpaired case command that opens the dictation applies to all of it.
+        // A case command that opens the dictation and is still unclosed (not paired, not part
+        // of a rejected empty pair) applies to all of it.
         var casePrefix: Kind?
-        if items.count > 1, !paired.contains(0), case .marker(let phrase, _) = items[0],
+        if items.count > 1, openers.first?.item == 0, case .marker(let phrase, _) = items[0],
            phrase.opens, phrase.kind.changesCase {
             casePrefix = phrase.kind
         }

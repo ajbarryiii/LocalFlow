@@ -112,6 +112,11 @@ enum LocalDictationTests {
             ("All caps text is hard to read.", "TEXT IS HARD TO READ."),
             ("No caps on Hello no caps off World", "hello World"),
             ("All caps.", "All caps."),
+            ("Make this all caps on urgent all caps off.", "Make this URGENT."),
+            ("All caps on all caps off.", "All caps on all caps off."),
+            ("No caps on no caps off.", "No caps on no caps off."),
+            ("Quote I need a price quote end quote and quote send it tomorrow end quote",
+             "\"I need a price quote\" and \"send it tomorrow\""),
             ("", ""),
         ]
         for (input, expected) in cases {
