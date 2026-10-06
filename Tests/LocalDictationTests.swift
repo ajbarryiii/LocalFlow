@@ -61,6 +61,17 @@ enum LocalDictationTests {
             ("open paren something end quote", "open paren something end quote"),
             ("open paren close paren", "open paren close paren"),
             ("Open, quote, a close quote", "Open, \"a\""),
+            ("See open bracket one close bracket, and open square bracket two close square bracket.",
+             "See [one], and [two]."),
+            ("My tax bracket went up, close bracket.", "My tax bracket went up, close bracket."),
+            ("open bracket open paren x close paren close bracket", "[(x)]"),
+            ("Use open curly brace name close curly brace here", "Use {name} here"),
+            ("open curly a close curly and left brace b right brace", "{a} and {b}"),
+            ("Run, backtick, make check, end backtick, before pushing.", "Run `make check`, before pushing."),
+            ("Type back tick ls end back tick", "Type `ls`"),
+            ("Press the backtick key, then backtick git status end backtick.", "Press the backtick key, then `git status`."),
+            ("This is, double asterisk, really important, close double asterisk.", "This is **really important**."),
+            ("Add a double asterisk here, end double asterisk.", "Add a double asterisk here, end double asterisk."),
             ("", ""),
         ]
         for (input, expected) in cases {

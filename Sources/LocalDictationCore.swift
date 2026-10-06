@@ -55,16 +55,27 @@ enum LocalDictationCore {
 /// its kind; unmatched or empty pairs stay literal text.
 enum SpokenDelimiterFormatter {
     private enum Kind {
-        case quote, paren
+        case quote, paren, bracket, brace, backtick, bold
 
-        var opening: String { self == .quote ? "\"" : "(" }
-        var closing: String { self == .quote ? "\"" : ")" }
+        var delimiters: (opening: String, closing: String) {
+            switch self {
+            case .quote: return ("\"", "\"")
+            case .paren: return ("(", ")")
+            case .bracket: return ("[", "]")
+            case .brace: return ("{", "}")
+            case .backtick: return ("`", "`")
+            case .bold: return ("**", "**")
+            }
+        }
     }
 
     private struct Phrase {
         let words: [String]
         let kind: Kind
         let opens: Bool
+
+        /// Openers without an "open"/"begin"/"left" prefix can also be ordinary nouns ("the quote").
+        var isBare: Bool { opens && !["open", "begin", "left"].contains(words[0]) }
     }
 
     private struct Word {
@@ -89,6 +100,19 @@ enum SpokenDelimiterFormatter {
             ("left paren", .paren, true),
             ("close paren", .paren, false), ("close parenthesis", .paren, false), ("close parentheses", .paren, false),
             ("end paren", .paren, false), ("right paren", .paren, false),
+            ("open bracket", .bracket, true), ("open square bracket", .bracket, true), ("left bracket", .bracket, true),
+            ("close bracket", .bracket, false), ("close square bracket", .bracket, false),
+            ("end bracket", .bracket, false), ("right bracket", .bracket, false),
+            ("open brace", .brace, true), ("open curly brace", .brace, true), ("open curly", .brace, true),
+            ("left brace", .brace, true),
+            ("close brace", .brace, false), ("close curly brace", .brace, false), ("close curly", .brace, false),
+            ("end brace", .brace, false), ("right brace", .brace, false),
+            ("backtick", .backtick, true), ("back tick", .backtick, true), ("open backtick", .backtick, true),
+            ("open back tick", .backtick, true),
+            ("end backtick", .backtick, false), ("end back tick", .backtick, false),
+            ("close backtick", .backtick, false), ("close back tick", .backtick, false),
+            ("double asterisk", .bold, true), ("open double asterisk", .bold, true),
+            ("close double asterisk", .bold, false), ("end double asterisk", .bold, false),
         ]
         // Longest phrases first so "end quote" is never read as "end" plus an opening "quote".
         return entries.map { Phrase(words: $0.0.split(separator: " ").map(String.init), kind: $0.1, opens: $0.2) }
@@ -98,7 +122,7 @@ enum SpokenDelimiterFormatter {
     /// Recognizer punctuation dropped just inside a closing delimiter; "?" and "!" are kept.
     private static let strippedBeforeClosing: Set<Character> = [",", ";", ":", "."]
 
-    /// A bare "quote" directly after one of these is the noun ("the quote"), never an opener.
+    /// A bare opener directly after one of these is a noun ("the quote"), never an opener.
     private static let determiners: Set<String> = [
         "a", "an", "the", "this", "that", "my", "your", "his", "her", "our", "their", "its",
     ]
@@ -128,10 +152,10 @@ enum SpokenDelimiterFormatter {
             while let position = openers.lastIndex(where: { $0.kind == phrase.kind }) {
                 let opener = openers[position].item
                 if opener == itemIndex - 1 {
-                    // Empty pairs stay literal. A bare "quote" may be the noun ("a price quote,
+                    // Empty pairs stay literal. A bare opener may be a noun ("a price quote,
                     // end quote"), so keep looking for an earlier opener; otherwise the closer is spent.
                     openers.remove(at: position)
-                    if case .marker(let openerPhrase, _) = items[opener], openerPhrase.words == ["quote"] { continue }
+                    if case .marker(let openerPhrase, _) = items[opener], openerPhrase.isBare { continue }
                     break
                 }
                 paired.formUnion([opener, itemIndex])
@@ -159,8 +183,9 @@ enum SpokenDelimiterFormatter {
                     continue
                 }
                 if phrase.opens {
-                    if phrase.kind == .paren, output.last == "," { output.removeLast() }
-                    output += (afterOpening ? "" : words[range.lowerBound].separator) + phrase.kind.opening
+                    // Only a quotation reads naturally after a comma ("He said, "…"").
+                    if phrase.kind != .quote, output.last == "," { output.removeLast() }
+                    output += (afterOpening ? "" : words[range.lowerBound].separator) + phrase.kind.delimiters.opening
                     contentStarts.append(output.utf8.count)
                     afterOpening = true
                 } else {
@@ -168,7 +193,7 @@ enum SpokenDelimiterFormatter {
                     while output.utf8.count > contentStart, let last = output.last, strippedBeforeClosing.contains(last) {
                         output.removeLast()
                     }
-                    output += phrase.kind.closing + words[range.upperBound - 1].trailing
+                    output += phrase.kind.delimiters.closing + words[range.upperBound - 1].trailing
                 }
             }
         }
@@ -177,7 +202,7 @@ enum SpokenDelimiterFormatter {
 
     private static func matches(_ phrase: Phrase, at index: Int, in words: [Word]) -> Bool {
         guard index + phrase.words.count <= words.count else { return false }
-        if phrase.words == ["quote"], index > 0, words[index - 1].trailing.isEmpty,
+        if phrase.isBare, index > 0, words[index - 1].trailing.isEmpty,
            determiners.contains(words[index - 1].core) {
             return false
         }
