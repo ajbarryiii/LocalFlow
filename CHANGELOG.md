@@ -13,11 +13,13 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 
 Second LocalFlow beta. Requires an Apple Silicon Mac running macOS 26 or later.
 
-**Upgrading from 2.0.0:** LocalFlow now uses its own app identifier, so macOS
-treats this version as a new app. Grant Microphone and Accessibility again,
-re-enable Launch at Login if you use it, and re-create any voice macros.
-Preferences and history from 2.0.0 are left untouched in the old FreeFlow
-location; they are not shared with or deleted by this version.
+**Upgrading from 2.0.0:** the 2.0.0 beta still used FreeFlow's development
+identifier (`com.zachlatta.freeflow.dev`). This beta uses LocalFlow's own
+(`com.ajbarryiii.localflow.dev`), so macOS treats it as a new app. Grant
+Microphone and Accessibility again, re-enable Launch at Login if you use it,
+and re-create any voice macros. Preferences and history from 2.0.0 are left
+untouched in the old FreeFlow Dev location; they are not shared with or
+deleted by this version.
 
 ### Added
 
@@ -28,15 +30,17 @@ location; they are not shared with or deleted by this version.
   matched pairs convert; a lone "quote" or "the paren" stays as spoken.
 - Spoken capitalization. "all caps on … all caps off" uppercases the words in
   between and "all lowercase … end lowercase" lowercases them. Starting a
-  dictation with "all caps" or "all lowercase" changes the whole dictation.
+  dictation with "all caps" or "all lowercase", without a closing command,
+  changes the whole dictation.
 - A setting to turn these spoken commands off, under Settings → Clipboard. It
   is on by default.
 
 ### Changed
 
 - LocalFlow uses its own bundle identifiers and stores its data under
-  Application Support/LocalFlow, so it never shares preferences, permissions,
-  or history with an installed copy of FreeFlow.
+  Application Support/LocalFlow (Application Support/LocalFlow Dev for this
+  beta), so it never shares preferences, permissions, or history with an
+  installed copy of FreeFlow.
 - Rebuilding the app no longer forces the several-minute model preparation
   when the model itself has not changed.
 
