@@ -15,6 +15,8 @@ enum ShortcutCoreTests {
         testHoldSessionControllerLifecycle()
         testToggleSessionControllerLifecycle()
         testHoldToToggleSessionControllerLifecycle()
+        testPromptChordEmitsPromptEvents()
+        testPromptSessionControllerLifecycle()
     }
 
     private static func testBareFnHoldLifecycle() {
@@ -343,5 +345,70 @@ enum ShortcutCoreTests {
         controller.reset()
         TestSupport.expectEqual(controller.activeMode, nil)
         TestSupport.expectEqual(controller.toggleStopArmed, false)
+    }
+
+    private static func testPromptChordEmitsPromptEvents() {
+        let prompt = ShortcutBinding.defaultHold.withAddedModifiers(.shift)
+        let configuration = ShortcutConfiguration(hold: .defaultHold, toggle: .disabled, prompt: prompt)
+        func press(_ events: [ShortcutInputEvent]) -> [ShortcutMatchResult] {
+            var state = ShortcutInputState()
+            return events.map { event in
+                let result = ShortcutMatcher.reduce(state: state, event: event, configuration: configuration)
+                state = result.state
+                return result
+            }
+        }
+
+        // Fn first, then Shift: a hold recording is upgraded to a prompt.
+        let fnFirst = press([.modifierChanged(keyCode: 63, isDown: true), .modifierChanged(keyCode: 56, isDown: true),
+                             .modifierChanged(keyCode: 63, isDown: false)])
+        TestSupport.expectEqual(fnFirst.map(\.emittedEvents), [[.holdActivated], [.promptActivated],
+                                                               [.holdDeactivated, .promptDeactivated]])
+        TestSupport.expect(fnFirst[1].state.hasPressedShortcutInputs(configuration: configuration),
+                           "Paste must wait for the prompt chord to be released")
+
+        // Shift first, then Fn: the more specific prompt chord starts the session.
+        let shiftFirst = press([.modifierChanged(keyCode: 56, isDown: true), .modifierChanged(keyCode: 63, isDown: true)])
+        TestSupport.expectEqual(shiftFirst.map(\.emittedEvents), [[], [.promptActivated, .holdActivated]])
+
+        let keyPrompt = ShortcutBinding(keyCode: 97, keyDisplay: "F6", modifiers: [], kind: .key, preset: nil)
+        let keyConfiguration = ShortcutConfiguration(hold: .disabled, toggle: .disabled, prompt: keyPrompt)
+        let keyDown = ShortcutMatcher.reduce(state: ShortcutInputState(),
+                                             event: .keyChanged(keyCode: 97, isDown: true, isRepeat: false),
+                                             configuration: keyConfiguration)
+        TestSupport.expectEqual(keyDown.emittedEvents, [.promptActivated])
+        TestSupport.expectEqual(keyDown.consumeDecision, .consume)
+        TestSupport.expect(keyDown.state.hasPressedShortcutInputs(configuration: keyConfiguration),
+                           "Paste must wait for a held prompt key")
+    }
+
+    private static func testPromptSessionControllerLifecycle() {
+        let controller = DictationShortcutSessionController()
+        TestSupport.expectEqual(controller.handle(event: .promptActivated, isTranscribing: true), nil)
+        TestSupport.expectEqual(controller.handle(event: .promptActivated, isTranscribing: false), .start(.hold))
+        TestSupport.expect(controller.isPromptSession, "The prompt shortcut must start a prompt session")
+        TestSupport.expectEqual(controller.handle(event: .holdActivated, isTranscribing: false), nil)
+        TestSupport.expectEqual(controller.handle(event: .holdDeactivated, isTranscribing: false), nil)
+        TestSupport.expectEqual(controller.handle(event: .promptDeactivated, isTranscribing: false), .stop)
+        TestSupport.expectEqual(controller.activeMode, nil)
+        TestSupport.expect(controller.isPromptSession, "The tag must survive the stop so transcription can read it")
+
+        TestSupport.expectEqual(controller.handle(event: .holdActivated, isTranscribing: false), .start(.hold))
+        TestSupport.expect(!controller.isPromptSession, "A plain hold session must not inherit the last tag")
+        TestSupport.expectEqual(controller.handle(event: .promptActivated, isTranscribing: false), nil)
+        TestSupport.expect(controller.isPromptSession, "Pressing the prompt shortcut mid-recording must tag it")
+        TestSupport.expectEqual(controller.handle(event: .promptDeactivated, isTranscribing: false), nil)
+        TestSupport.expectEqual(controller.handle(event: .holdDeactivated, isTranscribing: false), .stop)
+
+        TestSupport.expectEqual(controller.handle(event: .promptActivated, isTranscribing: false), .start(.hold))
+        TestSupport.expectEqual(controller.handle(event: .toggleActivated, isTranscribing: false), .switchedToToggle)
+        TestSupport.expectEqual(controller.handle(event: .promptDeactivated, isTranscribing: false), nil)
+        TestSupport.expectEqual(controller.activeMode, .toggle)
+        TestSupport.expectEqual(controller.handle(event: .toggleDeactivated, isTranscribing: false), nil)
+        TestSupport.expectEqual(controller.handle(event: .toggleActivated, isTranscribing: false), .stop)
+        TestSupport.expect(controller.isPromptSession, "A prompt latched into tap mode must keep its tag")
+
+        controller.beginManual(mode: .toggle)
+        TestSupport.expect(!controller.isPromptSession, "Manual recordings are never prompts")
     }
 }

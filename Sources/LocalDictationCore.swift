@@ -11,10 +11,12 @@ struct LocalDictationResult: Equatable {
     let output: String
     let shouldPressEnter: Bool
     let usedMacro: Bool
+    var addedPromptTag = false
 
     var status: String {
-        let base = usedMacro ? "Local voice macro" : "Local transcription"
-        return shouldPressEnter ? "\(base); detected press enter command" : base
+        var status = usedMacro ? "Local voice macro" : "Local transcription"
+        if addedPromptTag { status += "; added prompt tag" }
+        return shouldPressEnter ? "\(status); detected press enter command" : status
     }
 }
 
@@ -25,8 +27,10 @@ enum LocalDictationCore {
         pattern: #"(?i)(?:^|[ \t\r\n,;:\-]+)press[ \t\r\n]+enter[\s\p{P}]*$"#
     )
 
+    /// `promptTag` is placed before dictated output so an AI agent receiving it knows it came from
+    /// speech-to-text. Macro payloads are the user's own saved text, so they are never tagged.
     static func process(_ transcript: String, macros: [VoiceMacro], pressEnterEnabled: Bool,
-                        spokenDelimitersEnabled: Bool) -> LocalDictationResult {
+                        spokenDelimitersEnabled: Bool, promptTag: String? = nil) -> LocalDictationResult {
         var raw = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var shouldPressEnter = false
         if pressEnterEnabled,
@@ -39,9 +43,12 @@ enum LocalDictationCore {
         let normalized = normalize(raw)
         let macro = normalized.isEmpty ? nil : macros.first { normalize($0.command) == normalized }
         let dictated = spokenDelimitersEnabled ? SpokenDelimiterFormatter.format(raw) : raw
-        return LocalDictationResult(rawTranscript: raw,
-                                    output: (macro?.payload ?? dictated).trimmingCharacters(in: .whitespacesAndNewlines),
-                                    shouldPressEnter: shouldPressEnter, usedMacro: macro != nil)
+        let output = (macro?.payload ?? dictated).trimmingCharacters(in: .whitespacesAndNewlines)
+        let tag = macro == nil && !output.isEmpty
+            ? (promptTag ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        return LocalDictationResult(rawTranscript: raw, output: tag.isEmpty ? output : "\(tag) \(output)",
+                                    shouldPressEnter: shouldPressEnter, usedMacro: macro != nil,
+                                    addedPromptTag: !tag.isEmpty)
     }
 
     private static func normalize(_ text: String) -> String {
