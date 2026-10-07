@@ -1462,14 +1462,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let savedAudio = Self.saveAudioFile(from: fileURL)
             let input = savedAudio?.fileURL ?? fileURL
             self.transcribingAudioFileName = savedAudio?.fileName
-            let audioSeconds = Self.audioDuration(of: input)
             self.statusText = "Transcribing locally..."
             self.debugStatusMessage = "Transcribing audio"
             self.transcriptionTask?.cancel()
             self.transcriptionTask = Task {
                 do {
+                    // Read off the main thread, alongside transcription, so it never delays it.
+                    async let audioSeconds = Self.audioDuration(of: input)
                     let raw = try await LocalParakeetService.shared.transcribe(fileURL: input)
                     try Task.checkCancellation()
+                    let seconds = await audioSeconds
                     await MainActor.run {
                         guard self.isTranscribing else { return }
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
@@ -1480,11 +1482,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.lastTranscriptionStatus = result.status
                         self.recordPipelineHistoryEntry(rawTranscript: result.rawTranscript, transcript: result.output,
                                                         status: result.status, audioFileName: savedAudio?.fileName)
-                        // Count spoken words: macros can expand the output and commands remove words.
-                        if let audioSeconds {
-                            self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
-                                                       seconds: audioSeconds)
-                        }
                         self.transcriptionTask = nil
                         self.transcribingAudioFileName = nil
                         self.lastTranscript = result.output
@@ -1508,6 +1505,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                     self.restoreClipboardIfNeeded(pendingRestore)
                                 }
                             }
+                        }
+                        // After the paste is triggered, so the counter never delays it. Count spoken
+                        // words: macros can expand the output and commands remove words.
+                        if let seconds {
+                            self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
+                                                       seconds: seconds)
                         }
                         self.audioRecorder.cleanup()
                         self.refreshAvailableMicrophonesIfNeeded()
@@ -1552,7 +1555,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return stats
     }
 
-    /// Reads only the file header, so this is cheap enough for the main thread.
+    /// Reads only the file header. Called off the main thread during transcription.
     private static func audioDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
         return Double(file.length) / file.fileFormat.sampleRate
