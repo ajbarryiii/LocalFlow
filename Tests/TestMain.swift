@@ -10,6 +10,8 @@ struct LocalFlowTests {
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
         SemanticVersionTests.run()
+        UpdateSignatureVerifierTests.run()
+        UpdateManagerTests.run()
         print("LocalFlowTests passed")
     }
 }

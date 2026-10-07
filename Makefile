@@ -27,6 +27,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Parakeet/ParakeetFrames.swift \
 	Sources/Parakeet/ParakeetFrontEnd.swift \
 	Sources/UpdateManager.swift \
+	Sources/UpdateSignatureVerifier.swift \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
 	Sources/ShortcutCore/ShortcutModels.swift

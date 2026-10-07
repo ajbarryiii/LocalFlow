@@ -173,6 +173,11 @@ final class UpdateManager: ObservableObject {
     private let postTranscriptionReminderInterval: TimeInterval = 24 * 60 * 60 // 1 day
     private var periodicTimer: Timer?
     private var activeDownloadTask: Task<Void, Never>?
+    /// Shows a failed download or install. The update runs after the menu
+    /// closes, so the status alone is never seen. Replaceable for tests.
+    var presentUpdateFailure: (String) -> Void = { message in
+        UpdateManager.showAlert(title: "Update Failed", message: message)
+    }
 
     private init() {
         lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
@@ -681,8 +686,12 @@ final class UpdateManager: ObservableObject {
     }
 
     private func showErrorAlert(_ message: String) {
+        Self.showAlert(title: "Update Check Failed", message: message)
+    }
+
+    private static func showAlert(title: String, message: String) {
         let alert = NSAlert()
-        alert.messageText = "Update Check Failed"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.icon = NSApp.applicationIconImage
@@ -697,6 +706,11 @@ final class UpdateManager: ObservableObject {
         activeDownloadTask = nil
         downloadProgress = nil
         updateStatus = .idle
+    }
+
+    private func failUpdate(_ message: String) {
+        updateStatus = .error(message)
+        presentUpdateFailure(message)
     }
 
     func downloadAndInstall(release: GitHubRelease) {
@@ -722,7 +736,7 @@ final class UpdateManager: ObservableObject {
         do {
             try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
         } catch {
-            updateStatus = .error("Failed to create temp directory: \(error.localizedDescription)")
+            failUpdate("Failed to create temp directory: \(error.localizedDescription)")
             return
         }
 
@@ -794,9 +808,9 @@ final class UpdateManager: ObservableObject {
             try? fm.removeItem(at: tempDir)
             return
         } catch {
-            updateStatus = .error("Download failed: \(error.localizedDescription)")
             downloadProgress = nil
             try? fm.removeItem(at: tempDir)
+            failUpdate("Download failed: \(error.localizedDescription)")
             return
         }
 
@@ -822,9 +836,10 @@ final class UpdateManager: ObservableObject {
             let volumeURL = URL(fileURLWithPath: mountPoint)
             let contents = try fm.contentsOfDirectory(at: volumeURL, includingPropertiesForKeys: nil)
             guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
-                updateStatus = .error("No .app found in DMG.")
-                try? fm.removeItem(at: tempDir)
-                return
+                // Throw so the alert appears after the DMG is detached.
+                throw NSError(domain: "UpdateManager", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "No .app found in DMG."
+                ])
             }
 
             // Copy app to staging directory
@@ -832,6 +847,16 @@ final class UpdateManager: ObservableObject {
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
             let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             try fm.copyItem(at: appBundle, to: stagedApp)
+
+            // Verify the staged copy, since that is what gets installed.
+            do {
+                try await Task.detached {
+                    try UpdateSignatureVerifier.verifyMatchesRunningApp(stagedApp)
+                }.value
+            } catch {
+                try? fm.removeItem(at: stagingDir)
+                throw error
+            }
 
             // Clean up DMG (detach happens in defer above, delete temp dir)
             try? fm.removeItem(at: tempDir)
@@ -841,8 +866,8 @@ final class UpdateManager: ObservableObject {
             replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
 
         } catch {
-            updateStatus = .error("Install failed: \(error.localizedDescription)")
             try? fm.removeItem(at: tempDir)
+            failUpdate("Install failed: \(error.localizedDescription)")
         }
     }
 
