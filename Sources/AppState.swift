@@ -242,6 +242,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private static let dictationStatsStorageKey = "dictation_stats"
+    @Published private(set) var dictationStats = AppState.loadDictationStats() {
+        didSet {
+            if let data = try? JSONEncoder().encode(dictationStats) {
+                UserDefaults.standard.set(data, forKey: Self.dictationStatsStorageKey)
+            }
+        }
+    }
+
     @Published var isRecording = false {
         didSet {
             guard oldValue != isRecording else { return }
@@ -1453,6 +1462,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let savedAudio = Self.saveAudioFile(from: fileURL)
             let input = savedAudio?.fileURL ?? fileURL
             self.transcribingAudioFileName = savedAudio?.fileName
+            let audioSeconds = Self.audioDuration(of: input)
             self.statusText = "Transcribing locally..."
             self.debugStatusMessage = "Transcribing audio"
             self.transcriptionTask?.cancel()
@@ -1470,6 +1480,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.lastTranscriptionStatus = result.status
                         self.recordPipelineHistoryEntry(rawTranscript: result.rawTranscript, transcript: result.output,
                                                         status: result.status, audioFileName: savedAudio?.fileName)
+                        // Count spoken words: macros can expand the output and commands remove words.
+                        if let audioSeconds {
+                            self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
+                                                       seconds: audioSeconds)
+                        }
                         self.transcriptionTask = nil
                         self.transcribingAudioFileName = nil
                         self.lastTranscript = result.output
@@ -1523,6 +1538,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    func resetDictationStats() {
+        dictationStats = DictationStats()
+    }
+
+    private static func loadDictationStats() -> DictationStats {
+        guard let data = UserDefaults.standard.data(forKey: dictationStatsStorageKey),
+              let stats = try? JSONDecoder().decode(DictationStats.self, from: data) else {
+            return DictationStats()
+        }
+        return stats
+    }
+
+    /// Reads only the file header, so this is cheap enough for the main thread.
+    private static func audioDuration(of url: URL) -> TimeInterval? {
+        guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
+        return Double(file.length) / file.fileFormat.sampleRate
     }
 
     private func recordPipelineHistoryEntry(rawTranscript: String, transcript: String, status: String, audioFileName: String?) {

@@ -12,6 +12,7 @@ struct LocalFlowTests {
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
         UpdateManagerTests.run()
+        DictationStatsTests.run()
         print("LocalFlowTests passed")
     }
 }
