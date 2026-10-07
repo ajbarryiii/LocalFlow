@@ -833,6 +833,16 @@ final class UpdateManager: ObservableObject {
             let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             try fm.copyItem(at: appBundle, to: stagedApp)
 
+            // Verify the staged copy, since that is what gets installed.
+            do {
+                try await Task.detached {
+                    try UpdateSignatureVerifier.verifyMatchesRunningApp(stagedApp)
+                }.value
+            } catch {
+                try? fm.removeItem(at: stagingDir)
+                throw error
+            }
+
             // Clean up DMG (detach happens in defer above, delete temp dir)
             try? fm.removeItem(at: tempDir)
 
