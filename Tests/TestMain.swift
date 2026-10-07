@@ -11,6 +11,7 @@ struct LocalFlowTests {
         ShortcutCoreTests.run()
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
+        UpdateManagerTests.run()
         print("LocalFlowTests passed")
     }
 }
