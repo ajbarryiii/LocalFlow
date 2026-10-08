@@ -1,0 +1,13 @@
+[package]
+name = "lf-asr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-cpu.workspace = true
+lf-model.workspace = true
+serde_json.workspace = true
+# Unicode general categories, to find the punctuation NeMo strips spaces before.
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }

@@ -1,0 +1,36 @@
+# LocalFlow dictation daemon, as a systemd user unit.
+#
+# Not installed automatically. To try it:
+#   cp linux/packaging/localflowd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user start localflowd
+#
+# The daemon needs WAYLAND_DISPLAY in the user manager's environment. The
+# NixOS Hyprland module imports it when the session starts; otherwise run
+#   dbus-update-activation-environment --systemd WAYLAND_DISPLAY
+# from the Hyprland config.
+
+[Unit]
+Description=LocalFlow dictation daemon
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+# Adjust to where localflowd is installed (a Nix package path in Phase 5).
+ExecStart=%h/.local/bin/localflowd
+Restart=on-failure
+RestartSec=2
+
+# The daemon only talks over Unix sockets (its control socket, PipeWire,
+# Wayland) and never opens network connections.
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

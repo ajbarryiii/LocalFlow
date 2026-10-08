@@ -1,0 +1,41 @@
+[package]
+name = "lf-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "localflowd"
+path = "src/bin/localflowd.rs"
+
+[[bin]]
+name = "localflowctl"
+path = "src/bin/localflowctl.rs"
+
+[dependencies]
+lf-asr.workspace = true
+lf-cpu.workspace = true
+lf-dictation = { path = "../lf-dictation" }
+lf-io-api.workspace = true
+lf-media = { path = "../lf-media" }
+lf-pipewire = { path = "../lf-pipewire" }
+lf-wayland = { path = "../lf-wayland" }
+lf-model.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+unicode-segmentation = "1"
+
+[dev-dependencies]
+# FLAC decoding for the ignored real-model test (public LibriSpeech audio).
+claxon = "0.4"
+# Fake MPRIS players on a private bus for the media-pause test.
+zbus = "5"
+
+[[test]]
+name = "private_dbus"
+harness = false
+
+[[test]]
+name = "stalled_stderr"
+harness = false

@@ -1,0 +1,23 @@
+[package]
+name = "lf-pipewire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-io-api.workspace = true
+libc.workspace = true
+pipewire = "0.10"
+
+[dev-dependencies]
+# The test tone needs pw_buffer.requested (PipeWire >= 0.3.49).
+pipewire = { version = "0.10", features = ["v0_3_49"] }
+
+[[bin]]
+name = "lf-mic-smoke"
+path = "src/bin/lf-mic-smoke.rs"
+
+[[test]]
+name = "private_pipewire"
+harness = false

@@ -20,6 +20,23 @@ that architecture unless the user explicitly approves a migration.
 - `.github/workflows/check.yml`: pull-request verification.
 - `.github/workflows/release.yml`: semver-tagged production release.
 - `.github/workflows/dev-release.yml`: signed development release from `main`.
+- `linux/`: Linux (NixOS, Hyprland) implementation in Rust. It is a separate
+  Cargo workspace that shares no build with the macOS app; see
+  `linux/PLAN.md`. The Rust build is approved for `linux/` only. The macOS
+  app stays Swift with `swiftc` and Make.
+
+## Linux verification
+
+From the repository root, on Linux:
+
+```bash
+nix develop ./linux --command cargo fmt --all --manifest-path linux/Cargo.toml --check
+nix develop ./linux --command cargo clippy --release --manifest-path linux/Cargo.toml --all-targets
+nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.toml
+```
+
+Model weights live outside the repository (on a separate data disk on the
+development machine). Tests use synthetic weights and activations only.
 
 ## Working rules
 
