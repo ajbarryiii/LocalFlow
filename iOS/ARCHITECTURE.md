@@ -865,3 +865,19 @@ Self-test with invented synthetic speech (2.42 s):
   Removal uses `deleteBackward()` once per inserted grapheme. The inserted
   text is held in instance memory only during that window, then dropped
   (`KeyboardCore/UndoTracker`; pure, tested).
+- **No compute-policy picker (after the second host review).** The live app
+  always uses the Neural Engine. CPU-only remains measurable through the
+  self-test (`SMOKE_COMPUTE=cpuOnly` / `LOCALFLOW_SELFTEST_COMPUTE`).
+  Removing runtime policy switching removes its races: a preparation deadlock,
+  a revived retired runtime, and CPU inference after backgrounding.
+  Diagnostics shows the compute units in use as read-only information.
+- **Boundaries use capture time.** Each tap buffer carries its `AVAudioTime`
+  host time. Frames captured before a recording's begin boundary, or after
+  its finish boundary, are trimmed before conversion, so idle audio never
+  enters a dictation even with 0.2 s buffers. Converter cleanup at
+  finish/cancel happens immediately, serialized with conversion. It never
+  waits for the next callback.
+- **Media services reset ends the session.** This follows Apple's guidance:
+  audio-session state is invalid, so resuming requires a new foreground
+  start. Background engine restarts remain only for configuration changes
+  within a surviving session.
