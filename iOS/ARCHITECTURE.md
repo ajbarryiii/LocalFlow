@@ -769,3 +769,53 @@ after moving the cursor. Dictation stays primary.
   inserts on touch-up, which keeps typing latency low in the extension. The
   same view runs trackpad mode: touch and hold the space bar, and the letters
   blank out, as on Apple's keyboard.
+
+## Host decisions after the host review (2026-10-09)
+
+- **What counts as foreground.** "Foreground" means the application state is
+  not `.background`, so `.inactive` counts, per UIKit. A URL open is only a
+  hint: it never forces foreground. Admission waits for actual foreground
+  arrival, which re-reads the intent and reconciles; freshness is checked at
+  that moment. A prewarmed launch that has never been in the foreground skips
+  reconciliation until it first arrives there.
+- **Audio boundary.** Each dictation's samples carry a recording token, and
+  appends must match it **under the buffer lock**. The tap does no conversion
+  while idle. The sample-rate converter is reset or replaced at every begin,
+  finish and cancel, so no audio-derived state crosses a dictation boundary.
+- **Capture liveness.** A recording ends with `.audioSessionFailed` after
+  sustained input starvation or repeated conversion failures, or the startup
+  timeout applies if no first buffer ever arrives. The maximum duration is
+  enforced by elapsed time as well as by sample count.
+- **Engine recovery.** While the audio session is still active (not
+  interrupted), an engine configuration change or a stopped engine may be
+  restarted **in the background too**. Background starts of a new session
+  stay forbidden. All failure notifications go through the same 0.5 s grace,
+  and queued engine notifications are fenced by engine generation. The
+  session ends only if the restart fails.
+- **Audio session options.** `.playAndRecord` with
+  `[.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker]`, so other apps'
+  audio never moves to the earpiece.
+- **Compute fallback.** Automatic uses the Neural Engine. A CPU retry happens
+  only when all of these hold:
+  - the OS is iOS 27 or later, where background Neural Engine access needs an
+    entitlement
+  - the app is in the background
+  - the failure is a model or transcription failure
+
+  Before loading the CPU runtime, the primary runtime is quiesced and
+  released, so at most one runtime is alive. On iOS 26 there is no automatic
+  CPU retry. The Diagnostics "Neural Engine only" and "CPU only" policies
+  remain for experiments.
+- **Cancellation.** Waiting for model readiness is cancellation-aware. A
+  cancelled, superseded, locked or expired request releases its samples
+  immediately and never starts fallback work.
+- **Memory warnings.** A warning that arrives during preparation is
+  remembered, and the runtime is released once it becomes idle.
+- **Synthetic input fails closed.** In self-test builds, a requested but
+  unusable synthetic microphone fails the session and never constructs real
+  capture.
+- **Persistence exception.** The app's own UserDefaults stores the last
+  model-preparation duration (content-free), to show an estimate. Nothing
+  else about dictations is persisted by the host.
+- **Keyboard-connected indicator.** It uses presence freshness
+  (`keyboardPresenceTimeout`), not the file's mere existence.
