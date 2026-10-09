@@ -1005,3 +1005,33 @@ The harness lives outside the repository
   is `(1/60 s) / median touch interval`, measured from the extension's own
   touches. Apple's behavior in 120 Hz (ProMotion) host apps is still
   unmeasured; a test variant is ready.
+- **Undo ownership v2 (after the third keyboard review; supersedes v1).**
+  Ownership is proven by anchors, never by timing.
+  - **Anchors:** at insertion, the keyboard records a before-anchor (up to
+    24 characters of `documentContextBeforeInput`) and an after-anchor (up to
+    24 characters of `documentContextAfterInput`).
+  - **When Undo is offered:**
+    - The current after-context must start with the after-anchor, as far as
+      both are visible.
+    - The current before-context must end with before-anchor + insertion. If
+      the context is truncated, its visible part must instead be a suffix of
+      the insertion at least 16 characters long, and deletion then proceeds
+      progressively, re-verifying continuity each step.
+    - Insertions shorter than 16 characters, such as a lone `"\n"`, need the
+      full before-anchor + insertion and the after-anchor to match. With an
+      empty document, they need the exact whole context.
+  - **Callback attribution:** a callback counts as ours only if it matches
+    the expected outcome of a specific pending operation we issued (a
+    consumable expectation). Anything else invalidates Undo permanently.
+    There are no time windows.
+  - **No proof, no Undo.** When ownership cannot be proven, Undo is not
+    offered. A host that edits text without sending callbacks remains a
+    documented residual risk, mitigated by the anchors.
+- **Queued edits are bound to a field.** Each queued edit carries its field
+  identity and edit generation. An aborted trackpad session discards its
+  queue, and only a successful completion flushes it. A nil
+  `documentIdentifier` never matches anything.
+- **Probes only where units can differ.** Moves that cross only
+  single-code-point BMP characters need no unit probe, because UTF-16 and
+  grapheme counts agree there. Probes happen only when crossing clusters, and
+  always finish or roll back to a real cluster boundary.
