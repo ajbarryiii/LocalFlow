@@ -1,28 +1,31 @@
 import Foundation
 
-/// Every held-delete constant, in one place so measured values drop in with a one-line change.
-/// Times are seconds from touch-down, read from touch and timer timestamps.
+/// Every held-delete constant, in one place. Times are seconds.
 ///
-/// Where the defaults come from (researched 2026-10-09; replace with the XCUITest measurements):
-/// - `initialDelay` and `characterInterval`: KeyboardKit, the open-source reimplementation of
-///   Apple's keyboard, uses `repeatDelay = 0.5` and a 0.1 s repeat timer; iOS's hardware-key
-///   repeat is reported at 0.4 s, then 0.1 s. The tap itself deletes at once, on touch-down.
-/// - `wordModeAfter`: Apple's keyboard switches from characters to whole words while delete is
-///   held. KeyboardKit switches 3 s into repeating (3.5 s after touch-down); a developer report
-///   puts Apple's switch at about 4 s. 3.5 s sits between them.
-/// - `wordInterval`: no published value. Words go slower than characters, so the eye can follow.
+/// Measured on Apple's keyboard (ARCHITECTURE.md, "Measured Apple keyboard behavior", and the
+/// calibration report; iOS 26.4 simulator, XCUITest): the first deletion 0.087 s after touch-down, or
+/// at lift if the key is released sooner; the first repeat 0.50 s after that, then a character every
+/// 0.10 s; after 21 single characters (about 2.52 s after the first deletion) word mode, 2 words every
+/// 0.354 s, each word with the space before it.
 struct DeleteRepeatParameters: Equatable, Sendable {
-    var initialDelay: TimeInterval = 0.5
-    var characterInterval: TimeInterval = 0.1
-    var wordModeAfter: TimeInterval = 3.5
-    var wordInterval: TimeInterval = 0.2
+    var firstDeletionDelay: TimeInterval = 0.087
+    var initialDelay: TimeInterval = 0.50
+    var characterInterval: TimeInterval = 0.10
+    /// Character deletions, the first one included, before word mode.
+    var charactersBeforeWords = 21
+    var wordInterval: TimeInterval = 0.354
+    var wordsPerTick = 2
 
     static let standard = DeleteRepeatParameters()
 }
 
-/// The held delete key's schedule. Pure: the keyboard asks what to delete at each fire time.
+/// The held delete key's schedule. Pure: the keyboard asks when each deletion happens and what it
+/// deletes.
 struct DeleteRepeat: Equatable, Sendable {
-    enum Unit: Equatable, Sendable { case character, word }
+    enum Unit: Equatable, Sendable {
+        case character
+        case words(Int)
+    }
 
     let parameters: DeleteRepeatParameters
 
@@ -30,18 +33,21 @@ struct DeleteRepeat: Equatable, Sendable {
         self.parameters = parameters
     }
 
-    /// What a repeat deletes when it fires `elapsed` seconds after touch-down.
-    func unit(atElapsed elapsed: TimeInterval) -> Unit {
-        elapsed >= parameters.wordModeAfter ? .word : .character
-    }
+    /// When the first deletion happens, in seconds after touch-down (or at lift, if sooner).
+    var firstDeletion: TimeInterval { parameters.firstDeletionDelay }
 
-    /// When the next repeat fires, in seconds after touch-down. Pass nil before the first repeat.
-    func nextFire(afterRepeatAt elapsed: TimeInterval?) -> TimeInterval {
-        guard let elapsed else { return parameters.initialDelay }
-        let interval = unit(atElapsed: elapsed) == .word ? parameters.wordInterval : parameters.characterInterval
-        let next = elapsed + interval
-        // The first word step comes exactly at the switch, not an interval later.
-        if elapsed < parameters.wordModeAfter, next > parameters.wordModeAfter { return parameters.wordModeAfter }
-        return next
+    /// Repeat `index` (1 is the first repeat after the first deletion): when it fires, in seconds after
+    /// touch-down, and what it deletes.
+    func repeatAt(_ index: Int) -> (time: TimeInterval, unit: Unit) {
+        let index = max(index, 1)
+        let start = parameters.firstDeletionDelay + parameters.initialDelay
+        // Repeats before this one, plus the first deletion, were all characters until the switch.
+        let firstWordRepeat = max(parameters.charactersBeforeWords, 1)
+        guard index >= firstWordRepeat else {
+            return (start + Double(index - 1) * parameters.characterInterval, .character)
+        }
+        let switchTime = start + Double(firstWordRepeat - 1) * parameters.characterInterval
+        return (switchTime + Double(index - firstWordRepeat) * parameters.wordInterval,
+                .words(max(parameters.wordsPerTick, 1)))
     }
 }

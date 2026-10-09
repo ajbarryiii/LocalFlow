@@ -33,6 +33,8 @@ struct LocalFlowIOSTests {
             ("KeyboardLayout", KeyboardLayoutTests.tests),
             ("TypingRules", TypingRulesTests.tests),
             ("UndoTracker", UndoTrackerTests.tests),
+            ("EditTracker", EditTrackerTests.tests),
+            ("KeyTouchModel", KeyTouchModelTests.tests),
         ]
         var count = 0
         for (suite, tests) in suites {

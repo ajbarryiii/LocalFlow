@@ -55,21 +55,3 @@ final class TextKitLineLayout: LineLayout {
         manager.ensureLayout(for: container)
     }
 }
-
-/// Character advances in the body font, cached per grapheme for the gesture.
-final class GlyphAdvances {
-    private let font: UIFont
-    private var cache: [String: Double] = [:]
-
-    init(font: UIFont) {
-        self.font = font
-    }
-
-    func advance(of grapheme: String) -> Double {
-        if let cached = cache[grapheme] { return cached }
-        let measured = grapheme == "\t" ? "    " : grapheme
-        let width = Double((measured as NSString).size(withAttributes: [.font: font]).width)
-        if cache.count < 512 { cache[grapheme] = width }
-        return width
-    }
-}

@@ -4,6 +4,8 @@ enum TypingRulesTests {
     static var tests: [TestCase] {
         [
             ("shiftTapAndCapsLock", testShiftTapAndCapsLock),
+            ("shiftLetterShiftIsNotCapsLock", testShiftLetterShiftIsNotCapsLock),
+            ("contextTailIsReleasedOnceAcknowledged", testContextTailIsReleasedOnceAcknowledged),
             ("oneShotShiftClearsAfterALetter", testOneShotShiftClearsAfterALetter),
             ("automaticShiftNeverOverridesTheUser", testAutomaticShiftNeverOverridesTheUser),
             ("layersReturnToLetters", testLayersReturnToLetters),
@@ -34,6 +36,51 @@ enum TypingRulesTests {
         state.tapShift(at: 40)
         state.tapShift(at: 40.5)
         TestSupport.expectEqual(state.shift, .off)
+    }
+
+    private static func testShiftLetterShiftIsNotCapsLock() {
+        // Regression: shift, a letter, then shift within the double-tap window turned on caps lock.
+        var state = TypingState()
+        state.tapShift(at: 10)
+        state.didTypeCharacter("A")
+        state.tapShift(at: 10.2)
+        TestSupport.expectEqual(state.shift, .once)
+        // Any other key between the taps counts the same way.
+        var spaced = TypingState()
+        spaced.tapShift(at: 20)
+        _ = spaced.spaceEdit(before: "Hi", at: 20.1)
+        spaced.tapShift(at: 20.2)
+        TestSupport.expect(spaced.shift != .capsLock, "caps lock after shift, space, shift")
+        var deleted = TypingState()
+        deleted.tapShift(at: 30)
+        deleted.didDelete()
+        deleted.tapShift(at: 30.2)
+        TestSupport.expect(deleted.shift != .capsLock, "caps lock after shift, delete, shift")
+        var returned = TypingState()
+        returned.tapShift(at: 40)
+        returned.didTypeReturn()
+        returned.tapShift(at: 40.2)
+        TestSupport.expect(returned.shift != .capsLock, "caps lock after shift, return, shift")
+        var layered = TypingState()
+        layered.tapShift(at: 50)
+        layered.switchLayer(to: .numbers)
+        layered.switchLayer(to: .letters)
+        layered.tapShift(at: 50.2)
+        TestSupport.expect(layered.shift != .capsLock, "caps lock after shift, 123, ABC, shift")
+    }
+
+    private static func testContextTailIsReleasedOnceAcknowledged() {
+        var tail = ContextTail()
+        tail.inserted("t", proxyBefore: "Typed tex")
+        TestSupport.expectEqual(tail.known, "Typed text")
+        // The proxy has not caught up: the model stays.
+        tail.acknowledge(proxyBefore: "Typed tex")
+        TestSupport.expectEqual(tail.known, "Typed text")
+        // Once the proxy shows the edit, the typed text is not held any longer.
+        tail.acknowledge(proxyBefore: "Earlier. Typed text")
+        TestSupport.expectEqual(tail.known, nil)
+        tail.acknowledge(proxyBefore: nil)
+        TestSupport.expectEqual(tail.known, nil)
     }
 
     private static func testOneShotShiftClearsAfterALetter() {

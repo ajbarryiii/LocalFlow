@@ -10,7 +10,6 @@ enum ComputePolicyTests {
     }
 
     private static func testAlwaysTheNeuralEngine() {
-        TestSupport.expectEqual(ComputePolicy.allCases, [.neuralEngine])
         TestSupport.expectEqual(ComputePolicy.units, .cpuAndNeuralEngine)
     }
 

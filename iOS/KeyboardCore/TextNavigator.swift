@@ -83,7 +83,12 @@ struct TextNavigator {
     /// around that position. Compares up to 32 code units on each side; a side the host shows
     /// nothing of, or the snapshot knows nothing of, cannot disagree.
     func agrees(before: String, after: String, at position: Int) -> Bool {
-        let split = boundaries[position]
+        agrees(before: before, after: after, atUTF16: boundaries[position])
+    }
+
+    /// `agrees` at any UTF-16 offset, including one inside a cluster, as after a UTF-16 step.
+    func agrees(before: String, after: String, atUTF16 split: Int) -> Bool {
+        guard (0...units.count).contains(split) else { return false }
         let window = 32
         let expectedBefore = units[max(0, split - window) ..< split]
         let expectedAfter = units[split ..< min(units.count, split + window)]
@@ -122,14 +127,14 @@ struct TextNavigator {
         return layout.x(atUTF16: boundaries[position], line: line, in: text)
     }
 
-    /// The caret position on `lineIndex` closest to `x`, never after the line's break.
+    /// The caret position on `lineIndex` closest to `x`, never after the line's break. The end of a
+    /// soft-wrapped line counts: the caret stays at that end instead of wrapping, as on Apple's keyboard.
     func position(nearestX x: Double, onLine lineIndex: Int, lines: [Range<Int>], layout: any LineLayout) -> Int {
         let line = lines[lineIndex]
-        let isLastLine = lineIndex == lines.count - 1
         var best: (position: Int, distance: Double)?
         for (position, offset) in boundaries.enumerated() {
             guard offset >= line.lowerBound else { continue }
-            guard offset < line.upperBound || (isLastLine && offset == line.upperBound) else { break }
+            guard offset <= line.upperBound else { break }
             // The position after a line break starts the next line.
             if offset > line.lowerBound, graphemes[position - 1].first?.isNewline == true { break }
             let distance = abs(layout.x(atUTF16: offset, line: line, in: text) - x)

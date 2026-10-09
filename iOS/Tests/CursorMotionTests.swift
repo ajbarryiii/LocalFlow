@@ -3,170 +3,146 @@ import Foundation
 enum CursorMotionTests {
     static var tests: [TestCase] {
         [
-            ("gainIsOneWhenSlowAndCappedWhenFast", testGainIsOneWhenSlowAndCappedWhenFast),
-            ("gainRisesSmoothlyAndMonotonically", testGainRisesSmoothlyAndMonotonically),
-            ("multipliersScaleGainAndAcceleration", testMultipliersScaleGainAndAcceleration),
-            ("speedComesFromTouchTimestamps", testSpeedComesFromTouchTimestamps),
-            ("residualsCarryBetweenSamples", testResidualsCarryBetweenSamples),
-            ("wideCharactersTakeMoreTravel", testWideCharactersTakeMoreTravel),
-            ("hysteresisStopsFlicker", testHysteresisStopsFlicker),
-            ("edgesBlockOnlyPastATypicalCharacter", testEdgesBlockOnlyPastATypicalCharacter),
-            ("lineStepsHalfwayWithHysteresis", testLineStepsHalfwayWithHysteresis),
-            ("stopAndLimit", testStopAndLimit),
+            ("measuredActivationAndSlop", testMeasuredActivationAndSlop),
+            ("measuredGainValues", testMeasuredGainValues),
+            ("gainIsContinuousAndRising", testGainIsContinuousAndRising),
+            ("gainIsPerEventAndSymmetric", testGainIsPerEventAndSymmetric),
+            ("eventStepScaleCorrectsTheStep", testEventStepScaleCorrectsTheStep),
+            ("multipliersScaleMovementAndGain", testMultipliersScaleMovementAndGain),
+            ("noDeadZoneOrRounding", testNoDeadZoneOrRounding),
+            ("clampForgetsOvershoot", testClampForgetsOvershoot),
+            ("measuredClamps", testMeasuredClamps),
         ]
     }
 
-    private static let parameters = TrackpadParameters.standard
+    private static let measured = TrackpadParameters.standard
 
-    private static func testGainIsOneWhenSlowAndCappedWhenFast() {
-        TestSupport.expectEqual(parameters.gain(forSpeed: 0), 1)
-        TestSupport.expectEqual(parameters.gain(forSpeed: parameters.lowSpeed), 1)
-        TestSupport.expectEqual(parameters.gain(forSpeed: parameters.highSpeed), parameters.maximumGain)
-        TestSupport.expectEqual(parameters.gain(forSpeed: 10 * parameters.highSpeed), parameters.maximumGain)
-        TestSupport.expectEqual(parameters.gain(forSpeed: -50), 1)
+    private static func close(_ actual: Double, _ expected: Double, _ tolerance: Double, _ what: String,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        TestSupport.expect(abs(actual - expected) <= tolerance, "\(what): expected \(expected), got \(actual)",
+                           file: file, line: line)
     }
 
-    private static func testGainRisesSmoothlyAndMonotonically() {
+    private static func testMeasuredActivationAndSlop() {
+        TestSupport.expectEqual(measured.holdDuration, 0.381)
+        // 16.0 pt (straight line from touch-down) activates and 16.33 pt does not.
+        TestSupport.expectEqual(measured.holdSlop, 16)
+        // Apple has no drag-to-activate.
+        TestSupport.expectEqual(measured.dragActivationDistance, .infinity)
+    }
+
+    private static func testMeasuredGainValues() {
+        // ARCHITECTURE.md, "Measured Apple keyboard behavior": g(1) ≈ 1.04, g(3) ≈ 1.32, g(7) ≈ 1.905,
+        // g(15) ≈ 2.567, g(30) ≈ 3.36.
+        close(measured.gain(forStep: 0), 1, 1e-12, "g(0)")
+        close(measured.gain(forStep: 1), 1.04, 1e-9, "g(1)")
+        close(measured.gain(forStep: 2), 1.16, 1e-9, "g(2)")
+        close(measured.gain(forStep: 3), 1.32, 1e-9, "g(3)")
+        close(measured.gain(forStep: 7), 1.905, 0.005, "g(7)")
+        close(measured.gain(forStep: 15), 2.567, 0.005, "g(15)")
+        close(measured.gain(forStep: 30), 3.36, 0.005, "g(30)")
+        close(measured.gain(forStep: -5), 1, 1e-12, "a negative step reads as none")
+    }
+
+    private static func testGainIsContinuousAndRising() {
+        let epsilon = 1e-9
+        for knee in [measured.quadraticLimit, measured.linearLimit] {
+            let below = measured.gain(forStep: knee - epsilon)
+            let above = measured.gain(forStep: knee + epsilon)
+            close(above, below, 0.001, "continuity at \(knee)")
+        }
+        close(measured.gain(forStep: 5.92), 1.787, 0.001, "g(5.92)")
         var previous = 0.0
-        for speed in stride(from: 0.0, through: 2_000, by: 10) {
-            let gain = parameters.gain(forSpeed: speed)
-            TestSupport.expect(gain >= previous, "gain dropped at \(speed)")
-            // Smoothstep: no jump between neighbouring speeds.
-            TestSupport.expect(previous == 0 || gain - previous < 0.05, "gain jumped at \(speed)")
+        for step in stride(from: 0.0, through: 60, by: 0.05) {
+            let gain = measured.gain(forStep: step)
+            TestSupport.expect(gain >= previous - 1e-12, "gain dropped at \(step)")
             previous = gain
         }
-        let middle = parameters.gain(forSpeed: (parameters.lowSpeed + parameters.highSpeed) / 2)
-        TestSupport.expect(abs(middle - (1 + parameters.maximumGain) / 2) < 1e-9, "midpoint gain \(middle)")
     }
 
-    private static func testMultipliersScaleGainAndAcceleration() {
-        let slower = parameters.tuned(sensitivity: 0.5, acceleration: 1)
-        TestSupport.expectEqual(slower.gain(forSpeed: 0), 0.5)
-        TestSupport.expectEqual(slower.gain(forSpeed: 5_000), 0.5 * parameters.maximumGain)
-        let flat = parameters.tuned(sensitivity: 1, acceleration: 0.25)
-        TestSupport.expectEqual(flat.gain(forSpeed: 5_000), 1 + (parameters.maximumGain - 1) * 0.25)
-        let steep = parameters.tuned(sensitivity: 2, acceleration: 2)
-        TestSupport.expectEqual(steep.gain(forSpeed: 0), 2)
-        TestSupport.expectEqual(steep.gain(forSpeed: 5_000), 2 * (1 + (parameters.maximumGain - 1) * 2))
-        // Out-of-range or broken multipliers are clamped or ignored.
-        TestSupport.expectEqual(parameters.tuned(sensitivity: 100, acceleration: 1).baseGain, 4)
-        TestSupport.expectEqual(parameters.tuned(sensitivity: .nan, acceleration: .infinity), parameters)
-        TestSupport.expectEqual(parameters.tuned(sensitivity: 1, acceleration: 1), parameters)
-    }
-
-    private static func testSpeedComesFromTouchTimestamps() {
-        // The same 4-point samples, 1/120 s apart (480 pt/s) and 1/30 s apart (120 pt/s).
-        var fast = CursorMotion(parameters: parameters)
-        var slow = CursorMotion(parameters: parameters)
-        for i in 0 ..< 30 {
-            fast.add(dx: 4, dy: 0, timestamp: 10 + Double(i) / 120)
-            slow.add(dx: 4, dy: 0, timestamp: 10 + Double(i) / 30)
-        }
-        TestSupport.expect(abs(fast.speed - 480) < 5, "fast speed \(fast.speed)")
-        TestSupport.expect(abs(slow.speed - 120) < 2, "slow speed \(slow.speed)")
-        TestSupport.expect(fast.horizontal > slow.horizontal * 1.3, "acceleration ignored")
-        TestSupport.expect(abs(slow.horizontal - 120) < 1, "slow travel \(slow.horizontal)")
-        // A sample with the same timestamp, or one from the past, adds travel but no speed spike.
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: 1, dy: 0, timestamp: 5)
-        motion.add(dx: 1, dy: 0, timestamp: 5)
-        motion.add(dx: 1, dy: 0, timestamp: 4)
-        TestSupport.expectEqual(motion.speed, 0)
-        TestSupport.expectEqual(motion.horizontal, 3)
+    private static func testGainIsPerEventAndSymmetric() {
+        // The same 12 pt of finger travel as one event or as twelve: the gain follows the event's
+        // step, never the time between events.
+        var oneEvent = FloatingCursor(parameters: measured, x: 0, y: 0)
+        oneEvent.move(dx: 12, dy: 0)
+        var manyEvents = FloatingCursor(parameters: measured, x: 0, y: 0)
+        for _ in 0 ..< 12 { manyEvents.move(dx: 1, dy: 0) }
+        close(oneEvent.x, 12 * measured.gain(forStep: 12), 1e-9, "one 12-pt event")
+        close(manyEvents.x, 12 * 1.04, 1e-9, "twelve 1-pt events")
+        // On a diagonal, one gain from the 2D step moves both axes, the same in every direction.
+        var diagonal = FloatingCursor(parameters: measured, x: 0, y: 0)
+        let moved = diagonal.move(dx: -3, dy: 4)
+        close(moved.dx, -3 * measured.gain(forStep: 5), 1e-9, "diagonal x")
+        close(moved.dy, 4 * measured.gain(forStep: 5), 1e-9, "diagonal y")
+        TestSupport.expect(abs(moved.dy / moved.dx + 4.0 / 3) < 1e-12, "the direction changed")
+        var back = FloatingCursor(parameters: measured, x: 0, y: 0)
+        back.move(dx: 3, dy: -4)
+        close(back.x, -diagonal.x, 1e-12, "symmetric x")
+        close(back.y, -diagonal.y, 1e-12, "symmetric y")
+        // A vertical-only step uses the same curve as a horizontal one.
+        var vertical = FloatingCursor(parameters: measured, x: 0, y: 0)
+        vertical.move(dx: 0, dy: 7)
+        close(vertical.y, 7 * measured.gain(forStep: 7), 1e-9, "vertical")
         // Broken input is dropped.
-        motion.add(dx: .nan, dy: 1, timestamp: 6)
-        TestSupport.expectEqual(motion.horizontal, 3)
+        var broken = FloatingCursor(parameters: measured, x: 5, y: 5)
+        broken.move(dx: .nan, dy: 1)
+        broken.move(dx: 1, dy: .infinity)
+        TestSupport.expectEqual(broken.x, 5)
+        TestSupport.expectEqual(broken.y, 5)
     }
 
-    private static func testResidualsCarryBetweenSamples() {
-        // Many tiny slow samples add up to whole characters, with nothing lost to rounding.
-        var motion = CursorMotion(parameters: parameters)
-        var steps = 0
-        for i in 0 ..< 200 {
-            motion.add(dx: 0.5, dy: 0, timestamp: Double(i) / 120)
-            steps += motion.takeHorizontalSteps { _ in 10 }.steps
-        }
-        // 100 points over 10-point characters, crossing at 60 % of each: at 6, 16, ... 96.
-        TestSupport.expectEqual(steps, 10)
-        TestSupport.expect(abs(Double(steps) * 10 + motion.horizontal - 100) < 1e-9, "travel lost")
+    private static func testEventStepScaleCorrectsTheStep() {
+        TestSupport.expectEqual(measured.eventStepScale, 1)
+        var halved = measured
+        halved.eventStepScale = 2
+        // A 120 Hz device delivering half-size steps reads them as the simulator's full steps.
+        close(halved.gain(forStep: 3.5), measured.gain(forStep: 7), 1e-12, "scaled step")
     }
 
-    private static func testWideCharactersTakeMoreTravel() {
-        func steps(over width: Double) -> Int {
-            var motion = CursorMotion(parameters: parameters)
-            motion.add(dx: 60, dy: 0, timestamp: 0)
-            return motion.takeHorizontalSteps { _ in width }.steps
-        }
-        TestSupport.expectEqual(steps(over: 5), 12)
-        TestSupport.expectEqual(steps(over: 10), 6)
-        TestSupport.expectEqual(steps(over: 16), 4)
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: -26, dy: 0, timestamp: 0)
-        // Backwards crosses the characters before the caret: 16, 5, 5 → three steps.
-        let widths: [Int: Double] = [-1: 16, -2: 5, -3: 5, -4: 16]
-        TestSupport.expectEqual(motion.takeHorizontalSteps { widths[$0] }.steps, -3)
+    private static func testMultipliersScaleMovementAndGain() {
+        let slower = measured.tuned(sensitivity: 0.5, acceleration: 1)
+        close(slower.travelFactor(forStep: 7), 0.5 * measured.gain(forStep: 7), 1e-12, "sensitivity scales movement")
+        close(slower.gain(forStep: 7), measured.gain(forStep: 7), 1e-12, "sensitivity leaves the gain")
+        let flatter = measured.tuned(sensitivity: 1, acceleration: 0.5)
+        close(flatter.gain(forStep: 15), 1 + (measured.gain(forStep: 15) - 1) * 0.5, 1e-12, "acceleration scales g - 1")
+        close(flatter.gain(forStep: 0), 1, 1e-12, "acceleration leaves slow movement exact")
+        // Out-of-range or broken multipliers are clamped or ignored.
+        TestSupport.expectEqual(measured.tuned(sensitivity: 100, acceleration: 1).sensitivity, 4)
+        TestSupport.expectEqual(measured.tuned(sensitivity: 0.01, acceleration: 1).sensitivity, 0.25)
+        TestSupport.expectEqual(measured.tuned(sensitivity: .nan, acceleration: .infinity), measured)
+        TestSupport.expectEqual(measured.tuned(sensitivity: 1, acceleration: 1), measured)
     }
 
-    private static func testHysteresisStopsFlicker() {
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: 6, dy: 0, timestamp: 0)
-        TestSupport.expectEqual(motion.takeHorizontalSteps { _ in 10 }.steps, 1)
-        // The pointer now rests 4 points behind the new caret; wobbling 1 point either way does nothing.
-        for (i, dx) in [-1.0, 1, -1, 1, -1.5].enumerated() {
-            motion.add(dx: dx, dy: 0, timestamp: Double(i + 1))
-            TestSupport.expectEqual(motion.takeHorizontalSteps { _ in 10 }.steps, 0)
-        }
-        motion.add(dx: -1, dy: 0, timestamp: 10)
-        TestSupport.expectEqual(motion.takeHorizontalSteps { _ in 10 }.steps, -1)
+    private static func testNoDeadZoneOrRounding() {
+        // 1 pt of slow finger movement moves the point 1 pt (measured: no dead zone), and many tiny
+        // events add up exactly.
+        var point = FloatingCursor(parameters: .flat, x: 0, y: 0)
+        for _ in 0 ..< 200 { point.move(dx: 0.5, dy: -0.25) }
+        close(point.x, 100, 1e-9, "x")
+        close(point.y, -50, 1e-9, "y")
+        var measuredPoint = FloatingCursor(parameters: measured, x: 0, y: 0)
+        measuredPoint.move(dx: 0.1, dy: 0)
+        close(measuredPoint.x, 0.1 * 1.0004, 1e-12, "a tenth of a point")
     }
 
-    private static func testEdgesBlockOnlyPastATypicalCharacter() {
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: 3, dy: 0, timestamp: 0)
-        let small = motion.takeHorizontalSteps { _ in nil }
-        TestSupport.expectEqual(small, CursorMotion.HorizontalSteps(steps: 0, blockedForward: false, blockedBackward: false))
-        motion.add(dx: 4, dy: 0, timestamp: 1)
-        TestSupport.expect(motion.takeHorizontalSteps { _ in nil }.blockedForward, "not blocked forward")
-        var backward = CursorMotion(parameters: parameters)
-        backward.add(dx: -25, dy: 0, timestamp: 0)
-        let result = backward.takeHorizontalSteps { $0 == -1 ? 10 : nil }
-        TestSupport.expectEqual(result.steps, -1)
-        TestSupport.expect(result.blockedBackward, "not blocked backward")
+    private static func testClampForgetsOvershoot() {
+        var point = FloatingCursor(parameters: .flat, x: 50, y: 10)
+        point.move(dx: 500, dy: -300)
+        point.clamp(x: 1.5 ... 98.5, y: 3 ... 18)
+        TestSupport.expectEqual(point.x, 98.5)
+        TestSupport.expectEqual(point.y, 3)
+        // The reversal answers at once: nothing of the 450-point overshoot is remembered.
+        point.move(dx: -1, dy: 1)
+        TestSupport.expectEqual(point.x, 97.5)
+        TestSupport.expectEqual(point.y, 4)
+        point.place(x: 20, y: 30)
+        TestSupport.expectEqual(point.x, 20)
+        TestSupport.expectEqual(point.y, 30)
     }
 
-    private static func testLineStepsHalfwayWithHysteresis() {
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: 0, dy: 12, timestamp: 0)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 20), 0)
-        motion.add(dx: 0, dy: 1.5, timestamp: 1)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 20), 1)
-        // Resting near the boundary does not bounce back.
-        motion.add(dx: 0, dy: -5, timestamp: 2)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 20), 0)
-        motion.add(dx: 0, dy: -60, timestamp: 2)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 20), -3)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 0), 0)
-        motion.stopVertical()
-        motion.restoreLines(2, lineHeight: 20)
-        TestSupport.expectEqual(motion.takeLineSteps(lineHeight: 20), 2)
-    }
-
-    private static func testStopAndLimit() {
-        var motion = CursorMotion(parameters: parameters)
-        motion.add(dx: 30, dy: 30, timestamp: 0)
-        motion.stopHorizontal(atEnd: true)
-        TestSupport.expectEqual(motion.horizontal, 0)
-        motion.add(dx: -5, dy: 0, timestamp: 1)
-        motion.stopHorizontal(atEnd: true)
-        TestSupport.expectEqual(motion.horizontal, -5)
-        motion.stopHorizontal(atEnd: false)
-        TestSupport.expectEqual(motion.horizontal, 0)
-        motion.stopVertical()
-        TestSupport.expectEqual(motion.vertical, 0)
-        motion.add(dx: 1_000, dy: 0, timestamp: 2)
-        motion.limitHorizontal(to: 600)
-        TestSupport.expectEqual(motion.horizontal, 600)
-        motion.consumeHorizontal(9)
-        TestSupport.expectEqual(motion.horizontal, 591)
+    private static func testMeasuredClamps() {
+        TestSupport.expectEqual(measured.horizontalInset, 1.5)
+        TestSupport.expectEqual(measured.topOvershoot, 7)
+        TestSupport.expectEqual(measured.bottomOvershoot, 8)
     }
 }

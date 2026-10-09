@@ -19,9 +19,12 @@ enum WordBoundariesTests {
     }
 
     private static func testWordAndTrailingSpaces() {
-        TestSupport.expectEqual(deleted("The quick brown"), "brown")
-        TestSupport.expectEqual(deleted("The quick "), "quick ")
-        TestSupport.expectEqual(deleted("The quick  \t"), "quick  \t")
+        // Measured: each word goes with the space before it.
+        TestSupport.expectEqual(deleted("The quick brown"), " brown")
+        TestSupport.expectEqual(deleted("The quick "), " quick ")
+        TestSupport.expectEqual(deleted("The quick  \t"), " quick  \t")
+        // The first word tick finishes a partly deleted word.
+        TestSupport.expectEqual(deleted("The quick bro"), " bro")
         TestSupport.expectEqual(deleted("word"), "word")
         TestSupport.expectEqual(deleted("   "), "   ")
         TestSupport.expectEqual(deleted(""), "")
@@ -31,23 +34,23 @@ enum WordBoundariesTests {
     }
 
     private static func testPunctuationStaysWithItsWord() {
-        TestSupport.expectEqual(deleted("Hello, world."), "world.")
+        TestSupport.expectEqual(deleted("Hello, world."), " world.")
         TestSupport.expectEqual(deleted("Hello, "), "Hello, ")
         TestSupport.expectEqual(deleted("Really?! "), "Really?! ")
         TestSupport.expectEqual(deleted("say (hello)"), "hello)")
-        TestSupport.expectEqual(deleted("say ("), "(")
-        TestSupport.expectEqual(deleted("wait ..."), "...")
-        TestSupport.expectEqual(deleted("a - "), "- ")
+        TestSupport.expectEqual(deleted("say ("), " (")
+        TestSupport.expectEqual(deleted("wait ..."), " ...")
+        TestSupport.expectEqual(deleted("a - "), " - ")
         TestSupport.expectEqual(deleted("well-known"), "known")
     }
 
     private static func testApostrophesAndDigitSeparatorsJoin() {
-        TestSupport.expectEqual(deleted("I don't"), "don't")
-        TestSupport.expectEqual(deleted("I don\u{2019}t"), "don\u{2019}t")
-        TestSupport.expectEqual(deleted("the dogs'"), "dogs'")
+        TestSupport.expectEqual(deleted("I don't"), " don't")
+        TestSupport.expectEqual(deleted("I don\u{2019}t"), " don\u{2019}t")
+        TestSupport.expectEqual(deleted("the dogs'"), " dogs'")
         TestSupport.expectEqual(deleted("said 'hi'"), "hi'")
-        TestSupport.expectEqual(deleted("pi is 3.14"), "3.14")
-        TestSupport.expectEqual(deleted("about 1,200"), "1,200")
+        TestSupport.expectEqual(deleted("pi is 3.14"), " 3.14")
+        TestSupport.expectEqual(deleted("about 1,200"), " 1,200")
         TestSupport.expectEqual(deleted("end.Next"), "Next")
     }
 
@@ -59,11 +62,11 @@ enum WordBoundariesTests {
     }
 
     private static func testEmojiAreTheirOwnStep() {
-        TestSupport.expectEqual(deleted("nice \u{1F44D}\u{1F3FD}"), "\u{1F44D}\u{1F3FD}")
+        TestSupport.expectEqual(deleted("nice \u{1F44D}\u{1F3FD}"), " \u{1F44D}\u{1F3FD}")
         TestSupport.expectEqual(deleted("hi\u{1F44B}"), "\u{1F44B}")
-        TestSupport.expectEqual(deleted("love \u{2764}\u{FE0F} "), "\u{2764}\u{FE0F} ")
-        TestSupport.expectEqual(deleted("go \u{1F1EB}\u{1F1F7}"), "\u{1F1EB}\u{1F1F7}")
-        TestSupport.expectEqual(deleted("press 1\u{FE0F}\u{20E3}"), "1\u{FE0F}\u{20E3}")
+        TestSupport.expectEqual(deleted("love \u{2764}\u{FE0F} "), " \u{2764}\u{FE0F} ")
+        TestSupport.expectEqual(deleted("go \u{1F1EB}\u{1F1F7}"), " \u{1F1EB}\u{1F1F7}")
+        TestSupport.expectEqual(deleted("press 1\u{FE0F}\u{20E3}"), " 1\u{FE0F}\u{20E3}")
         TestSupport.expectEqual(deleted("\u{1F44B}hi"), "hi")
         // A plain digit or sign is not an emoji.
         TestSupport.expect(!WordBoundaries.isEmoji("1"), "digit")
@@ -73,7 +76,7 @@ enum WordBoundariesTests {
 
     private static func testCountsGraphemesAndCodeUnits() {
         TestSupport.expectEqual(WordBoundaries.previousWord(before: "ok \u{1F44D}\u{1F3FD}"),
-                                WordBoundaries.Deletion(graphemes: 1, utf16: 4))
+                                WordBoundaries.Deletion(graphemes: 2, utf16: 5))
         TestSupport.expectEqual(WordBoundaries.previousWord(before: "cafe\u{301} "),
                                 WordBoundaries.Deletion(graphemes: 5, utf16: 6))
         TestSupport.expectEqual(WordBoundaries.previousWord(before: ""), WordBoundaries.Deletion(graphemes: 0, utf16: 0))
@@ -88,7 +91,7 @@ enum WordBoundariesTests {
             steps.append(String(text.suffix(count)))
             text = String(text.dropLast(count))
         }
-        TestSupport.expectEqual(steps, ["words.", "more ", "and ", "\n", "\u{1F605}", "typo ", "a ", "with ",
-                                        "text, ", "Dictated "])
+        TestSupport.expectEqual(steps, [" words.", " more", "and", "\n", " \u{1F605}", " typo", " a", " with",
+                                        " text,", "Dictated"])
     }
 }

@@ -1,48 +1,62 @@
 import SwiftUI
 import UIKit
 
-/// The dictation bar above the keys: status, Undo, "Insert last dictation", cancel, and the mic
-/// that morphs into a stop capsule with live level bars. It renders `KeyboardDictationClient.state`
-/// only, so typing never re-renders it.
+/// Top-row state that belongs to the UI, not the dictation protocol.
+@MainActor
+final class KeyboardChrome: ObservableObject {
+    @Published var isMenuOpen = false
+}
+
+/// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
+/// the left, Undo / "Insert last dictation" chips or a one-line status in the middle, and the
+/// Start capsule on the right, which becomes a red Stop capsule with live level bars while
+/// recording. It renders `KeyboardDictationClient.state` only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
-    var onInfo: () -> Void
+    @ObservedObject var chrome: KeyboardChrome
+    var onMenu: () -> Void
+    /// Any other bar action also closes the menu.
+    var onAction: () -> Void
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         let compact = verticalSizeClass == .compact
         let state = client.state
-        let control: CGFloat = compact ? 34 : 40
+        let height: CGFloat = compact ? 32 : 38
         HStack(spacing: 8) {
-            StatusBlock(state: state, onInfo: onInfo)
+            Button(action: onMenu) {
+                Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: height, height: height)
+                    .background(Circle().fill(chrome.isMenuOpen ? Color(uiColor: KeyPalette.fill) : .clear))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle())
+            .accessibilityLabel(chrome.isMenuOpen ? "Close menu" : "LocalFlow menu")
+            .accessibilityIdentifier("lf.menu")
+
+            Middle(client: client, state: state, height: height - 8, onAction: onAction)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if state.canUndo, !state.mode.isInProgress {
-                BarPill(title: "Undo", symbol: "arrow.uturn.backward", height: control - 8) { client.undoLastDictation() }
-                    .accessibilityLabel("Undo last dictation")
-                    .accessibilityIdentifier("lf.undo")
-            }
-            if state.canInsertLast, !state.mode.isRecording {
-                BarPill(title: "Insert last", symbol: "text.insert", height: control - 8) { client.insertLastDictation() }
-                    .accessibilityLabel("Insert last dictation")
-                    .accessibilityIdentifier("lf.insertLast")
-            }
+
             if state.mode.isInProgress {
-                Button { client.cancelTapped() } label: {
+                Button {
+                    onAction()
+                    client.cancelTapped()
+                } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: control * 0.36, weight: .bold))
+                        .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.primary)
-                        .frame(width: control - 6, height: control - 6)
+                        .frame(width: height - 6, height: height - 6)
                         .background(Circle().fill(Color(uiColor: KeyPalette.fill)))
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Cancel dictation")
                 .accessibilityIdentifier("lf.cancel")
             }
-            if state.mode.allowsDictation {
-                MicButton(client: client, state: state, size: control)
-            }
+            StartCapsule(client: client, state: state, height: height, onAction: onAction, onUnavailable: onMenu)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeOut(duration: 0.2), value: state.canUndo)
         .animation(.easeOut(duration: 0.2), value: state.canInsertLast)
@@ -50,52 +64,53 @@ struct DictationBarView: View {
     }
 }
 
-private struct StatusBlock: View {
+/// Chips when there is something to act on; otherwise one line of status.
+private struct Middle: View {
+    let client: KeyboardDictationClient
     let state: KeyboardViewState
-    let onInfo: () -> Void
+    let height: CGFloat
+    let onAction: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 7, height: 7)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(state.title)
-                    .font(.footnote.weight(.semibold))
+            if state.canUndo, !state.mode.isInProgress {
+                Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
+                    onAction()
+                    client.undoLastDictation()
+                }
+                .accessibilityLabel("Undo last dictation")
+                .accessibilityIdentifier("lf.undo")
+            }
+            if state.canInsertLast, !state.mode.isRecording {
+                Chip(title: "Insert last", symbol: "text.insert", height: height) {
+                    onAction()
+                    client.insertLastDictation()
+                }
+                .accessibilityLabel("Insert last dictation")
+                .accessibilityIdentifier("lf.insertLast")
+            }
+            if !(state.canUndo && !state.mode.isInProgress), !(state.canInsertLast && !state.mode.isRecording),
+               let status = statusLine {
+                Text(status)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(state.mode.needsAttention ? .primary : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                if let hint = state.hint {
-                    Text(hint)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            if !state.mode.allowsDictation {
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                        .font(.body)
-                }
-                .accessibilityLabel("How to fix this")
-                .accessibilityIdentifier("lf.info")
+                    .accessibilityIdentifier("lf.status")
             }
         }
-        .accessibilityElement(children: .combine)
     }
 
-    private var dotColor: Color {
+    /// Ready and idle show only the model or session hint; everything else its one-line title.
+    private var statusLine: String? {
         switch state.mode {
-        case .ready: return .green
-        case .recording: return .red
-        case .starting, .transcribing: return .blue
-        case .error, .needsFullAccess, .configurationError, .incompatible: return .orange
-        case .hostUnavailable: return .gray
+        case .ready: return state.hint
+        default: return state.title.isEmpty ? nil : state.title
         }
     }
 }
 
-private struct BarPill: View {
+private struct Chip: View {
     let title: String
     let symbol: String
     let height: CGFloat
@@ -117,25 +132,36 @@ private struct BarPill: View {
     }
 }
 
-/// A mic that morphs into a stop capsule with live level bars and the elapsed time.
-private struct MicButton: View {
+/// The primary control: "Start" with a waveform glyph, a red "Stop" with live levels and the elapsed
+/// time while starting or recording, and a spinner while transcribing.
+private struct StartCapsule: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
-    let size: CGFloat
+    let height: CGFloat
+    let onAction: () -> Void
+    /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
+    let onUnavailable: () -> Void
 
     var body: some View {
-        Button { client.micTapped() } label: {
+        Button {
+            if state.mode.allowsDictation {
+                onAction()
+                client.micTapped()
+            } else {
+                onUnavailable()
+            }
+        } label: {
             content
-                .foregroundStyle(.white)
-                .frame(minWidth: size, minHeight: size, maxHeight: size)
+                .padding(.horizontal, 14)
+                .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
                 .background(Capsule().fill(fill))
                 .contentShape(Capsule())
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
-        .allowsHitTesting(isEnabled)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isRecording)
-        .accessibilityRemoveTraits(isEnabled ? [] : .isButton)
+        .allowsHitTesting(state.mode != .transcribing)
+        .opacity(state.mode.allowsDictation ? 1 : 0.45)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isActiveCapture)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint(state.mode == .hostUnavailable ? "Opens LocalFlow to start a session" : "")
@@ -145,39 +171,38 @@ private struct MicButton: View {
     @ViewBuilder private var content: some View {
         switch state.mode {
         case .recording(_, let startedAt):
-            HStack(spacing: 8) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: size * 0.3, weight: .bold))
-                LevelBars(levels: state.levels, height: size * 0.5)
+            HStack(spacing: 7) {
+                Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
+                LevelBars(levels: state.levels, height: height * 0.45)
                 Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
                     .fixedSize()
             }
-            .padding(.horizontal, size * 0.35)
-        case .starting, .transcribing:
-            ProgressView()
-                .tint(.white)
+            .foregroundStyle(.white)
+        case .starting:
+            HStack(spacing: 7) {
+                ProgressView().tint(.white).controlSize(.small)
+                Text("Stop").font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+        case .transcribing:
+            ProgressView().tint(foreground).controlSize(.small)
         default:
-            Image(systemName: "mic.fill")
-                .font(.system(size: size * 0.42, weight: .semibold))
+            HStack(spacing: 6) {
+                Image(systemName: "waveform").font(.system(size: 15, weight: .semibold))
+                Text("Start").font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(foreground)
         }
     }
 
+    /// A white capsule on the dark keyboard and a black one on the light keyboard, like Wispr's.
     private var fill: Color {
-        switch state.mode {
-        case .recording: return .red
-        case .starting, .transcribing: return Color.accentColor.opacity(0.75)
-        default: return .accentColor
-        }
+        state.mode.isActiveCapture ? .red : .primary
     }
 
-    private var isEnabled: Bool {
-        switch state.mode {
-        case .ready, .hostUnavailable, .error, .starting, .recording: return true
-        case .transcribing, .needsFullAccess, .configurationError, .incompatible: return false
-        }
-    }
+    private var foreground: Color { Color(uiColor: .systemBackground) }
 
     private var accessibilityLabel: String {
         switch state.mode {
@@ -199,7 +224,7 @@ private struct MicButton: View {
 }
 
 private struct LevelBars: View {
-    static let count = 12
+    static let count = 8
     let levels: [Float]
     let height: CGFloat
 
@@ -217,44 +242,63 @@ private struct LevelBars: View {
     }
 }
 
-/// Explains, over the keys, why dictation is unavailable and how to fix it. Typing still works.
-struct InfoPanelView: View {
+/// The menu: session status, "Open LocalFlow", the trackpad tip, and details of anything that keeps
+/// dictation from working. A tap outside the card closes it.
+struct MenuPanelView: View {
     @ObservedObject var client: KeyboardDictationClient
     var onClose: () -> Void
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(client.state.title).font(.subheadline.weight(.semibold))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    switch client.state.mode {
-                    case .needsFullAccess:
-                        Text(KeyboardMessages.fullAccessExplanation)
-                        Text(KeyboardMessages.fullAccessSteps(keyboardName: keyboardName)).foregroundStyle(.secondary)
-                    case .configurationError:
-                        Text(KeyboardMessages.configurationErrorDetail)
-                    case .incompatible:
-                        Text(KeyboardMessages.incompatibleDetail)
-                    default:
-                        Text(client.state.title)
-                    }
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onClose)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                Label(client.state.sessionSummary, systemImage: "waveform.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("lf.menu.session")
+                if let details {
+                    Text(details)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.footnote)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    onClose()
+                    client.openLocalFlow()
+                } label: {
+                    Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
+                        .font(.subheadline.weight(.medium))
+                }
+                .accessibilityIdentifier("lf.menu.open")
+                Label(KeyboardMessages.trackpadTip, systemImage: "hand.point.up.left")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            HStack {
-                Spacer()
-                Button("Done", action: onClose)
-                    .font(.footnote.weight(.semibold))
-                    .accessibilityIdentifier("lf.info.done")
-            }
+            .padding(14)
+            .frame(maxWidth: 300, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: KeyPalette.fill)))
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+            .padding(8)
         }
-        .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: KeyPalette.fill)))
-        .padding(6)
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .accessibilityAddTraits(.isModal)
+    }
+
+    /// The full explanation for the states the top row condenses to one line.
+    private var details: String? {
+        switch client.state.mode {
+        case .needsFullAccess:
+            return KeyboardMessages.fullAccessExplanation + " "
+                + KeyboardMessages.fullAccessSteps(keyboardName: keyboardName)
+        case .configurationError: return KeyboardMessages.configurationErrorDetail
+        case .incompatible: return KeyboardMessages.incompatibleDetail
+        case .error, .hostUnavailable: return client.state.title
+        default: return nil
+        }
     }
 }
 
@@ -280,11 +324,26 @@ private extension KeyboardMode {
         return false
     }
 
-    /// Dictation can run, or at least be explained by the mic; otherwise the bar shows an info button.
+    /// Starting or recording: the capsule is the red Stop.
+    var isActiveCapture: Bool {
+        switch self {
+        case .starting, .recording: return true
+        default: return false
+        }
+    }
+
+    /// Dictation can be started or explained by the Start capsule.
     var allowsDictation: Bool {
         switch self {
         case .needsFullAccess, .configurationError, .incompatible: return false
         default: return true
+        }
+    }
+
+    var needsAttention: Bool {
+        switch self {
+        case .error, .needsFullAccess, .configurationError, .incompatible: return true
+        default: return false
         }
     }
 }

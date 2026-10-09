@@ -55,6 +55,7 @@ struct TypingState: Equatable, Sendable {
     mutating func switchLayer(to layer: KeyboardLayer) {
         self.layer = layer
         lastSpaceAt = nil
+        lastShiftTapAt = nil
     }
 
     /// The text a character key types now: uppercase while shifted.
@@ -71,10 +72,13 @@ struct TypingState: Equatable, Sendable {
         }
         if layer != .letters, character == "'" { layer = .letters }
         lastSpaceAt = nil
+        // Shift, a letter, shift is two single taps, not a double tap.
+        lastShiftTapAt = nil
     }
 
     /// What the space key does now: a plain space, or ". " in place of the space just typed.
     mutating func spaceEdit(before: String?, at time: TimeInterval) -> SpaceEdit {
+        lastShiftTapAt = nil
         defer { if layer != .letters { layer = .letters } }
         if let last = lastSpaceAt, time >= last, time - last <= parameters.doubleSpaceInterval,
            DoubleSpacePeriod.applies(before: before) {
@@ -89,10 +93,12 @@ struct TypingState: Equatable, Sendable {
     mutating func didTypeReturn() {
         layer = .letters
         lastSpaceAt = nil
+        lastShiftTapAt = nil
     }
 
     mutating func didDelete() {
         lastSpaceAt = nil
+        lastShiftTapAt = nil
     }
 
     /// Auto-capitalization only moves between off and an automatic one-shot shift; it never
@@ -200,5 +206,12 @@ struct ContextTail: Equatable, Sendable {
 
     mutating func forget() {
         known = nil
+    }
+
+    /// Releases the model once the proxy shows it: the proxy is then the only copy, so the typed text
+    /// is not held a moment longer than the edit that needed it.
+    mutating func acknowledge(proxyBefore: String?) {
+        guard let known, let proxyBefore, proxyBefore.hasSuffix(known) else { return }
+        self.known = nil
     }
 }

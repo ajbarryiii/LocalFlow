@@ -1,10 +1,11 @@
 import Foundation
 
-/// Lays text out in fixed-width columns: `columns` graphemes per line (wrapping anywhere), line
-/// breaks end lines, and every grapheme is `width` points wide.
+/// Lays text out in columns: `columns` graphemes per line (wrapping anywhere), line breaks end
+/// lines, and every grapheme is `width` points wide unless `advance` says otherwise.
 struct FixedWidthLayout: LineLayout {
     var columns: Int
     var width: Double = 10
+    var advance: ((String) -> Double)?
 
     func lines(in text: String) -> [Range<Int>] {
         var lines: [Range<Int>] = []
@@ -29,13 +30,13 @@ struct FixedWidthLayout: LineLayout {
     }
 
     func x(atUTF16 offset: Int, line: Range<Int>, in text: String) -> Double {
-        var position = 0, count = 0
+        var position = 0, x = 0.0
         for character in text {
             if position >= offset { break }
-            if position >= line.lowerBound { count += 1 }
+            if position >= line.lowerBound { x += advance?(String(character)) ?? width }
             position += character.utf16.count
         }
-        return Double(count) * width
+        return x
     }
 }
 
@@ -62,32 +63,61 @@ struct FakeTextHost {
     /// UIKit's window stops at line breaks; only "\n" itself shows, right after one.
     var windowStopsAtLineBreaks: Bool
     var lagFrames: Int
+    /// `textDidChange` arrives this many frames after each adjustment lands, even an ignored one (the
+    /// proxy shows the caret unmoved afterwards, as measured); nil sends none.
+    var callbackFrames: Int?
+    /// As measured in UIKit: until that callback the proxy answers from the context it last reported,
+    /// the caret moved by the offset in code units and clamped to that text.
+    var provisionalContext: Bool
     private var queued: [(offset: Int, frames: Int)] = []
+    private var callbacks: [Int] = []
+    private var provisional: (units: [UInt16], caret: Int)?
     private(set) var adjustmentCount = 0
 
     init(text: String, caret: Int? = nil, unit: CursorOffsetUnit = .utf16, window: Int? = nil,
-         windowStopsAtLineBreaks: Bool = false, lagFrames: Int = 0) {
+         windowStopsAtLineBreaks: Bool = false, lagFrames: Int = 0, callbackFrames: Int? = 1,
+         provisionalContext: Bool = false) {
         self.text = text
         self.caret = caret ?? text.utf16.count
         self.unit = unit
         self.window = window
         self.windowStopsAtLineBreaks = windowStopsAtLineBreaks
         self.lagFrames = lagFrames
+        self.callbackFrames = callbackFrames
+        self.provisionalContext = provisionalContext
     }
 
     mutating func adjust(by offset: Int) {
         adjustmentCount += 1
+        if provisionalContext {
+            let shown = provisional ?? {
+                let context = self.context
+                return (Array((context.before + context.after).utf16), context.before.utf16.count)
+            }()
+            provisional = (shown.units, min(max(shown.caret + offset, 0), shown.units.count))
+        }
         queued.append((offset, lagFrames))
         advanceFrame(applyingDueOnly: true)
     }
 
     /// Lets one display frame pass; lagging adjustments land when due.
     mutating func advanceFrame(applyingDueOnly: Bool = false) {
-        if !applyingDueOnly { queued = queued.map { (offset: $0.offset, frames: $0.frames - 1) } }
+        if !applyingDueOnly {
+            queued = queued.map { (offset: $0.offset, frames: $0.frames - 1) }
+            callbacks = callbacks.map { $0 - 1 }
+        }
         while let first = queued.first, first.frames <= 0 {
             queued.removeFirst()
             apply(first.offset)
         }
+    }
+
+    /// The `textDidChange` callbacks due now. The first one replaces any provisional context.
+    mutating func takeCallbacks() -> Int {
+        let due = callbacks.filter { $0 <= 0 }.count
+        callbacks.removeAll { $0 <= 0 }
+        if due > 0 { provisional = nil }
+        return due
     }
 
     private mutating func apply(_ offset: Int) {
@@ -102,6 +132,7 @@ struct FakeTextHost {
             let target = index + offset
             if offsets.indices.contains(target) { caret = offsets[target] }
         }
+        if let callbackFrames { callbacks.append(callbackFrames) }
     }
 
     private func graphemeOffsets() -> [Int] {
@@ -115,6 +146,10 @@ struct FakeTextHost {
 
     /// What the proxy reports now.
     var context: (before: String, after: String) {
+        if let provisional {
+            return (String(decoding: provisional.units[..<provisional.caret], as: UTF16.self),
+                    String(decoding: provisional.units[provisional.caret...], as: UTF16.self))
+        }
         let units = Array(text.utf16)
         var start = 0, end = units.count
         if windowStopsAtLineBreaks {
@@ -138,33 +173,59 @@ struct FakeTextHost {
 
     /// Whether the caret sits on a grapheme boundary.
     var caretIsOnBoundary: Bool { graphemeOffsets().contains(caret) }
+
+    /// Whether the caret sits between the two halves of a surrogate pair.
+    var caretSplitsSurrogatePair: Bool {
+        let units = Array(text.utf16)
+        guard caret > 0, caret < units.count else { return false }
+        return UTF16.isLeadSurrogate(units[caret - 1]) && UTF16.isTrailSurrogate(units[caret])
+    }
 }
 
-/// Drives a session against a host: one touch sample per 120 Hz frame, then the lift and the
-/// settling frames. Returns the time after the gesture.
+/// One display frame: the host's due `textDidChange` callbacks reach the session as in
+/// `KeyboardInput`, then the session reads the context and may adjust. A callback the session cannot
+/// explain would end the gesture, so it fails the test.
+func runFrame(_ session: inout TrackpadSession, host: inout FakeTextHost, at time: TimeInterval) {
+    host.advanceFrame()
+    for _ in 0 ..< host.takeCallbacks() {
+        let context = host.context
+        TestSupport.expect(session.explains(before: context.before, after: context.after),
+                           "a callback for the session's own adjustment was not explained")
+        session.hostDidChange()
+    }
+    let context = host.context
+    if let offset = session.frame(before: context.before, after: context.after, timestamp: time) {
+        host.adjust(by: offset)
+    }
+}
+
+/// Drives a session against a host: one touch event per 120 Hz frame, then a rest and the lift (or a
+/// system cancellation) and the settling frames. Returns the
+/// time after the gesture.
 @discardableResult
 func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samples: [(dx: Double, dy: Double)],
-                start: TimeInterval = 100, frameInterval: TimeInterval = 1.0 / 120, end: Bool = true) -> TimeInterval {
+                start: TimeInterval = 100, frameInterval: TimeInterval = 1.0 / 120, end: Bool = true,
+                cancel: Bool = false, restFrames: Int = 90) -> TimeInterval {
     var time = start
     func frame() {
-        host.advanceFrame()
-        let context = host.context
-        if let offset = session.frame(before: context.before, after: context.after, timestamp: time) {
-            host.adjust(by: offset)
-        }
+        runFrame(&session, host: &host, at: time)
     }
     for sample in samples {
-        session.drag(dx: sample.dx, dy: sample.dy, timestamp: time)
+        session.drag(dx: sample.dx, dy: sample.dy)
         frame()
         time += frameInterval
     }
     // Let edge probes and re-snapshots finish while the finger rests.
-    for _ in 0 ..< 90 {
+    for _ in 0 ..< restFrames {
         frame()
         time += frameInterval
     }
-    guard end else { return time }
-    session.end(at: time)
+    guard end || cancel else { return time }
+    if cancel {
+        session.cancel(at: time)
+    } else {
+        session.end(at: time)
+    }
     for _ in 0 ..< 120 where !session.isFinished(at: time) {
         frame()
         time += frameInterval
@@ -173,13 +234,28 @@ func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samp
 }
 
 func makeSession(_ host: FakeTextHost, unit: CursorOffsetUnit? = nil, columns: Int = 1_000,
-                 parameters: TrackpadParameters = .standard) -> TrackpadSession {
+                 advance: ((String) -> Double)? = nil, layoutWidth: Double = 10_000,
+                 parameters: TrackpadParameters = .flat) -> TrackpadSession {
     let context = host.context
     return TrackpadSession(before: context.before, after: context.after, unit: unit, parameters: parameters,
-                           layout: FixedWidthLayout(columns: columns), lineHeight: 20, advance: testAdvance)
+                           layout: FixedWidthLayout(columns: columns, advance: advance), lineHeight: 20,
+                           layoutWidth: layoutWidth)
 }
 
-/// `count` slow samples of `step` points each (60 points per second at 120 Hz: gain 1).
+/// `samples` touch events of the same step.
 func slowDrag(dx: Double = 0, dy: Double = 0, samples: Int) -> [(dx: Double, dy: Double)] {
     Array(repeating: (dx, dy), count: samples)
+}
+
+extension TrackpadParameters {
+    /// Gain 1 for every step, so positional tests count exact distances. The measured curve has its
+    /// own tests.
+    static var flat: TrackpadParameters {
+        var parameters = TrackpadParameters.standard
+        parameters.quadraticCoefficient = 0
+        parameters.linearSlope = 0
+        parameters.powerCoefficient = 1
+        parameters.powerExponent = 0
+        return parameters
+    }
 }

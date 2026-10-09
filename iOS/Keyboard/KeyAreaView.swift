@@ -2,28 +2,37 @@ import UIKit
 
 @MainActor
 protocol KeyAreaViewDelegate: AnyObject {
-    /// A key acted: characters, space and return on touch-up; shift and layer keys on touch-down;
-    /// delete here only from VoiceOver (a held delete uses the begin and end calls).
+    /// A key acted: characters, space and return on touch-up or rollover; shift and layer keys on
+    /// touch-down; delete here only from VoiceOver (a held delete uses the begin and end calls).
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, timestamp: TimeInterval)
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval)
     func keyAreaEndedDelete(_ keyArea: KeyAreaView)
     func keyAreaBeganTrackpad(_ keyArea: KeyAreaView)
-    /// Finger movement in points, with the touch's own timestamp.
-    func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double, timestamp: TimeInterval)
-    func keyAreaEndedTrackpad(_ keyArea: KeyAreaView, timestamp: TimeInterval)
+    /// Finger movement in points for one delivered touch event (Apple's gain is per event).
+    func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double)
+    /// `cancelled`: the system cancelled the touch, which is not a lift.
+    func keyAreaEndedTrackpad(_ keyArea: KeyAreaView, timestamp: TimeInterval, cancelled: Bool)
 }
 
 /// The key area: one view that tracks every touch itself, with nearest-key hit testing so gaps are
-/// never dead. Keys highlight on touch-down and type on touch-up, so the slow path (the text proxy)
-/// is touched once per keystroke and nothing re-renders but the keys involved. Touch and hold the
-/// space bar for trackpad mode: the caps go blank and the whole area moves the cursor.
+/// never dead. The decisions live in `KeyTouchModel`; this view feeds it touches, applies its
+/// effects, and draws pressed keys and callouts from its state, so only the keys involved redraw.
+/// Touch and hold the space bar for trackpad mode: the caps go blank and the whole area moves the
+/// cursor.
 final class KeyAreaView: UIView {
     weak var delegate: KeyAreaViewDelegate?
     /// The target of the globe key's `handleInputModeList(from:with:)`.
     weak var inputModeController: UIInputViewController? {
         didSet { wireGlobe() }
     }
-    var trackpadParameters = TrackpadParameters.standard
+    var trackpadParameters: TrackpadParameters {
+        get { model.parameters }
+        set { model.parameters = newValue }
+    }
+    /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
+    var spaceTitle = "LocalFlow" {
+        didSet { if spaceTitle != oldValue { relabel() } }
+    }
 
     private(set) var keyLayer = KeyboardLayer.letters
     private(set) var shift = ShiftMode.off
@@ -34,25 +43,21 @@ final class KeyAreaView: UIView {
         didSet { if returnKeyType != oldValue { relabel() } }
     }
 
-    private var placedKeys: [PlacedKey] = []
+    private var model = KeyTouchModel()
     private var keyViews: [KeyCapView] = []
     private var builtSize = CGSize.zero
     private let globeButton = UIButton(type: .system)
     private let callout = KeyCalloutView()
-    private var tracked: [ObjectIdentifier: TrackedTouch] = [:]
-    private var holdTimer: Timer?
-    private var trackpad: (id: ObjectIdentifier, last: CGPoint)?
+    /// Stable small IDs for the model, one per live `UITouch`.
+    private var touchIDs: [ObjectIdentifier: KeyTouchModel.TouchID] = [:]
+    private var nextTouchID = 1
+    private var holdTimers: [KeyTouchModel.TouchID: Timer] = [:]
+    private var trackpadLast: CGPoint?
+    private var shownPressed: Set<KeyAction> = []
+    private var shownCallout: KeyAction?
+    private var isBlank = false
 
-    private enum Role { case character, space, delete, returnKey, shift, layer, slide }
-
-    private struct TrackedTouch {
-        var touch: UITouch
-        var keyIndex: Int
-        var start: CGPoint
-        var role: Role
-        /// Typed already, because another finger came down first (rollover).
-        var committed = false
-    }
+    private var placedKeys: [PlacedKey] { model.keys }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -95,25 +100,31 @@ final class KeyAreaView: UIView {
         builtSize = bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
         let metrics = KeyboardMetrics(width: Double(bounds.width), height: Double(bounds.height))
-        placedKeys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
-        while keyViews.count < placedKeys.count {
+        let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
+        // Held fingers follow the new keys before anything is drawn or typed from them.
+        let effects = model.keysChanged(keys, layer: keyLayer)
+        while keyViews.count < keys.count {
             let view = KeyCapView()
             insertSubview(view, belowSubview: callout)
             keyViews.append(view)
         }
-        while keyViews.count > placedKeys.count { keyViews.removeLast().removeFromSuperview() }
-        for (view, key) in zip(keyViews, placedKeys) {
+        while keyViews.count > keys.count { keyViews.removeLast().removeFromSuperview() }
+        for (view, key) in zip(keyViews, keys) {
             view.frame = CGRect(x: key.frame.x, y: key.frame.y, width: key.frame.width, height: key.frame.height)
+            view.isBlank = isBlank
             view.isPressed = false
-            view.isBlank = trackpad != nil
         }
-        if let globe = placedKeys.firstIndex(where: { $0.action == .nextKeyboard }) {
+        if let globe = keys.firstIndex(where: { $0.action == .nextKeyboard }) {
             globeButton.frame = keyViews[globe].frame
             if globeButton.superview == nil { insertSubview(globeButton, belowSubview: callout) }
         } else {
             globeButton.removeFromSuperview()
         }
+        shownPressed = []
+        shownCallout = nil
         relabel()
+        perform(effects, timestamp: CACurrentMediaTime())
+        refreshPressed()
         if UIAccessibility.isVoiceOverRunning { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
     }
 
@@ -133,7 +144,7 @@ final class KeyAreaView: UIView {
             case .delete:
                 view.configure(title: nil, symbol: "delete.left", font: wordFont, prominent: false, secondary: false)
             case .space:
-                view.configure(title: key.label, symbol: nil, font: wordFont, prominent: false, secondary: true)
+                view.configure(title: spaceTitle, symbol: nil, font: wordFont, prominent: false, secondary: true)
             case .returnKey:
                 view.configure(title: returnKeyType.keyTitle, symbol: returnKeyType.keyTitle == nil ? "return" : nil,
                                font: wordFont, prominent: returnKeyType.isProminent, secondary: false)
@@ -160,218 +171,150 @@ final class KeyAreaView: UIView {
 
     // MARK: Touches
 
-    private func nearestKey(to point: CGPoint) -> Int? {
-        KeyboardLayout.nearestKey(toX: Double(point.x), y: Double(point.y), in: placedKeys)
+    private func id(for touch: UITouch) -> KeyTouchModel.TouchID {
+        let key = ObjectIdentifier(touch)
+        if let id = touchIDs[key] { return id }
+        let id = nextTouchID
+        nextTouchID += 1
+        touchIDs[key] = id
+        return id
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches {
-            guard trackpad == nil else { continue }   // other fingers are ignored in trackpad mode
+        for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
-            guard let index = nearestKey(to: point) else { continue }
-            commitPendingCharacters(timestamp: touch.timestamp)
-            UIDevice.current.playInputClick()
-            var entry = TrackedTouch(touch: touch, keyIndex: index, start: point, role: .character)
-            switch placedKeys[index].action {
-            case .character:
-                showCallout(for: index)
-            case .space:
-                entry.role = .space
-                keyViews[index].isPressed = true
-                startHoldTimer(for: touch)
-            case .delete:
-                entry.role = .delete
-                keyViews[index].isPressed = true
-                delegate?.keyAreaBeganDelete(self, timestamp: touch.timestamp)
-            case .returnKey:
-                entry.role = .returnKey
-                keyViews[index].isPressed = true
-            case .shift:
-                entry.role = .shift
-                delegate?.keyArea(self, typed: .shift, timestamp: touch.timestamp)
-                keyViews[index].isPressed = true
-            case .layer(let layer):
-                // Switch at once, so a slide onto a key in the new layer types it.
-                entry.role = .layer
-                delegate?.keyArea(self, typed: .layer(layer), timestamp: touch.timestamp)
-                entry.keyIndex = nearestKey(to: point) ?? index
-                keyViews[entry.keyIndex].isPressed = true
-            case .nextKeyboard:
-                continue
-            }
-            tracked[ObjectIdentifier(touch)] = entry
+            let touchID = id(for: touch)
+            let effects = model.began(touchID, x: Double(point.x), y: Double(point.y))
+            if model.touches.last?.id == touchID { UIDevice.current.playInputClick() }
+            perform(effects, timestamp: touch.timestamp)
         }
+        refreshPressed()
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            let id = ObjectIdentifier(touch)
-            if let current = trackpad, current.id == id {
-                // Coalesced samples carry each touch's own timestamp, so the speed is the finger's.
-                var last = current.last
-                for sample in event?.coalescedTouches(for: touch) ?? [touch] {
-                    let point = sample.location(in: self)
-                    delegate?.keyArea(self, movedTrackpadBy: Double(point.x - last.x), dy: Double(point.y - last.y),
-                                      timestamp: sample.timestamp)
-                    last = point
-                }
-                trackpad = (id, last)
+            guard let id = touchIDs[ObjectIdentifier(touch)] else { continue }
+            if id == model.trackpadTouch, let last = trackpadLast {
+                // One step per delivered event, not per coalesced sample: Apple's gain was measured
+                // per event (ARCHITECTURE.md, "Measured Apple keyboard behavior").
+                let point = touch.location(in: self)
+                delegate?.keyArea(self, movedTrackpadBy: Double(point.x - last.x), dy: Double(point.y - last.y))
+                trackpadLast = point
                 continue
             }
-            guard var entry = tracked[id] else { continue }
             let point = touch.location(in: self)
-            switch entry.role {
-            case .space:
-                let dx = point.x - entry.start.x, dy = point.y - entry.start.y
-                if abs(dx) >= CGFloat(trackpadParameters.dragActivationDistance) {
-                    beginTrackpad(with: touch)
-                    continue
-                }
-                if (dx * dx + dy * dy).squareRoot() > CGFloat(trackpadParameters.holdSlop) { cancelHoldTimer() }
-            case .character, .slide, .layer:
-                guard !entry.committed, let index = nearestKey(to: point), index != entry.keyIndex else { break }
-                keyViews[entry.keyIndex].isPressed = false
-                entry.keyIndex = index
-                if case .character = placedKeys[index].action {
-                    if entry.role == .layer { entry.role = .slide }
-                    showCallout(for: index)
-                } else {
-                    callout.hide()
-                }
-            case .delete, .returnKey, .shift:
-                break
-            }
-            tracked[id] = entry
+            let effects = model.moved(id, x: Double(point.x), y: Double(point.y))
+            if id == model.trackpadTouch { trackpadLast = point }
+            perform(effects, timestamp: touch.timestamp)
         }
+        refreshPressed()
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        finish(touches, typing: true)
+        for touch in touches {
+            guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            let point = touch.location(in: self)
+            perform(model.ended(id, x: Double(point.x), y: Double(point.y)), timestamp: touch.timestamp)
+        }
+        refreshPressed()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        finish(touches, typing: false)
-    }
-
-    private func finish(_ touches: Set<UITouch>, typing: Bool) {
         for touch in touches {
-            let id = ObjectIdentifier(touch)
-            if let current = trackpad, current.id == id {
-                endTrackpad(timestamp: touch.timestamp)
-                continue
-            }
-            guard let entry = tracked.removeValue(forKey: id) else { continue }
-            let point = touch.location(in: self)
-            keyViews[safe: entry.keyIndex]?.isPressed = false
-            switch entry.role {
-            case .character, .slide:
-                callout.hide()
-                guard typing, !entry.committed, case .character(let character) = placedKeys[entry.keyIndex].action else { break }
-                delegate?.keyArea(self, typed: .character(character), timestamp: touch.timestamp)
-                // A number slid to from the layer key returns to letters, as on Apple's keyboard.
-                if entry.role == .slide, keyLayer != .letters {
-                    delegate?.keyArea(self, typed: .layer(.letters), timestamp: touch.timestamp)
-                }
-            case .layer:
-                callout.hide()
-            case .space:
-                cancelHoldTimer()
-                if typing, nearestKey(to: point).map({ placedKeys[$0].action == .space }) == true {
-                    delegate?.keyArea(self, typed: .space, timestamp: touch.timestamp)
-                }
-            case .returnKey:
-                if typing, nearestKey(to: point).map({ placedKeys[$0].action == .returnKey }) == true {
-                    delegate?.keyArea(self, typed: .returnKey, timestamp: touch.timestamp)
-                }
-            case .delete:
-                delegate?.keyAreaEndedDelete(self)
-            case .shift:
-                break
-            }
+            guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            perform(model.cancelled(id), timestamp: touch.timestamp)
         }
-    }
-
-    /// Rollover: a new finger commits the keys still held by earlier ones, so fast two-thumb
-    /// typing keeps its order.
-    private func commitPendingCharacters(timestamp: TimeInterval) {
-        for (id, entry) in tracked where !entry.committed && (entry.role == .character || entry.role == .slide) {
-            guard case .character(let character) = placedKeys[entry.keyIndex].action else { continue }
-            delegate?.keyArea(self, typed: .character(character), timestamp: timestamp)
-            tracked[id]?.committed = true
-            callout.hide()
-        }
-    }
-
-    private func showCallout(for index: Int) {
-        guard case .character(let character) = placedKeys[index].action else { return }
-        callout.show(displayed(character), over: keyViews[index].frame, within: bounds, compact: isCompact)
-    }
-
-    // MARK: Trackpad
-
-    private func startHoldTimer(for touch: UITouch) {
-        cancelHoldTimer()
-        let id = ObjectIdentifier(touch)
-        let timer = Timer(timeInterval: trackpadParameters.holdDuration, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let entry = self.tracked[id], entry.role == .space else { return }
-                self.beginTrackpad(with: entry.touch)
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        holdTimer = timer
-    }
-
-    private func cancelHoldTimer() {
-        holdTimer?.invalidate()
-        holdTimer = nil
-    }
-
-    private func beginTrackpad(with touch: UITouch) {
-        cancelHoldTimer()
-        let id = ObjectIdentifier(touch)
-        if let entry = tracked.removeValue(forKey: id) { keyViews[safe: entry.keyIndex]?.isPressed = false }
-        callout.hide()
-        trackpad = (id, touch.location(in: self))
-        UIView.animate(withDuration: 0.15) {
-            for view in self.keyViews {
-                view.isBlank = true
-                view.alpha = 0.55
-            }
-            self.globeButton.alpha = 0
-        }
-        delegate?.keyAreaBeganTrackpad(self)
-    }
-
-    private func endTrackpad(timestamp: TimeInterval) {
-        trackpad = nil
-        UIView.animate(withDuration: 0.15) {
-            for view in self.keyViews {
-                view.isBlank = false
-                view.alpha = 1
-            }
-            self.globeButton.alpha = 1
-        }
-        delegate?.keyAreaEndedTrackpad(self, timestamp: timestamp)
+        refreshPressed()
     }
 
     /// Ends every touch, for example when the keyboard disappears mid-gesture.
     func cancelAllTouches() {
-        cancelHoldTimer()
-        callout.hide()
-        if trackpad != nil { endTrackpad(timestamp: CACurrentMediaTime()) }
-        for entry in tracked.values {
-            keyViews[safe: entry.keyIndex]?.isPressed = false
-            if entry.role == .delete { delegate?.keyAreaEndedDelete(self) }
+        perform(model.cancelAll(), timestamp: CACurrentMediaTime())
+        touchIDs.removeAll()
+        refreshPressed()
+    }
+
+    private func perform(_ effects: [KeyTouchModel.Effect], timestamp: TimeInterval) {
+        for effect in effects {
+            switch effect {
+            case .type(let action):
+                delegate?.keyArea(self, typed: action, timestamp: timestamp)
+            case .beginDelete:
+                delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
+            case .endDelete:
+                delegate?.keyAreaEndedDelete(self)
+            case .startHoldTimer(let id):
+                startHoldTimer(id)
+            case .cancelHoldTimer(let id):
+                holdTimers.removeValue(forKey: id)?.invalidate()
+            case .beginTrackpad:
+                setBlank(true)
+                delegate?.keyAreaBeganTrackpad(self)
+            case .endTrackpad(let cancelled):
+                trackpadLast = nil
+                setBlank(false)
+                delegate?.keyAreaEndedTrackpad(self, timestamp: timestamp, cancelled: cancelled)
+            }
         }
-        tracked.removeAll()
+    }
+
+    /// Draws pressed keys and the callout from the model, touching only keys that changed.
+    private func refreshPressed() {
+        let pressed = model.pressedActions
+        if pressed != shownPressed {
+            for (view, key) in zip(keyViews, placedKeys) where pressed.contains(key.action) != shownPressed.contains(key.action) {
+                view.isPressed = pressed.contains(key.action)
+            }
+            shownPressed = pressed
+        }
+        let callout = isBlank ? nil : model.calloutAction
+        guard callout != shownCallout else { return }
+        shownCallout = callout
+        if let callout, case .character(let character) = callout,
+           let index = placedKeys.firstIndex(where: { $0.action == callout }), keyViews.indices.contains(index) {
+            self.callout.show(displayed(character), over: keyViews[index].frame, within: bounds, compact: isCompact)
+        } else {
+            self.callout.hide()
+        }
+    }
+
+    // MARK: Trackpad
+
+    private func startHoldTimer(_ id: KeyTouchModel.TouchID) {
+        holdTimers.removeValue(forKey: id)?.invalidate()
+        let timer = Timer(timeInterval: trackpadParameters.holdDuration, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.holdTimers[id] = nil
+                let point = self.model.touches.first { $0.id == id }.map { CGPoint(x: $0.x, y: $0.y) }
+                let effects = self.model.holdElapsed(id)
+                if self.model.trackpadTouch == id, let point { self.trackpadLast = point }
+                self.perform(effects, timestamp: CACurrentMediaTime())
+                self.refreshPressed()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        holdTimers[id] = timer
+    }
+
+    private func setBlank(_ blank: Bool) {
+        guard blank != isBlank else { return }
+        isBlank = blank
+        UIView.animate(withDuration: 0.15) {
+            for view in self.keyViews {
+                view.isBlank = blank
+                view.alpha = blank ? 0.55 : 1
+            }
+            self.globeButton.alpha = blank ? 0 : 1
+        }
+        if blank { callout.hide() }
     }
 
     // MARK: Accessibility
 
     private func rebuildAccessibility() {
         var elements: [Any] = []
-        for (index, key) in placedKeys.enumerated() {
+        for (index, key) in placedKeys.enumerated() where keyViews.indices.contains(index) {
             if key.action == .nextKeyboard {
                 elements.append(globeButton)
                 continue
@@ -424,12 +367,6 @@ private final class KeyAccessibilityElement: UIAccessibilityElement {
     override func accessibilityActivate() -> Bool {
         onActivate?()
         return onActivate != nil
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }
 

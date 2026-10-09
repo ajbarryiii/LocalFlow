@@ -1,14 +1,16 @@
 import Foundation
 
-/// What one word-deletion step of a held delete key removes, from the text before the caret.
-/// Pure; the keyboard reads the context in memory only and drops it after the deletion.
+/// What one word of a held delete key's word mode removes, from the text before the caret. Pure;
+/// the keyboard reads the context in memory only and drops it after the deletion.
 ///
-/// Rules, from the caret backwards, after the convention of Option-Delete on Apple platforms:
-/// trailing spaces and tabs, then one of
+/// Measured on Apple's keyboard: each word goes with the space before it, and the first word tick
+/// finishes a partly deleted word. From the caret backwards: trailing spaces and tabs, then one of
 /// - a single line break (a paragraph boundary is its own step),
 /// - a single emoji,
 /// - trailing punctuation plus the word it is attached to ("world." or "dogs'"). Apostrophes
 ///   inside a word ("don't") and a period or comma between digits ("3.14") stay part of the word.
+///
+/// then the spaces and tabs before it (never a line break).
 enum WordBoundaries {
     struct Deletion: Equatable, Sendable {
         /// The number of `deleteBackward()` calls: one per grapheme cluster.
@@ -33,6 +35,9 @@ enum WordBoundaries {
                 }
             case .space:
                 break
+            }
+            if i < characters.count, !characters[i].isNewline {
+                while i > 0, kind(of: characters[i - 1]) == .space { i -= 1 }
             }
         }
         let removed = characters[i...]

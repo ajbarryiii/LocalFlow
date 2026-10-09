@@ -982,3 +982,15 @@ The harness lives outside the repository
 
   Full report: `/home/aj/.cache/localflow-ios/calibration/REPORT.md`, outside
   the repository.
+- **Proxy context, as measured in the simulator (UIKit hosts).**
+  - **Spans line breaks:** the before-context reaches across line breaks, a
+    sentence or two back, and often starts mid-line. Only the after-context
+    stops at a line break.
+  - **Provisional context:** right after an `adjustTextPosition`, the proxy
+    first reports a provisional context: its last-reported text, with the
+    caret clamped to that text. The host's own context arrives with
+    `textDidChange` about 10 ms later. The trackpad trusts a probe or crossing
+    only once every adjustment has been answered by `textDidChange`, or after
+    a 0.3 s timeout. A caret shown exactly at the snapshot's edge is never
+    taken as a line crossing.
+  - Whether devices behave the same is part of the device plan.

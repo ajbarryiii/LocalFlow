@@ -52,6 +52,23 @@ enum KeyboardMessages {
         }
     }
 
+    static let trackpadTip = "Hold space to move the cursor"
+
+    /// The menu panel's session line, only from a live host.
+    static func sessionSummary(for status: HostStatus?, now: Date) -> String {
+        guard let status, status.schema == DictationProtocol.schema,
+              DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
+        else { return "No session running" }
+        switch status.session {
+        case .inactive: return "No session running"
+        case .starting: return "Session starting…"
+        case .active: break
+        }
+        guard let expiresAt = status.sessionExpiresAt else { return "Session active" }
+        let minutes = max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
+        return "Session active · ends after \(minutes) min idle"
+    }
+
     /// A small hint about the model or session, only from a live host: a dead host's last status
     /// would otherwise claim "Preparing model…" forever.
     static func hint(for status: HostStatus?, now: Date) -> String? {

@@ -59,7 +59,7 @@ struct HomeView: View {
 
                 Section {
                     NavigationLink(value: HomeRoute.diagnostics) {
-                        RowLabel(title: "Diagnostics", detail: "Compute policy and measurements", symbol: "gauge.with.dots.needle.67percent")
+                        RowLabel(title: "Diagnostics", detail: "Measurements and cursor tuning", symbol: "gauge.with.dots.needle.67percent")
                     }
                     .accessibilityIdentifier("home.diagnostics")
                 } footer: {

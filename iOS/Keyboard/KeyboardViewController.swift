@@ -7,20 +7,21 @@ final class KeyboardInputView: UIInputView, UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
 }
 
-/// The extension's principal class (`LocalFlowKeyboard.KeyboardViewController`): the SwiftUI
-/// dictation bar on top of the UIKit key area, the text proxy, and field changes.
+/// The extension's principal class (`LocalFlowKeyboard.KeyboardViewController`): the SwiftUI top row
+/// above the UIKit key area, the menu panel, the text proxy, and field changes.
 final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private lazy var client = KeyboardDictationClient()
     private let keyArea = KeyAreaView()
     private lazy var input = KeyboardInput(controller: self, keyArea: keyArea)
+    private let chrome = KeyboardChrome()
     private var bar: UIHostingController<DictationBarView>?
-    private var infoPanel: UIHostingController<InfoPanelView>?
+    private var menuPanel: UIHostingController<MenuPanelView>?
     private var barHeight: NSLayoutConstraint?
     private var totalHeight: NSLayoutConstraint?
     private var trackpadHaptics: UIImpactFeedbackGenerator?
 
-    /// Apple's portrait keys are 216 points tall without the predictive bar; the dictation bar
-    /// takes the predictive bar's place, a little taller for the mic.
+    /// Apple's portrait keys are 216 points tall without the predictive bar; the top row takes the
+    /// predictive bar's place, a little taller for the Start capsule, as on Wispr Flow's keyboard.
     private var heights: (bar: CGFloat, keys: CGFloat) {
         traitCollection.verticalSizeClass == .compact
             ? (44, CGFloat(KeyboardMetrics.compactHeight)) : (54, CGFloat(KeyboardMetrics.regularHeight))
@@ -38,12 +39,13 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         keyArea.delegate = input
         keyArea.inputModeController = self
         input.onTrackpadChange = { [weak self] active in self?.trackpadChanged(active) }
-        input.onEdit = { [weak self] in self?.client.noteEdit() }
+        input.onUndoAvailabilityChanged = { [weak self] in self?.client.publishUndoState() }
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
 
-        let bar = UIHostingController(rootView: DictationBarView(client: client, onInfo: { [weak self] in
-            self?.setInfoPanel(visible: true)
-        }))
+        let bar = UIHostingController(rootView: DictationBarView(
+            client: client, chrome: chrome,
+            onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
+            onAction: { [weak self] in self?.setMenu(visible: false) }))
         bar.view.backgroundColor = .clear
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false
@@ -97,18 +99,18 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.viewDidDisappear(animated)
         client.stop()
         input.stop()
-        setInfoPanel(visible: false)
+        setMenu(visible: false)
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         documentDidChange()
-        input.proxyChanged()
+        input.hostChanged(textChanged: true)
     }
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
-        input.proxyChanged()
+        input.hostChanged(textChanged: false)
     }
 
     private func documentDidChange() {
@@ -121,9 +123,10 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         if overrideUserInterfaceStyle != style { overrideUserInterfaceStyle = style }
     }
 
-    // MARK: Trackpad and info
+    // MARK: Trackpad and menu
 
     private func trackpadChanged(_ active: Bool) {
+        if active { setMenu(visible: false) }
         UIView.animate(withDuration: 0.15) { self.bar?.view.alpha = active ? 0.3 : 1 }
         guard active, client.hapticsAllowed else { return }
         let haptics = trackpadHaptics ?? UIImpactFeedbackGenerator(style: .light, view: view)
@@ -138,10 +141,13 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         return (settings.cursorSensitivity, settings.cursorAcceleration)
     }
 
-    private func setInfoPanel(visible: Bool) {
-        if visible, infoPanel == nil {
-            let panel = UIHostingController(rootView: InfoPanelView(client: client, onClose: { [weak self] in
-                self?.setInfoPanel(visible: false)
+    /// The menu panel covers the key area; a tap outside its card, or on the menu button, closes it.
+    private func setMenu(visible: Bool) {
+        if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
+        if visible, menuPanel == nil {
+            keyArea.cancelAllTouches()
+            let panel = UIHostingController(rootView: MenuPanelView(client: client, onClose: { [weak self] in
+                self?.setMenu(visible: false)
             }))
             panel.view.backgroundColor = .clear
             panel.safeAreaRegions = []
@@ -155,12 +161,12 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
                 panel.view.bottomAnchor.constraint(equalTo: keyArea.bottomAnchor),
             ])
             panel.didMove(toParent: self)
-            infoPanel = panel
-        } else if !visible, let panel = infoPanel {
+            menuPanel = panel
+        } else if !visible, let panel = menuPanel {
             panel.willMove(toParent: nil)
             panel.view.removeFromSuperview()
             panel.removeFromParent()
-            infoPanel = nil
+            menuPanel = nil
         }
     }
 
@@ -176,8 +182,10 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.insertDictation(text)
     }
 
-    func deleteBackward(count: Int) {
-        input.deleteForUndo(count)
+    var canUndoLastDictation: Bool { input.canUndoLastDictation }
+
+    func undoLastDictation() {
+        input.undoLastDictation()
     }
 
     func openContainingApp(_ url: URL, completion: @escaping @MainActor @Sendable (Bool) -> Void) -> Bool {

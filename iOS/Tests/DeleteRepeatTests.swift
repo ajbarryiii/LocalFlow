@@ -3,49 +3,67 @@ import Foundation
 enum DeleteRepeatTests {
     static var tests: [TestCase] {
         [
-            ("charactersThenWords", testCharactersThenWords),
+            ("measuredParameters", testMeasuredParameters),
+            ("charactersThenTwoWords", testCharactersThenTwoWords),
             ("scheduleTimes", testScheduleTimes),
             ("parametersDropIn", testParametersDropIn),
         ]
     }
 
-    private static func testCharactersThenWords() {
+    private static func close(_ actual: Double, _ expected: Double, _ what: String,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        TestSupport.expect(abs(actual - expected) < 1e-9, "\(what): expected \(expected), got \(actual)", file: file, line: line)
+    }
+
+    private static func testMeasuredParameters() {
+        // ARCHITECTURE.md, "Measured Apple keyboard behavior".
+        let measured = DeleteRepeatParameters.standard
+        TestSupport.expectEqual(measured.firstDeletionDelay, 0.087)
+        TestSupport.expectEqual(DeleteRepeat().firstDeletion, 0.087)
+        TestSupport.expectEqual(measured.initialDelay, 0.50)
+        TestSupport.expectEqual(measured.characterInterval, 0.10)
+        TestSupport.expectEqual(measured.charactersBeforeWords, 21)
+        TestSupport.expectEqual(measured.wordInterval, 0.354)
+        TestSupport.expectEqual(measured.wordsPerTick, 2)
+    }
+
+    private static func testCharactersThenTwoWords() {
         let schedule = DeleteRepeat()
-        TestSupport.expectEqual(schedule.unit(atElapsed: 0.5), .character)
-        TestSupport.expectEqual(schedule.unit(atElapsed: 3.49), .character)
-        TestSupport.expectEqual(schedule.unit(atElapsed: 3.5), .word)
-        TestSupport.expectEqual(schedule.unit(atElapsed: 30), .word)
+        // The first deletion and repeats 1–20 are the 21 characters; repeat 21 deletes two words.
+        for index in 1 ... 20 { TestSupport.expectEqual(schedule.repeatAt(index).unit, .character) }
+        TestSupport.expectEqual(schedule.repeatAt(21).unit, .words(2))
+        TestSupport.expectEqual(schedule.repeatAt(40).unit, .words(2))
     }
 
     private static func testScheduleTimes() {
         let schedule = DeleteRepeat()
-        var fires: [TimeInterval] = []
-        var last: TimeInterval?
-        while fires.count < 40 {
-            let next = schedule.nextFire(afterRepeatAt: last)
-            fires.append(next)
-            last = next
+        // Times from touch-down: the first deletion at 0.087 s, the first repeat 0.50 s after it.
+        close(schedule.repeatAt(1).time, 0.587, "first repeat")
+        close(schedule.repeatAt(2).time, 0.687, "second repeat")
+        close(schedule.repeatAt(20).time, 2.487, "21st character")
+        // Word mode 2.5 s after the first deletion (measured: about 2.52 s), then every 0.354 s.
+        close(schedule.repeatAt(21).time - schedule.firstDeletion, 2.5, "first word tick")
+        close(schedule.repeatAt(22).time, 2.941, "second word tick")
+        close(schedule.repeatAt(23).time, 3.295, "third word tick")
+        var previous = 0.0
+        for index in 1 ... 60 {
+            let time = schedule.repeatAt(index).time
+            TestSupport.expect(time > previous, "schedule must advance at \(index)")
+            previous = time
         }
-        TestSupport.expectEqual(fires[0], 0.5)
-        TestSupport.expect(abs(fires[1] - 0.6) < 1e-9, "second repeat \(fires[1])")
-        // Characters every 0.1 s until the switch, which fires exactly at 3.5 s, then words every 0.2 s.
-        let characterFires = fires.filter { schedule.unit(atElapsed: $0) == .character }
-        TestSupport.expectEqual(characterFires.count, 30)
-        let firstWord = fires.first { schedule.unit(atElapsed: $0) == .word }!
-        TestSupport.expect(abs(firstWord - 3.5) < 1e-9, "first word at \(firstWord)")
-        let index = fires.firstIndex(of: firstWord)!
-        TestSupport.expect(abs(fires[index + 1] - fires[index] - 0.2) < 1e-9, "word interval")
-        for (earlier, later) in zip(fires, fires.dropFirst()) {
-            TestSupport.expect(later > earlier, "schedule must advance")
-        }
+        // Out-of-range indexes read as the first repeat.
+        TestSupport.expectEqual(schedule.repeatAt(0).time, schedule.repeatAt(1).time)
     }
 
     private static func testParametersDropIn() {
-        let measured = DeleteRepeatParameters(initialDelay: 0.4, characterInterval: 0.08, wordModeAfter: 2, wordInterval: 0.3)
+        let measured = DeleteRepeatParameters(initialDelay: 0.4, characterInterval: 0.08, charactersBeforeWords: 5,
+                                              wordInterval: 0.3, wordsPerTick: 1)
         let schedule = DeleteRepeat(parameters: measured)
-        TestSupport.expectEqual(schedule.nextFire(afterRepeatAt: nil), 0.4)
-        TestSupport.expectEqual(schedule.unit(atElapsed: 2), .word)
-        TestSupport.expect(abs(schedule.nextFire(afterRepeatAt: 2) - 2.3) < 1e-9, "measured word interval")
+        close(schedule.repeatAt(1).time, 0.487, "first repeat")
+        TestSupport.expectEqual(schedule.repeatAt(4).unit, .character)
+        TestSupport.expectEqual(schedule.repeatAt(5).unit, .words(1))
+        close(schedule.repeatAt(5).time, 0.807, "switch")
+        close(schedule.repeatAt(6).time, 1.107, "word interval")
         TestSupport.expectEqual(DeleteRepeatParameters.standard, DeleteRepeatParameters())
     }
 }

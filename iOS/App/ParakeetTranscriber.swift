@@ -139,17 +139,6 @@ private final class ParakeetRuntime: SpeechRuntime {
     }
 }
 
-// Temporary: `DiagnosticsView` (another agent's file this round) still shows a compute-policy picker.
-// These keep it compiling with one fixed, inert option; delete them once it shows the units read-only.
-extension ComputePolicy {
-    var label: String { "Neural Engine" }
-    var explanation: String { "Always the Neural Engine: fast, and about 165 MB of memory." }
-}
-
-extension ParakeetTranscriber {
-    var policy: ComputePolicy { .neuralEngine }
-}
-
 extension ComputeFailureHint {
     var message: String {
         switch self {

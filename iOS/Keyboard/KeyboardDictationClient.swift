@@ -10,8 +10,9 @@ protocol KeyboardTextTarget: AnyObject {
     /// The view haptics attach to; nil before it loads.
     var feedbackView: UIView? { get }
     func insert(_ text: String)
-    /// Undo of the last dictation: one `deleteBackward()` per grapheme.
-    func deleteBackward(count: Int)
+    /// "Undo last dictation" is owned by the editing side (`KeyboardInput`), which sees every edit.
+    var canUndoLastDictation: Bool { get }
+    func undoLastDictation()
     /// Tries to open the containing app (see `HostAppLauncher`); false if no attempt was made.
     func openContainingApp(_ url: URL, completion: @escaping @MainActor @Sendable (Bool) -> Void) -> Bool
 }
@@ -24,6 +25,8 @@ struct KeyboardViewState: Equatable {
     var canInsertLast = false
     /// The last inserted dictation can still be removed (see `UndoTracker`).
     var canUndo = false
+    /// For the menu panel: whether a session runs and how long it stays idle.
+    var sessionSummary = ""
     /// Recent input levels while recording, oldest first.
     var levels: [Float] = []
 }
@@ -55,8 +58,6 @@ final class KeyboardDictationClient: ObservableObject {
     private var shownIntent = StoreRead<KeyboardIntent>.absent
     private var shownStatus = StoreRead<HostStatus>.absent
     private var manualInsertID: UUID?
-    /// The last inserted dictation, for "Undo"; its text lives only here, for at most 30 s.
-    private var undo = UndoTracker()
     private var launcherFailed = false
     /// A record request whose bounce failed; it waits for the user to open LocalFlow.
     private var unlaunchedRequestID: UUID?
@@ -166,21 +167,40 @@ final class KeyboardDictationClient: ObservableObject {
         refresh()
     }
 
-    /// "Undo": removes the last inserted dictation while `UndoTracker` still allows it.
+    /// "Undo": removes the last inserted dictation, progressively, while it is still owned.
     func undoLastDictation() {
         notice = nil
-        if let target, let count = undo.takeUndo(documentID: target.documentID, contextBefore: target.contextBeforeInput,
-                                                 now: CACurrentMediaTime()) {
-            target.deleteBackward(count: count)
-            playHaptic(.press)
-        }
-        refresh()
+        guard target?.canUndoLastDictation == true else { return publishUndoState() }
+        target?.undoLastDictation()
+        playHaptic(.press)
+        publishUndoState()
     }
 
-    /// Typing, delete, trackpad movement or an insertion other than a dictation: undo no longer applies.
-    func noteEdit() {
-        guard undo.insertion != nil else { return }
-        undo.editHappened()
+    /// Whether Undo can be offered changed. Updates only that, without reading the shared files or
+    /// delivering a result, so an invalidation inside an edit can never insert text before the edit
+    /// runs.
+    func publishUndoState() {
+        let canUndo = target?.canUndoLastDictation == true
+        guard canUndo != state.canUndo else { return }
+        state.canUndo = canUndo
+    }
+
+    /// "Open LocalFlow" in the menu: the same launcher as the bounce, without a dictation request.
+    func openLocalFlow() {
+        notice = nil
+        var attempted = false
+        if let url = configuration?.dictateURL, let target {
+            attempted = target.openContainingApp(url) { [weak self] opened in
+                guard let self, !opened else { return }
+                self.launcherFailed = true
+                self.show(KeyboardMessages.openLocalFlow)
+                self.refresh()
+            }
+        }
+        if !attempted {
+            launcherFailed = true
+            show(KeyboardMessages.openLocalFlow)
+        }
         refresh()
     }
 
@@ -261,7 +281,6 @@ final class KeyboardDictationClient: ObservableObject {
         let mode = KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now)
         ledger.noteDisplayed(mode, intent: intent, documentID: documentID)
         ledger.prune(now: now, keeping: Set([intent.value?.requestID, shownIntent.value?.requestID].compactMap { $0 }))
-        undo.expire(now: CACurrentMediaTime())
         if access == .fullAccess { deliverResults(documentID: documentID, now: now) }
         shownIntent = intent
         shownStatus = status
@@ -293,7 +312,6 @@ final class KeyboardDictationClient: ObservableObject {
             return
         }
         target.insert(text)
-        undo.recordInsertion(text, documentID: target.documentID, at: CACurrentMediaTime())
         // The proxy may not reflect the insertion yet, and a following result's spacing needs it.
         context = (context ?? "") + text
         playHaptic(.success)
@@ -324,13 +342,11 @@ final class KeyboardDictationClient: ObservableObject {
         } else {
             notice = nil
         }
-        // The context is read only while an undo is pending.
-        let canUndo = undo.insertion != nil && target.map {
-            undo.undoableGraphemes(documentID: $0.documentID, contextBefore: $0.contextBeforeInput,
-                                   now: CACurrentMediaTime()) != nil
-        } == true
         let next = KeyboardViewState(mode: mode, title: title, hint: KeyboardMessages.hint(for: status.value, now: now),
-                                     canInsertLast: manualInsertID != nil, canUndo: canUndo, levels: levels)
+                                     canInsertLast: manualInsertID != nil,
+                                     canUndo: target?.canUndoLastDictation == true,
+                                     sessionSummary: KeyboardMessages.sessionSummary(for: status.value, now: now),
+                                     levels: levels)
         guard next != state else { return }
         if mode.phase != state.mode.phase {
             if case .recording = mode { playHaptic(.listening) }

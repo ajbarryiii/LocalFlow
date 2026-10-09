@@ -1,33 +1,20 @@
 import CoreML
 import SwiftUI
 
-/// Device experiments: the compute policy and content-free measurements of recent dictations, held
-/// in memory only.
+/// Device experiments: cursor tuning, the runtime (compute units read-only, as the policy is fixed)
+/// and content-free measurements of recent dictations, held in memory only.
 struct DiagnosticsView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
 
     var body: some View {
         List {
-            Section {
-                Picker("Compute policy", selection: Binding(get: { transcriber.policy }, set: { host.setComputePolicy($0) })) {
-                    ForEach(ComputePolicy.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .accessibilityIdentifier("diagnostics.computePolicy")
-                Text(transcriber.policy.explanation).font(.footnote).foregroundStyle(.secondary)
-            } header: {
-                Text("Compute policy")
-            } footer: {
-                Text("Changing the compute units releases the model; it is prepared again for the next dictation.")
-            }
-
             CursorTuningSection(settings: host.settings.settings)
 
             Section("Runtime") {
                 LabeledContent("Model", value: modelText)
-                LabeledContent("Compute units", value: transcriber.activeUnits?.label ?? "—")
+                LabeledContent("Compute units", value: transcriber.activeUnits?.label ?? "Not loaded")
+                    .accessibilityIdentifier("diagnostics.computeUnits")
                 LabeledContent("Available devices", value: availableDevices)
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     LabeledContent("Memory footprint", value: footprintText(ProcessMemory.footprint()))

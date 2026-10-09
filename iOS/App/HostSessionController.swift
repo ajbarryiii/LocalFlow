@@ -121,10 +121,6 @@ final class HostSessionController: ObservableObject {
         _ = transcriber.releaseIfIdle()
     }
 
-    /// Temporary and inert: the policy is fixed. Only keeps `DiagnosticsView`'s picker compiling until it
-    /// shows the compute units read-only; delete with that picker.
-    func setComputePolicy(_ policy: ComputePolicy) {}
-
     /// `<scheme>://dictate` is only a hint. In the foreground it runs one reconciliation pass; before the
     /// app gets there it does nothing, and the arrival reconciles. It never starts capture by itself:
     /// only a fresh record intent admitted in the foreground can.
