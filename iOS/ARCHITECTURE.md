@@ -838,3 +838,11 @@ Self-test with invented synthetic speech (2.42 s):
   inference entitlement, fails the request and shows a content-free hint in
   Diagnostics. The "CPU only" policy stays in Diagnostics for foreground
   experiments only. This supersedes "Compute fallback" above.
+- **Battery.** An idle session keeps the audio hardware and the app awake, so
+  idle cost is kept to a minimum:
+  - request a large I/O buffer (about 0.1–0.2 s) and 16 kHz mono input
+  - do no conversion or allocation in the idle tap
+  - keep the 5-minute default timeout
+
+  The device plan includes battery drain over 30 minutes, comparing an idle
+  session against no session, and against Wispr Flow if it is installed.
