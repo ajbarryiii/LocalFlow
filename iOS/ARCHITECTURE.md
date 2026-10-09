@@ -963,3 +963,22 @@ The harness lives outside the repository
   matches automatically by applying `g` per delivered event.
   `TrackpadParameters.eventStepScale` (default 1.0) is the correction knob if
   the device shows otherwise.
+- **Trackpad model (supersedes "Motion model").** Apple's trackpad is a 2D
+  floating cursor. A virtual point in the emulated text layout starts exactly
+  at the caret (relative mapping). Each delivered touch event moves it by
+  `g(|d|)·d`, using one gain for both axes. The caret is the character
+  boundary nearest the point, on the line whose center is nearest the point.
+  - Pushing past a line's start or end keeps the caret at that end of the
+    line: there is no wrapping. Only vertical motion changes lines.
+  - On the first and last lines, the caret stays on the line and keeps its
+    column.
+  - The point is clamped to [1.5, width − 1.5] × [first line center − 7, last
+    line center + 8]. Overshoot is not remembered.
+  - There is no dead zone, hysteresis or momentum.
+  - Only the 0.381 s timer starts trackpad mode; movement before it is
+    discarded.
+  - The first deletion happens 0.087 s after touch-down, or at lift if that
+    comes sooner.
+
+  Full report: `/home/aj/.cache/localflow-ios/calibration/REPORT.md`, outside
+  the repository.
