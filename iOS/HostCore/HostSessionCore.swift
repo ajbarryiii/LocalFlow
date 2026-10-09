@@ -238,9 +238,30 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// The engine of `generation` stopped, its configuration changed, or media services were reset. The
-    /// failure waits out `captureStallGrace` (an interruption arriving meanwhile wins), then the engine is
-    /// restarted, in the background too. A report for an engine that has since been replaced is ignored.
+    /// Capture settings changed (the microphone choice). In the foreground during an active session the
+    /// capture is reconfigured now; otherwise the change applies at the next session start. Never in the
+    /// background, where nothing may be reconfigured on the user's behalf.
+    func captureSettingsChanged() {
+        guard isLaunched, session == .active else { return }
+        let now = environment.now()
+        guard noteForeground(now) else { return }
+        do {
+            try capture.reconfigure()
+        } catch {
+            endSession(.engineFailed, now)
+            flush(now)
+            return
+        }
+        captureStartedAt = now
+        captureFailingSince = nil
+        needsPublish = true
+        flush(now)
+    }
+
+    /// The engine of `generation` stopped or its configuration changed, within a surviving audio session
+    /// (a route change, or the microphone choice re-asserted). The failure waits out `captureStallGrace`
+    /// (an interruption arriving meanwhile wins), then the engine is restarted, in the background too. A
+    /// report for an engine that has since been replaced is ignored.
     func captureFailed(generation: UInt64) {
         guard session == .active, generation == capture.engineGeneration else { return }
         noteCaptureFailure(environment.now())

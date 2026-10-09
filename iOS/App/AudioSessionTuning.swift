@@ -13,6 +13,8 @@ struct CaptureConfiguration: Equatable, Sendable {
     var inputSampleRate: Double
     var inputChannels: Int
     var tapBufferFrames: Int
+    /// The input port in use, if known (nil for the synthetic input).
+    var inputPort: InputPortKind?
 }
 
 /// Battery: an idle session should wake the app as rarely as possible. Latency does not matter,

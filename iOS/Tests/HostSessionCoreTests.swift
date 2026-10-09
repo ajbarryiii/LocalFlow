@@ -45,6 +45,7 @@ enum HostSessionCoreTests {
             ("cancelDuringTheTailDiscardsTheRecording", isolated(testCancelDuringTheTailDiscardsTheRecording)),
             ("sessionEndDuringTheTailTranscribes", isolated(testSessionEndDuringTheTailTranscribes)),
             ("mediaServicesResetEndsTheSession", isolated(testMediaServicesResetEndsTheSession)),
+            ("microphoneChoiceAppliesInTheForegroundOnly", isolated(testMicrophoneChoiceAppliesInTheForegroundOnly)),
         ]
     }
 
@@ -1000,6 +1001,40 @@ enum HostSessionCoreTests {
         h.core.captureMediaServicesReset()
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "finished recording lost")
     }
+
+    /// A changed microphone choice reconfigures an active session in the foreground at once, keeps the
+    /// recording going, and otherwise waits for the next session start; never in the background.
+    @MainActor
+    private static func testMicrophoneChoiceAppliesInTheForegroundOnly() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.captureSettingsChanged()   // no session: applies at the next start
+        TestSupport.expectEqual(h.capture.reconfigureCount, 0)
+        h.record(R)
+        let generation = h.capture.engineGeneration
+        h.core.captureSettingsChanged()
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expect(h.capture.engineGeneration > generation, "same engine after reconfiguring")
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+        h.core.captureFailed(generation: generation)   // the old engine's queued report is ignored
+        h.clock.now += grace
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        // In the background nothing is reconfigured.
+        h.clock.isForeground = false
+        try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
+        h.core.captureSettingsChanged()
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+        // A reconfiguration that fails ends the session.
+        h.clock.isForeground = true
+        h.capture.failReconfigure = true
+        h.core.captureSettingsChanged()
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+    }
 }
 
 // MARK: Harness
@@ -1118,6 +1153,8 @@ private final class FakeCapture: HostCapture {
     var failRestart = false
     var startCount = 0
     var restartCount = 0
+    var reconfigureCount = 0
+    var failReconfigure = false
     var boundaryCount = 0
     var isRunning = false
     private(set) var engineGeneration: UInt64 = 0
@@ -1160,6 +1197,14 @@ private final class FakeCapture: HostCapture {
         TestSupport.expect(isRunning, "restart without a running session")
         guard !failRestart else { throw CocoaError(.featureUnsupported) }
         restartCount += 1
+        engineGeneration += 1
+    }
+
+    func reconfigure() throws {
+        TestSupport.expect(clock.isForeground, "capture reconfigured in the background")
+        TestSupport.expect(isRunning, "reconfigured without a session")
+        guard !failReconfigure else { throw CocoaError(.featureUnsupported) }
+        reconfigureCount += 1
         engineGeneration += 1
     }
 

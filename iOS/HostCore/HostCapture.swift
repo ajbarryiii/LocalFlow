@@ -16,6 +16,9 @@ protocol HostCapture: AnyObject {
     /// Rebuilds and starts the engine inside the audio session that is already active, without
     /// activating anything, so it is allowed in the background. Throws when that session is gone.
     func restart() throws
+    /// Applies changed capture settings (the microphone choice) inside the active session: category,
+    /// preferred input and a new engine. Foreground only.
+    func reconfigure() throws
     /// Stops the engine and deactivates the audio session. Idempotent.
     func stop()
     var isRunning: Bool { get }
@@ -60,6 +63,7 @@ final class UnavailableCapture: HostCapture {
     func requestPermission() async -> Bool { false }
     func start() throws { throw Unavailable() }
     func restart() throws { throw Unavailable() }
+    func reconfigure() throws { throw Unavailable() }
     func stop() {}
     var isRunning: Bool { false }
     var lastBufferAt: Date? { nil }

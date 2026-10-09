@@ -66,6 +66,11 @@ final class SyntheticCapture: HostCapture {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    /// The synthetic input has no microphone to choose: nothing to change.
+    func reconfigure() throws {
+        guard activatedSession else { throw SyntheticError.noSession }
+    }
+
     func recordingBoundary() {
         pipeline.boundaryPassed()
     }

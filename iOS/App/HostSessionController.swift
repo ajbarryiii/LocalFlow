@@ -17,6 +17,8 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var isDictationInProgress = false
     /// The current capture configuration, requested against granted, for Diagnostics. Content-free.
     @Published private(set) var captureConfiguration: CaptureConfiguration?
+    /// The input in use while capturing, nil otherwise. Content-free; Home shows `currentInput?.label`.
+    @Published private(set) var currentInput: InputPortKind?
     /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
     @Published var bounceVisible = false
     /// "Try it" has the keyboard in this app, so an admission there must not cover it.
@@ -66,6 +68,8 @@ final class HostSessionController: ObservableObject {
             microphone.onFailure = { [weak core] generation in core?.captureFailed(generation: generation) }
             microphone.onMediaServicesReset = { [weak core] in core?.captureMediaServicesReset() }
             microphone.onConfigured = { [weak self] in self?.configured($0) }
+            microphone.onInputChanged = { [weak self] in self?.inputChanged($0) }
+            microphone.useBuiltInMicrophone = preferences.useBuiltInMicrophone
         }
         #if LOCALFLOW_SELFTEST
         (capture as? SyntheticCapture)?.onConfigured = { [weak self] in self?.configured($0) }
@@ -121,6 +125,15 @@ final class HostSessionController: ObservableObject {
         _ = transcriber.releaseIfIdle()
     }
 
+    /// "Use iPhone microphone". Stored now; applied at the next session start, or at once when changed in
+    /// the foreground during a session (never in the background).
+    func setUseBuiltInMicrophone(_ value: Bool) {
+        guard value != preferences.useBuiltInMicrophone else { return }
+        preferences.useBuiltInMicrophone = value
+        (core?.capture as? MicrophoneCapture)?.useBuiltInMicrophone = value
+        core?.captureSettingsChanged()
+    }
+
     /// `<scheme>://dictate` is only a hint. In the foreground it runs one reconciliation pass; before the
     /// app gets there it does nothing, and the arrival reconciles. It never starts capture by itself:
     /// only a fresh record intent admitted in the foreground can.
@@ -161,6 +174,10 @@ final class HostSessionController: ObservableObject {
                                                            spokenDelimitersEnabled: spokenDelimitersEnabled)
                 return (processed.output, processed.shouldPressEnter)
             })
+    }
+
+    private func inputChanged(_ input: InputPortKind?) {
+        if currentInput != input { currentInput = input }
     }
 
     private func configured(_ configuration: CaptureConfiguration) {

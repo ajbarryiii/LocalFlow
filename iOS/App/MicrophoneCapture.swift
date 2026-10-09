@@ -4,8 +4,9 @@ import Foundation
 /// The session's microphone: one `AVAudioEngine` input tap for the whole session, feeding a
 /// `CapturePipeline` (HostCore) with each buffer's capture time. The pipeline trims frames captured
 /// outside the recording before converting the rest to 16 kHz mono, with a converter replaced at every
-/// dictation boundary; every other buffer is dropped in the callback unconverted. Large I/O and tap buffers keep an idle session from waking the app often
-/// (`AudioSessionTuning`). Audio is never written to disk or logged.
+/// dictation boundary; every other buffer is dropped in the callback unconverted. Large I/O and tap
+/// buffers keep an idle session from waking the app often (`AudioSessionTuning`). The input follows the
+/// "Use iPhone microphone" choice (`MicrophoneRoute`). Audio is never written to disk or logged.
 @MainActor
 final class MicrophoneCapture: HostCapture {
     /// The audio session was interrupted: the session must end.
@@ -16,6 +17,10 @@ final class MicrophoneCapture: HostCapture {
     var onMediaServicesReset: (@MainActor () -> Void)?
     /// Every engine start reports what was requested and what iOS granted.
     var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
+    /// The input in use changed or became known; nil once capture stops. Content-free.
+    var onInputChanged: (@MainActor (InputPortKind?) -> Void)?
+    /// "Use iPhone microphone": read at every start, reconfiguration and route change.
+    var useBuiltInMicrophone = MicrophoneRoute.defaultUseBuiltInMicrophone
 
     private(set) var engineGeneration: UInt64 = 0
     private let buffer: DictationSampleBuffer
@@ -45,6 +50,9 @@ final class MicrophoneCapture: HostCapture {
             center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.mediaServicesWereReset() }
             },
+            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.routeChanged() }
+            },
         ]
     }
 
@@ -67,12 +75,11 @@ final class MicrophoneCapture: HostCapture {
     func start() throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        // `.defaultToSpeaker` keeps other apps' audio on the speaker instead of the earpiece.
-        try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
+        try setCategory(on: session)
         requested = AudioSessionTuning.requestPreferences(on: session)
         try session.setActive(true)
         activatedSession = true
-        AudioSessionTuning.preferMonoInput(on: session)
+        applyInputChoice(on: session)
         do {
             try startEngine()
         } catch {
@@ -90,8 +97,20 @@ final class MicrophoneCapture: HostCapture {
         try startEngine()
     }
 
+    /// The microphone choice changed during a session in the foreground: the new category and input, then
+    /// a new engine for the new input format, without deactivating the session.
+    func reconfigure() throws {
+        guard activatedSession else { throw CaptureError.noSession }
+        tearDownEngine()
+        let session = AVAudioSession.sharedInstance()
+        try setCategory(on: session)
+        applyInputChoice(on: session)
+        try startEngine()
+    }
+
     func stop() {
         tearDownEngine()
+        onInputChanged?(nil)
         guard activatedSession else { return }
         activatedSession = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -99,6 +118,39 @@ final class MicrophoneCapture: HostCapture {
 
     func recordingBoundary() {
         pipeline?.boundaryPassed()
+    }
+
+    private func setCategory(on session: AVAudioSession) throws {
+        let options = MicrophoneRoute.categoryOptions(useBuiltInMicrophone: useBuiltInMicrophone)
+        try session.setCategory(.playAndRecord, mode: .default, options: AVAudioSession.CategoryOptions(options))
+    }
+
+    /// Prefers the built-in microphone, or clears any preference so the system chooses; then mono input
+    /// for the port now in use (the channel preference belongs to the port).
+    private func applyInputChoice(on session: AVAudioSession) {
+        let available = session.availableInputs ?? []
+        let preferred = MicrophoneRoute.preferredInput(useBuiltInMicrophone: useBuiltInMicrophone,
+                                                       availableInputs: available.map { InputPortKind($0.portType) })
+        let port = preferred.flatMap { kind in available.first { InputPortKind($0.portType) == kind } }
+        try? session.setPreferredInput(port)
+        AudioSessionTuning.preferMonoInput(on: session)
+    }
+
+    /// Headphones plugged in or out, AirPods connecting: if the system moved the input off the built-in
+    /// microphone, ask for it again. The engine's configuration-change report then rebuilds it for the
+    /// new input (in the background too, within this session), through the usual grace period.
+    private func routeChanged() {
+        guard activatedSession else { return }
+        let session = AVAudioSession.sharedInstance()
+        if MicrophoneRoute.needsReassertion(useBuiltInMicrophone: useBuiltInMicrophone, currentInput: Self.currentInput(session),
+                                            availableInputs: (session.availableInputs ?? []).map { InputPortKind($0.portType) }) {
+            applyInputChoice(on: session)
+        }
+        onInputChanged?(Self.currentInput(session))
+    }
+
+    private static func currentInput(_ session: AVAudioSession) -> InputPortKind? {
+        session.currentRoute.inputs.first.map { InputPortKind($0.portType) }
     }
 
     /// Every audio object is invalid, including the session this object activated, so there is nothing to
@@ -135,7 +187,8 @@ final class MicrophoneCapture: HostCapture {
             source: "microphone", requestedIOBufferDuration: requested.ioBufferDuration,
             actualIOBufferDuration: session.ioBufferDuration, requestedSampleRate: requested.sampleRate,
             actualSampleRate: session.sampleRate, inputSampleRate: format.sampleRate, inputChannels: Int(format.channelCount),
-            tapBufferFrames: Int(tapFrames)))
+            tapBufferFrames: Int(tapFrames), inputPort: Self.currentInput(session)))
+        onInputChanged?(Self.currentInput(session))
     }
 
     private func tearDownEngine() {
@@ -269,4 +322,30 @@ private final class InputConverter: SampleConverter {
     }
 
     private enum ConversionError: Error { case unsupported }
+}
+
+extension InputPortKind {
+    init(_ port: AVAudioSession.Port) {
+        switch port {
+        case .builtInMic: self = .builtInMic
+        case .bluetoothHFP, .bluetoothLE: self = .bluetooth
+        case .headsetMic: self = .headset
+        case .usbAudio: self = .usb
+        default: self = .other
+        }
+    }
+}
+
+extension AVAudioSession.CategoryOptions {
+    init(_ options: Set<MicrophoneRoute.CategoryOption>) {
+        self = []
+        for option in options {
+            switch option {
+            case .mixWithOthers: insert(.mixWithOthers)
+            case .defaultToSpeaker: insert(.defaultToSpeaker)
+            case .allowBluetoothA2DP: insert(.allowBluetoothA2DP)
+            case .allowBluetoothHFP: insert(.allowBluetoothHFP)
+            }
+        }
+    }
 }

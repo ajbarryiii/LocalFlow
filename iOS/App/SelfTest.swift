@@ -75,10 +75,10 @@ enum SelfTest {
     }
 
     static func report(_ configuration: CaptureConfiguration) {
-        print(String(format: "LocalFlow self-test: capture source=%@ requested_io_s=%.3f actual_io_s=%.3f requested_rate=%.0f actual_rate=%.0f input_rate=%.0f input_channels=%d tap_frames=%d",
+        print(String(format: "LocalFlow self-test: capture source=%@ requested_io_s=%.3f actual_io_s=%.3f requested_rate=%.0f actual_rate=%.0f input_rate=%.0f input_channels=%d tap_frames=%d input_port=%@",
                      configuration.source, configuration.requestedIOBufferDuration ?? -1, configuration.actualIOBufferDuration,
                      configuration.requestedSampleRate ?? -1, configuration.actualSampleRate, configuration.inputSampleRate,
-                     configuration.inputChannels, configuration.tapBufferFrames))
+                     configuration.inputChannels, configuration.tapBufferFrames, configuration.inputPort?.rawValue ?? "none"))
         fflush(stdout)
     }
 

@@ -8,6 +8,7 @@ struct HomeView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
     @ObservedObject var settings: SharedSettingsModel
+    @ObservedObject var preferences: AppPreferences
     @State var path: [HomeRoute]
 
     var body: some View {
@@ -52,6 +53,10 @@ struct HomeView: View {
                                   isOn: $settings.pressEnterEnabled)
                     SettingToggle(title: "Haptics", detail: "Feedback when recording starts and stops.",
                                   isOn: $settings.hapticsEnabled)
+                    SettingToggle(title: "Use iPhone microphone",
+                                  detail: "Keeps AirPods in high-quality audio and avoids Bluetooth delay, even with headphones connected.",
+                                  isOn: Binding(get: { preferences.useBuiltInMicrophone }, set: { host.setUseBuiltInMicrophone($0) }))
+                        .accessibilityIdentifier("settings.useBuiltInMicrophone")
                 } header: {
                     Text("Dictation")
                 }
@@ -102,6 +107,13 @@ private struct SessionCard: View {
                 }
                 Spacer()
                 if host.session == .active { remaining }
+            }
+
+            if host.session == .active, let input = host.currentInput {
+                Label("Input: \(input.label)", systemImage: input == .builtInMic ? "iphone" : "headphones")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("session.input")
             }
 
             VStack(alignment: .leading, spacing: 6) {

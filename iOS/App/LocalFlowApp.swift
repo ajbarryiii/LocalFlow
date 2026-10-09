@@ -56,7 +56,8 @@ private struct RootView: View {
             if !host.isConfigured {
                 ConfigurationErrorView()
             } else if preferences.onboardingComplete || LaunchOptions.current.skipOnboarding {
-                HomeView(transcriber: host.transcriber, settings: host.settings, path: LaunchOptions.current.homePath)
+                HomeView(transcriber: host.transcriber, settings: host.settings, preferences: preferences,
+                         path: LaunchOptions.current.homePath)
                     .transition(.opacity)
             } else {
                 OnboardingView(transcriber: host.transcriber, step: LaunchOptions.current.onboardingStep) {
