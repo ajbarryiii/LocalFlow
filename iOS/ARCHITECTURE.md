@@ -652,3 +652,14 @@ These refine the sections above and take precedence where they differ.
   - content-free measurements of the last dictation, held in memory only:
     audio seconds, preparation and transcription milliseconds, compute units
     used, foreground or background, and the process footprint
+- **Claim by rename, not delete.** On APFS, concurrent `unlink` calls on one
+  file can each report success: two or three winners per round, measured on
+  the Mac across both threads and processes. Every result removal therefore
+  first renames the file to a unique private name, and only the caller whose
+  rename succeeded deletes it. This covers the keyboard's claim,
+  `deleteResult`, and every host purge. Measured: exactly one winner per round.
+- **Staged writes.** Writes go to a `.staging-<UUID>.tmp` file in the same
+  directory, carrying the destination's protection class, and are then renamed
+  over the destination. The expiry purge also sweeps staging files older than
+  `resultTTL`. Run recovery calls `purgeStagingFiles(olderThan: 0, now:)`
+  before writing anything.

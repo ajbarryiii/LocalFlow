@@ -16,6 +16,8 @@ enum KeyboardResultLedgerTests {
             ("planOrdersAndPicksNewestForChip", testPlanOrdersAndPicksNewestForChip),
             ("claimByDeleteWinsOnce", testClaimByDeleteWinsOnce),
             ("fieldSwitchMidRequest", testFieldSwitchMidRequest),
+            ("failedDeleteKeepsResultEligible", testFailedDeleteKeepsResultEligible),
+            ("concurrentClaimantsHaveExactlyOneWinner", testConcurrentClaimantsHaveExactlyOneWinner),
         ]
     }
 
@@ -217,6 +219,62 @@ enum KeyboardResultLedgerTests {
             // Tapping the chip claims the result and inserts it into B.
             TestSupport.expect(ledger.claim(requestID: Fixture.requestID, in: store), "chip claim failed")
             TestSupport.expectEqual(store.resultRequestIDs(), [])
+        }
+    }
+
+    /// A transient delete failure leaves the result on disk, so it must stay insertable: the binding,
+    /// auto-insert and the chip survive, and the next poll's claim wins.
+    private static func testFailedDeleteKeepsResultEligible() {
+        withStore { store in
+            var ledger = KeyboardResultLedger()
+            ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
+            try! store.writeResult(Fixture.result())
+            let before = ledger
+            SharedDictationStoreTests.withReadOnlyDirectory(of: store) {
+                TestSupport.expect(!ledger.claim(requestID: Fixture.requestID, in: store), "claimed without deleting")
+            }
+            TestSupport.expectEqual(ledger, before)
+            let onDisk = store.readResult(requestID: Fixture.requestID).value!
+            let plan = ledger.plan(for: [onDisk], documentID: Fixture.documentA, now: Fixture.now)
+            TestSupport.expectEqual(plan.autoInsert, [onDisk])
+            TestSupport.expect(ledger.claim(requestID: Fixture.requestID, in: store), "the retry did not win")
+            TestSupport.expectEqual(ledger.consumed, [Fixture.requestID])
+            TestSupport.expectEqual(store.readResult(requestID: Fixture.requestID), .absent)
+
+            var chip = KeyboardResultLedger()
+            let other = Fixture.result(Fixture.otherRequestID)
+            try! store.writeResult(other)
+            SharedDictationStoreTests.withReadOnlyDirectory(of: store) {
+                TestSupport.expect(!chip.claim(requestID: Fixture.otherRequestID, in: store), "chip claimed without deleting")
+            }
+            TestSupport.expectEqual(chip.consumed, [])
+            TestSupport.expectEqual(chip.plan(for: [other], documentID: Fixture.documentB, now: Fixture.now).manualInsert,
+                                    other)
+            TestSupport.expect(chip.claim(requestID: Fixture.otherRequestID, in: store), "the chip retry did not win")
+        }
+    }
+
+    /// Claimants on separate threads, some through a second store as another process would hold,
+    /// race for each result. Exactly one wins, and every loser still consumes the request.
+    private static func testConcurrentClaimantsHaveExactlyOneWinner() {
+        withStore { store in
+            let otherProcess = SharedDictationStore(directory: store.directory)
+            for iteration in 0..<200 {
+                let requestID = UUID()
+                try! store.writeResult(Fixture.result(requestID))
+                let winners = Locked(0)
+                let consumed = Locked(0)
+                Concurrently.run(3) { thread in
+                    var ledger = KeyboardResultLedger()
+                    ledger.bindFinish(requestID: requestID, documentID: Fixture.documentA)
+                    let won = ledger.claim(requestID: requestID, in: thread == 0 ? otherProcess : store)
+                    winners.update { $0 += won ? 1 : 0 }
+                    consumed.update { $0 += ledger.consumed.contains(requestID) ? 1 : 0 }
+                }
+                TestSupport.expect(winners.current == 1, "iteration \(iteration) had \(winners.current) winners")
+                TestSupport.expectEqual(consumed.current, 3)
+                TestSupport.expectEqual(store.readResult(requestID: requestID), .absent)
+            }
         }
     }
 }

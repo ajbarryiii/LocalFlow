@@ -64,15 +64,31 @@ struct SharedDictationStore: Sendable {
 
     // MARK: Deletes
 
+    enum ResultRemoval: Equatable, Sendable {
+        /// This call removed the file, so this caller won the claim.
+        case removed
+        /// Another claimant or a purge removed it first.
+        case alreadyAbsent
+        /// The file may still be there (for example a transient I/O error); a later attempt may succeed.
+        case failed
+    }
+
+    /// Removes `result-R.json` so that exactly one caller, across threads and processes, sees `.removed`.
+    func removeResult(requestID: UUID) -> ResultRemoval {
+        removeResultFile(at: resultURL(for: requestID))
+    }
+
     /// True only if this call removed the file, so exactly one claimant wins a result.
     @discardableResult
     func deleteResult(requestID: UUID) -> Bool {
-        (try? FileManager.default.removeItem(at: resultURL(for: requestID))) != nil
+        removeResult(requestID: requestID) == .removed
     }
 
     /// Deletes results whose age is outside `[-clockSkewTolerance, resultTTL]`. A result that cannot
     /// be decoded (for example while the device is locked) is judged by its file's modification date.
+    /// Also sweeps staging files abandoned for as long, so either process cleans up after a crash.
     func purgeExpiredResults(now: Date) {
+        defer { purgeStagingFiles(olderThan: DictationProtocol.resultTTL, now: now) }
         for (requestID, url) in resultFiles() {
             let timestamp: Date?
             if let result = readResult(requestID: requestID).value {
@@ -82,13 +98,27 @@ struct SharedDictationStore: Sendable {
             }
             guard let timestamp, !DictationProtocol.isFresh(timestamp, ttl: DictationProtocol.resultTTL, now: now)
             else { continue }
-            try? FileManager.default.removeItem(at: url)
+            _ = removeResultFile(at: url)
         }
     }
 
     /// Deletes every result for which `shouldDelete` returns true. Used for run recovery and session end.
     func purgeResults(where shouldDelete: (UUID, StoreRead<DictationResult>) -> Bool) {
         for (requestID, url) in resultFiles() where shouldDelete(requestID, readResult(requestID: requestID)) {
+            _ = removeResultFile(at: url)
+        }
+    }
+
+    /// Deletes staging files whose modification date is outside `[-clockSkewTolerance, age]`. A writer
+    /// that dies between writing and renaming leaves one behind, and a result's may hold a transcript.
+    /// The host passes 0 during run recovery, before it writes anything, to remove them at any age.
+    /// Other callers keep a long age so they never pull an in-flight write from under the other process.
+    func purgeStagingFiles(olderThan age: TimeInterval, now: Date) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where name.hasPrefix(Self.stagingPrefix) && name.hasSuffix(Self.stagingSuffix) {
+            let url = directory.appendingPathComponent(name, isDirectory: false)
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            if let modified, DictationProtocol.isFresh(modified, ttl: age, now: now) { continue }
             try? FileManager.default.removeItem(at: url)
         }
     }
@@ -145,13 +175,42 @@ struct SharedDictationStore: Sendable {
         return .value(record)
     }
 
+    static let stagingPrefix = ".staging-"
+    static let stagingSuffix = ".tmp"
+
+    private func makeStagingURL() -> URL {
+        directory.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)\(Self.stagingSuffix)", isDirectory: false)
+    }
+
+    /// Every result removal, claim or purge, goes through here. On APFS, concurrent unlinks of one
+    /// name can all succeed, but only one rename of it can, so the file is first moved to a private
+    /// staging name and deleted from there. A crash in between leaves a staging file for the sweeps.
+    private func removeResultFile(at url: URL) -> ResultRemoval {
+        let claimed = makeStagingURL()
+        guard rename(url.path, claimed.path) == 0 else { return errno == ENOENT ? .alreadyAbsent : .failed }
+        _ = unlink(claimed.path)
+        return .removed
+    }
+
+    /// Writes a uniquely named staging file next to the destination, then renames it over the
+    /// destination: a reader sees the old or the new record, never part of one. Foundation's
+    /// `.atomic` is avoided because its temporary file, abandoned by a crash, escapes every sweep.
     private func write<Record: Encodable>(_ record: Record, to url: URL, protection: Data.WritingOptions) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = .sortedKeys
         let data = try encoder.encode(record)
         try createDirectoryIfNeeded()
-        try data.write(to: url, options: [.atomic, protection])
+        let staging = makeStagingURL()
+        do {
+            try data.write(to: staging, options: [.withoutOverwriting, protection])
+            guard rename(staging.path, url.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
     }
 
     private func createDirectoryIfNeeded() throws {

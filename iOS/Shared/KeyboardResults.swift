@@ -64,13 +64,16 @@ struct KeyboardResultLedger: Equatable, Sendable {
     }
 
     /// Claim before insert: deletes `result-R.json` and returns true only if this call removed it,
-    /// so a transcript is inserted at most once across instances and processes. R is consumed
-    /// either way.
+    /// so a transcript is inserted at most once across instances and processes. R is consumed once
+    /// the file is gone, whoever removed it. If the delete failed, the result may still be on disk,
+    /// so the binding and eligibility stay as they were and a later poll retries.
     mutating func claim(requestID: UUID, in store: SharedDictationStore) -> Bool {
         guard !consumed.contains(requestID) else { return false }
+        let removal = store.removeResult(requestID: requestID)
+        guard removal != .failed else { return false }
         consumed.insert(requestID)
         bindings[requestID] = nil
         invalidated.remove(requestID)
-        return store.deleteResult(requestID: requestID)
+        return removal == .removed
     }
 }
