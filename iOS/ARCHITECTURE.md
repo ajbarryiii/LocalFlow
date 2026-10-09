@@ -902,3 +902,25 @@ Self-test with invented synthetic speech (2.42 s):
   fresh, discriminating evidence; ambiguous probes are not cached. Unchanged
   context is ambiguous, never a document boundary, so further movement needs
   new finger travel. The unit cache holds only the current field.
+
+### Top row (user decision 2026-10-09, modeled on Wispr Flow's keyboard)
+
+- **Right:** a prominent capsule button labeled "Start" with a waveform glyph
+  (`lf.mic`). This is the primary dictation control.
+  - While starting or recording, it becomes a red "Stop" capsule with live
+    level bars and elapsed time, with a small ✕ cancel beside it (`lf.cancel`).
+  - While transcribing, it shows a spinner.
+  - When the host is unavailable, it still reads "Start" and bounces.
+- **Left:** a menu button (`lf.menu`) opens a compact panel over the key area.
+  It contains:
+  - session status (idle time left, or no session)
+  - "Open LocalFlow", the same launcher as the bounce
+  - a one-line trackpad tip
+
+  Tapping outside the panel or the button again closes it.
+- **Middle:** contextual chips for Undo (`lf.undo`) and "Insert last
+  dictation" (`lf.insertLast`), with a one-line status ("Preparing model…",
+  errors, banners) when no chip is shown.
+- **Space bar label:** "LocalFlow".
+- This supersedes the earlier dictation-bar layout. The key area is
+  unchanged (Apple's layout).
