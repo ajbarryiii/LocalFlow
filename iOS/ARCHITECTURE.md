@@ -1053,3 +1053,22 @@ The harness lives outside the repository
   - The selection logic is pure in HostCore and tested. Home shows the input
     port type in use (content-free: iPhone microphone, Bluetooth, headset,
     USB).
+- **Field width profiles (user decision 2026-10-09).** The trackpad's
+  emulated layout uses one of two per-device profiles.
+  - **Messages** is the default and is optimized for. It reproduces the
+    compose bubble's measured wrap width and insets, expressed as screen
+    width minus fixed chrome so it carries across iPhone sizes.
+  - **Full width** applies to Notes, Mail, T3 Code-style inputs and similar
+    fields.
+  - **Selecting a profile:** a content-free trait fingerprint of the field
+    picks the profile. The fingerprint uses the keyboard type, return-key
+    type, autocapitalization, autocorrection, smart-text settings, text
+    content type, and the unit mode the trackpad learned.
+  - **Fallback:** when Messages cannot be told apart from full-width fields,
+    the Messages profile is used everywhere.
+  - **Measurement:** Messages geometry is measured with XCUITest across
+    simulator sizes, and on the user's device only with their consent, using
+    an unsent draft that is cleared afterwards. The fingerprints come from a
+    debug readout in the keyboard menu.
+  - **Later:** learning a width correction from the user's sideways nudges
+    may come as a third layer.
