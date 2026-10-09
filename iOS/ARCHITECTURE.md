@@ -819,3 +819,22 @@ after moving the cursor. Dictation stays primary.
   else about dictations is persisted by the host.
 - **Keyboard-connected indicator.** It uses presence freshness
   (`keyboardPresenceTimeout`), not the file's mere existence.
+
+## Device measurements (iPhone 15 Pro, iOS 26.6.2, 2026-10-09)
+
+Self-test with invented synthetic speech (2.42 s):
+
+| Compute | Preparation | Transcription | Peak footprint |
+| --- | --- | --- | --- |
+| Neural Engine, first launch after install | 67.2 s | 0.049 s | 165 MB |
+| Neural Engine, later launch | 0.69 s | 0.040 s | 166 MB |
+| CPU only | 60.7 s | 0.519 s | 3229 MB |
+
+- Neural Engine specialization is cached across launches of one install, so
+  the cold cost is paid once per install. Onboarding must still show it.
+- **There is no automatic CPU fallback.** It peaks at about 3.2 GB and would
+  be jetsammed in the background. "Automatic" means Neural Engine only. A
+  background failure on iOS 27 or later, which likely means the missing
+  inference entitlement, fails the request and shows a content-free hint in
+  Diagnostics. The "CPU only" policy stays in Diagnostics for foreground
+  experiments only. This supersedes "Compute fallback" above.
