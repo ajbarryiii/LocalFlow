@@ -1,0 +1,14 @@
+[package]
+name = "lf-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-io-api.workspace = true
+# Pure-Rust D-Bus. async-io and futures-lite are zbus's own runtime crates
+# (no new crates): they bound each whole call, sending included.
+zbus = "5"
+async-io = "2"
+futures-lite = "2"

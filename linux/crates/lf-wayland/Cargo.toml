@@ -1,0 +1,26 @@
+[package]
+name = "lf-wayland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-io-api.workspace = true
+libc.workspace = true
+wayland-client = "0.31"
+# Route the backend's diagnostics to the `log` facade instead of stderr.
+wayland-backend = { version = "0.3", features = ["log"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+
+[dev-dependencies]
+wayland-protocols = { version = "0.32", features = ["client"] }
+xkbcommon = "0.9"
+
+[[bin]]
+name = "lf-type-smoke"
+path = "src/bin/lf-type-smoke.rs"
+
+[[test]]
+name = "headless_sway"
+harness = false
