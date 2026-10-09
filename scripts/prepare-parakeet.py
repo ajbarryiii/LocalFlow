@@ -12,6 +12,8 @@ import shutil
 import sys
 from types import SimpleNamespace
 
+BUCKETS = (4, 8, 15, 30)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -25,7 +27,18 @@ def main():
     import models
     import native
     import reference
-    from mil import build, weights
+    from mil import build, encoder, weights
+
+    # LocalFlow uses 4/8/15/30-second functions. Upstream sizes its folded
+    # relative-position tables for 15 seconds; extend them to 30 seconds. Each
+    # function slices the same centre positions, so shorter functions keep their
+    # values while the shared table grows.
+    if encoder.BUCKETS != {2: 201, 4: 401, 8: 801, 15: 1501} or encoder.MAX_T != 188:
+        raise ValueError("Unexpected upstream encoder buckets; review the LocalFlow override")
+    encoder.BUCKETS = {seconds: seconds * 100 + 1 for seconds in BUCKETS}
+    encoder.MAX_T = encoder.encoder_frames(encoder.BUCKETS[max(BUCKETS)])
+    fold_positions = encoder.fold_positions
+    encoder.fold_positions = lambda w_pos, length=encoder.MAX_T: fold_positions(w_pos, length)
 
     export = args.export.resolve()
     output = artifacts.check(args.output)
@@ -64,7 +77,7 @@ def main():
         "model": "localflow", "display_name": "LocalFlow", "base_model": "parakeet-v2-ternary", "training_step": 250000,
         "export_sha256": export_sha, "encoder": "C6s8", "layout": "plain",
         "compute_units": "cpuAndNeuralEngine", "decoder": "native-fp32",
-        "buckets_seconds": [2, 4, 8, 15], "sample_rate": 16000,
+        "buckets_seconds": list(BUCKETS), "sample_rate": 16000,
         "files": {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in files},
     }
     (output / "bundle.json").write_text(json.dumps(bundle, indent=2) + "\n")

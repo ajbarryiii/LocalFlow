@@ -19,7 +19,7 @@ struct LocalModelSettingsView: View {
             if appState.localModelPreparationState == .failed {
                 Button("Retry Model Preparation") { appState.prepareLocalTranscriptionIfNeeded() }
             }
-            Text("Recordings longer than 15 seconds are transcribed in separate chunks. The model stays in memory while the app is open.")
+            Text("Recordings longer than 30 seconds (15 seconds while the model is still optimizing) are transcribed in separate chunks. The model stays in memory while the app is open.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

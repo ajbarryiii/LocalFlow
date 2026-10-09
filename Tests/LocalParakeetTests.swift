@@ -3,11 +3,11 @@ import Foundation
 
 enum LocalParakeetTests {
     static func run() {
-        for (samples, bucket) in [(1, 2), (32000, 2), (32001, 4), (64000, 4), (64001, 8), (128000, 8), (128001, 15), (240000, 15)] {
+        for (samples, bucket) in [(1, 4), (64000, 4), (64001, 8), (128000, 8), (128001, 15), (240000, 15), (240001, 30), (480000, 30)] {
             TestSupport.expectEqual(try! LocalParakeetCore.bucket(samples: samples), bucket)
         }
         expectFailure { _ = try LocalParakeetCore.bucket(samples: 0) }
-        expectFailure { _ = try LocalParakeetCore.bucket(samples: 240001) }
+        expectFailure { _ = try LocalParakeetCore.bucket(samples: 480001) }
         TestSupport.expectEqual(try! LocalParakeetCore.detokenize([0, 1, 2], vocabulary: ["▁Blue", "bird", "▁test."]), "Bluebird test.")
         expectFailure { _ = try LocalParakeetCore.detokenize([3], vocabulary: ["▁test"]) }
 
@@ -37,6 +37,50 @@ enum LocalParakeetTests {
         testSyntheticAudioEOF()
         testBlobBounds()
         testPreparedModelReuse()
+        testFifteenSecondBootstrap()
+        ParakeetBackgroundPreparationTests.run()
+    }
+
+    private static func testFifteenSecondBootstrap() {
+        let cache = ParakeetModelCache<Int>()
+        var loads: [Int] = []
+        let strategy = ParakeetStartupStrategy.applicationDefault
+        TestSupport.expectEqual(strategy.initialBuckets, [15])
+        TestSupport.expectEqual(strategy.backgroundBuckets, [4, 8, 30])
+        func load(_ bucket: Int) -> Int { loads.append(bucket); return bucket }
+        // Before bootstrap, retain normal lazy loading rather than selecting an
+        // unavailable fallback. Chunks stay within the 15s bucket.
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 4)
+        TestSupport.expectEqual(cache.chunkSamples(strategy: strategy), 240000)
+        TestSupport.expectEqual(cache.chunkSamples(strategy: .allBuckets), 480000)
+        try! cache.prepare(buckets: strategy.initialBuckets, load: load) { _, _ in }
+        TestSupport.expectEqual(loads, [15])
+        for samples in [1, 64000, 64001, 128001, 240000] {
+            TestSupport.expectEqual(try! cache.transcriptionBucket(samples: samples, strategy: strategy), 15)
+        }
+        TestSupport.expectEqual(cache.chunkSamples(strategy: strategy), 240000)
+        expectFailure { _ = try cache.transcriptionBucket(samples: 480001, strategy: strategy) }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: .allBuckets), 4)
+        // A loaded but failed warmup must not displace the usable fallback.
+        expectFailure {
+            try cache.prepare(buckets: [4], load: load) { _, _ in throw CancellationError() }
+        }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 15)
+        try! cache.prepare(buckets: [4], load: load) { _, _ in }
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 1, strategy: strategy), 4)
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 64001, strategy: strategy), 15)
+        // A failed 30s warmup keeps 15s chunks; a ready one allows 30s chunks.
+        expectFailure {
+            try cache.prepare(buckets: [30], load: load) { _, _ in throw CancellationError() }
+        }
+        TestSupport.expectEqual(cache.chunkSamples(strategy: strategy), 240000)
+        try! cache.prepare(buckets: [30], load: load) { _, _ in }
+        TestSupport.expectEqual(cache.chunkSamples(strategy: strategy), 480000)
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 240001, strategy: strategy), 30)
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 128001, strategy: strategy), 15)
+        try! cache.prepare(load: load) { _, _ in }
+        TestSupport.expectEqual(loads, [15, 4, 30, 8])
+        TestSupport.expectEqual(try! cache.transcriptionBucket(samples: 64001, strategy: strategy), 8)
     }
 
     private static func testPreparedModelReuse() {
@@ -48,21 +92,21 @@ enum LocalParakeetTests {
             return SyntheticModel()
         }
         // A transcription can load one bucket before startup preparation runs.
-        let existing = try! cache.model(for: 4, load: load)
+        let existing = try! cache.model(for: 8, load: load)
         try! cache.prepare(load: load) { bucket, _ in warmed.append(bucket) }
-        TestSupport.expectEqual(loads, [4, 2, 8, 15])
+        TestSupport.expectEqual(loads, [8, 4, 15, 30])
         TestSupport.expectEqual(warmed, LocalParakeetCore.buckets)
-        TestSupport.expect(try! cache.model(for: 4, load: load) === existing,
+        TestSupport.expect(try! cache.model(for: 8, load: load) === existing,
                            "Startup preparation must reuse an already loaded model")
         try! cache.prepare(load: load) { _, _ in fatalError("Prepared models must not warm twice") }
         for bucket in LocalParakeetCore.buckets { _ = try! cache.model(for: bucket, load: load) }
-        TestSupport.expectEqual(loads, [4, 2, 8, 15])
+        TestSupport.expectEqual(loads, [8, 4, 15, 30])
 
         let retry = ParakeetModelCache<SyntheticModel>()
         loads = []; warmed = []
         expectFailure {
             try retry.prepare(load: load) { bucket, _ in
-                if bucket == 4 { throw LocalParakeetError.invalid("Synthetic failure") }
+                if bucket == 8 { throw LocalParakeetError.invalid("Synthetic failure") }
                 warmed.append(bucket)
             }
         }

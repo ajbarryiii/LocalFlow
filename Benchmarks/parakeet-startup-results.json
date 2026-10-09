@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "export_sha256": "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503",
+  "encoder": "C6s8 plain",
+  "hardware": "Apple M1 Pro",
+  "macOS": "27.0",
+  "repeats": 1,
+  "cache_evidence": "new copied bundle path then same-path fresh process; no cache deletion or Instruments cache events",
+  "limitations": [
+    "Synthetic smoke on a shared Mac; no accuracy or controlled performance claim.",
+    "First-path loads are not proven uncached specialization.",
+    "Guard RSS polling can miss short peaks and excludes system services. Normal desktop work and a brief verification build overlapped the run."
+  ],
+  "runs": [
+    {
+      "first_transcript_ready_seconds": 372.037697166,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "expected_match": true,
+          "transcription_seconds": 0.095111583
+        },
+        {
+          "audio_seconds": 4,
+          "expected_match": true,
+          "transcription_seconds": 0.109193833
+        },
+        {
+          "audio_seconds": 7,
+          "expected_match": true,
+          "transcription_seconds": 0.121696333
+        },
+        {
+          "audio_seconds": 18,
+          "expected_match": true,
+          "transcription_seconds": 0.110271334
+        }
+      ],
+      "preparation_seconds": 371.942582666,
+      "repeated_preparation_seconds": 3.4542e-05,
+      "schema": 1,
+      "strategy": "all",
+      "phase": "new-path",
+      "repeat": 1,
+      "process_wall_seconds": 373.4784056249773,
+      "guard_peak_group_rss_kib": 461072,
+      "guard_swap_growth_kib": 0
+    },
+    {
+      "first_transcript_ready_seconds": 2.283948583,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "expected_match": true,
+          "transcription_seconds": 0.068118959
+        },
+        {
+          "audio_seconds": 4,
+          "expected_match": true,
+          "transcription_seconds": 0.052307458
+        },
+        {
+          "audio_seconds": 7,
+          "expected_match": true,
+          "transcription_seconds": 0.07111825
+        },
+        {
+          "audio_seconds": 18,
+          "expected_match": true,
+          "transcription_seconds": 0.111463791
+        }
+      ],
+      "preparation_seconds": 2.215826416,
+      "repeated_preparation_seconds": 4.8541e-05,
+      "schema": 1,
+      "strategy": "all",
+      "phase": "same-path-fresh-process",
+      "repeat": 1,
+      "process_wall_seconds": 3.284156624926254,
+      "guard_peak_group_rss_kib": 186912,
+      "guard_swap_growth_kib": 0
+    },
+    {
+      "first_transcript_ready_seconds": 94.266509542,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "expected_match": true,
+          "transcription_seconds": 0.085025125
+        },
+        {
+          "audio_seconds": 4,
+          "expected_match": true,
+          "transcription_seconds": 0.063628375
+        },
+        {
+          "audio_seconds": 7,
+          "expected_match": true,
+          "transcription_seconds": 0.0575885
+        },
+        {
+          "audio_seconds": 18,
+          "expected_match": true,
+          "transcription_seconds": 0.114452792
+        }
+      ],
+      "preparation_seconds": 94.181480667,
+      "repeated_preparation_seconds": 4.125e-05,
+      "schema": 1,
+      "strategy": "fifteen-first",
+      "phase": "new-path",
+      "repeat": 1,
+      "process_wall_seconds": 95.55482695798855,
+      "guard_peak_group_rss_kib": 500288,
+      "guard_swap_growth_kib": 0
+    },
+    {
+      "first_transcript_ready_seconds": 0.828611708,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "expected_match": true,
+          "transcription_seconds": 0.065948334
+        },
+        {
+          "audio_seconds": 4,
+          "expected_match": true,
+          "transcription_seconds": 0.061499583
+        },
+        {
+          "audio_seconds": 7,
+          "expected_match": true,
+          "transcription_seconds": 0.060227458
+        },
+        {
+          "audio_seconds": 18,
+          "expected_match": true,
+          "transcription_seconds": 0.130172125
+        }
+      ],
+      "preparation_seconds": 0.762660083,
+      "repeated_preparation_seconds": 4.3125e-05,
+      "schema": 1,
+      "strategy": "fifteen-first",
+      "phase": "same-path-fresh-process",
+      "repeat": 1,
+      "process_wall_seconds": 2.2361558749107644,
+      "guard_peak_group_rss_kib": 182496,
+      "guard_swap_growth_kib": 0
+    }
+  ],
+  "bundle_growth": {
+    "additional_weight_files": 0,
+    "scripts_bundled": false
+  }
+}
