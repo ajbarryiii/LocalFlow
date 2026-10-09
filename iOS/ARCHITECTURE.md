@@ -1077,3 +1077,14 @@ The harness lives outside the repository
     new measured profile. If the trait fingerprints cannot distinguish
     Messages from full-width fields, the default is decided with the user
     once the data is in. It is not automatically Messages.
+- **Keyboard round 4 notes.**
+  - **One callback per adjustment:** each `adjustTextPosition`,
+    `insertText` and `deleteBackward` is expected to produce one callback.
+    Hosts may coalesce them, and attribution accepts that only when the
+    callback matches the expected outcome.
+  - **Hiding unbinds fields:** a request bound to a field before the
+    keyboard hides is no longer auto-inserted after it reappears. Its result
+    is offered as "Insert last dictation".
+  - **Tests match measurement:** `FakeTextHost` models the measured UIKit
+    context: two sentences back across line breaks, and forward to the end of
+    the sentence or line.
