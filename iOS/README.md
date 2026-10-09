@@ -38,7 +38,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
-Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`,
+Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
 `HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`) can be overridden, for
 example `make -C iOS check SHARED_SOURCES= HOSTCORE_SOURCES=`.
 
@@ -84,40 +84,173 @@ is kept in `build/smoke-simulator/obj/selftest.log` only on failure. If
 The simulator has no Neural Engine. Core ML runs a `.cpuAndNeuralEngine` model
 on the CPU there, so simulator timings say nothing about device performance.
 
+### Enabling the keyboard without taps
+
+The simulator reads the keyboard list from preferences, so the keyboard can be
+made current without touching Settings. Run these while the simulator is
+booted, then relaunch the app:
+
+```bash
+dev=LocalFlow-Keyboard; kb=com.ajbarryiii.localflow.ios.dev.keyboard
+xcrun simctl spawn $dev defaults write -g AppleKeyboards -array $kb "en_US@sw=QWERTY;hw=Automatic" "emoji@sw=Emoji"
+xcrun simctl spawn $dev defaults write com.apple.keyboard.preferences KeyboardsCurrentAndNext -array $kb "en_US@sw=QWERTY;hw=Automatic"
+```
+
+Full Access is a `kTCCServiceKeyboardNetwork` row, with `auth_value` 2 for the
+keyboard's bundle ID, in the simulator's `data/Library/TCC/TCC.db`. Insert it
+while the simulator is shut down. Reinstalling the app can reset the current
+keyboard and the Full Access row.
+
+### End-to-end without a microphone
+
+```bash
+make -C iOS e2e-sim PARAKEET_BUNDLE_DIR=/path/to/bundle [E2E_SKIP_ONBOARDING=1] [E2E_SCREEN=home] [E2E_START_SESSION=1]
+make -C iOS e2e-sim-probe [E2E_BACKGROUND=1 | E2E_FROM_BACKGROUND=1]
+make -C iOS e2e-sim-scenarios
+```
+
+`e2e-sim` builds the self-test variant into `build/e2e-simulator` and installs
+it on `LocalFlow-E2E` (`E2E_SIM_DEVICE`). It generates the invented
+`E2E_PHRASE` with `say` and launches with `LOCALFLOW_SYNTHETIC_MIC`, a
+real-time-paced synthetic source. The Mac microphone is never used, and a
+requested but unusable synthetic source fails closed rather than falling back
+to the real microphone. `E2E_SCREEN` accepts `onboarding`,
+`onboarding-microphone|keyboard|model`, `home`, `tryit`, `keyboard-setup` and
+`diagnostics`. The app's content-free `LocalFlow self-test:` lines go to
+`build/e2e-simulator/obj/e2e-app.log`.
+
+`e2e-sim-probe` plays the keyboard's side through the App Group files:
+
+1. record intent
+2. synthetic speech
+3. finish intent
+4. result
+
+It prints only phases and pass/fail, then deletes the result file.
+
+`e2e-sim-scenarios` runs four cases with one pass/fail line each:
+- `cancel`
+- `kill-relaunch`: the request is reported interrupted and never restarts
+- `url-hint-fresh`
+- `url-hint-stale`
+
+On the 26.4 simulator, `simctl openurl` with a custom scheme leaves an
+"Open in LocalFlow Dev?" alert that cannot be tapped headlessly, so the probes
+bring the app forward with `simctl launch`. The next simulator reboot clears
+the alert.
+
+Simulator timings: the encoder runs on the CPU and prepares on every cold
+launch, taking about 72 s and 840 MB.
+
 ## Device
 
-Device builds need a paid developer team, because the App Group capability
-requires explicit App IDs and provisioning profiles:
+Device builds need the App Group capability, so they need explicit App IDs
+and development provisioning profiles on a paid team.
 
-1. In the developer portal, register an App Group (`APP_GROUP`) and two
-   explicit App IDs, `BUNDLE_ID` and `BUNDLE_ID.keyboard`, each with the App
-   Groups capability set to that group.
-2. Create a development provisioning profile for each App ID that includes
-   your device, and download both.
-3. Build and sign:
+### Getting profiles
 
-   ```bash
-   make -C iOS PLATFORM=device PARAKEET_BUNDLE_DIR=/path/to/bundle \
-     CODESIGN_IDENTITY="Apple Development: Name (XXXXXXXXXX)" TEAM_ID=XXXXXXXXXX \
-     APP_PROFILE=/path/to/app.mobileprovision KEYBOARD_PROFILE=/path/to/keyboard.mobileprovision
-   ```
+Make a throwaway Xcode project outside the repository; it must never be
+committed. Give it automatic signing on the team: an app target and a
+`com.apple.keyboard-service` extension target, each with the App Group in its
+entitlements. Build it once:
 
-   The build checks that each profile matches its App ID and grants the App
-   Group. It then embeds the profiles, adds `application-identifier`,
-   `com.apple.developer.team-identifier` and the profile's `get-task-allow`
-   value to the entitlements, and signs the extension before the app.
-4. Install with `xcrun devicectl device install app --device <device>
-   iOS/build/device/LocalFlow.app`.
+```bash
+xcodebuild -project SigningHelper.xcodeproj -scheme SigningHelper -allowProvisioningUpdates \
+  -destination 'generic/platform=iOS' build   # or -destination id=<UDID> -allowProvisioningDeviceRegistration for a new phone
+```
 
-`make -C iOS PLATFORM=device binaries` compiles and links for the device
-without signing.
+This registers the App IDs and the group, then downloads team profiles to
+`~/Library/Developer/Xcode/UserData/Provisioning Profiles/<UUID>.mobileprovision`.
+The profiles expire after a year; rerun the helper to renew them or to add
+devices. Find a profile's App ID with
+`security cms -D -i <file> | plutil -extract Entitlements.application-identifier raw -o - -`.
+
+### Building, signing and installing
+
+`codesign` fails over SSH (`errSecInternalComponent`) because the login
+keychain is locked in SSH sessions. Run signing builds in Terminal.app on the
+Mac. Later `make` calls over SSH find the signed build up to date. Keep the
+signing variables in a shell array, because the profile directory contains a
+space.
+
+```bash
+P="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+SIGN=(PLATFORM=device CODESIGN_IDENTITY="Apple Development: Name (XXXXXXXXXX)" TEAM_ID=XXXXXXXXXX
+      APP_PROFILE="$P/<app-uuid>.mobileprovision" KEYBOARD_PROFILE="$P/<keyboard-uuid>.mobileprovision"
+      PARAKEET_BUNDLE_DIR=/path/to/bundle)
+make -C iOS all "${SIGN[@]}"                              # Terminal.app: builds and signs
+make -C iOS install-device "${SIGN[@]}" DEVICE=<name or id> # installs, does not launch
+make -C iOS smoke-device "${SIGN[@]}" DEVICE=<name or id> [SMOKE_DEVICE_INSTALL=0] [SMOKE_COMPUTE=cpuOnly]
+```
+
+- The build checks that each profile matches its App ID and grants the App
+  Group. It embeds the profiles, adds `application-identifier`, the team
+  identifier and `get-task-allow`, and signs the extension before the app.
+- The phone needs Developer Mode, a pairing with the Mac, and to stay
+  unlocked during `smoke-device`. `install-device` and `smoke-device` stop with
+  a clear message when the phone is locked.
+- `smoke-device` installs the self-test variant, which shares the bundle ID,
+  so reinstall the normal build afterwards. `SMOKE_DEVICE_INSTALL=0` reruns
+  the installed build, which gives a true warm run.
+- The synthetic recording is overwritten with an empty file when the run ends.
+- `make -C iOS PLATFORM=device binaries` compiles and links without signing.
+
+Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
+
+| Compute | Preparation | Transcription | Peak |
+| --- | --- | --- | --- |
+| Neural Engine, first launch after install | 67 s | 0.049 s | 165 MB |
+| Neural Engine, later launches | 0.69 s | 0.040 s | 166 MB |
+| CPU only (self-test only) | 61 s | 0.52 s | 3.2 GB |
+
+## Using the keyboard
+
+- **Dictation:** the top bar has the mic and stop button, a level meter,
+  cancel, "Insert last dictation", and **Undo** for the last insertion.
+  - Undo is offered only until you type, move the cursor, change fields or
+    hide the keyboard, or 30 s pass.
+  - It removes text only as far as the visible context proves it was the
+    dictation.
+- **Typing:** a basic QWERTY layer with `123` and `#+=`. It has Apple-style
+  shift (double-tap for caps lock), auto-capitalization and the double-space
+  period. There is no autocorrect.
+- **Trackpad:** touch and hold space (about 0.5 s) and the keys blank out.
+  - Drag to move the cursor horizontally, by character, or vertically, by
+    line, keeping the column.
+  - Faster swipes travel further.
+  - Diagnostics → Cursor has sensitivity and acceleration sliders for tuning
+    against Apple's keyboard.
+- **Delete:** hold to repeat; after about 3.5 s it deletes whole words.
+- Apple's own globe and dictation microphone below the keyboard belong to iOS
+  and cannot be replaced. Turning off Settings → General → Keyboard → Enable
+  Dictation hides Apple's microphone system-wide.
 
 ## Manual tests
 
-Pending. These need a device or a person at the simulator. Record results
-before merge.
+These need a person at a device, or Sol through computer use at the
+simulator. Record results before merge. The device rows are required by
+AGENTS.md.
 
-- [ ] Keyboard appears in Settings, can be enabled, and Full Access can be granted.
-- [ ] App Group container is shared by the app and the keyboard on a device.
-- [ ] Device-signed build installs and launches.
-- [ ] Model preparation and transcription on a device (Neural Engine and CPU only).
+Setup and session:
+- [x] Device-signed build installs; signatures and entitlements verified (2026-10-09).
+- [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
+- [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
+- [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
+- [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
+- [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at expiry, lock, a call and End session.
+- [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
+- [ ] Field binding: dictate into Try it field A, switch to field B mid-request; no auto-insert into B, and the chip appears.
+- [ ] Undo: removes exactly the dictation; disappears after typing, cursor moves, 30 s, or hiding the keyboard.
+- [ ] Kill LocalFlow during recording: the request reports interrupted and never restarts; no result file remains.
+- [ ] Battery: 30 min idle session vs no session (and vs Wispr Flow if installed).
+- [ ] Peak memory during a 5-minute dictation; no jetsam in the background.
+
+Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practice):
+- [ ] Hold-to-trackpad delay feels the same as Apple's.
+- [ ] Slow drags land between each pair of letters; fast swipes travel similar distances.
+- [ ] Vertical moves across soft-wrapped lines, short lines and blank lines keep the column.
+- [ ] Held delete switches to words at a similar time and pace.
+- [ ] Shift, caps lock, auto-capitalization, double-space period, `123`/`#+=`, emoji and accent deletion.
+- [ ] Two-thumb rollover, including space, keeps typing order.
+- [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
+- [ ] Haptics only with Full Access; VoiceOver labels; dark mode; landscape; SE-size layout.
