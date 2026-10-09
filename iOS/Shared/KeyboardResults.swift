@@ -18,6 +18,18 @@ struct KeyboardResultLedger: Equatable, Sendable {
     /// Requests whose binding a focus change removed. Displaying them again never rebinds them.
     private(set) var invalidated: Set<UUID> = []
     private(set) var consumed: Set<UUID> = []
+    /// When `prune` first saw each binding or invalidation, and each consumed request.
+    private var bookkeepingSeenAt: [UUID: Date] = [:]
+    private var consumedSeenAt: [UUID: Date] = [:]
+
+    /// A binding or invalidation outlives its first sighting by the longest recording, a generous
+    /// transcription allowance and the insertion window, plus clock skew. Past that, a late result
+    /// is still offered through "Insert last dictation", never inserted unbound.
+    static let bindingRetention = DictationProtocol.maxDictationDuration + 120 + DictationProtocol.resultTTL
+        + 2 * DictationProtocol.clockSkewTolerance
+    /// A consumed request is remembered while a result file for it could still be fresh, so it is
+    /// never inserted twice within the delivery window.
+    static let consumedRetention = DictationProtocol.resultTTL + 2 * DictationProtocol.clockSkewTolerance + 10
 
     /// Call after writing `finish(R)`. The user stopped R in this field, so this binding stands
     /// even if a focus change invalidated an earlier one.
@@ -56,11 +68,51 @@ struct KeyboardResultLedger: Equatable, Sendable {
         return .offerManualInsert
     }
 
+    /// A result that would insert nothing (an empty transcript without Enter) is never offered
+    /// manually, so it cannot hide an older one that would.
     func plan(for results: [DictationResult], documentID: UUID?, now: Date) -> ResultPlan {
         let ordered = results.sorted { ($0.createdAt, $0.requestID.uuidString) < ($1.createdAt, $1.requestID.uuidString) }
         return ResultPlan(
             autoInsert: ordered.filter { disposition(of: $0, documentID: documentID, now: now) == .autoInsert },
-            manualInsert: ordered.last { disposition(of: $0, documentID: documentID, now: now) == .offerManualInsert })
+            manualInsert: ordered.last {
+                disposition(of: $0, documentID: documentID, now: now) == .offerManualInsert && !Self.insertsNothing($0)
+            })
+    }
+
+    static func insertsNothing(_ result: DictationResult) -> Bool {
+        TextInsertionFormatter.text(for: result, contextBefore: nil).isEmpty
+    }
+
+    /// Retires bookkeeping that can no longer matter, so a long-lived keyboard instance does not
+    /// grow without bound. Call on every pass. `keeping` holds requests still in flight (the current
+    /// intent's), which are never retired.
+    mutating func prune(now: Date, keeping: Set<UUID>) {
+        let tolerance = DictationProtocol.clockSkewTolerance
+        for requestID in Set(bindings.keys).union(invalidated) where bookkeepingSeenAt[requestID] == nil {
+            bookkeepingSeenAt[requestID] = now
+        }
+        for requestID in consumed where consumedSeenAt[requestID] == nil {
+            consumedSeenAt[requestID] = now
+        }
+        for (requestID, seenAt) in bookkeepingSeenAt {
+            if seenAt > now + tolerance {
+                bookkeepingSeenAt[requestID] = now   // the clock went back; restart the wait
+            } else if bindings[requestID] == nil && !invalidated.contains(requestID) {
+                bookkeepingSeenAt[requestID] = nil   // claimed meanwhile
+            } else if !keeping.contains(requestID), now.timeIntervalSince(seenAt) > Self.bindingRetention {
+                bindings[requestID] = nil
+                invalidated.remove(requestID)
+                bookkeepingSeenAt[requestID] = nil
+            }
+        }
+        for (requestID, seenAt) in consumedSeenAt {
+            if seenAt > now + tolerance {
+                consumedSeenAt[requestID] = now
+            } else if !keeping.contains(requestID), now.timeIntervalSince(seenAt) > Self.consumedRetention {
+                consumed.remove(requestID)
+                consumedSeenAt[requestID] = nil
+            }
+        }
     }
 
     /// Claim before insert: deletes `result-R.json` and returns true only if this call removed it,

@@ -10,6 +10,8 @@ protocol KeyboardTextTarget: AnyObject {
     /// The view haptics attach to; nil before it loads.
     var feedbackView: UIView? { get }
     func insert(_ text: String)
+    /// Undo of the last dictation: one `deleteBackward()` per grapheme.
+    func deleteBackward(count: Int)
     /// Tries to open the containing app (see `HostAppLauncher`); false if no attempt was made.
     func openContainingApp(_ url: URL, completion: @escaping @MainActor @Sendable (Bool) -> Void) -> Bool
 }
@@ -20,6 +22,8 @@ struct KeyboardViewState: Equatable {
     var title = ""
     var hint: String?
     var canInsertLast = false
+    /// The last inserted dictation can still be removed (see `UndoTracker`).
+    var canUndo = false
     /// Recent input levels while recording, oldest first.
     var levels: [Float] = []
 }
@@ -51,6 +55,8 @@ final class KeyboardDictationClient: ObservableObject {
     private var shownIntent = StoreRead<KeyboardIntent>.absent
     private var shownStatus = StoreRead<HostStatus>.absent
     private var manualInsertID: UUID?
+    /// The last inserted dictation, for "Undo"; its text lives only here, for at most 30 s.
+    private var undo = UndoTracker()
     private var launcherFailed = false
     /// A record request whose bounce failed; it waits for the user to open LocalFlow.
     private var unlaunchedRequestID: UUID?
@@ -59,6 +65,9 @@ final class KeyboardDictationClient: ObservableObject {
     private var levelSampledAt: Date?
 
     private var notifier: DarwinNotifier? { configuration.map(DarwinNotifier.init(configuration:)) }
+
+    /// Haptics need Full Access and the user's setting; the keys use the same rule.
+    var hapticsAllowed: Bool { hapticsEnabled }
 
     private var access: KeyboardAccess {
         guard target?.hasFullAccess == true else { return .noFullAccess }
@@ -157,6 +166,24 @@ final class KeyboardDictationClient: ObservableObject {
         refresh()
     }
 
+    /// "Undo": removes the last inserted dictation while `UndoTracker` still allows it.
+    func undoLastDictation() {
+        notice = nil
+        if let target, let count = undo.takeUndo(documentID: target.documentID, contextBefore: target.contextBeforeInput,
+                                                 now: CACurrentMediaTime()) {
+            target.deleteBackward(count: count)
+            playHaptic(.press)
+        }
+        refresh()
+    }
+
+    /// Typing, delete, trackpad movement or an insertion other than a dictation: undo no longer applies.
+    func noteEdit() {
+        guard undo.insertion != nil else { return }
+        undo.editHappened()
+        refresh()
+    }
+
     private func startDictation(openingHost: Bool) {
         guard let store else { return }
         let requestID = UUID()
@@ -233,6 +260,8 @@ final class KeyboardDictationClient: ObservableObject {
         }
         let mode = KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now)
         ledger.noteDisplayed(mode, intent: intent, documentID: documentID)
+        ledger.prune(now: now, keeping: Set([intent.value?.requestID, shownIntent.value?.requestID].compactMap { $0 }))
+        undo.expire(now: CACurrentMediaTime())
         if access == .fullAccess { deliverResults(documentID: documentID, now: now) }
         shownIntent = intent
         shownStatus = status
@@ -249,10 +278,8 @@ final class KeyboardDictationClient: ObservableObject {
             var context = target?.contextBeforeInput
             for result in plan.autoInsert { insert(result, context: &context) }
         }
-        // A result that would insert nothing is not worth a chip.
-        manualInsertID = plan.manualInsert.flatMap {
-            TextInsertionFormatter.text(for: $0, contextBefore: nil).isEmpty ? nil : $0.requestID
-        }
+        // The ledger never offers a result that would insert nothing.
+        manualInsertID = plan.manualInsert?.requestID
     }
 
     /// Claim before insert: the result is inserted only if this call deleted its file, so it lands
@@ -266,6 +293,7 @@ final class KeyboardDictationClient: ObservableObject {
             return
         }
         target.insert(text)
+        undo.recordInsertion(text, documentID: target.documentID, at: CACurrentMediaTime())
         // The proxy may not reflect the insertion yet, and a following result's spacing needs it.
         context = (context ?? "") + text
         playHaptic(.success)
@@ -296,8 +324,13 @@ final class KeyboardDictationClient: ObservableObject {
         } else {
             notice = nil
         }
+        // The context is read only while an undo is pending.
+        let canUndo = undo.insertion != nil && target.map {
+            undo.undoableGraphemes(documentID: $0.documentID, contextBefore: $0.contextBeforeInput,
+                                   now: CACurrentMediaTime()) != nil
+        } == true
         let next = KeyboardViewState(mode: mode, title: title, hint: KeyboardMessages.hint(for: status.value, now: now),
-                                     canInsertLast: manualInsertID != nil, levels: levels)
+                                     canInsertLast: manualInsertID != nil, canUndo: canUndo, levels: levels)
         guard next != state else { return }
         if mode.phase != state.mode.phase {
             if case .recording = mode { playHaptic(.listening) }

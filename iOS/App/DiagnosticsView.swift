@@ -23,6 +23,8 @@ struct DiagnosticsView: View {
                 Text("Changing the compute units releases the model; it is prepared again for the next dictation.")
             }
 
+            CursorTuningSection(settings: host.settings.settings)
+
             Section("Runtime") {
                 LabeledContent("Model", value: modelText)
                 LabeledContent("Compute units", value: transcriber.activeUnits?.label ?? "—")
@@ -85,6 +87,46 @@ struct DiagnosticsView: View {
             }
         }
         return names.isEmpty ? "—" : names.joined(separator: ", ")
+    }
+}
+
+/// The keyboard's trackpad-mode multipliers (App Group settings, read when a gesture starts), for
+/// tuning on a device side by side with Apple's keyboard.
+private struct CursorTuningSection: View {
+    let settings: LocalFlowSettings?
+    @State private var sensitivity = 1.0
+    @State private var acceleration = 1.0
+
+    var body: some View {
+        Section {
+            slider("Sensitivity", value: $sensitivity, range: 0.5 ... 2, identifier: "diagnostics.cursorSensitivity")
+            slider("Acceleration", value: $acceleration, range: 0.25 ... 3, identifier: "diagnostics.cursorAcceleration")
+            Button("Reset to 1×") {
+                sensitivity = 1
+                acceleration = 1
+            }
+            .disabled(sensitivity == 1 && acceleration == 1)
+        } header: {
+            Text("Cursor")
+        } footer: {
+            Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple's keyboard in Try it's practice field: touch and hold the space bar with each and match the feel. Changes apply to the next gesture.")
+        }
+        .onAppear {
+            sensitivity = settings?.cursorSensitivity ?? 1
+            acceleration = settings?.cursorAcceleration ?? 1
+        }
+        .onChange(of: sensitivity) { _, value in settings?.cursorSensitivity = value }
+        .onChange(of: acceleration) { _, value in settings?.cursorAcceleration = value }
+    }
+
+    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title, value: String(format: "%.2f×", value.wrappedValue))
+            Slider(value: value, in: range, step: 0.05)
+                .accessibilityLabel(title)
+                .accessibilityValue(String(format: "%.2f times", value.wrappedValue))
+                .accessibilityIdentifier(identifier)
+        }
     }
 }
 

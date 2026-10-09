@@ -6,11 +6,16 @@ struct LocalFlowSettings {
     static let sessionMinuteOptions = [5, 15, 60]
     static let defaultSessionMinutes = 5
 
+    /// Accepted values of the trackpad-mode multipliers; others read as the default, 1.
+    static let cursorMultiplierRange: ClosedRange<Double> = 0.25...4
+
     private enum Key {
         static let sessionMinutes = "sessionMinutes"
         static let spokenDelimitersEnabled = "spokenDelimitersEnabled"
         static let pressEnterEnabled = "pressEnterEnabled"
         static let hapticsEnabled = "hapticsEnabled"
+        static let cursorSensitivity = "cursorSensitivity"
+        static let cursorAcceleration = "cursorAcceleration"
     }
 
     let defaults: UserDefaults
@@ -53,8 +58,33 @@ struct LocalFlowSettings {
         nonmutating set { defaults.set(newValue, forKey: Key.hapticsEnabled) }
     }
 
+    /// Scales the keyboard's trackpad-mode gain at every speed. Default 1.
+    var cursorSensitivity: Double {
+        get { multiplier(Key.cursorSensitivity) }
+        nonmutating set { setMultiplier(newValue, forKey: Key.cursorSensitivity) }
+    }
+
+    /// Scales how far the trackpad-mode gain rises above 1 on fast drags. Default 1.
+    var cursorAcceleration: Double {
+        get { multiplier(Key.cursorAcceleration) }
+        nonmutating set { setMultiplier(newValue, forKey: Key.cursorAcceleration) }
+    }
+
     // Every boolean setting defaults to on.
     private func bool(_ key: String) -> Bool {
         defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    private func multiplier(_ key: String) -> Double {
+        // A Bool also bridges to NSNumber; only a real number counts.
+        guard let number = defaults.object(forKey: key) as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return 1 }
+        let value = number.doubleValue
+        return value.isFinite && Self.cursorMultiplierRange.contains(value) ? value : 1
+    }
+
+    private func setMultiplier(_ value: Double, forKey key: String) {
+        guard value.isFinite, Self.cursorMultiplierRange.contains(value) else { return }
+        defaults.set(value, forKey: key)
     }
 }

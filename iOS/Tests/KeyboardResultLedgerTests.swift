@@ -18,7 +18,96 @@ enum KeyboardResultLedgerTests {
             ("fieldSwitchMidRequest", testFieldSwitchMidRequest),
             ("failedDeleteKeepsResultEligible", testFailedDeleteKeepsResultEligible),
             ("concurrentClaimantsHaveExactlyOneWinner", testConcurrentClaimantsHaveExactlyOneWinner),
+            ("emptyResultDoesNotHideTheChip", testEmptyResultDoesNotHideTheChip),
+            ("pruneRetiresOldBookkeeping", testPruneRetiresOldBookkeeping),
+            ("pruneKeepsInFlightAndRecentClaims", testPruneKeepsInFlightAndRecentClaims),
         ]
+    }
+
+    private static let thirdRequestID = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
+
+    private static func testEmptyResultDoesNotHideTheChip() {
+        // Regression: a newer result that inserts nothing hid an older one that would.
+        let older = Fixture.result(Fixture.requestID, text: "Synthetic older sentence", createdAt: Fixture.now - 10)
+        let emptyNewer = Fixture.result(Fixture.otherRequestID, text: "  ", pressEnter: false, createdAt: Fixture.now - 2)
+        let plan = KeyboardResultLedger().plan(for: [older, emptyNewer], documentID: Fixture.documentA, now: Fixture.now)
+        TestSupport.expectEqual(plan.manualInsert?.requestID, Fixture.requestID)
+        TestSupport.expect(KeyboardResultLedger.insertsNothing(emptyNewer), "empty result")
+        // An empty transcript that presses Enter does insert something.
+        let enter = Fixture.result(thirdRequestID, text: "", pressEnter: true, createdAt: Fixture.now - 1)
+        TestSupport.expect(!KeyboardResultLedger.insertsNothing(enter), "enter-only result")
+        let withEnter = KeyboardResultLedger().plan(for: [older, emptyNewer, enter], documentID: Fixture.documentA,
+                                                    now: Fixture.now)
+        TestSupport.expectEqual(withEnter.manualInsert?.requestID, thirdRequestID)
+        // Only no-ops: nothing is offered.
+        TestSupport.expectEqual(KeyboardResultLedger().plan(for: [emptyNewer], documentID: nil, now: Fixture.now).manualInsert, nil)
+        // A bound empty result is still auto-claimed, so it does not linger.
+        var bound = KeyboardResultLedger()
+        bound.bindFinish(requestID: Fixture.otherRequestID, documentID: Fixture.documentA)
+        TestSupport.expectEqual(bound.plan(for: [emptyNewer], documentID: Fixture.documentA, now: Fixture.now).autoInsert,
+                                [emptyNewer])
+    }
+
+    private static func testPruneRetiresOldBookkeeping() {
+        withStore { store in
+            var ledger = KeyboardResultLedger()
+            ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
+            ledger.bindFinish(requestID: Fixture.otherRequestID, documentID: Fixture.documentB)
+            ledger.documentChanged(to: Fixture.documentA)   // invalidates the other request
+            ledger.prune(now: Fixture.now, keeping: [])
+            TestSupport.expectEqual(ledger.bindings, [Fixture.requestID: Fixture.documentA])
+            TestSupport.expectEqual(ledger.invalidated, [Fixture.otherRequestID])
+            // Still within the delivery window: kept.
+            ledger.prune(now: Fixture.now + KeyboardResultLedger.bindingRetention, keeping: [])
+            TestSupport.expectEqual(ledger.bindings.count, 1)
+            ledger.prune(now: Fixture.now + KeyboardResultLedger.bindingRetention + 1, keeping: [])
+            TestSupport.expectEqual(ledger.bindings, [:])
+            TestSupport.expectEqual(ledger.invalidated, [])
+            // A consumed request is retired after its own, shorter window.
+            try! store.writeResult(Fixture.result(thirdRequestID))
+            TestSupport.expect(ledger.claim(requestID: thirdRequestID, in: store), "claim")
+            let claimedAt = Fixture.now + 1_000
+            ledger.prune(now: claimedAt, keeping: [])
+            TestSupport.expectEqual(ledger.consumed, [thirdRequestID])
+            ledger.prune(now: claimedAt + KeyboardResultLedger.consumedRetention + 1, keeping: [])
+            TestSupport.expectEqual(ledger.consumed, [])
+            TestSupport.expect(KeyboardResultLedger.consumedRetention > DictationProtocol.resultTTL
+                               + DictationProtocol.clockSkewTolerance, "retention shorter than the delivery window")
+            // Pruning an empty ledger is a no-op, and the ledger is back to its initial state.
+            ledger.prune(now: claimedAt + 10_000, keeping: [])
+            TestSupport.expectEqual(ledger, KeyboardResultLedger())
+        }
+    }
+
+    private static func testPruneKeepsInFlightAndRecentClaims() {
+        withStore { store in
+            var ledger = KeyboardResultLedger()
+            ledger.noteDisplayed(.recording(level: 0.2, startedAt: Fixture.now), intent: .value(Fixture.intent(.record)),
+                                 documentID: Fixture.documentA)
+            ledger.prune(now: Fixture.now, keeping: [Fixture.requestID])
+            // The current request is never retired, however long it runs.
+            ledger.prune(now: Fixture.now + 10 * KeyboardResultLedger.bindingRetention, keeping: [Fixture.requestID])
+            TestSupport.expectEqual(ledger.bindings, [Fixture.requestID: Fixture.documentA])
+            // Duplicate protection within the delivery window: a claimed request is not inserted again.
+            try! store.writeResult(Fixture.result())
+            TestSupport.expect(ledger.claim(requestID: Fixture.requestID, in: store), "first claim")
+            let claimedAt = Fixture.now + 30
+            ledger.prune(now: claimedAt, keeping: [])
+            try! store.writeResult(Fixture.result(createdAt: claimedAt))
+            ledger.prune(now: claimedAt + DictationProtocol.resultTTL, keeping: [])
+            TestSupport.expectEqual(ledger.disposition(of: Fixture.result(createdAt: claimedAt), documentID: Fixture.documentA,
+                                                       now: claimedAt + DictationProtocol.resultTTL), .ignore)
+            TestSupport.expect(!ledger.claim(requestID: Fixture.requestID, in: store), "claimed twice")
+            // A backward clock jump restarts the wait instead of retiring early or never.
+            var jumped = KeyboardResultLedger()
+            jumped.bindFinish(requestID: Fixture.otherRequestID, documentID: Fixture.documentB)
+            jumped.prune(now: Fixture.now + 1_000, keeping: [])
+            jumped.prune(now: Fixture.now, keeping: [])
+            jumped.prune(now: Fixture.now + KeyboardResultLedger.bindingRetention, keeping: [])
+            TestSupport.expectEqual(jumped.bindings.count, 1)
+            jumped.prune(now: Fixture.now + KeyboardResultLedger.bindingRetention + 1, keeping: [])
+            TestSupport.expectEqual(jumped.bindings, [:])
+        }
     }
 
     private static func disposition(_ ledger: KeyboardResultLedger, _ result: DictationResult = Fixture.result(),

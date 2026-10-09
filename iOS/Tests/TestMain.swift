@@ -25,6 +25,14 @@ struct LocalFlowIOSTests {
             ("CapturePipeline", CapturePipelineTests.tests),
             ("CaptureTiming", CaptureTimingTests.tests),
             ("TranscriptionEngine", TranscriptionEngineTests.tests),
+            ("CursorMotion", CursorMotionTests.tests),
+            ("TextNavigator", TextNavigatorTests.tests),
+            ("TrackpadSession", TrackpadSessionTests.tests),
+            ("WordBoundaries", WordBoundariesTests.tests),
+            ("DeleteRepeat", DeleteRepeatTests.tests),
+            ("KeyboardLayout", KeyboardLayoutTests.tests),
+            ("TypingRules", TypingRulesTests.tests),
+            ("UndoTracker", UndoTrackerTests.tests),
         ]
         var count = 0
         for (suite, tests) in suites {

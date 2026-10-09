@@ -25,6 +25,9 @@ SDK = iphonesimulator
 SUPPORTED_PLATFORM = iPhoneSimulator
 TARGET = arm64-apple-ios$(DEPLOYMENT_TARGET)-simulator
 CODESIGN_IDENTITY ?= -
+ifneq ($(filter install-device,$(MAKECMDGOALS)),)
+$(error install-device needs PLATFORM=device)
+endif
 else ifeq ($(PLATFORM),device)
 SDK = iphoneos
 SUPPORTED_PLATFORM = iPhoneOS
@@ -45,11 +48,12 @@ APP_SWIFT_SOURCES ?= $(call swift_sources,App)
 KEYBOARD_SWIFT_SOURCES ?= $(call swift_sources,Keyboard)
 SHARED_SOURCES ?= $(call swift_sources,Shared)
 HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
+KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTATION_CORE_SOURCES)
-KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES)
+KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
 
 OBJ_DIR = $(BUILD_DIR)/obj
 APP_BUNDLE = $(BUILD_DIR)/LocalFlow.app
@@ -238,7 +242,7 @@ typecheck:
 	echo "Type-checking the keyboard"; \
 	xcrun --sdk iphonesimulator swiftc $$flags $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_SOURCES)
 
-# Shared and HostCore are Foundation-only, so their tests run on the Mac.
+# Shared, HostCore and KeyboardCore are Foundation-only, so their tests run on the Mac.
 test:
 ifeq ($(strip $(TEST_SOURCES)),)
 	@echo "No iOS host tests yet; skipping."
@@ -246,7 +250,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 
@@ -314,7 +318,62 @@ smoke-sim:
 		*) echo "$$result" >&2; echo "See $(SMOKE_LOG)" >&2; exit 1 ;; \
 	esac
 
-.PHONY: e2e-sim e2e-sim-probe
+.PHONY: install-device smoke-device
+
+# A name or identifier from `xcrun devicectl list devices`.
+DEVICE ?=
+SMOKE_DEVICE_BUILD_DIR ?= build/smoke-device
+SMOKE_DEVICE_LOG = $(SMOKE_DEVICE_BUILD_DIR)/obj/selftest.log
+# 0 reruns the self-test build already on DEVICE without building or reinstalling it,
+# so a second run shows whether Core ML kept its on-device specialization (a warm run).
+SMOKE_DEVICE_INSTALL ?= 1
+# Shell fragment: fails unless DEVICE is set, reachable and unlocked.
+DEVICE_UNLOCKED = [ -n "$(DEVICE)" ] || { echo "Set DEVICE to a name or identifier from 'xcrun devicectl list devices'." >&2; exit 1; }; \
+	lock_json=$$(mktemp); \
+	xcrun devicectl device info lockState --device "$(DEVICE)" --quiet --json-output "$$lock_json" >/dev/null 2>&1 || \
+		{ rm -f "$$lock_json"; echo "Cannot reach $(DEVICE); see 'xcrun devicectl list devices'." >&2; exit 1; }; \
+	locked=$$(plutil -extract result.passcodeRequired raw -o - "$$lock_json" 2>/dev/null || echo unknown); rm -f "$$lock_json"; \
+	[ "$$locked" = false ] || { echo "Unlock $(DEVICE) and keep it awake until the run finishes." >&2; exit 1; }
+
+# Installs the signed build on DEVICE without launching it (PLATFORM=device).
+install-device: all
+	@[ -n "$(DEVICE)" ] || { echo "install-device needs DEVICE, a name or identifier from 'xcrun devicectl list devices'." >&2; exit 1; }
+	xcrun devicectl device install app --device "$(DEVICE)" "$(APP_BUNDLE)"
+
+# smoke-sim on a device. Builds and signs the self-test variant (it needs the device signing
+# variables), replaces the BUNDLE_ID install on DEVICE with it, copies invented `say` speech
+# into the app's data container and launches the app with the self-test environment. Prints
+# only the content-free result line. The phone must stay unlocked. devicectl cannot delete
+# files, so the recording is overwritten with an empty file afterwards.
+smoke-device:
+	@[ -n "$(DEVICE)" ] || { echo "smoke-device needs DEVICE, a name or identifier from 'xcrun devicectl list devices'." >&2; exit 1; }
+ifneq ($(SMOKE_DEVICE_INSTALL),0)
+	@[ -n "$(strip $(PARAKEET_BUNDLE_DIR))" ] || { echo "smoke-device needs PARAKEET_BUNDLE_DIR (the Parakeet model bundle)." >&2; exit 1; }
+	@$(MAKE) --no-print-directory all PLATFORM=device BUILD_DIR="$(SMOKE_DEVICE_BUILD_DIR)" SWIFT_FLAGS="$(SWIFT_FLAGS) -D LOCALFLOW_SELFTEST"
+endif
+	@set -e; $(DEVICE_UNLOCKED); obj="$(SMOKE_DEVICE_BUILD_DIR)/obj"; mkdir -p "$$obj"; \
+	if [ "$(SMOKE_DEVICE_INSTALL)" != 0 ]; then \
+		xcrun devicectl device install app --quiet --device "$(DEVICE)" "$(SMOKE_DEVICE_BUILD_DIR)/LocalFlow.app"; \
+	fi; \
+	copy_audio() { xcrun devicectl device copy to --quiet --device "$(DEVICE)" --domain-type appDataContainer \
+		--domain-identifier "$(BUNDLE_ID)" --source "$$1" --destination tmp/localflow-selftest.wav; }; \
+	say -o "$$obj/selftest.wav" --data-format=LEI16@16000 "$(SMOKE_PHRASE)"; : > "$$obj/empty.wav"; \
+	trap 'copy_audio "$$obj/empty.wav" >/dev/null 2>&1 || true; rm -f "$$obj/selftest.wav" "$$obj/empty.wav"' EXIT; \
+	copy_audio "$$obj/selftest.wav"; \
+	echo "Running the self-test on $(DEVICE) (compute: $(SMOKE_COMPUTE))"; \
+	DEVICECTL_CHILD_LOCALFLOW_SELFTEST_AUDIO=tmp/localflow-selftest.wav \
+	DEVICECTL_CHILD_LOCALFLOW_SELFTEST_EXPECTED="$(SMOKE_PHRASE)" \
+	DEVICECTL_CHILD_LOCALFLOW_SELFTEST_COMPUTE="$(SMOKE_COMPUTE)" \
+		xcrun devicectl device process launch --device "$(DEVICE)" --console --terminate-existing \
+		--timeout $(SMOKE_TIMEOUT) "$(BUNDLE_ID)" > "$(SMOKE_DEVICE_LOG)" 2>&1 || true; \
+	result=$$(LC_ALL=C sed -n -E 's/.*(LocalFlow self-test: result=)/\1/p' "$(SMOKE_DEVICE_LOG)" | tail -n 1 | tr -d '\r'); \
+	case "$$result" in \
+		*"result=pass"*) echo "$$result"; rm -f "$(SMOKE_DEVICE_LOG)" ;; \
+		"") echo "No self-test result; see $(SMOKE_DEVICE_LOG)" >&2; exit 1 ;; \
+		*) echo "$$result" >&2; echo "See $(SMOKE_DEVICE_LOG)" >&2; exit 1 ;; \
+	esac
+
+.PHONY: e2e-sim e2e-sim-probe e2e-sim-scenarios
 
 E2E_BUILD_DIR ?= build/e2e-simulator
 E2E_SIM_DEVICE ?= LocalFlow-E2E
@@ -369,25 +428,32 @@ e2e-sim:
 	echo "  App output:    $(E2E_LOG) (content-free self-test lines only)"; \
 	echo "  Shut down:     xcrun simctl shutdown $$udid"
 
-# Scripted round trip against an e2e-sim install, playing the keyboard's part
-# through the shared files: a record intent, the app brought to the foreground
-# (as when the user opens it), a finish intent, then the result is compared with
-# E2E_PHRASE. Prints phases and pass/fail only, never the
-# transcript; the result file is claimed (deleted) afterwards.
-# `simctl launch` activates the running app; its environment matters only if the
-# app has to start again, and keeps the synthetic microphone in that case.
-e2e-sim-probe:
-	@set -e; \
-	udid=$$(xcrun simctl list devices | grep -F "    $(E2E_SIM_DEVICE) (" | grep -F "(Booted)" | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/'); \
+# Shell fragment for the probes below, which play the keyboard's part through the
+# shared files from the Mac: udid, dir, intent ACTION [REQUEST], presence, field
+# KEY (from status.json), status_of REQUEST (phase/error or none), and
+# launch_app [simctl launch options], which brings the app forward (or starts it
+# again) with the synthetic microphone.
+E2E_SHELL = udid=$$(xcrun simctl list devices | grep -F "    $(E2E_SIM_DEVICE) (" | grep -F "(Booted)" | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/'); \
 	[ -n "$$udid" ] || { echo "$(E2E_SIM_DEVICE) is not booted; run make e2e-sim first." >&2; exit 1; }; \
 	group=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" "$(APP_GROUP)"); \
 	dir="$$group/Library/Caches/LocalFlowDictation"; mkdir -p "$$dir"; \
 	request=$$(uuidgen); instance=$$(uuidgen); \
 	intent() { printf '{"action":"%s","issuedAt":%s,"keyboardInstanceID":"%s","requestID":"%s","schema":1}' \
-		"$$1" "$$(date +%s)" "$$instance" "$$request" > "$$dir/.e2e-intent.tmp"; mv "$$dir/.e2e-intent.tmp" "$$dir/intent.json"; }; \
+		"$$1" "$$(date +%s)" "$$instance" "$${2:-$$request}" > "$$dir/.e2e-intent.tmp"; mv "$$dir/.e2e-intent.tmp" "$$dir/intent.json"; }; \
 	presence() { printf '{"keyboardInstanceID":"%s","schema":1,"seenAt":%s}' "$$instance" "$$(date +%s)" > "$$dir/.e2e-presence.tmp"; \
 		mv "$$dir/.e2e-presence.tmp" "$$dir/presence.json"; }; \
 	field() { plutil -extract "$$1" raw -o - "$$dir/status.json" 2>/dev/null || true; }; \
+	status_of() { if [ "$$(field dictation.requestID)" = "$$1" ]; then echo "$$(field dictation.phase)/$$(field dictation.error)"; else echo none; fi; }; \
+	launch_app() { SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
+		xcrun simctl launch "$$@" "$$udid" "$(BUNDLE_ID)" >/dev/null; }
+
+# Scripted round trip against an e2e-sim install: a record intent, the app brought
+# to the foreground (as when the user opens it), a finish intent, then the result
+# is compared with E2E_PHRASE. Prints phases and pass/fail only, never the
+# transcript; the result file is claimed (deleted) afterwards. If the app has to
+# start again, launch_app keeps the synthetic microphone.
+e2e-sim-probe:
+	@set -e; $(E2E_SHELL); \
 	phase() { if [ "$$(field dictation.requestID)" = "$$request" ]; then field dictation.phase; else echo none; fi; }; \
 	wait_for() { deadline=$$(( $$(date +%s) + $$2 )); last=; while :; do \
 		p=$$(phase); [ "$$p" = "$$last" ] || { echo "  $$(date +%T) phase=$$p session=$$(field session) model=$$(field model)"; last=$$p; }; \
@@ -401,8 +467,7 @@ e2e-sim-probe:
 	else \
 		echo "Request $$request: record intent, then LocalFlow to the foreground"; \
 		intent record; \
-		SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
-			xcrun simctl launch "$$udid" "$(BUNDLE_ID)" >/dev/null; \
+		launch_app; \
 		if [ -n "$(E2E_OPEN_URL)" ]; then xcrun simctl openurl "$$udid" "$(URL_SCHEME)://dictate"; fi; \
 	fi; \
 	wait_for "recording failed cancelled" 30 || { echo "Timed out before recording" >&2; exit 1; }; \
@@ -428,5 +493,46 @@ e2e-sim-probe:
 	if [ "$$actual" = "$$expected" ]; then echo "e2e: result=pass transcript_match=true press_enter=$$enter"; \
 	else echo "e2e: result=fail transcript_match=false press_enter=$$enter" >&2; exit 1; fi
 
+# Contract scenarios against an e2e-sim install, each printing one pass/fail line:
+# - cancel: a cancel intent ends a recording.
+# - kill-relaunch: the app is killed while recording; relaunched while the record
+#   intent is still fresh, it reports the request interrupted and never restarts it.
+# - url-hint: with LocalFlow in the background and no session, a record intent and
+#   <scheme>://dictate admit nothing (the simulator holds the URL behind its "Open
+#   in …?" alert; the in-app background hint path is covered by host tests). Only
+#   arriving in the foreground admits, judging freshness then: a fresh intent
+#   records, and one past pendingRecordTTL is neither admitted nor rejected.
+# Relaunches end any session; the app is left running with no session.
+e2e-sim-scenarios:
+	@set -e; $(E2E_SHELL); \
+	until_phase() { i=0; while [ "$$(field dictation.requestID)" != "$$1" ] || [ "$$(field dictation.phase)" != "$$2" ]; do \
+		sleep 0.25; i=$$((i + 1)); [ $$i -lt 120 ] || return 1; done; }; \
+	pass() { echo "e2e-scenario: $$1 result=pass"; }; \
+	fail() { echo "e2e-scenario: $$1 result=fail $$2" >&2; exit 1; }; \
+	to_background() { xcrun simctl launch "$$udid" com.apple.Preferences >/dev/null; sleep 2; }; \
+	r=$$(uuidgen); intent record "$$r"; launch_app; \
+	until_phase "$$r" recording || fail cancel "not recording: $$(status_of "$$r")"; \
+	intent cancel "$$r"; until_phase "$$r" cancelled || fail cancel "$$(status_of "$$r")"; \
+	pass cancel; \
+	r=$$(uuidgen); intent record "$$r"; launch_app; \
+	until_phase "$$r" recording || fail kill-relaunch "not recording: $$(status_of "$$r")"; \
+	run=$$(field hostRunID); xcrun simctl terminate "$$udid" "$(BUNDLE_ID)"; launch_app; \
+	i=0; while [ "$$(field hostRunID)" = "$$run" ]; do sleep 0.25; i=$$((i + 1)); [ $$i -lt 60 ] || fail kill-relaunch "no new run"; done; \
+	sleep 2; outcome=$$(status_of "$$r"); \
+	[ "$$outcome" = failed/interrupted ] && [ "$$(field session)" = inactive ] || fail kill-relaunch "$$outcome session=$$(field session)"; \
+	pass kill-relaunch; \
+	to_background; \
+	r=$$(uuidgen); intent record "$$r"; xcrun simctl openurl "$$udid" "$(URL_SCHEME)://dictate" || true; sleep 4; \
+	[ "$$(status_of "$$r")" = none ] && [ "$$(field session)" = inactive ] && [ "$$(field model)" = notPrepared ] || \
+		fail url-hint-background "$$(status_of "$$r") session=$$(field session) model=$$(field model)"; \
+	launch_app; until_phase "$$r" recording || fail url-hint-foreground "$$(status_of "$$r")"; \
+	pass url-hint-fresh; \
+	intent cancel "$$r"; until_phase "$$r" cancelled || true; \
+	launch_app --terminate-running-process; sleep 3; to_background; \
+	r=$$(uuidgen); intent record "$$r"; xcrun simctl openurl "$$udid" "$(URL_SCHEME)://dictate" || true; \
+	sleep $$(( 21 + 3 )); launch_app; sleep 3; \
+	[ "$$(status_of "$$r")" = none ] && [ "$$(field session)" = inactive ] || fail url-hint-stale "$$(status_of "$$r") session=$$(field session)"; \
+	pass url-hint-stale
+
 clean:
-	rm -rf build "$(BUILD_DIR)" "$(SMOKE_BUILD_DIR)" "$(HOST_BUILD_DIR)"
+	rm -rf build "$(BUILD_DIR)" "$(SMOKE_BUILD_DIR)" "$(SMOKE_DEVICE_BUILD_DIR)" "$(HOST_BUILD_DIR)"
