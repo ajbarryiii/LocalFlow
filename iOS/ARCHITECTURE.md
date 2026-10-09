@@ -741,3 +741,31 @@ The keyboard reads `documentContextBeforeInput`, `documentContextAfterInput`
 and `documentIdentifier` in memory only. It uses them for spacing, result
 binding, cursor movement and word deletion. They are never stored, logged or
 transmitted, and are dropped when the gesture or operation ends.
+
+### Typing keys (user decision 2026-10-09)
+
+The keyboard gets a basic QWERTY layer, so a typo can be fixed in place right
+after moving the cursor. Dictation stays primary.
+
+- **Layout:**
+  - A dictation bar on top: status line, mic/stop capsule with the level
+    meter, cancel, and the "Insert last dictation" chip.
+  - An Apple-like key area below:
+    - three letter rows with shift and delete
+    - a bottom row of `123`, globe (only when `needsInputModeSwitchKey`),
+      space and return
+    - a `123` layer and a `#+=` layer
+  - Total height is about the system keyboard's height plus the dictation
+    bar.
+- **Behavior:**
+  - Shift: one tap for a single shifted letter; double-tap for caps lock.
+  - Auto-capitalization at the start of a sentence, honoring the proxy's
+    `autocapitalizationType`.
+  - Double-space inserts ". ", as on Apple's keyboard.
+  - Key callouts on press.
+  - No autocorrect, predictions or learned words.
+- **Touch handling:** the key area is one UIKit touch-tracking view with
+  nearest-key hit testing (no dead gaps). It highlights on touch-down and
+  inserts on touch-up, which keeps typing latency low in the extension. The
+  same view runs trackpad mode: touch and hold the space bar, and the letters
+  blank out, as on Apple's keyboard.
