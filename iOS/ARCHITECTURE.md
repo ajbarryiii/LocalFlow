@@ -598,3 +598,57 @@ No transcript history is stored.
   - background transcription latency and memory, Neural Engine against CPU
   - jetsam behavior
   - result cleanup after a forced kill
+
+## Decisions recorded after Phase 1
+
+These refine the sections above and take precedence where they differ.
+
+- **Binding.** A keyboard binds R to the current field while it displays R as
+  recording or transcribing. It does not bind at completion. After a focus
+  change invalidates a binding, only an explicit `finish` rebinds it
+  (`KeyboardResultLedger`).
+- **Watchdog.** `HostWatchdog.stopReason` takes `lastForegroundAt`, so a
+  bounce longer than 15 s is not cancelled at swipe-back, before the keyboard
+  has rewritten its presence.
+- **Known requests.** Run recovery marks a previous run's terminal requests as
+  known too. The controller adds every **rejected** ID to `knownRequestIDs`.
+- **Rejecting during another dictation.** When reconciliation yields
+  `reject(R, …)` while another request S is starting, recording or
+  transcribing, the host does not publish R in the single `dictation` slot,
+  because that would hide S. It only marks R as known. The keyboard's intent
+  then names R, which no longer matches the status, so it falls back to
+  `ready`.
+- **Foreground flag.** The controller passes `isForeground = true` whenever
+  the scene is active, including the activation that follows a URL open.
+- **Status rate.** While a dictation is starting or recording, the host
+  publishes status at about 10 Hz for the level meter. Otherwise it publishes
+  at the 1 Hz heartbeat.
+- **File protection.** Class A (`.complete`) applies on devices only. The
+  simulator and the macOS test host use class C, because macOS refuses class
+  A to unentitled processes.
+- **Model preparation.** The simulator runs the encoder on the CPU and
+  prepares it on **every** cold launch: about 72 s, with a peak footprint of
+  about 835 MB and about 1.1 s to transcribe 2.4 s of speech. Onboarding and
+  the bounce screen must show preparation progress and must not promise
+  "one-time". Whether Core ML caches Neural Engine specialization across
+  launches on a device is part of the device plan.
+- **Build.**
+  - The iOS build adds `-Xcc -DACCELERATE_NEW_LAPACK`, because the iOS 26 SDK
+    deprecates the CBLAS interface used by the shared decoder.
+  - `make PLATFORM=device binaries` compiles and links without signing.
+  - Self-test options:
+    - `LOCALFLOW_SELFTEST_AUDIO` (`SMOKE_AUDIO`)
+    - `LOCALFLOW_SELFTEST_EXPECTED`
+    - `LOCALFLOW_SELFTEST_COMPUTE=cpuOnly` (`SMOKE_COMPUTE`)
+
+    The result line reports pass or fail, timings, App Group state, compute
+    units and peak footprint. It never includes the transcript.
+- **Keyboard ASCII.** `IsASCIICapable` is NO, because the vocabulary emits
+  non-ASCII tokens.
+- **Diagnostics.** The app has a Diagnostics section that serves device
+  experiments:
+  - a compute-policy picker: Automatic (Neural Engine with a CPU retry in the
+    background), Neural Engine only, or CPU only
+  - content-free measurements of the last dictation, held in memory only:
+    audio seconds, preparation and transcription milliseconds, compute units
+    used, foreground or background, and the process footprint
