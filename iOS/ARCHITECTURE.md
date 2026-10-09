@@ -663,3 +663,81 @@ These refine the sections above and take precedence where they differ.
   over the destination. The expiry purge also sweeps staging files older than
   `resultTTL`. Run recovery calls `purgeStagingFiles(olderThan: 0, now:)`
   before writing anything.
+
+## Cursor control and editing (keyboard; added 2026-10-09)
+
+Typos are common in dictation, so moving to a word and fixing it has to be
+fast. The goal is to match the feel of Apple's keyboard trackpad mode as
+closely as a third-party keyboard can.
+
+### Platform limits (verify on device)
+
+- A keyboard can move the cursor only with
+  `textDocumentProxy.adjustTextPosition(byCharacterOffset:)`. It cannot
+  select text, it cannot read the host field's layout, font or width, and it
+  sees only the context the proxy exposes. That context is
+  `documentContextBeforeInput` / `AfterInput`, typically a paragraph or a few
+  hundred characters, and it updates asynchronously after each adjustment.
+- So **horizontal** movement is exact, measured in grapheme clusters, with
+  offsets in the units `adjustTextPosition` uses. **Vertical** movement is
+  emulated:
+  - The keyboard lays out its context snapshot with TextKit, using the
+    system body font at an estimated container width (the keyboard's width
+    minus typical field insets).
+  - It keeps the cursor's x position (the column, in points) while moving
+    between visual lines.
+  - Hard line breaks are exact; soft wraps are an estimate. Fields with a
+    custom font or width will drift by a few characters.
+
+### Trackpad mode
+
+- **Activation**: as on Apple's keyboard, touch and hold the space bar. The
+  hold threshold matches Apple's, with the value measured or researched and
+  recorded here. The pad dims its other controls, plays a light haptic (with
+  Full Access and the haptics setting), and the whole keyboard surface
+  becomes a trackpad until the finger lifts. A drag that starts on the space
+  bar and passes a small slop distance after the hold also activates it.
+- **Motion model** (`KeyboardCore/CursorMotion`; pure, tested):
+  - The finger delta (points) is multiplied by an acceleration gain that
+    depends on finger speed. The gain is 1 below a low-speed threshold and
+    rises smoothly to a capped maximum at high speed. The curve's shape and
+    constants approximate Apple's trackpad mode; how they were derived is
+    documented next to the code.
+  - Horizontal: the accelerated delta is consumed by the advances of the
+    actual characters being crossed, measured in the body font. Crossing
+    "mmm" takes more travel than "iii", as in Apple's position-based
+    tracking. A fallback average advance applies when no context is visible.
+  - Vertical: the accelerated delta crosses one visual line per body-font
+    line height. The column is preserved.
+  - Residuals carry over between touch events so slow drags stay precise.
+    No step overshoots the context snapshot, so the snapshot refreshes when
+    the proxy catches up.
+- **Snapshot handling** (`KeyboardCore/TextNavigator`; pure, tested):
+  - At gesture start, take `before + after` plus the cursor index, then move
+    a virtual cursor inside that snapshot.
+  - Issue `adjustTextPosition` with grapheme-safe deltas, coalesced to at
+    most one call per display frame.
+  - Re-snapshot when the virtual cursor nears a snapshot edge and the proxy
+    has caught up.
+  - Never split a grapheme cluster (emoji, combining marks). Handle UTF-16
+    and grapheme counts explicitly.
+- **Tuning**: the sensitivity and acceleration multipliers are in
+  `LocalFlowSettings`. The app's Diagnostics screen exposes them for device
+  side-by-side comparison with Apple's keyboard. "Try it" includes a
+  multi-line field with invented sample text for vertical tests.
+
+### Word editing
+
+- Delete key behaves like Apple's. A tap deletes one character. Holding
+  repeats with acceleration, and after a threshold (Apple's behavior,
+  documented in code) the key deletes whole words, using the context before
+  the cursor.
+- Word boundaries use the same rules as `TextNavigator`
+  (`KeyboardCore/WordBoundaries`; pure, tested).
+
+### Privacy update (supersedes invariant 5)
+
+The keyboard reads `documentContextBeforeInput`, `documentContextAfterInput`
+and `documentIdentifier` in memory only. It uses them for spacing, result
+binding, cursor movement and word deletion. They are never stored, logged or
+transmitted, and are dropped when the gesture or operation ends.
