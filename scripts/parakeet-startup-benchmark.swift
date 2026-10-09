@@ -28,13 +28,13 @@ struct ParakeetStartupBenchmark {
             let initialProgress = try await service.preparationProgress(directory: directory)
             var timings: [[String: Any]] = []
             var firstTranscriptReady = 0.0
-            for duration in [14, 2, 4, 7, 18] {
+            for duration in [14, 2, 4, 7, 18, 33] {
                 let predictionStart = clock.now
                 let text = try await service.transcribe(
                     fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"), directory: directory)
                 let elapsed = seconds(predictionStart.duration(to: clock.now))
                 if timings.isEmpty { firstTranscriptReady = seconds(start.duration(to: clock.now)) }
-                let expected = duration == 18 ? phrase + " " + phrase : phrase
+                let expected = expectedText(duration)
                 let normalized = text.lowercased().filter { $0.isLetter || $0.isWhitespace }
                 let match = normalized == expected
                 timings.append(["audio_seconds": duration, "transcription_seconds": elapsed,
@@ -44,14 +44,14 @@ struct ParakeetStartupBenchmark {
             var backgroundTimes: [Double] = []
             var backgroundMatches = true
             var backgroundBucketCounts: [String: Int] = [:]
-            let durations = [2, 4, 7, 14, 18]
+            let durations = [2, 4, 7, 14, 18, 33]
             while try await service.preparationProgress(directory: directory).isOptimizing {
                 let duration = durations[backgroundTimes.count % durations.count]
                 let predictionStart = clock.now
                 let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
                                                         directory: directory)
                 backgroundTimes.append(seconds(predictionStart.duration(to: clock.now)))
-                let expected = duration == 18 ? phrase + " " + phrase : phrase
+                let expected = expectedText(duration)
                 backgroundMatches = backgroundMatches && text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
                 guard backgroundMatches else { throw LocalParakeetError.invalid("Synthetic background mismatch") }
                 for bucket in trace.take() { backgroundBucketCounts[String(bucket), default: 0] += 1 }
@@ -64,15 +64,15 @@ struct ParakeetStartupBenchmark {
                 guard finalProgress.preparedBuckets == LocalParakeetCore.buckets else {
                     throw LocalParakeetError.invalid("Synthetic optimization did not finish")
                 }
-                for duration in [2, 4, 7, 14, 18] {
+                for duration in [2, 4, 7, 14, 18, 33] {
                     let predictionStart = clock.now
                     let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
                                                             directory: directory)
                     let elapsed = seconds(predictionStart.duration(to: clock.now))
-                    let expected = duration == 18 ? phrase + " " + phrase : phrase
+                    let expected = expectedText(duration)
                     let match = text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
                     let buckets = trace.take()
-                    let expectedBuckets = duration == 18 ? [15, 4] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
+                    let expectedBuckets = duration == 18 ? [30] : duration == 33 ? [30, 4] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
                     guard match, buckets == expectedBuckets else { throw LocalParakeetError.invalid("Synthetic handoff mismatch") }
                     optimized.append(["audio_seconds": duration, "transcription_seconds": elapsed,
                                       "expected_match": match, "buckets_used": buckets])
@@ -106,6 +106,13 @@ struct ParakeetStartupBenchmark {
         }
     }
 
+    // Additional phrase starts after the one at 0s. Each phrase is under 1.9s.
+    private static let repeatOffsets: [Int: [Double]] = [18: [15.1], 33: [15.1, 27.5, 30.5]]
+
+    private static func expectedText(_ duration: Int) -> String {
+        Array(repeating: phrase, count: 1 + (repeatOffsets[duration]?.count ?? 0)).joined(separator: " ")
+    }
+
     private static func seconds(_ duration: Duration) -> Double {
         let parts = duration.components
         return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
@@ -120,15 +127,17 @@ struct ParakeetStartupBenchmark {
         let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
         try file.read(into: input)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for duration in [2, 4, 7, 14, 18] {
+        for duration in [2, 4, 7, 14, 18, 33] {
             let count = Int(Double(duration) * file.processingFormat.sampleRate)
             let padded = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(count))!
             padded.frameLength = padded.frameCapacity
             let samples = padded.floatChannelData![0]
             samples.initialize(repeating: 0, count: count)
             samples.update(from: input.floatChannelData![0], count: Int(input.frameLength))
-            if duration == 18 {
-                let offset = Int(15.1 * file.processingFormat.sampleRate)
+            // Repeats cross the 15s split, end near the 30s window edge and
+            // fall in a remainder chunk after 30s.
+            for start in repeatOffsets[duration] ?? [] {
+                let offset = Int(start * file.processingFormat.sampleRate)
                 guard offset + Int(input.frameLength) <= count else {
                     throw LocalParakeetError.invalid("Synthetic speech exceeds chunk fixture")
                 }

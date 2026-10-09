@@ -118,6 +118,30 @@ new-path run and 241 MiB for same-path reuse, with no swap growth. System
 Core ML/ANE services are excluded. These are smoke results, not a promise
 of unchanged foreground latency on every machine.
 
+## 4/8/15/30-second functions
+
+The encoder was reconverted from the same export with b4/b8/b15/b30 functions
+in place of b2/b4/b8/b15. Startup still prepares b15 first, then warms b4, b8
+and b30 in the background. Recordings split at the largest ready function.
+[The timing record](parakeet-b30-results.json) is a one-repeat run on the same
+M1 Pro, with an added 33-second fixture whose phrases cross the 15-second
+split, end near the 30-second window edge and fall in the remainder chunk.
+
+The new-path first transcript was ready in 102.51 seconds with only b15
+prepared; all four functions were ready by 421.24 seconds. Before b30 was
+ready, the 18- and 33-second fixtures used 15-second chunks. 271 synthetic
+dictations during optimization all matched: 97.7 ms median, 251.0 ms p95
+and 267.2 ms maximum. After optimization, 2/4/7/14-second fixtures used
+b4/b4/b8/b15, the 18-second fixture used a single b30 pass in 250 ms, and the
+33-second fixture used b30+b4 in 216 ms; all matched.
+
+A fresh process reusing that model path produced its first transcript in
+0.87 seconds and completed optimization by 2.52 seconds, with all fixtures
+matching. The guarded process group peaked at 582 MiB for the new-path run
+and 340 MiB for same-path reuse. The compiled encoder grew from 299 MB to
+332 MB because the shared position tables cover 30 seconds. The b30 function
+has no upstream accuracy gate; these checks are synthetic smoke results only.
+
 ## Validation limits
 
 New-path loads are not proven cold device-cache loads: no cache deletion or

@@ -7,7 +7,7 @@ The full development-set mean WER reported after rebuilding that export is
 6.0856%. This is an English speech model.
 
 Inference uses the M1 Pro optimization experiment's plain-layout C6s8
-multifunction Core ML encoder, with 2/4/8/15-second functions,
+multifunction Core ML encoder, with 4/8/15/30-second functions,
 `cpuAndNeuralEngine`, a native vDSP feature extractor, and the native FP32
 Accelerate TDT decoder (F2). C6s8 stores a sparse mask and grouped ternary
 lookup tables. The encoder graph uses FP16 values and FP16-rounded row scales;
@@ -33,7 +33,7 @@ deterministic voice macros, local history/retry, and paste behavior remain.
 Microphone and Accessibility are the only dictation permissions.
 
 Startup prepares the 15-second function first on the
-dictation queue. Once ready, a separate utility queue prepares the 2/4/8-second
+dictation queue. Once ready, a separate utility queue prepares the 4/8/30-second
 functions one at a time and hands each successfully warmed model to the
 dictation queue. Each chunk then uses the smallest ready function that fits;
 unavailable smaller functions fall back to a larger ready function. Background
@@ -45,9 +45,10 @@ Settings and the menu show preparation status. First-time device preparation
 may still take several minutes; dictation submitted before it finishes waits
 behind preparation. The runtime and loaded models stay in memory for the
 session, so subsequent dictations reuse them. The model's file size is not its runtime RAM footprint: loaded models
-and working buffers require additional memory. Recordings
-longer than 15 seconds are split into independent chunks; words crossing a
-chunk boundary can lose context. Cancellation is checked between audio
+and working buffers require additional memory. Recordings are split into
+independent chunks at the largest ready function: 15 seconds until the
+30-second function is ready, then 30 seconds. Words crossing a chunk boundary
+can lose context. Cancellation is checked between audio
 buffers, Core ML calls, and decoder steps; an in-progress Core ML load or
 prediction must finish before cancellation returns.
 
@@ -58,6 +59,13 @@ Run it through the upstream `ios/macguard`, with `--upstream STT_CHECKOUT`,
 upstream's allowed artifact area. It verifies the export hash and writes a
 bundle manifest with per-file SHA-256 hashes. Runtime verifies those hashes
 before loading. Preserve the generated bundle outside the checkout.
+
+The upstream experiment built 2/4/8/15-second functions. `prepare-parakeet.py`
+replaces that bucket set with 4/8/15/30 seconds for this conversion only, and
+extends the shared folded relative-position tables from 188 to 376 encoder
+frames. Shorter functions slice the same centre positions, whose values depend
+only on position. The upstream accuracy gates did not cover the 30-second
+function; its synthetic smoke validation is in `Benchmarks/ParakeetStartup.md`.
 
 The bundle model ID is `localflow`, with display name LocalFlow and
 `parakeet-v2-ternary` recorded as its base model. The build can relabel a
@@ -107,6 +115,11 @@ The earlier 15-second-only startup was tested by the user in an isolated
 app: approximately 90 seconds to readiness, with only 10–15 seconds of setup.
 The Core ML comparison and synthetic short/long transcript checks are documented
 in `Benchmarks/ParakeetStartup.md`. The new progressive preparation/handoff needs manual app-level testing.
+
+The 4/8/15/30-second conversion matched every synthetic fixture, including an
+18-second recording in one b30 pass and a 33-second recording as b30+b4.
+First-use readiness was 102.51 seconds with b15 only; all functions were ready
+by 421.24 seconds. Real 15–30-second dictations need manual testing.
 
 Before merge, manually test microphone dictation, global shortcuts,
 Accessibility paste, cancellation, local retries, and offline operation

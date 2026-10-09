@@ -24,7 +24,7 @@ final class LocalParakeetService: @unchecked Sendable {
     private let startupStrategy: ParakeetStartupStrategy
     private let onBucketUsed: (@Sendable (Int) -> Void)?
 
-    // Dictation becomes ready after 15s; optional smaller warmups do not occupy
+    // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
     // its serial queue. Benchmarks can compare startup policies explicitly.
     init(startupStrategy: ParakeetStartupStrategy = .applicationDefault,
          onBucketUsed: (@Sendable (Int) -> Void)? = nil) {
@@ -190,12 +190,14 @@ private final class LocalParakeetRuntime {
     }
 
     func transcribe(fileURL: URL, check: () throws -> Void) throws -> String {
+        // Installs also run on this queue, so readiness is fixed for the recording.
+        let chunk = models.chunkSamples(strategy: startupStrategy)
         var pending: [Float] = [], pieces: [String] = []
         try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
             pending.append(contentsOf: samples)
-            while pending.count >= LocalParakeetCore.maxSamples {
-                pieces.append(try transcribeChunk(Array(pending.prefix(LocalParakeetCore.maxSamples)), check: check))
-                pending.removeFirst(LocalParakeetCore.maxSamples)
+            while pending.count >= chunk {
+                pieces.append(try transcribeChunk(Array(pending.prefix(chunk)), check: check))
+                pending.removeFirst(chunk)
             }
         }
         if !pending.isEmpty { pieces.append(try transcribeChunk(pending, check: check)) }

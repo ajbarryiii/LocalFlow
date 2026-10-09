@@ -11,8 +11,8 @@ enum LocalParakeetError: LocalizedError {
 enum LocalParakeetCore {
     static let modelID = "localflow"
     static let sampleRate = 16_000
-    static let maxSamples = 15 * sampleRate
-    static let buckets = [2, 4, 8, 15]
+    static let maxSamples = 30 * sampleRate
+    static let buckets = [4, 8, 15, 30]
 
     static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -20,7 +20,7 @@ enum LocalParakeetCore {
 
     static func bucket(samples: Int) throws -> Int {
         guard samples > 0, samples <= maxSamples else {
-            throw LocalParakeetError.invalid("Local transcription chunk must contain 1–240000 samples.")
+            throw LocalParakeetError.invalid("Local transcription chunk must contain 1–480000 samples.")
         }
         return buckets.first { samples <= $0 * sampleRate }!
     }
@@ -63,17 +63,18 @@ enum LocalParakeetCore {
 enum ParakeetStartupStrategy: String {
     case allBuckets = "all"
     case fifteenSecondsFirst = "fifteen-first"
-    case fifteenSecondsThenSmaller = "fifteen-background"
+    case fifteenSecondsThenOthers = "fifteen-background"
 
     // Dictation becomes usable after one function rather than all four.
-    static let applicationDefault: Self = .fifteenSecondsThenSmaller
+    static let applicationDefault: Self = .fifteenSecondsThenOthers
 
     var initialBuckets: [Int] {
         self == .allBuckets ? LocalParakeetCore.buckets : [15]
     }
 
+    // Short functions first; the 30s function is the slowest to prepare.
     var backgroundBuckets: [Int] {
-        self == .fifteenSecondsThenSmaller ? [2, 4, 8] : []
+        self == .fifteenSecondsThenOthers ? [4, 8, 30] : []
     }
 }
 
@@ -99,11 +100,17 @@ final class ParakeetModelCache<Model> {
         return model
     }
 
+    // Recordings split at the largest ready function, so 30s chunks are used
+    // only after that function is prepared. Until then chunks stay at 15s.
+    func chunkSamples(strategy: ParakeetStartupStrategy) -> Int {
+        (prepared.union(strategy.initialBuckets).max() ?? 15) * LocalParakeetCore.sampleRate
+    }
+
     func transcriptionBucket(samples: Int, strategy: ParakeetStartupStrategy) throws -> Int {
         let preferred = try LocalParakeetCore.bucket(samples: samples)
         if strategy != .allBuckets {
             // Use the smallest ready function that can hold the input. A failed
-            // 2s warmup can still benefit from a ready 4s or 8s function.
+            // 4s warmup can still benefit from a ready 8s or 15s function.
             return LocalParakeetCore.buckets.first { $0 >= preferred && prepared.contains($0) } ?? preferred
         }
         return preferred
