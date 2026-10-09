@@ -20,6 +20,9 @@ enum SessionEndReason: Equatable, Sendable {
     case engineFailed
     /// Permission or audio-session activation failed while starting.
     case startFailed(HostErrorCode)
+    /// Media services were reset: the audio session is invalid, and only a new foreground start can
+    /// capture again.
+    case mediaServicesReset
 }
 
 /// What wakes a reconciliation pass.
@@ -33,10 +36,21 @@ enum HostSessionPolicy {
     static let reconcileInterval: TimeInterval = 0.5
     /// About 10 Hz while starting or recording, for the keyboard's level meter.
     static let fastStatusInterval: TimeInterval = 0.1
-    /// How long the engine may be stopped before the session treats it as failed. An interruption stops
-    /// the engine and posts its notification at about the same time; this lets the notification win, so
-    /// a call is reported as `.interrupted` rather than restarted or reported as an engine failure.
+    /// How long a capture failure (a stopped engine, a configuration change, a media-services reset, or
+    /// starvation) stays pending before the session acts on it. An interruption stops the engine and
+    /// posts its notification at about the same time; the grace lets the interruption win, so a call is
+    /// reported as `.interrupted` rather than restarted.
     static let captureStallGrace: TimeInterval = 0.5
+    /// Input buffers arrive about every 100 ms. With none for this long (idle), or no new samples for this
+    /// long (recording), capture is starved.
+    static let captureStarvationTimeout: TimeInterval = 2
+    /// Consecutive buffers that fail to convert before the capture thread reports it.
+    static let maxConsecutiveConversionFailures = 5
+    /// Engine recoveries in a row that produce no input before the session gives up.
+    static let maxRecoveriesWithoutInput = 2
+    /// After finish, how long to wait for the tail (frames captured before the finish but not yet
+    /// delivered: up to one tap buffer plus the I/O buffer) before transcribing what has arrived.
+    static let tailTimeout: TimeInterval = 1
 
     static func statusInterval(for dictation: DictationStatus?) -> TimeInterval {
         switch dictation?.phase {
@@ -67,14 +81,35 @@ enum HostSessionPolicy {
         return !DictationProtocol.isFresh(idleSince, ttl: duration, now: now)
     }
 
-    /// The `isForeground` to reconcile with, or nil to skip the pass.
-    /// - A URL open counts as foreground: the system is bringing the app forward (contract).
+    /// The `isForeground` to reconcile with, or nil to skip the pass. `isForeground` is the application
+    /// state, not `.background`.
+    /// - A URL open is only a hint. Before the app actually arrives in the foreground it does nothing,
+    ///   so it can neither admit, prepare nor reject; the arrival re-reads the intent, and freshness is
+    ///   judged then.
     /// - A process that has never been in the foreground (a prewarmed launch) skips: without a session
     ///   it could only reject, and would reject for good the request its own bounce is about to admit.
     static func reconcileForeground(trigger: ReconcileTrigger, isForeground: Bool, hasBeenForeground: Bool) -> Bool? {
-        if trigger == .urlOpen { return true }
-        guard isForeground || hasBeenForeground else { return nil }
-        return isForeground
+        if isForeground { return true }
+        guard trigger != .urlOpen, hasBeenForeground else { return nil }
+        return false
+    }
+
+    /// No input since `lastInputAt` for `captureStarvationTimeout`. A backward clock jump is not
+    /// starvation; the caller restarts its baseline.
+    static func isStarved(lastInputAt: Date, now: Date) -> Bool {
+        now.timeIntervalSince(lastInputAt) >= captureStarvationTimeout
+    }
+
+    /// The recording cap by elapsed time since admission, in addition to the sample-count cap. Fails
+    /// closed: a backward clock jump past the tolerance ends the recording.
+    static func hasExceededMaxDuration(startedAt: Date, now: Date) -> Bool {
+        !DictationProtocol.isFresh(startedAt, ttl: DictationProtocol.maxDictationDuration, now: now)
+    }
+
+    /// A keyboard with Full Access was visible recently: its presence is within `keyboardPresenceTimeout`.
+    static func isKeyboardConnected(presence: StoreRead<KeyboardPresence>, now: Date) -> Bool {
+        guard let presence = presence.value else { return false }
+        return DictationProtocol.isFresh(presence.seenAt, ttl: DictationProtocol.keyboardPresenceTimeout, now: now)
     }
 
     /// The reconciler's `cancel(R)`. For a `finish` that reached a request still starting nothing was
@@ -98,7 +133,7 @@ enum HostSessionPolicy {
             case .user, .idleExpired: return .cancelled(.sessionInactive)
             case .interrupted: return .failed(.interrupted)
             case .deviceLocked: return .cancelled(.deviceLocked)
-            case .engineFailed: return .failed(.audioSessionFailed)
+            case .engineFailed, .mediaServicesReset: return .failed(.audioSessionFailed)
             case .startFailed(let code): return .failed(code)
             }
         case .transcribing:
@@ -114,7 +149,7 @@ enum HostSessionPolicy {
         case .user, .idleExpired: return nil
         case .interrupted: return .interrupted
         case .deviceLocked: return .deviceLocked
-        case .engineFailed: return .audioSessionFailed
+        case .engineFailed, .mediaServicesReset: return .audioSessionFailed
         case .startFailed(let code): return code
         }
     }

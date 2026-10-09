@@ -8,6 +8,8 @@ enum HostSessionPolicyTests {
             ("expiryOnlyWhileActiveAndIdle", testExpiryOnlyWhileActiveAndIdle),
             ("idleExpiryFailsClosed", testIdleExpiryFailsClosed),
             ("reconcileForegroundFlag", testReconcileForegroundFlag),
+            ("starvationAndElapsedCap", testStarvationAndElapsedCap),
+            ("keyboardConnectedNeedsFreshPresence", testKeyboardConnectedNeedsFreshPresence),
             ("cancelOutcomeDependsOnIntent", testCancelOutcomeDependsOnIntent),
             ("watchdogOutcomes", testWatchdogOutcomes),
             ("sessionEndOutcomes", testSessionEndOutcomes),
@@ -62,7 +64,34 @@ enum HostSessionPolicyTests {
             // A prewarmed process never reconciles: it could only reject.
             TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: false), nil)
         }
-        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: false), true)
+        // A URL is only a hint: in the background it neither admits nor rejects, whatever came before.
+        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: false), nil)
+        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: true), nil)
+        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: true, hasBeenForeground: false), true)
+    }
+
+    private static func testStarvationAndElapsedCap() {
+        typealias Policy = HostSessionPolicy
+        let timeout = Policy.captureStarvationTimeout
+        TestSupport.expect(!Policy.isStarved(lastInputAt: now, now: now + timeout - 0.01), "starved early")
+        TestSupport.expect(Policy.isStarved(lastInputAt: now, now: now + timeout), "not starved")
+        TestSupport.expect(!Policy.isStarved(lastInputAt: now, now: now - 60), "a backward jump counted as starvation")
+        let cap = DictationProtocol.maxDictationDuration
+        TestSupport.expect(!Policy.hasExceededMaxDuration(startedAt: now, now: now + cap), "capped early")
+        TestSupport.expect(Policy.hasExceededMaxDuration(startedAt: now, now: now + cap + 0.01), "not capped")
+        TestSupport.expect(Policy.hasExceededMaxDuration(startedAt: now, now: now - 3), "a backward jump extended it")
+    }
+
+    private static func testKeyboardConnectedNeedsFreshPresence() {
+        typealias Policy = HostSessionPolicy
+        let timeout = DictationProtocol.keyboardPresenceTimeout
+        TestSupport.expect(Policy.isKeyboardConnected(presence: .value(Fixture.presence(seenAt: now - timeout)), now: now),
+                           "fresh presence not connected")
+        TestSupport.expect(!Policy.isKeyboardConnected(presence: .value(Fixture.presence(seenAt: now - timeout - 1)), now: now),
+                           "a stale presence file counted as connected")
+        for read in [StoreRead<KeyboardPresence>.absent, .incompatible, .unreadable] {
+            TestSupport.expect(!Policy.isKeyboardConnected(presence: read, now: now), "\(read) counted as connected")
+        }
     }
 
     private static func testCancelOutcomeDependsOnIntent() {
@@ -84,11 +113,13 @@ enum HostSessionPolicyTests {
             TestSupport.expectEqual(Policy.sessionEndOutcome(.interrupted, phase: phase), .failed(.interrupted))
             TestSupport.expectEqual(Policy.sessionEndOutcome(.deviceLocked, phase: phase), .cancelled(.deviceLocked))
             TestSupport.expectEqual(Policy.sessionEndOutcome(.engineFailed, phase: phase), .failed(.audioSessionFailed))
+            TestSupport.expectEqual(Policy.sessionEndOutcome(.mediaServicesReset, phase: phase), .failed(.audioSessionFailed))
             TestSupport.expectEqual(Policy.sessionEndOutcome(.startFailed(.microphonePermissionDenied), phase: phase),
                                     .failed(.microphonePermissionDenied))
         }
         // Transcription needs no audio and survives everything except device lock.
-        for reason in [SessionEndReason.user, .idleExpired, .interrupted, .engineFailed, .startFailed(.audioSessionFailed)] {
+        for reason in [SessionEndReason.user, .idleExpired, .interrupted, .engineFailed, .mediaServicesReset,
+                       .startFailed(.audioSessionFailed)] {
             TestSupport.expectEqual(Policy.sessionEndOutcome(reason, phase: .transcribing), nil)
         }
         TestSupport.expectEqual(Policy.sessionEndOutcome(.deviceLocked, phase: .transcribing), .cancelled(.deviceLocked))
@@ -103,6 +134,7 @@ enum HostSessionPolicyTests {
         TestSupport.expectEqual(HostSessionPolicy.sessionError(after: .interrupted), .interrupted)
         TestSupport.expectEqual(HostSessionPolicy.sessionError(after: .deviceLocked), .deviceLocked)
         TestSupport.expectEqual(HostSessionPolicy.sessionError(after: .engineFailed), .audioSessionFailed)
+        TestSupport.expectEqual(HostSessionPolicy.sessionError(after: .mediaServicesReset), .audioSessionFailed)
         TestSupport.expectEqual(HostSessionPolicy.sessionError(after: .startFailed(.microphonePermissionDenied)),
                                 .microphonePermissionDenied)
     }

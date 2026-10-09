@@ -235,13 +235,11 @@ private struct SettingToggle: View {
 
 struct KeyboardSetupScreen: View {
     @EnvironmentObject private var host: HostSessionController
-    @State private var connected = false
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                KeyboardSetupSteps(connected: connected)
+                KeyboardSetupSteps { host.keyboardHasFullAccess }
                 Button("Open Settings") { AppIdentity.openSettings() }
                     .buttonStyle(PrimaryButtonStyle())
             }
@@ -250,7 +248,5 @@ struct KeyboardSetupScreen: View {
         .background(Theme.screenBackground.ignoresSafeArea())
         .navigationTitle("Keyboard setup")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { connected = host.keyboardHasFullAccess }
-        .onChange(of: scenePhase) { connected = host.keyboardHasFullAccess }
     }
 }

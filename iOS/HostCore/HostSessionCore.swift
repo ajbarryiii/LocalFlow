@@ -1,41 +1,10 @@
 import Foundation
 
-enum CapturePermission: Equatable, Sendable { case undetermined, denied, granted }
-
-/// The session's audio input: `MicrophoneCapture` in the app, a synthetic source in self-test builds and
-/// a fake in tests. It appends to the session's `DictationSampleBuffer` from its own thread and reports
-/// the buffer's outcomes through `HostSessionCore.captureDelivered(_:)`.
-@MainActor
-protocol HostCapture: AnyObject {
-    var permission: CapturePermission { get }
-    /// Shows the system prompt; call only in the foreground.
-    func requestPermission() async -> Bool
-    /// Activates audio and starts delivering buffers; call only in the foreground.
-    func start() throws
-    /// Stops the engine and deactivates audio. Idempotent.
-    func stop()
-    var isRunning: Bool { get }
-    /// When the latest input buffer arrived, whether or not it was kept.
-    var lastBufferAt: Date? { get }
-}
-
-/// The host-owned model runtime.
-@MainActor
-protocol HostTranscriber: AnyObject {
-    var modelState: HostStatus.Model { get }
-    /// Starts preparing unless the model is ready or already preparing.
-    func prepare()
-    /// Waits for readiness, then transcribes 16 kHz mono samples. Throws `TranscriptionFailure` or
-    /// `CancellationError`.
-    func transcribe(_ samples: [Float]) async throws -> String
-    /// Releases the model runtime unless it is preparing or transcribing.
-    func releaseIfIdle()
-}
-
 /// Platform hooks, injected so the core stays Foundation-only and testable.
 struct HostEnvironment {
     var now: @MainActor () -> Date
-    /// The app is in the foreground (active or inactive), where capture may start.
+    /// The application state is not `.background` (active or inactive): capture may start, and a fresh
+    /// record intent may be admitted without a session.
     var isForeground: @MainActor () -> Bool
     /// Begins a UIKit background task. `onExpiration` runs on main when time runs out; the returned
     /// closure ends the task, and the core calls it exactly once.
@@ -46,12 +15,12 @@ struct HostEnvironment {
 }
 
 /// The host side of the protocol: session lifecycle, idle expiry, reconciliation, run recovery,
-/// watchdog, transcription and status publishing. `HostSessionController` (App) drives it from timers,
-/// Darwin notifications and UIKit events and mirrors its state into SwiftUI.
+/// watchdog, capture supervision, transcription and status publishing. `HostSessionController` (App)
+/// drives it from timers, Darwin notifications and UIKit events and mirrors its state into SwiftUI.
 ///
-/// Every asynchronous completion carries a `DictationTicket` or session generation and is dropped
-/// unless it is still current. Status is written after every change, and on the cadence of
-/// `HostSessionPolicy` while live.
+/// Every asynchronous completion carries a `DictationTicket`, a session generation or an engine
+/// generation and is dropped unless it is still current. Status is written after every change, and on
+/// the cadence of `HostSessionPolicy` while live.
 @MainActor
 final class HostSessionCore {
     let hostRunID: UUID
@@ -76,14 +45,25 @@ final class HostSessionCore {
     private(set) var hasBeenForeground = false
 
     private var sessionGeneration: UInt64 = 0
-    /// A session start waiting for the app to reach the foreground (a URL open during launch).
+    /// A session start waiting for the foreground (the permission prompt was answered elsewhere).
     private var pendingStart: UInt64?
     private var transcription: Transcription?
     private var needsPublish = false
     private var lastStatusAt: Date?
     private var lastPurgeAt: Date?
     private var lastReconcileAt: Date?
-    private var captureStoppedSince: Date?
+    /// Capture supervision: a reported or observed failure waits out `captureStallGrace` here.
+    private var captureFailingSince: Date?
+    /// When the current engine started, the baseline for starvation before its first buffer.
+    private var captureStartedAt: Date?
+    private var recoveriesWithoutInput = 0
+    /// Sample growth of the recording, to detect a recording that stopped receiving audio.
+    private var recordingProgress: (generation: UInt64, duration: TimeInterval, since: Date)?
+    /// A memory warning not yet acted on: the model is released once nothing uses it.
+    private var pendingModelRelease = false
+    /// A finished recording waiting for its tail: frames captured before the finish but not yet
+    /// delivered. It is drained when the capture reports the tail complete, or after `tailTimeout`.
+    private var closing: (ticket: DictationTicket, since: Date)?
 
     /// Runs after every status write, for the UI.
     var onChange: (@MainActor () -> Void)?
@@ -143,11 +123,11 @@ final class HostSessionCore {
         flush(now)
     }
 
+    /// A URL open is passed as `.urlOpen`: only a hint, acted on once the app is actually in front.
     func reconcile(_ trigger: ReconcileTrigger) {
         guard isLaunched else { return }
         let now = environment.now()
         noteForeground(now)
-        if trigger == .urlOpen { hasBeenForeground = true }
         reconcilePass(trigger, now)
         flush(now)
     }
@@ -157,28 +137,18 @@ final class HostSessionCore {
         guard isLaunched else { return }
         let now = environment.now()
         let foreground = noteForeground(now)
-        if let current = slot.current, current.phase == .starting || current.phase == .recording {
-            if let reason = HostWatchdog.stopReason(current: current, presence: store.readPresence(),
-                                                    isForeground: foreground, lastForegroundAt: lastForegroundAt, now: now) {
-                endInProgress(HostSessionPolicy.watchdogOutcome(reason), now)
-            } else if current.phase == .recording, buffer.hasReachedLimit {
-                finish(current.requestID, now)   // normally reported by the tap; this is the backstop
-            }
-        }
+        superviseDictation(now, foreground: foreground)
+        superviseCapture(now)
         // A deferred start nobody is waiting for any more (its request timed out) is abandoned.
-        if pendingStart != nil, !slot.isInProgress { endSession(.startFailed(.audioSessionFailed), now) }
-        if session == .active, !capture.isRunning {
-            let since = captureStoppedSince ?? now
-            captureStoppedSince = since
-            let stalled = now.timeIntervalSince(since)
-            if stalled < 0 || stalled >= HostSessionPolicy.captureStallGrace { recoverCapture(now) }
-        } else {
-            captureStoppedSince = nil
+        if let closing, HostSessionPolicy.isDue(last: closing.since, interval: HostSessionPolicy.tailTimeout, now: now) {
+            drainClosing(now)   // the tail never arrived (a stalled engine): transcribe what did
         }
+        if pendingStart != nil, !slot.isInProgress { endSession(.startFailed(.audioSessionFailed), now) }
         if session == .active, !slot.isInProgress,
            HostSessionPolicy.isIdleExpired(idleSince: idleSince, duration: settings.sessionDuration, now: now) {
             endSession(.idleExpired, now)
         }
+        releaseModelIfPending()
         let live = session != .inactive || foreground || slot.isInProgress
         if session != .inactive || foreground,
            HostSessionPolicy.isDue(last: lastReconcileAt, interval: HostSessionPolicy.reconcileInterval, now: now) {
@@ -195,11 +165,15 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// Scene or application state changed.
+    /// Scene or application state changed. Arriving in the foreground re-reads the intent and
+    /// reconciles, with freshness judged at that moment: this is what admits a request after a URL open.
     func foregroundChanged() {
         guard isLaunched else { return }
         let now = environment.now()
-        if noteForeground(now), let pending = pendingStart { continueSessionStart(pending, now) }
+        if noteForeground(now) {
+            if let pending = pendingStart { continueSessionStart(pending, now) }
+            reconcilePass(.activation, now)
+        }
         needsPublish = true
         flush(now)
     }
@@ -254,42 +228,48 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// The engine stopped, its configuration changed, or media services were reset.
-    func captureFailed() {
+    /// Media services were reset: the audio session this app activated is gone (contract: "Media services
+    /// reset ends the session"). A recording fails with `.audioSessionFailed`, since the microphone, not
+    /// another app, failed; a finished recording is still transcribed. Capturing again needs a new
+    /// foreground start.
+    func captureMediaServicesReset() {
         let now = environment.now()
-        recoverCapture(now)
+        endSession(.mediaServicesReset, now)
         flush(now)
     }
 
-    /// The transcriber's model state changed. Published on the next turn, so a change made in the middle
-    /// of a transition (preparation starts inside `startSession`) never publishes a half-applied state.
+    /// The engine of `generation` stopped, its configuration changed, or media services were reset. The
+    /// failure waits out `captureStallGrace` (an interruption arriving meanwhile wins), then the engine is
+    /// restarted, in the background too. A report for an engine that has since been replaced is ignored.
+    func captureFailed(generation: UInt64) {
+        guard session == .active, generation == capture.engineGeneration else { return }
+        noteCaptureFailure(environment.now())
+    }
+
+    /// The transcriber's model state changed. Acted on in the next turn, so a change made in the middle
+    /// of a transition (preparation starts inside `startSession`) never publishes a half-applied state
+    /// or re-enters the transcriber.
     func modelStateChanged() {
         needsPublish = true
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.releaseModelIfPending()
                 self.flush(self.environment.now())
             }
         }
     }
 
+    /// Releases the model now if nothing uses it; otherwise as soon as nothing does.
     func memoryWarning() {
-        guard !slot.isInProgress else { return }
-        transcriber.releaseIfIdle()
-        needsPublish = true
+        pendingModelRelease = true
+        releaseModelIfPending()
         flush(environment.now())
     }
 
-    /// Called by the capture on its own thread with every `DictationSampleBuffer.append` outcome.
-    nonisolated func captureDelivered(_ outcome: DictationSampleBuffer.AppendOutcome) {
-        switch outcome {
-        case .dropped, .accepted:
-            return
-        case .started(let generation):
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.recordingStarted(generation: generation) } }
-        case .reachedLimit(let generation):
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.recordingReachedLimit(generation: generation) } }
-        }
+    /// Called on the capture thread with every event of the capture pipeline.
+    nonisolated func captureDelivered(_ event: CaptureEvent) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.handle(event) } }
     }
 
     // MARK: Reconciliation
@@ -321,10 +301,12 @@ final class HostSessionCore {
         endInProgress(.cancelled(.superseded), now)
         knownRequestIDs.insert(requestID)
         let ticket = slot.admit(requestID, generation: buffer.begin(requestID: requestID), now: now)
+        capture.recordingBoundary()
         idleSince = nil
         needsPublish = true
         if transcriber.modelState == .unavailable {
             buffer.cancel(requestID: requestID)
+            capture.recordingBoundary()
             slot.end(ticket, .failed, error: .modelUnavailable, now: now)
             dictationEnded(now)
         } else if session == .inactive {
@@ -332,21 +314,42 @@ final class HostSessionCore {
         }
     }
 
+    /// Stops the recording at the current capture time and shows it as transcribing. The samples are
+    /// drained once the tail (frames captured before now, still in flight) has arrived.
     private func finish(_ requestID: UUID, _ now: Date) {
         guard let ticket = slot.ticket, ticket.requestID == requestID, slot.phase == .recording else { return }
-        guard let samples = buffer.finish(requestID: requestID), slot.markTranscribing(ticket, now: now) else {
+        guard buffer.close(requestID: requestID), slot.markTranscribing(ticket, now: now) else {
             endInProgress(.failed(.notRecording), now)
             return
         }
+        recordingProgress = nil
+        closing = (ticket, now)
         needsPublish = true
-        transcribe(samples, ticket)
+        // Nothing more can arrive at the cap or from a stopped engine.
+        if buffer.hasReachedLimit || !capture.isRunning { drainClosing(now) }
     }
 
-    /// Ends the request in progress, if any: stops its recording or transcription and publishes `outcome`.
+    private func drainClosing(_ now: Date) {
+        guard let closing else { return }
+        self.closing = nil
+        guard slot.isCurrent(closing.ticket), slot.phase == .transcribing else { return }
+        guard let samples = buffer.finish(requestID: closing.ticket.requestID) else {
+            endInProgress(.failed(.notRecording), now)
+            return
+        }
+        capture.recordingBoundary()
+        needsPublish = true
+        transcribe(RecordedAudio(samples: samples), closing.ticket)
+    }
+
+    /// Ends the request in progress, if any: stops its recording or transcription, so its samples are
+    /// released, and publishes `outcome`.
     @discardableResult
     private func endInProgress(_ outcome: DictationOutcome, _ now: Date) -> Bool {
         guard let ticket = slot.ticket else { return false }
         buffer.cancel(requestID: ticket.requestID)
+        capture.recordingBoundary()
+        if closing?.ticket == ticket { closing = nil }
         if let transcription, transcription.ticket == ticket {
             transcription.task.cancel()
             transcription.endBackgroundTask.run()
@@ -359,29 +362,116 @@ final class HostSessionCore {
 
     private func dictationEnded(_ now: Date) {
         idleSince = session == .active ? now : nil
+        recordingProgress = nil
         needsPublish = true
+        releaseModelIfPending()
     }
 
     // MARK: Recording
 
-    private func recordingStarted(generation: UInt64) {
+    private func handle(_ event: CaptureEvent) {
         let now = environment.now()
-        guard slot.markRecording(generation: generation, now: now) else { return }
-        needsPublish = true
+        switch event {
+        case .started(let generation):
+            if slot.markRecording(generation: generation, now: now) { needsPublish = true }
+        case .reachedLimit(let generation):
+            guard let ticket = slot.ticket, ticket.generation == generation else { break }
+            _ = slot.markRecording(generation: generation, now: now)   // the limit can arrive with the first buffer
+            finish(ticket.requestID, now)
+        case .tailComplete(let generation):
+            if closing?.ticket.generation == generation { drainClosing(now) }
+        case .conversionFailed(let generation):
+            guard let ticket = slot.ticket, ticket.generation == generation,
+                  slot.phase == .starting || slot.phase == .recording else { break }
+            endInProgress(.failed(.audioSessionFailed), now)
+            noteCaptureFailure(now)   // a rebuilt engine gets a fresh converter
+        }
         flush(now)
     }
 
-    private func recordingReachedLimit(generation: UInt64) {
-        guard let ticket = slot.ticket, ticket.generation == generation else { return }
-        let now = environment.now()
-        _ = slot.markRecording(generation: generation, now: now)   // the limit can arrive with the first buffer
-        finish(ticket.requestID, now)
-        flush(now)
+    /// Watchdog, the duration cap by samples and by elapsed time, and a recording that stopped growing.
+    private func superviseDictation(_ now: Date, foreground: Bool) {
+        guard let current = slot.current, let ticket = slot.ticket,
+              current.phase == .starting || current.phase == .recording else {
+            recordingProgress = nil
+            return
+        }
+        if let reason = HostWatchdog.stopReason(current: current, presence: store.readPresence(),
+                                                isForeground: foreground, lastForegroundAt: lastForegroundAt, now: now) {
+            endInProgress(HostSessionPolicy.watchdogOutcome(reason), now)
+            return
+        }
+        guard current.phase == .recording else { return }
+        if buffer.hasReachedLimit || HostSessionPolicy.hasExceededMaxDuration(startedAt: current.startedAt, now: now) {
+            finish(current.requestID, now)
+            return
+        }
+        let duration = buffer.recordedDuration
+        if let progress = recordingProgress, progress.generation == ticket.generation, progress.duration == duration,
+           progress.since <= now {
+            guard HostSessionPolicy.isStarved(lastInputAt: progress.since, now: now) else { return }
+            // Running but starved, or every buffer failing to convert: the recording cannot go on.
+            endInProgress(.failed(.audioSessionFailed), now)
+            noteCaptureFailure(now)
+        } else {
+            recordingProgress = (ticket.generation, duration, now)
+        }
+    }
+
+    // MARK: Capture supervision
+
+    private func noteCaptureFailure(_ now: Date) {
+        if captureFailingSince == nil { captureFailingSince = now }
+    }
+
+    /// A stopped or starved engine, or a reported failure, is restarted once `captureStallGrace` has
+    /// passed without an interruption ending the session first.
+    private func superviseCapture(_ now: Date) {
+        guard session == .active else {
+            captureFailingSince = nil
+            return
+        }
+        let lastInput = [capture.lastBufferAt, captureStartedAt].compactMap { $0 }.max()
+        if let lastBuffer = capture.lastBufferAt, let started = captureStartedAt, lastBuffer > started {
+            recoveriesWithoutInput = 0
+        }
+        if !capture.isRunning || lastInput.map({ HostSessionPolicy.isStarved(lastInputAt: $0, now: now) }) == true {
+            noteCaptureFailure(now)
+        }
+        guard let since = captureFailingSince else { return }
+        let pending = now.timeIntervalSince(since)
+        if pending < 0 || pending >= HostSessionPolicy.captureStallGrace { recoverCapture(now) }
+    }
+
+    /// While the audio session is active the engine may be rebuilt even in the background: `restart()`
+    /// never activates anything. In the foreground a full start also reconfigures the audio session. The
+    /// session ends if that fails, or if recoveries keep producing no input.
+    private func recoverCapture(_ now: Date) {
+        guard session == .active else { return }
+        captureFailingSince = nil
+        guard recoveriesWithoutInput < HostSessionPolicy.maxRecoveriesWithoutInput else {
+            endSession(.engineFailed, now)
+            return
+        }
+        do {
+            if environment.isForeground() {
+                capture.stop()
+                try capture.start()
+            } else {
+                try capture.restart()
+            }
+        } catch {
+            endSession(.engineFailed, now)
+            return
+        }
+        recoveriesWithoutInput += 1
+        captureStartedAt = now
+        needsPublish = true
     }
 
     // MARK: Transcription
 
-    private func transcribe(_ samples: [Float], _ ticket: DictationTicket) {
+    private func transcribe(_ audio: RecordedAudio, _ ticket: DictationTicket) {
         let endBackgroundTask = OnceAction()
         endBackgroundTask.action = environment.beginBackgroundTask { [weak self] in
             self?.backgroundTimeExpired(ticket)
@@ -390,7 +480,7 @@ final class HostSessionCore {
         let transcriber = self.transcriber
         let task = Task { [weak self] in
             let outcome: Result<String, Error>
-            do { outcome = .success(try await transcriber.transcribe(samples)) } catch { outcome = .failure(error) }
+            do { outcome = .success(try await transcriber.transcribe(audio)) } catch { outcome = .failure(error) }
             self?.transcriptionFinished(ticket, outcome)
             endBackgroundTask.run()
         }
@@ -429,6 +519,14 @@ final class HostSessionCore {
         flush(now)
     }
 
+    private func releaseModelIfPending() {
+        guard pendingModelRelease, !slot.isInProgress else { return }
+        if transcriber.releaseIfIdle() {
+            pendingModelRelease = false
+            needsPublish = true
+        }
+    }
+
     // MARK: Session
 
     private func startSession(_ now: Date) {
@@ -444,8 +542,7 @@ final class HostSessionCore {
 
     private func continueSessionStart(_ generation: UInt64, _ now: Date) {
         guard generation == sessionGeneration, session == .starting else { return }
-        // Capture and the permission prompt need the foreground. A URL open can arrive just before the
-        // app gets there; the start resumes on the next foreground change.
+        // A session never starts in the background: capture and the permission prompt need the front.
         guard environment.isForeground() else {
             pendingStart = generation
             return
@@ -482,23 +579,11 @@ final class HostSessionCore {
             return
         }
         session = .active
+        captureStartedAt = now
+        captureFailingSince = nil
+        recoveriesWithoutInput = 0
         if !slot.isInProgress { idleSince = now }
         needsPublish = true
-    }
-
-    /// Restarts the engine in the foreground. In the background, where capture cannot start, or if the
-    /// restart fails, the session ends.
-    private func recoverCapture(_ now: Date) {
-        guard session == .active else { return }
-        captureStoppedSince = nil
-        if environment.isForeground() {
-            capture.stop()
-            if (try? capture.start()) != nil {
-                needsPublish = true
-                return
-            }
-        }
-        endSession(.engineFailed, now)
     }
 
     private func endSession(_ reason: SessionEndReason, _ now: Date) {
@@ -509,14 +594,20 @@ final class HostSessionCore {
            let outcome = HostSessionPolicy.sessionEndOutcome(reason, phase: phase) {
             endInProgress(outcome, now)
         }
+        // A finished recording that survives the session end is transcribed with the tail it has; no more
+        // input will arrive.
+        drainClosing(now)
         capture.stop()
         // Anything still held belongs to a request that just ended; a transcription has its own copy.
         buffer.cancelAll()
-        captureStoppedSince = nil
+        capture.recordingBoundary()
         session = .inactive
         sessionID = nil
         sessionError = HostSessionPolicy.sessionError(after: reason)
         idleSince = nil
+        captureFailingSince = nil
+        captureStartedAt = nil
+        recoveriesWithoutInput = 0
         store.purgeExpiredResults(now: now)
         needsPublish = true
     }

@@ -15,6 +15,8 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var dictation: DictationStatus?
     @Published private(set) var level: Float = 0
     @Published private(set) var isDictationInProgress = false
+    /// The current capture configuration, requested against granted, for Diagnostics. Content-free.
+    @Published private(set) var captureConfiguration: CaptureConfiguration?
     /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
     @Published var bounceVisible = false
     /// "Try it" has the keyboard in this app, so an admission there must not cover it.
@@ -46,22 +48,28 @@ final class HostSessionController: ObservableObject {
         }
         let buffer = DictationSampleBuffer()
         let relay = CaptureRelay()
-        let deliver: @Sendable (DictationSampleBuffer.AppendOutcome) -> Void = { relay.deliver($0) }
-        let capture: HostCapture
+        let deliver: @Sendable (CaptureEvent) -> Void = { relay.deliver($0) }
         #if LOCALFLOW_SELFTEST
-        capture = SelfTest.syntheticCapture(buffer: buffer, deliver: deliver) ?? MicrophoneCapture(buffer: buffer, deliver: deliver)
+        let synthetic = SelfTest.syntheticInput(buffer: buffer, deliver: deliver)
         #else
-        capture = MicrophoneCapture(buffer: buffer, deliver: deliver)
+        let synthetic = SyntheticInputRequest.notRequested
         #endif
+        // A requested synthetic input that cannot be used never falls back to the microphone.
+        let capture = synthetic.capture { MicrophoneCapture(buffer: buffer, deliver: deliver) }
         let core = HostSessionCore(store: store, settings: sharedSettings, buffer: buffer, capture: capture,
-                                   transcriber: transcriber, notifier: DarwinNotifier(configuration: configuration),
+                                   transcriber: transcriber.engine, notifier: DarwinNotifier(configuration: configuration),
                                    environment: Self.environment)
         self.core = core
         relay.core = core
         if let microphone = capture as? MicrophoneCapture {
             microphone.onInterruption = { [weak core] in core?.captureInterrupted() }
-            microphone.onFailure = { [weak core] in core?.captureFailed() }
+            microphone.onFailure = { [weak core] generation in core?.captureFailed(generation: generation) }
+            microphone.onMediaServicesReset = { [weak core] in core?.captureMediaServicesReset() }
+            microphone.onConfigured = { [weak self] in self?.configured($0) }
         }
+        #if LOCALFLOW_SELFTEST
+        (capture as? SyntheticCapture)?.onConfigured = { [weak self] in self?.configured($0) }
+        #endif
         transcriber.onStateChange = { [weak core] in core?.modelStateChanged() }
         core.onChange = { [weak self] in self?.refresh() }
     }
@@ -110,17 +118,16 @@ final class HostSessionController: ObservableObject {
     /// Diagnostics: frees the runtime now, to measure a cold preparation.
     func releaseModel() {
         guard core?.isDictationInProgress != true else { return }
-        transcriber.releaseIfIdle()
+        _ = transcriber.releaseIfIdle()
     }
 
-    func setComputePolicy(_ policy: ComputePolicy) {
-        transcriber.setPolicy(policy)
-        // A live session keeps a prepared model, so the next dictation does not pay for it.
-        if session != .inactive, transcriber.modelState == .notPrepared { transcriber.prepare() }
-    }
+    /// Temporary and inert: the policy is fixed. Only keeps `DiagnosticsView`'s picker compiling until it
+    /// shows the compute units read-only; delete with that picker.
+    func setComputePolicy(_ policy: ComputePolicy) {}
 
-    /// `<scheme>://dictate` only brings the app forward and runs one reconciliation pass. It never
-    /// starts capture by itself: only a fresh record intent admitted here can.
+    /// `<scheme>://dictate` is only a hint. In the foreground it runs one reconciliation pass; before the
+    /// app gets there it does nothing, and the arrival reconciles. It never starts capture by itself:
+    /// only a fresh record intent admitted in the foreground can.
     func open(_ url: URL) {
         guard let configuration, HostURLRoute(url: url, scheme: configuration.urlScheme) != nil else { return }
         core?.reconcile(.urlOpen)
@@ -134,8 +141,11 @@ final class HostSessionController: ObservableObject {
         return await capture.requestPermission()
     }
 
-    /// Whether a keyboard with Full Access has written presence, so setup can show it as done.
-    var keyboardHasFullAccess: Bool { store?.readPresence().value != nil }
+    /// A keyboard with Full Access was visible within `keyboardPresenceTimeout`, so setup can show it as
+    /// working. A presence file that merely exists proves nothing.
+    var keyboardHasFullAccess: Bool {
+        store.map { HostSessionPolicy.isKeyboardConnected(presence: $0.readPresence(), now: Date()) } ?? false
+    }
 
     // MARK: Private
 
@@ -155,6 +165,13 @@ final class HostSessionController: ObservableObject {
                                                            spokenDelimitersEnabled: spokenDelimitersEnabled)
                 return (processed.output, processed.shouldPressEnter)
             })
+    }
+
+    private func configured(_ configuration: CaptureConfiguration) {
+        captureConfiguration = configuration
+        #if LOCALFLOW_SELFTEST
+        SelfTest.report(configuration)
+        #endif
     }
 
     private func tick() {
@@ -197,10 +214,8 @@ final class HostSessionController: ObservableObject {
             })
         }
         on(UIApplication.willEnterForegroundNotification) { $0.core?.foregroundChanged() }
-        on(UIApplication.didBecomeActiveNotification) {
-            $0.core?.foregroundChanged()
-            $0.core?.reconcile(.activation)
-        }
+        // Arriving in the foreground reconciles; that is what admits a request after a URL open.
+        on(UIApplication.didBecomeActiveNotification) { $0.core?.foregroundChanged() }
         on(UIApplication.didEnterBackgroundNotification) {
             $0.core?.foregroundChanged()
             if $0.core?.isDictationInProgress != true { $0.bounceVisible = false }
@@ -220,11 +235,8 @@ private final class CaptureRelay: @unchecked Sendable {
         set { lock.lock(); target = newValue; lock.unlock() }
     }
 
-    func deliver(_ outcome: DictationSampleBuffer.AppendOutcome) {
-        switch outcome {
-        case .dropped, .accepted: return
-        case .started, .reachedLimit: core?.captureDelivered(outcome)
-        }
+    func deliver(_ event: CaptureEvent) {
+        core?.captureDelivered(event)
     }
 }
 

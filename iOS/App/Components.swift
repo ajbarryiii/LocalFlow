@@ -161,6 +161,11 @@ struct ModelStatusRow: View {
             if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt {
                 PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
             }
+            if let hint = transcriber.lastFailureHint {
+                Label(hint.message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 

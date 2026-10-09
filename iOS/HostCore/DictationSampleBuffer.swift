@@ -23,9 +23,16 @@ final class DictationSampleBuffer: @unchecked Sendable {
     private var currentGeneration: UInt64 = 0
     private var samples: [Float] = []
     private var meter = LevelMeter()
+    private let hostClock: @Sendable () -> UInt64
+    private var beginHostTime: UInt64 = 0
+    private var endHostTime: UInt64?
 
-    init(maxDuration: TimeInterval = DictationProtocol.maxDictationDuration) {
+    /// `hostClock` is the capture clock (`mach_absolute_time`, the clock of `AVAudioTime.hostTime`); tests
+    /// inject their own.
+    init(maxDuration: TimeInterval = DictationProtocol.maxDictationDuration,
+         hostClock: @escaping @Sendable () -> UInt64 = { mach_absolute_time() }) {
         maxSampleCount = max(0, Int(maxDuration * Self.sampleRate))
+        self.hostClock = hostClock
     }
 
     /// The request being recorded, if any.
@@ -33,6 +40,18 @@ final class DictationSampleBuffer: @unchecked Sendable {
 
     /// Increases with every `begin`, so asynchronous completions can tell recordings apart.
     var generation: UInt64 { locked { currentGeneration } }
+
+    /// The recording token: the current generation while a request is recording, nil while idle. Capture
+    /// reads it before converting a buffer and hands it back to `append(_:token:)`, which drops the
+    /// samples unless it still matches under the lock. Converted audio therefore never crosses a
+    /// boundary, even when finish, cancel or begin runs during the conversion.
+    var recordingToken: UInt64? { locked { requestID == nil ? nil : currentGeneration } }
+
+    /// The recording token with its capture-time boundaries, read in one step. Capture keeps only frames
+    /// captured at or after `begin` and, once the recording is closing, before `end`.
+    var recordingWindow: RecordingWindow? {
+        locked { requestID == nil ? nil : RecordingWindow(token: currentGeneration, begin: beginHostTime, end: endHostTime) }
+    }
 
     var recordedDuration: TimeInterval { locked { Double(samples.count) / Self.sampleRate } }
 
@@ -48,6 +67,7 @@ final class DictationSampleBuffer: @unchecked Sendable {
             reset()
             self.requestID = requestID
             currentGeneration += 1
+            beginHostTime = hostClock()
             samples.reserveCapacity(min(maxSampleCount, Int(30 * Self.sampleRate)))
             return currentGeneration
         }
@@ -56,13 +76,28 @@ final class DictationSampleBuffer: @unchecked Sendable {
     @discardableResult
     func append<Samples: Collection>(_ newSamples: Samples) -> AppendOutcome where Samples.Element == Float {
         locked {
-            guard requestID != nil, samples.count < maxSampleCount, !newSamples.isEmpty else { return .dropped }
-            let isFirst = samples.isEmpty
-            let accepted = newSamples.prefix(maxSampleCount - samples.count)
-            samples.append(contentsOf: accepted)
-            meter.update(with: accepted)
-            if samples.count >= maxSampleCount { return .reachedLimit(generation: currentGeneration) }
-            return isFirst ? .started(generation: currentGeneration) : .accepted
+            appendLocked(newSamples)
+        }
+    }
+
+    /// Appends only if `token` (read from `recordingToken` before converting) still names the recording.
+    @discardableResult
+    func append<Samples: Collection>(_ newSamples: Samples, token: UInt64) -> AppendOutcome where Samples.Element == Float {
+        locked {
+            guard requestID != nil, currentGeneration == token else { return .dropped }
+            return appendLocked(newSamples)
+        }
+    }
+
+    /// Marks the end of `requestID`'s audio at the current capture time. Appends still land, trimmed to
+    /// frames captured before the end, until `finish` drains: audio captured just before the user stopped
+    /// is still in flight. False, changing nothing, unless `requestID` is recording and not yet closing.
+    @discardableResult
+    func close(requestID: UUID) -> Bool {
+        locked {
+            guard self.requestID == requestID, endHostTime == nil else { return false }
+            endHostTime = hostClock()
+            return true
         }
     }
 
@@ -92,8 +127,19 @@ final class DictationSampleBuffer: @unchecked Sendable {
         locked { reset() }
     }
 
+    private func appendLocked<Samples: Collection>(_ newSamples: Samples) -> AppendOutcome where Samples.Element == Float {
+        guard requestID != nil, samples.count < maxSampleCount, !newSamples.isEmpty else { return .dropped }
+        let isFirst = samples.isEmpty
+        let accepted = newSamples.prefix(maxSampleCount - samples.count)
+        samples.append(contentsOf: accepted)
+        meter.update(with: accepted)
+        if samples.count >= maxSampleCount { return .reachedLimit(generation: currentGeneration) }
+        return isFirst ? .started(generation: currentGeneration) : .accepted
+    }
+
     private func reset() {
         requestID = nil
+        endHostTime = nil
         samples = []
         meter = LevelMeter()
     }

@@ -41,33 +41,44 @@ enum SelfTest {
         return options
     }
 
-    /// The synthetic microphone, if `LOCALFLOW_SYNTHETIC_MIC` names a readable recording. Prints one
-    /// content-free line either way, so a test can tell a missing file from a silent one.
+    /// The synthetic microphone `LOCALFLOW_SYNTHETIC_MIC` asks for. A requested recording that cannot be
+    /// used fails closed (`.unusable`): the session then fails, and the real microphone is never built.
+    /// Prints one content-free line either way.
     @MainActor
-    static func syntheticCapture(buffer: DictationSampleBuffer,
-                                 deliver: @escaping @Sendable (DictationSampleBuffer.AppendOutcome) -> Void) -> HostCapture? {
-        guard let path = environment["LOCALFLOW_SYNTHETIC_MIC"], !path.isEmpty else { return nil }
+    static func syntheticInput(buffer: DictationSampleBuffer,
+                               deliver: @escaping @Sendable (CaptureEvent) -> Void) -> SyntheticInputRequest {
+        guard let path = environment["LOCALFLOW_SYNTHETIC_MIC"] else { return .notRequested }
         var samples: [Float] = []
         do {
+            guard !path.isEmpty else { throw SelfTestFailure.syntheticInputUnusable }
             try ParakeetAudioReader.read(fileURL: resolve(path), check: {}) { samples.append(contentsOf: $0) }
+            guard !samples.isEmpty else { throw SelfTestFailure.syntheticInputUnusable }
         } catch {
-            print("LocalFlow self-test: synthetic_mic=unreadable")
+            print("LocalFlow self-test: synthetic_mic=unusable")
             fflush(stdout)
-            return nil
+            return .unusable
         }
         print(String(format: "LocalFlow self-test: synthetic_mic=loaded audio_s=%.2f",
                      Double(samples.count) / DictationSampleBuffer.sampleRate))
         fflush(stdout)
-        return SyntheticCapture(samples: samples, buffer: buffer, deliver: deliver)
+        return .ready(SyntheticCapture(samples: samples, buffer: buffer, deliver: deliver))
     }
 
     /// One content-free line per dictation, so end-to-end runs record latency and memory.
     static func report(_ measurement: DictationMeasurement) {
-        print(String(format: "LocalFlow self-test: dictation outcome=%@ audio_s=%.2f wait_ms=%.0f transcription_ms=%.0f compute=%@ background=%@ footprint_mb=%.0f peak_footprint_mb=%.0f",
+        print(String(format: "LocalFlow self-test: dictation outcome=%@ audio_s=%.2f wait_ms=%.0f transcription_ms=%.0f compute=%@ background=%@ hint=%@ footprint_mb=%.0f peak_footprint_mb=%.0f",
                      measurement.outcome.rawValue, measurement.audioSeconds, measurement.waitMilliseconds,
                      measurement.transcriptionMilliseconds, measurement.computeUnits.replacingOccurrences(of: " ", with: "_"),
-                     String(measurement.inBackground), measurement.footprint?.currentMB ?? -1,
-                     measurement.footprint?.peakMB ?? -1))
+                     String(measurement.inBackground), measurement.hint?.rawValue ?? "none",
+                     measurement.footprint?.currentMB ?? -1, measurement.footprint?.peakMB ?? -1))
+        fflush(stdout)
+    }
+
+    static func report(_ configuration: CaptureConfiguration) {
+        print(String(format: "LocalFlow self-test: capture source=%@ requested_io_s=%.3f actual_io_s=%.3f requested_rate=%.0f actual_rate=%.0f input_rate=%.0f input_channels=%d tap_frames=%d",
+                     configuration.source, configuration.requestedIOBufferDuration ?? -1, configuration.actualIOBufferDuration,
+                     configuration.requestedSampleRate ?? -1, configuration.actualSampleRate, configuration.inputSampleRate,
+                     configuration.inputChannels, configuration.tapBufferFrames))
         fflush(stdout)
     }
 
@@ -167,5 +178,5 @@ enum SelfTest {
     }
 }
 
-private enum SelfTestFailure: Error { case modelMissing }
+private enum SelfTestFailure: Error { case modelMissing, syntheticInputUnusable }
 #endif

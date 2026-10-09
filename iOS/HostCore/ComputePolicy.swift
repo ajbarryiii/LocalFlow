@@ -18,32 +18,33 @@ enum TranscriptionFailure: Error, Equatable, Sendable {
     }
 }
 
-/// The Diagnostics compute-policy picker. The background loses the GPU, and on iOS 27 the Neural
-/// Engine needs an entitlement this prototype does not have yet, so Automatic falls back to the CPU.
+/// A content-free explanation Diagnostics shows for a failed transcription.
+enum ComputeFailureHint: String, Sendable {
+    /// A background attempt failed on iOS 27 or later, where background Neural Engine use needs the
+    /// continued-processing inference entitlement this prototype does not have.
+    case backgroundNeuralEngineNeedsEntitlement
+}
+
+/// The compute policy is fixed (contract: "No compute-policy picker"): the live app always uses the
+/// Neural Engine, about 165 MB at peak with its preparation cached across launches. The CPU runtime
+/// (about 3.2 GB) is measured only by the self-test, and nothing ever falls back to it.
 enum ComputePolicy: String, CaseIterable, Sendable {
-    /// The Neural Engine; a failed background attempt is retried once on a CPU-only model.
-    case automatic
-    /// The Neural Engine with no fallback, to measure it on its own.
     case neuralEngine
-    /// The CPU only.
-    case cpuOnly
 
     /// Core ML compute units, mirrored so this file stays Foundation-only.
     enum Units: String, Sendable { case cpuAndNeuralEngine, cpuOnly }
 
-    static let defaultPolicy = ComputePolicy.automatic
+    /// What the live app loads.
+    static let units = Units.cpuAndNeuralEngine
+    /// The first iOS on which background Neural Engine use needs an entitlement.
+    static let backgroundEntitlementOSVersion = 27
 
-    init(storedValue: String?) {
-        self = storedValue.flatMap(ComputePolicy.init(rawValue:)) ?? Self.defaultPolicy
-    }
-
-    var primaryUnits: Units { self == .cpuOnly ? .cpuOnly : .cpuAndNeuralEngine }
-
-    /// Whether to retry once on a lazily created CPU-only model. Only Automatic retries, only in the
-    /// background (where Neural Engine loss is expected), and only failures a CPU model could avoid:
-    /// a missing bundle or a cancellation is final.
-    func retriesOnCPU(after failure: TranscriptionFailure, inBackground: Bool, alreadyRetried: Bool) -> Bool {
-        guard self == .automatic, inBackground, !alreadyRetried else { return false }
-        return failure == .modelFailed || failure == .transcriptionFailed
+    /// The hint for a failure, if one applies: a model or transcription failure in the background on iOS
+    /// 27 or later most likely means the missing entitlement. The request fails either way.
+    static func failureHint(after failure: TranscriptionFailure, inBackground: Bool,
+                            osMajorVersion: Int) -> ComputeFailureHint? {
+        guard failure == .modelFailed || failure == .transcriptionFailed, inBackground,
+              osMajorVersion >= backgroundEntitlementOSVersion else { return nil }
+        return .backgroundNeuralEngineNeedsEntitlement
     }
 }

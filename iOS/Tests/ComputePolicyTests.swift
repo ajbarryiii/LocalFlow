@@ -3,42 +3,27 @@ import Foundation
 enum ComputePolicyTests {
     static var tests: [TestCase] {
         [
-            ("storedValueAndDefault", testStoredValueAndDefault),
-            ("primaryUnits", testPrimaryUnits),
-            ("onlyAutomaticRetriesOnceInTheBackground", testOnlyAutomaticRetriesOnceInTheBackground),
+            ("alwaysTheNeuralEngine", testAlwaysTheNeuralEngine),
+            ("entitlementHintOnlyForBackgroundFailuresOnIOS27", testEntitlementHint),
             ("failureCodes", testFailureCodes),
         ]
     }
 
-    private static func testStoredValueAndDefault() {
-        TestSupport.expectEqual(ComputePolicy(storedValue: nil), .automatic)
-        TestSupport.expectEqual(ComputePolicy(storedValue: "gpu"), .automatic)
-        for policy in ComputePolicy.allCases {
-            TestSupport.expectEqual(ComputePolicy(storedValue: policy.rawValue), policy)
-        }
+    private static func testAlwaysTheNeuralEngine() {
+        TestSupport.expectEqual(ComputePolicy.allCases, [.neuralEngine])
+        TestSupport.expectEqual(ComputePolicy.units, .cpuAndNeuralEngine)
     }
 
-    private static func testPrimaryUnits() {
-        TestSupport.expectEqual(ComputePolicy.automatic.primaryUnits, .cpuAndNeuralEngine)
-        TestSupport.expectEqual(ComputePolicy.neuralEngine.primaryUnits, .cpuAndNeuralEngine)
-        TestSupport.expectEqual(ComputePolicy.cpuOnly.primaryUnits, .cpuOnly)
-    }
-
-    private static func testOnlyAutomaticRetriesOnceInTheBackground() {
+    private static func testEntitlementHint() {
+        let hint = ComputeFailureHint.backgroundNeuralEngineNeedsEntitlement
         for failure in [TranscriptionFailure.modelFailed, .transcriptionFailed] {
-            TestSupport.expect(ComputePolicy.automatic.retriesOnCPU(after: failure, inBackground: true, alreadyRetried: false),
-                               "automatic did not retry \(failure)")
-            TestSupport.expect(!ComputePolicy.automatic.retriesOnCPU(after: failure, inBackground: true, alreadyRetried: true),
-                               "retried twice")
-            TestSupport.expect(!ComputePolicy.automatic.retriesOnCPU(after: failure, inBackground: false, alreadyRetried: false),
-                               "retried in the foreground")
-            for policy in [ComputePolicy.neuralEngine, .cpuOnly] {
-                TestSupport.expect(!policy.retriesOnCPU(after: failure, inBackground: true, alreadyRetried: false),
-                                   "\(policy) retried")
+            for version in [27, 28] {
+                TestSupport.expectEqual(ComputePolicy.failureHint(after: failure, inBackground: true, osMajorVersion: version), hint)
             }
+            TestSupport.expectEqual(ComputePolicy.failureHint(after: failure, inBackground: true, osMajorVersion: 26), nil)
+            TestSupport.expectEqual(ComputePolicy.failureHint(after: failure, inBackground: false, osMajorVersion: 27), nil)
         }
-        TestSupport.expect(!ComputePolicy.automatic.retriesOnCPU(after: .modelUnavailable, inBackground: true, alreadyRetried: false),
-                           "retried without a model")
+        TestSupport.expectEqual(ComputePolicy.failureHint(after: .modelUnavailable, inBackground: true, osMajorVersion: 27), nil)
     }
 
     private static func testFailureCodes() {

@@ -12,7 +12,6 @@ struct OnboardingView: View {
     var onFinish: () -> Void
 
     @State private var permission = CapturePermission.undetermined
-    @State private var keyboardConnected = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -109,7 +108,7 @@ struct OnboardingView: View {
             HeroSymbol(systemName: "keyboard.fill").padding(.top, 16)
             StepTitle(title: "Add the LocalFlow keyboard",
                       detail: "Dictate anywhere you type: switch to the LocalFlow keyboard with the globe key and tap the microphone.")
-            KeyboardSetupSteps(connected: keyboardConnected)
+            KeyboardSetupSteps { host.keyboardHasFullAccess }
         }
     }
 
@@ -117,7 +116,7 @@ struct OnboardingView: View {
         VStack(spacing: 22) {
             HeroSymbol(systemName: "cpu").padding(.top, 16)
             StepTitle(title: "Prepare the speech model",
-                      detail: "The speech model runs entirely on this iPhone. Preparing it optimizes it for this device. That can take a few minutes, and iOS may need to do it again after LocalFlow restarts.")
+                      detail: "The speech model runs entirely on this iPhone. Preparing it optimizes it for this device: the first time after installing can take a few minutes, and later it is usually quick.")
             ModelStatusRow(transcriber: transcriber, showsPrepareButton: false)
                 .padding(16)
                 .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -188,7 +187,6 @@ struct OnboardingView: View {
 
     private func refreshSetupState() {
         permission = host.microphonePermission
-        keyboardConnected = host.keyboardHasFullAccess
     }
 
     private var permissionText: String {
@@ -260,7 +258,8 @@ private struct PromiseRow: View {
 
 /// The Settings path to enable the keyboard and Full Access, shared by onboarding and Home.
 struct KeyboardSetupSteps: View {
-    var connected: Bool
+    /// Re-evaluated every second: it depends on how recently the keyboard was visible.
+    var isConnected: @MainActor () -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -272,10 +271,12 @@ struct KeyboardSetupSteps: View {
             Text("Full Access lets the keyboard talk to this app on your iPhone, to start dictation and pick up the text. LocalFlow has no network code; nothing leaves the device. Passwords and phone-number fields always use the system keyboard.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            if connected {
-                Label("Keyboard connected with Full Access", systemImage: "checkmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.green)
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                if isConnected() {
+                    Label("Keyboard active with Full Access", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.green)
+                }
             }
         }
         .padding(18)

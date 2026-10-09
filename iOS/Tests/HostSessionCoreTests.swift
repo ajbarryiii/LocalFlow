@@ -23,14 +23,28 @@ enum HostSessionCoreTests {
             ("permissionPrompt", isolated(testPermissionPrompt)),
             ("audioStartFailure", isolated(testAudioStartFailure)),
             ("interruptionEndsSession", isolated(testInterruptionEndsSession)),
-            ("engineFailureRestartsOnlyInForeground", isolated(testEngineFailureRestartsOnlyInForeground)),
+            ("engineFailureWaitsForGraceAndRestartsInBackground", isolated(testEngineFailureWaitsForGraceAndRestartsInBackground)),
+            ("staleEngineFailureIsIgnored", isolated(testStaleEngineFailureIsIgnored)),
+            ("starvedEngineIsRestartedThenGivenUp", isolated(testStarvedEngineIsRestartedThenGivenUp)),
+            ("stalledRecordingFails", isolated(testStalledRecordingFails)),
+            ("conversionFailureFailsRecording", isolated(testConversionFailureFailsRecording)),
+            ("elapsedTimeCapsRecording", isolated(testElapsedTimeCapsRecording)),
             ("prewarmedLaunchDoesNotReject", isolated(testPrewarmedLaunchDoesNotReject)),
-            ("urlOpenBeforeForegroundDefersCapture", isolated(testURLOpenBeforeForegroundDefersCapture)),
+            ("urlHintWaitsForForeground", isolated(testURLHintWaitsForForeground)),
+            ("staleIntentAtForegroundArrivalIsNotAdmitted", isolated(testStaleIntentAtForegroundArrivalIsNotAdmitted)),
             ("missingModelFailsAtAdmission", isolated(testMissingModelFailsAtAdmission)),
             ("statusCadence", isolated(testStatusCadence)),
             ("heartbeatPurgesExpiredResults", isolated(testHeartbeatPurgesExpiredResults)),
             ("memoryWarningReleasesOnlyWhenIdle", isolated(testMemoryWarningReleasesOnlyWhenIdle)),
+            ("memoryWarningDuringPreparationIsRemembered", isolated(testMemoryWarningDuringPreparationIsRemembered)),
+            ("endedRequestsReleaseTheirSamples", isolated(testEndedRequestsReleaseTheirSamples)),
+            ("unusableSyntheticInputFailsClosed", isolated(testUnusableSyntheticInputFailsClosed)),
             ("inAppStopAndCancel", isolated(testInAppStopAndCancel)),
+            ("finishWaitsForTheTail", isolated(testFinishWaitsForTheTail)),
+            ("tailTimeoutTranscribesWhatArrived", isolated(testTailTimeoutTranscribesWhatArrived)),
+            ("cancelDuringTheTailDiscardsTheRecording", isolated(testCancelDuringTheTailDiscardsTheRecording)),
+            ("sessionEndDuringTheTailTranscribes", isolated(testSessionEndDuringTheTailTranscribes)),
+            ("mediaServicesResetEndsTheSession", isolated(testMediaServicesResetEndsTheSession)),
         ]
     }
 
@@ -40,6 +54,9 @@ enum HostSessionCoreTests {
 
     private static let R = Fixture.requestID
     private static let S = Fixture.otherRequestID
+    private static let R2 = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
+    /// Just past the capture grace, so accumulated floating-point clock steps never land a hair short.
+    private static let grace = HostSessionPolicy.captureStallGrace + 0.001
 
     // MARK: Scenarios
 
@@ -106,9 +123,10 @@ enum HostSessionCoreTests {
         h.clock.now += 3
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         TestSupport.expectEqual(h.status?.dictation?.phase, .transcribing)
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "transcription not started")
-        TestSupport.expectEqual(h.transcriber.received.first?.count, 1_600)
+        TestSupport.expectEqual(h.transcriber.received.first, 1_600)
         TestSupport.expectEqual(h.background.begun, 1)
         TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
         h.clock.now += 1
@@ -134,6 +152,7 @@ enum HostSessionCoreTests {
         _ = TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .recording }
         h.writeIntent(.finish, S)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.transcriber.complete(.success("more"))
         _ = TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .completed }
@@ -173,9 +192,11 @@ enum HostSessionCoreTests {
     private static func testNewerRecordSupersedesTranscription() {
         let h = CoreHarness()
         defer { h.cleanup() }
+        h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.writeIntent(.record, S)
         h.core.reconcile(.intentSignal)
@@ -256,11 +277,11 @@ enum HostSessionCoreTests {
         h.clock.isForeground = false   // the user swiped back
         try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now + 1))
         h.clock.now += 15
-        h.keepCaptureFresh()
+        h.feed()
         h.core.tick()
         TestSupport.expectEqual(h.core.current?.phase, .recording)
         h.clock.now += 1.2
-        h.keepCaptureFresh()
+        h.feed()
         h.core.tick()
         TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
         TestSupport.expectEqual(h.status?.dictation?.error, .keyboardDismissed)
@@ -276,7 +297,7 @@ enum HostSessionCoreTests {
         h.deliver(count: 4_000)   // more than the cap in the first buffer
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .transcribing }, "not auto-finished")
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "not transcribing")
-        TestSupport.expectEqual(h.transcriber.received.first?.count, 3_200)
+        TestSupport.expectEqual(h.transcriber.received.first, 3_200)
     }
 
     @MainActor
@@ -299,6 +320,7 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.core.session, .active)
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.clock.now += 400
         h.keepCaptureFresh()
@@ -329,9 +351,11 @@ enum HostSessionCoreTests {
     private static func testDeviceLockCancelsEverything() {
         let h = CoreHarness()
         defer { h.cleanup() }
+        h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.core.deviceWillLock()
         TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
@@ -357,9 +381,11 @@ enum HostSessionCoreTests {
     private static func testBackgroundTimeExpiry() {
         let h = CoreHarness()
         defer { h.cleanup() }
+        h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
+        h.completeTail()
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.background.expire(0)
         TestSupport.expectEqual(h.status?.dictation?.phase, .failed)
@@ -379,6 +405,7 @@ enum HostSessionCoreTests {
             h.record(request)
             h.writeIntent(.finish, request)
             h.core.reconcile(.intentSignal)
+            h.completeTail()
             _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
             h.transcriber.complete(.failure(failure))
             TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .failed }, "failure not reported")
@@ -471,30 +498,6 @@ enum HostSessionCoreTests {
     }
 
     @MainActor
-    private static func testEngineFailureRestartsOnlyInForeground() {
-        let h = CoreHarness()
-        defer { h.cleanup() }
-        h.record(R)
-        h.core.captureFailed()
-        TestSupport.expectEqual(h.capture.startCount, 2)
-        TestSupport.expectEqual(h.core.session, .active)
-        TestSupport.expectEqual(h.core.current?.phase, .recording)
-        // A silently stopped engine is noticed by the timer, after a grace period.
-        h.capture.isRunning = false
-        h.core.tick()
-        TestSupport.expectEqual(h.capture.startCount, 2)
-        h.clock.now += HostSessionPolicy.captureStallGrace
-        h.core.tick()
-        TestSupport.expectEqual(h.capture.startCount, 3)
-        h.clock.isForeground = false
-        h.core.captureFailed()
-        TestSupport.expectEqual(h.capture.startCount, 3)
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
-        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
-    }
-
-    @MainActor
     private static func testPrewarmedLaunchDoesNotReject() {
         let h = CoreHarness(launch: false)
         defer { h.cleanup() }
@@ -508,36 +511,6 @@ enum HostSessionCoreTests {
         h.core.reconcile(.activation)
         TestSupport.expectEqual(h.status?.dictation?.phase, .starting)
         TestSupport.expectEqual(h.core.session, .active)
-    }
-
-    @MainActor
-    private static func testURLOpenBeforeForegroundDefersCapture() {
-        let h = CoreHarness(launch: false)
-        defer { h.cleanup() }
-        h.clock.isForeground = false
-        h.core.launch()
-        h.writeIntent(.record, R)
-        h.core.reconcile(.urlOpen)
-        TestSupport.expectEqual(h.status?.dictation?.phase, .starting)
-        TestSupport.expectEqual(h.status?.session, .starting)
-        TestSupport.expectEqual(h.capture.startCount, 0)
-        h.clock.isForeground = true
-        h.core.foregroundChanged()
-        TestSupport.expectEqual(h.capture.startCount, 1)
-        TestSupport.expectEqual(h.status?.session, .active)
-
-        // A deferred start nobody waits for any more is abandoned.
-        h.core.userEndSession()
-        h.clock.isForeground = false
-        h.writeIntent(.record, S)
-        h.core.reconcile(.urlOpen)
-        h.clock.now += DictationProtocol.startupTimeout + 0.1
-        h.core.tick()
-        TestSupport.expectEqual(h.status?.dictation?.error, .startupTimeout)
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        h.clock.isForeground = true
-        h.core.foregroundChanged()
-        TestSupport.expectEqual(h.capture.startCount, 1)
     }
 
     @MainActor
@@ -592,25 +565,13 @@ enum HostSessionCoreTests {
     }
 
     @MainActor
-    private static func testMemoryWarningReleasesOnlyWhenIdle() {
-        let h = CoreHarness()
-        defer { h.cleanup() }
-        h.record(R)
-        h.core.memoryWarning()
-        TestSupport.expectEqual(h.transcriber.releaseCount, 0)
-        h.writeIntent(.cancel, R)
-        h.core.reconcile(.intentSignal)
-        h.core.memoryWarning()
-        TestSupport.expectEqual(h.transcriber.releaseCount, 1)
-        TestSupport.expectEqual(h.status?.model, .notPrepared)
-    }
-
-    @MainActor
     private static func testInAppStopAndCancel() {
         let h = CoreHarness()
         defer { h.cleanup() }
+        h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
         h.core.userStopDictation()
+        h.completeTail()
         TestSupport.expectEqual(h.status?.dictation?.phase, .transcribing)
         _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
         h.core.userCancelDictation()
@@ -621,6 +582,423 @@ enum HostSessionCoreTests {
         h.transcriber.complete(.success("late"))
         _ = TestSupport.waitUntil(timeout: 0.2) { false }
         TestSupport.expectEqual(h.store.readResult(requestID: R), .absent)
+    }
+
+    // MARK: Capture supervision
+
+    @MainActor
+    private static func testEngineFailureWaitsForGraceAndRestartsInBackground() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        // A configuration change waits out the same grace as a stopped engine.
+        h.core.captureFailed(generation: h.capture.engineGeneration)
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        h.clock.now += HostSessionPolicy.captureStallGrace - 0.1
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        h.clock.now += 0.101
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 2)   // foreground: a full start
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+
+        // In the background the engine is rebuilt inside the active audio session, never started anew.
+        h.clock.isForeground = false
+        try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
+        h.feed()
+        h.core.captureFailed(generation: h.capture.engineGeneration)
+        h.clock.now += grace
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.restartCount, 1)
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+
+        // A restart that fails ends the session.
+        h.capture.failRestart = true
+        h.core.captureFailed(generation: h.capture.engineGeneration)
+        h.clock.now += grace
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.capture.startCount, 2)
+    }
+
+    @MainActor
+    private static func testStaleEngineFailureIsIgnored() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.userStartSession()
+        let first = h.capture.engineGeneration
+        h.core.captureFailed(generation: first)
+        h.clock.now += grace
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        // A notification queued for the replaced engine arrives afterwards.
+        h.core.captureFailed(generation: first)
+        h.clock.now += grace + 0.1
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        TestSupport.expectEqual(h.core.session, .active)
+    }
+
+    @MainActor
+    private static func testStarvedEngineIsRestartedThenGivenUp() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.userStartSession()
+        h.capture.stall()   // running, but no buffers arrive
+        func advance(_ seconds: Double) {
+            for _ in 0..<Int((seconds * 10).rounded()) {
+                h.clock.now += 0.1
+                h.core.tick()
+            }
+        }
+        let cycle = HostSessionPolicy.captureStarvationTimeout + HostSessionPolicy.captureStallGrace
+        advance(HostSessionPolicy.captureStarvationTimeout - 0.3)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        advance(0.3 + HostSessionPolicy.captureStallGrace + 0.2)
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        // Input after a recovery resets the budget.
+        h.capture.resumeDelivery()
+        advance(1)
+        h.capture.stall()
+        advance(cycle + 0.2)
+        TestSupport.expectEqual(h.capture.startCount, 3)
+        TestSupport.expectEqual(h.core.session, .active)
+        // Recoveries that keep producing no input end the session.
+        advance(2 * cycle + 0.2)
+        TestSupport.expectEqual(h.capture.startCount, 2 + HostSessionPolicy.maxRecoveriesWithoutInput)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+    }
+
+    @MainActor
+    private static func testStalledRecordingFails() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.core.tick()   // the growth baseline
+        // Buffers keep arriving (the engine runs), but no samples reach the recording.
+        h.clock.now += HostSessionPolicy.captureStarvationTimeout - 0.1
+        h.core.tick()
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+        h.clock.now += 0.101
+        h.core.tick()
+        TestSupport.expectEqual(h.status?.dictation?.phase, .failed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+        // The capture is rebuilt after the grace, and the session goes on.
+        h.clock.now += grace
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        TestSupport.expectEqual(h.core.session, .active)
+    }
+
+    @MainActor
+    private static func testConversionFailureFailsRecording() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        let generation = h.buffer.generation
+        h.core.captureDelivered(.conversionFailed(generation: generation &- 1))   // an older recording's
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+        h.core.captureDelivered(.conversionFailed(generation: generation))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .failed }, "conversion failure ignored")
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+        h.clock.now += grace
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 2)
+    }
+
+    @MainActor
+    private static func testElapsedTimeCapsRecording() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)   // admitted at Fixture.now; a trickle of samples never reaches the sample cap
+        while h.clock.now < Fixture.now + DictationProtocol.maxDictationDuration {
+            h.clock.now += 1
+            h.feed(count: 160)
+            h.core.tick()
+            TestSupport.expectEqual(h.core.current?.phase, .recording)
+        }
+        h.clock.now += 0.1
+        h.core.tick()
+        TestSupport.expectEqual(h.status?.dictation?.phase, .transcribing)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "not transcribing")
+        TestSupport.expect((h.transcriber.received.first ?? 0) < h.buffer.maxSampleCount, "sample cap used instead")
+    }
+
+    // MARK: URL hint
+
+    @MainActor
+    private static func testURLHintWaitsForForeground() {
+        let h = CoreHarness()   // launched in the foreground earlier in this run
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.writeIntent(.record, R)
+        h.core.reconcile(.urlOpen)
+        h.core.reconcile(.urlOpen)
+        // Neither admitted nor rejected, nothing prepared, and the request ID is not consumed.
+        TestSupport.expectEqual(h.status?.dictation, nil)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 0)
+        TestSupport.expect(!h.core.knownRequestIDs.contains(R), "the hint consumed the request")
+        h.core.foregroundChanged()   // still in the background: willEnterForeground
+        TestSupport.expectEqual(h.status?.dictation, nil)
+        h.clock.now += 3
+        h.clock.isForeground = true
+        h.core.foregroundChanged()   // arrived
+        TestSupport.expectEqual(h.status?.dictation?.requestID, R)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .starting)
+        TestSupport.expectEqual(h.status?.dictation?.startedAt, h.clock.now)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 1)
+
+        // A prewarmed process ignores the hint too.
+        let prewarmed = CoreHarness(launch: false)
+        defer { prewarmed.cleanup() }
+        prewarmed.clock.isForeground = false
+        prewarmed.core.launch()
+        prewarmed.writeIntent(.record, S)
+        prewarmed.core.reconcile(.urlOpen)
+        TestSupport.expectEqual(prewarmed.status?.dictation, nil)
+        TestSupport.expectEqual(prewarmed.transcriber.prepareCount, 0)
+    }
+
+    @MainActor
+    private static func testStaleIntentAtForegroundArrivalIsNotAdmitted() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.writeIntent(.record, R)
+        h.core.reconcile(.urlOpen)
+        h.clock.now += DictationProtocol.pendingRecordTTL + 0.1
+        h.clock.isForeground = true
+        h.core.foregroundChanged()
+        h.core.tick()
+        TestSupport.expectEqual(h.status?.dictation, nil)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.capture.startCount, 0)
+    }
+
+    // MARK: Memory and samples
+
+    @MainActor
+    private static func testMemoryWarningReleasesOnlyWhenIdle() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.core.memoryWarning()
+        TestSupport.expectEqual(h.transcriber.releaseCount, 0)
+        h.writeIntent(.cancel, R)
+        h.core.reconcile(.intentSignal)   // the dictation ends: the remembered warning applies now
+        TestSupport.expectEqual(h.transcriber.releaseCount, 1)
+        TestSupport.expectEqual(h.status?.model, .notPrepared)
+        h.core.tick()
+        TestSupport.expectEqual(h.transcriber.releaseCount, 1)
+    }
+
+    @MainActor
+    private static func testMemoryWarningDuringPreparationIsRemembered() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.transcriber.modelState = .preparing
+        h.transcriber.busy = true
+        h.core.memoryWarning()
+        h.clock.now += 1
+        h.core.tick()
+        TestSupport.expectEqual(h.transcriber.releaseCount, 0)
+        TestSupport.expect(h.transcriber.releaseAttempts >= 2, "the pending release was not retried")
+        h.transcriber.busy = false
+        h.transcriber.modelState = .ready
+        h.core.modelStateChanged()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.releaseCount == 1 }, "warning forgotten")
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.status?.model == .notPrepared }, "release unpublished")
+        h.clock.now += 1
+        h.core.tick()
+        TestSupport.expectEqual(h.transcriber.releaseCount, 1)
+    }
+
+    /// Cancel, supersede, device lock and background expiry all end the transcription at once, so the
+    /// recorded samples are freed instead of waiting for the model.
+    @MainActor
+    private static func testEndedRequestsReleaseTheirSamples() {
+        let endings: [(String, @MainActor (CoreHarness) -> Void)] = [
+            ("cancel", { h in
+                h.writeIntent(.cancel, R)
+                h.core.reconcile(.intentSignal)
+            }),
+            ("supersede", { h in
+                h.writeIntent(.record, S)
+                h.core.reconcile(.intentSignal)
+            }),
+            ("lock", { h in h.core.deviceWillLock() }),
+            ("expiry", { h in h.background.expire(0) }),
+        ]
+        for (name, end) in endings {
+            let h = CoreHarness()
+            defer { h.cleanup() }
+            h.record(R)
+            h.writeIntent(.finish, R)
+            h.core.reconcile(.intentSignal)
+            h.completeTail()
+            TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "\(name): not transcribing")
+            TestSupport.expect(h.transcriber.lastAudio != nil, "\(name): no audio handed over")
+            end(h)
+            TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.lastAudio == nil },
+                               "\(name): samples still held")
+            TestSupport.expectEqual(h.transcriber.pendingCount, 0)
+            TestSupport.expectEqual(h.store.readResult(requestID: R), .absent)
+        }
+    }
+
+    @MainActor
+    private static func testUnusableSyntheticInputFailsClosed() {
+        var madeMicrophone = false
+        let capture = SyntheticInputRequest.unusable.capture { madeMicrophone = true; return UnavailableCapture() }
+        TestSupport.expect(!madeMicrophone, "an unusable synthetic input fell back to the microphone")
+        TestSupport.expect(capture is UnavailableCapture, "wrong capture")
+        let h = CoreHarness(capture: capture)
+        defer { h.cleanup() }
+        h.writeIntent(.record, R)
+        h.core.reconcile(.activation)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+        _ = SyntheticInputRequest.notRequested.capture { madeMicrophone = true; return UnavailableCapture() }
+        TestSupport.expect(madeMicrophone, "no synthetic input did not use the microphone")
+    }
+
+    // MARK: Tail and media services
+
+    /// Finish stops the recording at the current capture time but keeps the frames still in flight:
+    /// transcription starts once the capture reports the tail complete.
+    @MainActor
+    private static func testFinishWaitsForTheTail() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        let boundaries = h.capture.boundaryCount
+        h.record(R)
+        TestSupport.expectEqual(h.capture.boundaryCount, boundaries + 1)   // begin
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .transcribing)
+        TestSupport.expectEqual(h.buffer.recordingWindow?.token, h.buffer.generation)
+        TestSupport.expect(h.buffer.recordingWindow?.end != nil, "not closing")
+        h.feed()   // captured before the finish, delivered after it
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.transcriber.pendingCount, 0)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "tail never drained")
+        TestSupport.expectEqual(h.transcriber.received, [3_200])
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+        TestSupport.expectEqual(h.capture.boundaryCount, boundaries + 2)   // drain
+        h.completeTail()   // a late duplicate changes nothing
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.transcriber.pendingCount, 1)
+    }
+
+    @MainActor
+    private static func testTailTimeoutTranscribesWhatArrived() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.clock.now += HostSessionPolicy.tailTimeout - 0.2
+        h.core.tick()
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.transcriber.pendingCount, 0)
+        h.clock.now += 0.2
+        h.core.tick()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "tail timeout ignored")
+        TestSupport.expectEqual(h.transcriber.received, [1_600])
+
+        // With the engine stopped, nothing more can arrive: the recording drains at once.
+        h.transcriber.complete(.success("words"))
+        h.record(S)
+        h.capture.isRunning = false
+        h.writeIntent(.finish, S)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "stopped engine waited")
+    }
+
+    @MainActor
+    private static func testCancelDuringTheTailDiscardsTheRecording() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.writeIntent(.cancel, R)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+        h.completeTail()
+        h.clock.now += HostSessionPolicy.tailTimeout + 0.1
+        h.core.tick()
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.transcriber.pendingCount, 0)
+        TestSupport.expectEqual(h.core.current?.phase, .cancelled)
+    }
+
+    /// A call during the tail ends the session, but the finished recording is still transcribed.
+    @MainActor
+    private static func testSessionEndDuringTheTailTranscribes() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.core.captureInterrupted()
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "recording lost at session end")
+        TestSupport.expectEqual(h.transcriber.received, [1_600])
+        TestSupport.expectEqual(h.core.current?.phase, .transcribing)
+    }
+
+    /// Media services reset: the session ends at once (no background restart), a recording fails with
+    /// `.audioSessionFailed`, and only a new foreground start captures again.
+    @MainActor
+    private static func testMediaServicesResetEndsTheSession() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        h.clock.isForeground = false
+        h.core.captureMediaServicesReset()
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .failed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+        TestSupport.expectEqual(h.capture.isRunning, false)
+        h.clock.now += 1
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.restartCount, 0)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        // From the background the next request is rejected; in the foreground it starts a new session.
+        h.writeIntent(.record, S)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.status?.dictation?.error, .sessionInactive)
+        h.clock.isForeground = true
+        h.core.userStartSession()
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        TestSupport.expectEqual(h.core.session, .active)
+
+        // A finished recording waiting for its tail is still transcribed.
+        h.record(R2)
+        h.writeIntent(.finish, R2)
+        h.core.reconcile(.intentSignal)
+        h.core.captureMediaServicesReset()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "finished recording lost")
     }
 }
 
@@ -643,24 +1021,29 @@ private final class CoreHarness {
         func expire(_ index: Int) { expirations[index]() }
     }
 
-    let clock = Clock()
+    let clock: Clock
     let background = BackgroundTasks()
     let directory = TestSupport.makeTemporaryDirectory()
     let suite = "LocalFlowIOSTests.\(UUID().uuidString)"
     let store: SharedDictationStore
     let settings: LocalFlowSettings
     let buffer: DictationSampleBuffer
-    let capture: FakeCapture
+    let fakeCapture: FakeCapture?
     let transcriber = FakeTranscriber()
     let core: HostSessionCore
     var published: [HostStatus] = []
 
-    init(launch: Bool = true, maxDuration: TimeInterval = DictationProtocol.maxDictationDuration) {
+    /// The fake capture; tests that inject another capture do not use it.
+    var capture: FakeCapture { fakeCapture! }
+
+    init(launch: Bool = true, maxDuration: TimeInterval = DictationProtocol.maxDictationDuration,
+         capture injected: HostCapture? = nil) {
+        let clock = Clock()
+        self.clock = clock
         store = SharedDictationStore(directory: directory)
         settings = LocalFlowSettings(defaults: UserDefaults(suiteName: suite)!)
         buffer = DictationSampleBuffer(maxDuration: maxDuration)
-        capture = FakeCapture(clock: clock)
-        let clock = self.clock
+        fakeCapture = injected == nil ? FakeCapture(clock: clock) : nil
         let background = self.background
         let environment = HostEnvironment(
             now: { clock.now },
@@ -672,7 +1055,8 @@ private final class CoreHarness {
             },
             formatTranscript: { text, pressEnter, _ in ("<\(text)>", pressEnter) })
         core = HostSessionCore(hostRunID: Fixture.hostRunID, store: store, settings: settings, buffer: buffer,
-                               capture: capture, transcriber: transcriber, notifier: nil, environment: environment)
+                               capture: injected ?? fakeCapture!, transcriber: transcriber, notifier: nil,
+                               environment: environment)
         core.onChange = { [unowned self] in
             if let status = self.store.readStatus().value { self.published.append(status) }
         }
@@ -692,16 +1076,28 @@ private final class CoreHarness {
         try! store.writeIntent(Fixture.intent(action, requestID, at: clock.now))
     }
 
-    /// Delivers one buffer from another thread, as the audio tap does.
+    /// Delivers one buffer from another thread, as the capture pipeline does.
     func deliver(count: Int = 1_600, loud: Bool = false) {
         let samples = (0..<count).map { (loud ? 0.3 : 0.01) * sinf(Float($0) * 0.2) }
         let buffer = self.buffer
         let core = self.core
-        DispatchQueue.global().sync { core.captureDelivered(buffer.append(samples)) }
+        DispatchQueue.global().sync {
+            guard let token = buffer.recordingToken,
+                  let event = CaptureEvent(buffer.append(samples, token: token)) else { return }
+            core.captureDelivered(event)
+        }
         keepCaptureFresh()
     }
 
-    func keepCaptureFresh() { capture.lastBufferAt = clock.now }
+    /// Samples arriving while recording, between ticks.
+    func feed(count: Int = 1_600) { deliver(count: count) }
+
+    /// The capture reports that every frame captured before the finish has arrived.
+    func completeTail() {
+        core.captureDelivered(.tailComplete(generation: buffer.generation))
+    }
+
+    func keepCaptureFresh() { fakeCapture?.resumeDelivery() }
 
     /// Admits `requestID` from the foreground and waits until it is recording.
     func record(_ requestID: UUID) {
@@ -713,17 +1109,32 @@ private final class CoreHarness {
     }
 }
 
+/// A capture whose buffers arrive whenever it runs, until `stall()`.
 @MainActor
 private final class FakeCapture: HostCapture {
     let clock: CoreHarness.Clock
     var permission = CapturePermission.granted
     var failStart = false
+    var failRestart = false
     var startCount = 0
+    var restartCount = 0
+    var boundaryCount = 0
     var isRunning = false
-    var lastBufferAt: Date?
+    private(set) var engineGeneration: UInt64 = 0
+    private var delivering = true
+    private var stalledAt: Date?
     private var pendingRequest: CheckedContinuation<Bool, Never>?
 
     init(clock: CoreHarness.Clock) { self.clock = clock }
+
+    var lastBufferAt: Date? { delivering ? (isRunning ? clock.now : nil) : stalledAt }
+
+    func stall() {
+        stalledAt = clock.now
+        delivering = false
+    }
+
+    func resumeDelivery() { delivering = true }
 
     var hasPendingRequest: Bool { pendingRequest != nil }
 
@@ -738,43 +1149,77 @@ private final class FakeCapture: HostCapture {
     }
 
     func start() throws {
-        TestSupport.expect(clock.isForeground, "capture started in the background")
+        TestSupport.expect(clock.isForeground, "a session was started in the background")
         guard !failStart else { throw CocoaError(.featureUnsupported) }
         startCount += 1
         isRunning = true
-        lastBufferAt = clock.now
+        engineGeneration += 1
+    }
+
+    func restart() throws {
+        TestSupport.expect(isRunning, "restart without a running session")
+        guard !failRestart else { throw CocoaError(.featureUnsupported) }
+        restartCount += 1
+        engineGeneration += 1
     }
 
     func stop() { isRunning = false }
+
+    func recordingBoundary() { boundaryCount += 1 }
 }
 
+/// A model that answers when told to. It honors cancellation like `TranscriptionEngine`, unless a test
+/// simulates a runtime that finishes anyway. It never keeps the audio beyond the call.
 @MainActor
 private final class FakeTranscriber: HostTranscriber {
     var modelState = HostStatus.Model.ready
+    var honorsCancellation = true
+    var busy = false
     var prepareCount = 0
+    var releaseAttempts = 0
     var releaseCount = 0
-    var received: [[Float]] = []
-    private var pending: [CheckedContinuation<String, Error>] = []
+    /// Sample counts of every recording handed over.
+    var received: [Int] = []
+    weak var lastAudio: RecordedAudio?
+    private var pending: [(id: UUID, continuation: CheckedContinuation<String, Error>)] = []
 
     var pendingCount: Int { pending.count }
 
     func prepare() { prepareCount += 1 }
 
-    func transcribe(_ samples: [Float]) async throws -> String {
-        received.append(samples)
-        return try await withCheckedThrowingContinuation { pending.append($0) }
+    func transcribe(_ audio: RecordedAudio) async throws -> String {
+        received.append(audio.samples.count)
+        lastAudio = audio
+        let id = UUID()
+        let honors = honorsCancellation
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { pending.append((id, $0)) }
+        } onCancel: {
+            guard honors else { return }
+            Task { @MainActor in self.resume(id, with: .failure(CancellationError())) }
+        }
     }
 
-    func releaseIfIdle() {
+    func releaseIfIdle() -> Bool {
+        releaseAttempts += 1
+        guard !busy else { return false }
         releaseCount += 1
         modelState = .notPrepared
+        return true
     }
 
+    /// Completes the oldest pending transcription.
     func complete(_ result: Result<String, Error>) {
-        pending.removeFirst().resume(with: result)
+        guard let id = pending.first?.id else { return }
+        resume(id, with: result)
     }
 
     func cancelAll() {
-        while !pending.isEmpty { complete(.failure(CancellationError())) }
+        while let id = pending.first?.id { resume(id, with: .failure(CancellationError())) }
+    }
+
+    private func resume(_ id: UUID, with result: Result<String, Error>) {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+        pending.remove(at: index).continuation.resume(with: result)
     }
 }

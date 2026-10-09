@@ -2,13 +2,12 @@ import Foundation
 import SwiftUI
 
 /// App-only preferences in the app's own `UserDefaults` (the keyboard never reads them). None holds
-/// user content: onboarding progress, the Diagnostics compute policy, and how long the last model
-/// preparation took, so the next one can show an estimate.
+/// user content: onboarding progress and how long the last model preparation took, so the next one can
+/// show an estimate.
 @MainActor
 final class AppPreferences: ObservableObject {
     private enum Key {
         static let onboardingComplete = "onboardingComplete"
-        static let computePolicy = "computePolicy"
         static let lastPreparationSeconds = "lastModelPreparationSeconds"
     }
 
@@ -18,14 +17,9 @@ final class AppPreferences: ObservableObject {
         didSet { defaults.set(onboardingComplete, forKey: Key.onboardingComplete) }
     }
 
-    @Published var computePolicy: ComputePolicy {
-        didSet { defaults.set(computePolicy.rawValue, forKey: Key.computePolicy) }
-    }
-
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         onboardingComplete = defaults.bool(forKey: Key.onboardingComplete)
-        computePolicy = ComputePolicy(storedValue: defaults.string(forKey: Key.computePolicy))
     }
 
     var lastPreparationSeconds: Double? {

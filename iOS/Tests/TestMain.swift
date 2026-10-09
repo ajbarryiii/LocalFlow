@@ -22,6 +22,9 @@ struct LocalFlowIOSTests {
             ("HostSessionPolicy", HostSessionPolicyTests.tests),
             ("ComputePolicy", ComputePolicyTests.tests),
             ("HostSessionCore", HostSessionCoreTests.tests),
+            ("CapturePipeline", CapturePipelineTests.tests),
+            ("CaptureTiming", CaptureTimingTests.tests),
+            ("TranscriptionEngine", TranscriptionEngineTests.tests),
         ]
         var count = 0
         for (suite, tests) in suites {

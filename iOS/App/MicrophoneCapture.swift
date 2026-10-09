@@ -1,26 +1,51 @@
 import AVFoundation
 import Foundation
 
-/// The session's microphone: one `AVAudioEngine` input tap for the whole session. The tap converts to
-/// 16 kHz mono `Float32` only while a request is recording; every other buffer is dropped in the
-/// callback without being converted or retained. Audio is never written to disk or logged.
+/// The session's microphone: one `AVAudioEngine` input tap for the whole session, feeding a
+/// `CapturePipeline` (HostCore) with each buffer's capture time. The pipeline trims frames captured
+/// outside the recording before converting the rest to 16 kHz mono, with a converter replaced at every
+/// dictation boundary; every other buffer is dropped in the callback unconverted. Large I/O and tap buffers keep an idle session from waking the app often
+/// (`AudioSessionTuning`). Audio is never written to disk or logged.
 @MainActor
 final class MicrophoneCapture: HostCapture {
-    /// Interruption: the session must end. Failure: the engine stopped or must be rebuilt.
+    /// The audio session was interrupted: the session must end.
     var onInterruption: (@MainActor () -> Void)?
-    var onFailure: (@MainActor () -> Void)?
+    /// Engine `generation` stopped or its configuration changed, within a surviving audio session.
+    var onFailure: (@MainActor (_ generation: UInt64) -> Void)?
+    /// Media services were reset: this object no longer owns an audio session, and the session must end.
+    var onMediaServicesReset: (@MainActor () -> Void)?
+    /// Every engine start reports what was requested and what iOS granted.
+    var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
 
+    private(set) var engineGeneration: UInt64 = 0
     private let buffer: DictationSampleBuffer
-    private let deliver: @Sendable (DictationSampleBuffer.AppendOutcome) -> Void
-    private let clock = BufferClock()
+    private let deliver: @Sendable (CaptureEvent) -> Void
     private var engine: AVAudioEngine?
-    private var engineObserver: NSObjectProtocol?
+    private var pipeline: CapturePipeline<InputConverter>?
+    /// This object activated the audio session and must deactivate it.
+    private var activatedSession = false
+    private var requested = AudioSessionTuning.Requested()
+    private var engineObservers: [NSObjectProtocol] = []
     private var sessionObservers: [NSObjectProtocol] = []
 
-    init(buffer: DictationSampleBuffer, deliver: @escaping @Sendable (DictationSampleBuffer.AppendOutcome) -> Void) {
+    init(buffer: DictationSampleBuffer, deliver: @escaping @Sendable (CaptureEvent) -> Void) {
         self.buffer = buffer
         self.deliver = deliver
-        observeAudioSession()
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        sessionObservers = [
+            center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+                let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
+                guard type == .began else { return }
+                MainActor.assumeIsolated {
+                    guard let self, self.activatedSession else { return }
+                    self.onInterruption?()
+                }
+            },
+            center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.mediaServicesWereReset() }
+            },
+        ]
     }
 
     var permission: CapturePermission {
@@ -37,146 +62,187 @@ final class MicrophoneCapture: HostCapture {
 
     var isRunning: Bool { engine?.isRunning ?? false }
 
-    var lastBufferAt: Date? { clock.lastBufferAt }
+    var lastBufferAt: Date? { pipeline?.clock.lastBufferAt }
 
     func start() throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP])
+        // `.defaultToSpeaker` keeps other apps' audio on the speaker instead of the earpiece.
+        try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
+        requested = AudioSessionTuning.requestPreferences(on: session)
         try session.setActive(true)
+        activatedSession = true
+        AudioSessionTuning.preferMonoInput(on: session)
         do {
-            let engine = AVAudioEngine()
-            let input = engine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInput }
-            let tap = try InputTap(format: format, buffer: buffer, clock: clock, deliver: deliver)
-            input.installTap(onBus: 0, bufferSize: 4_096, format: format, block: tap.block)
-            engine.prepare()
-            try engine.start()
-            self.engine = engine
-            engineObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-                // The engine stopped and its input format may have changed; it must be rebuilt.
-                MainActor.assumeIsolated { self?.onFailure?() }
-            }
+            try startEngine()
         } catch {
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            stop()
             throw error
         }
     }
 
+    /// A new engine inside the audio session this object already activated. Nothing is activated, so a
+    /// session that iOS ended (an interruption) makes the engine start fail instead of reviving it from
+    /// the background.
+    func restart() throws {
+        guard activatedSession else { throw CaptureError.noSession }
+        tearDownEngine()
+        try startEngine()
+    }
+
     func stop() {
-        if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
-        engineObserver = nil
-        guard let engine else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        self.engine = nil
-        clock.reset()
+        tearDownEngine()
+        guard activatedSession else { return }
+        activatedSession = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func observeAudioSession() {
+    func recordingBoundary() {
+        pipeline?.boundaryPassed()
+    }
+
+    /// Every audio object is invalid, including the session this object activated, so there is nothing to
+    /// deactivate and nothing to restart: ownership is dropped and only a new foreground `start()` can
+    /// capture again (contract: "Media services reset ends the session").
+    private func mediaServicesWereReset() {
+        guard activatedSession else { return }
+        activatedSession = false
+        tearDownEngine()
+        onMediaServicesReset?()
+    }
+
+    private func startEngine() throws {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInput }
+        let pipeline = CapturePipeline(buffer: buffer, converter: try InputConverter(input: format), deliver: deliver)
+        let tapFrames = AudioSessionTuning.tapBufferFrames(sampleRate: format.sampleRate)
+        input.installTap(onBus: 0, bufferSize: tapFrames, format: format, block: Self.tapBlock(for: pipeline))
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw error
+        }
+        engineGeneration &+= 1
+        self.engine = engine
+        self.pipeline = pipeline
+        observe(engine, generation: engineGeneration)
+        let session = AVAudioSession.sharedInstance()
+        onConfigured?(CaptureConfiguration(
+            source: "microphone", requestedIOBufferDuration: requested.ioBufferDuration,
+            actualIOBufferDuration: session.ioBufferDuration, requestedSampleRate: requested.sampleRate,
+            actualSampleRate: session.sampleRate, inputSampleRate: format.sampleRate, inputChannels: Int(format.channelCount),
+            tapBufferFrames: Int(tapFrames)))
+    }
+
+    private func tearDownEngine() {
+        for observer in engineObservers { NotificationCenter.default.removeObserver(observer) }
+        engineObservers = []
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        engine = nil
+        pipeline = nil   // its converter, with any resampler state, goes with it
+    }
+
+    /// Every report carries the generation of the engine it was registered for, so one queued before a
+    /// restart is ignored afterwards. The session core applies the grace period.
+    private func observe(_ engine: AVAudioEngine, generation: UInt64) {
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-        sessionObservers = [
-            center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
-                let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
-                guard type == .began else { return }
-                MainActor.assumeIsolated {
-                    guard let self, self.engine != nil else { return }
-                    self.onInterruption?()
-                }
-            },
-            center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
-                // Every audio object is invalid now; the engine is rebuilt (foreground) or the session ends.
-                MainActor.assumeIsolated {
-                    guard let self, self.engine != nil else { return }
-                    self.onFailure?()
-                }
-            },
+        let report: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.onFailure?(generation) }
+        }
+        engineObservers = [
+            center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main, using: report),
             center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] _ in
-                // A route change usually arrives with an engine configuration change; this catches an
-                // engine that stopped without one.
+                // A route change usually brings a configuration change; this catches an engine that
+                // stopped without one.
                 MainActor.assumeIsolated {
-                    guard let self, let engine = self.engine, !engine.isRunning else { return }
-                    self.onFailure?()
+                    guard let self, self.engineGeneration == generation, self.engine?.isRunning == false else { return }
+                    self.onFailure?(generation)
                 }
             },
         ]
     }
 
-    private enum CaptureError: Error { case noInput }
+    // Built outside the main actor: the tap runs on an audio thread.
+    nonisolated private static func tapBlock(for pipeline: CapturePipeline<InputConverter>) -> AVAudioNodeTapBlock {
+        { buffer, time in pipeline.process(TapBuffer(pcm: buffer, time: time)) }
+    }
+
+    private enum CaptureError: Error { case noInput, noSession }
 }
 
-/// When the latest input buffer arrived, written on the tap thread and read on main.
-final class BufferClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var last: Date?
+/// One tap buffer with its capture time. Slicing copies frames, so it allocates only while recording.
+private struct TapBuffer: CaptureInput {
+    let pcm: AVAudioPCMBuffer
+    let hostTime: UInt64?
+    let sampleTime: Int64?
 
-    var lastBufferAt: Date? {
-        lock.lock()
-        defer { lock.unlock() }
-        return last
+    init(pcm: AVAudioPCMBuffer, time: AVAudioTime) {
+        self.pcm = pcm
+        hostTime = time.isHostTimeValid ? time.hostTime : nil
+        sampleTime = time.isSampleTimeValid ? time.sampleTime : nil
     }
 
-    func mark() {
-        lock.lock()
-        last = Date()
-        lock.unlock()
+    private init(pcm: AVAudioPCMBuffer) {
+        self.pcm = pcm
+        hostTime = nil
+        sampleTime = nil
     }
 
-    func reset() {
-        lock.lock()
-        last = nil
-        lock.unlock()
+    var frameCount: Int { Int(pcm.frameLength) }
+    var sampleRate: Double { pcm.format.sampleRate }
+
+    func slice(_ frames: Range<Int>) -> TapBuffer? {
+        if frames == 0..<frameCount { return self }
+        guard !frames.isEmpty, frames.upperBound <= frameCount,
+              let copy = AVAudioPCMBuffer(pcmFormat: pcm.format, frameCapacity: AVAudioFrameCount(frames.count)) else { return nil }
+        copy.frameLength = AVAudioFrameCount(frames.count)
+        // Per channel buffer when deinterleaved, one buffer when interleaved: either way frames are
+        // `mBytesPerFrame` apart within each buffer.
+        let bytesPerFrame = Int(pcm.format.streamDescription.pointee.mBytesPerFrame)
+        let source = UnsafeMutableAudioBufferListPointer(pcm.mutableAudioBufferList)
+        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        for (from, to) in zip(source, destination) {
+            guard let from = from.mData, let to = to.mData else { return nil }
+            memcpy(to, from + frames.lowerBound * bytesPerFrame, frames.count * bytesPerFrame)
+        }
+        return TapBuffer(pcm: copy)
     }
 }
 
-/// Owned by the tap thread. Created outside any actor, so its block carries no actor isolation.
-private final class InputTap: @unchecked Sendable {
-    private let buffer: DictationSampleBuffer
-    private let clock: BufferClock
-    private let deliver: @Sendable (DictationSampleBuffer.AppendOutcome) -> Void
-    private let converter: AVAudioConverter
+/// Hardware format to 16 kHz mono `Float32`. Owned by the tap thread through the pipeline.
+private final class InputConverter: SampleConverter {
+    private let inputFormat: AVAudioFormat
     private let outputFormat: AVAudioFormat
-    private var convertingGeneration: UInt64?
+    private var converter: AVAudioConverter
 
-    init(format: AVAudioFormat, buffer: DictationSampleBuffer, clock: BufferClock,
-                     deliver: @escaping @Sendable (DictationSampleBuffer.AppendOutcome) -> Void) throws {
+    init(input: AVAudioFormat) throws {
         guard let output = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: DictationSampleBuffer.sampleRate,
                                          channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: format, to: output) else { throw ConversionError.unsupported }
-        converter.downmix = true
-        self.buffer = buffer
-        self.clock = clock
-        self.deliver = deliver
-        self.converter = converter
+              let converter = Self.makeConverter(from: input, to: output) else { throw ConversionError.unsupported }
+        inputFormat = input
         outputFormat = output
+        self.converter = converter
     }
 
-    var block: AVAudioNodeTapBlock {
-        { [self] pcm, _ in process(pcm) }
-    }
-
-    private func process(_ pcm: AVAudioPCMBuffer) {
-        clock.mark()
-        // Between dictations the buffer is dropped here, before conversion.
-        guard buffer.recordingRequestID != nil else {
-            convertingGeneration = nil
-            return
-        }
-        let generation = buffer.generation
-        if convertingGeneration != generation {
-            // A new recording starts with clean resampler state, so no earlier audio bleeds into it.
+    /// A new converter, so no filter history from earlier audio survives the boundary.
+    func reset() {
+        if let fresh = Self.makeConverter(from: inputFormat, to: outputFormat) {
+            converter = fresh
+        } else {
             converter.reset()
-            convertingGeneration = generation
         }
-        guard let samples = convert(pcm) else { return }
-        deliver(buffer.append(samples))
     }
 
-    private func convert(_ input: AVAudioPCMBuffer) -> [Float]? {
+    func convert(_ tapBuffer: TapBuffer) -> [Float]? {
+        let input = tapBuffer.pcm
         let ratio = outputFormat.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 32
         guard input.frameLength > 0,
@@ -192,8 +258,14 @@ private final class InputTap: @unchecked Sendable {
             inputStatus.pointee = .haveData
             return input
         }
-        guard status != .error, let channel = output.floatChannelData?[0], output.frameLength > 0 else { return nil }
+        guard status != .error, let channel = output.floatChannelData?[0] else { return nil }
         return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
+    }
+
+    private static func makeConverter(from input: AVAudioFormat, to output: AVAudioFormat) -> AVAudioConverter? {
+        let converter = AVAudioConverter(from: input, to: output)
+        converter?.downmix = true
+        return converter
     }
 
     private enum ConversionError: Error { case unsupported }
