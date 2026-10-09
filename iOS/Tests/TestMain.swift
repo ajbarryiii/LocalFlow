@@ -17,6 +17,11 @@ struct LocalFlowIOSTests {
             ("DarwinNotifier", DarwinNotifierTests.tests),
             ("DictationSampleBuffer", DictationSampleBufferTests.tests),
             ("HostURLRoute", HostURLRouteTests.tests),
+            ("RecentRequestIDs", RecentRequestIDsTests.tests),
+            ("HostDictationSlot", HostDictationSlotTests.tests),
+            ("HostSessionPolicy", HostSessionPolicyTests.tests),
+            ("ComputePolicy", ComputePolicyTests.tests),
+            ("HostSessionCore", HostSessionCoreTests.tests),
         ]
         var count = 0
         for (suite, tests) in suites {

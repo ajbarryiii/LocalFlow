@@ -1,0 +1,241 @@
+import Foundation
+import SwiftUI
+import UIKit
+
+/// Owns the host side for the app's lifetime: the session core (HostCore), the microphone, the model
+/// runtime, the timer, the `.intent` observation and the UIKit lifecycle events. It mirrors the core's
+/// state into SwiftUI and decides when the bounce screen shows.
+@MainActor
+final class HostSessionController: ObservableObject {
+    static let shared = HostSessionController()
+
+    @Published private(set) var session: HostStatus.Session = .inactive
+    @Published private(set) var sessionExpiresAt: Date?
+    @Published private(set) var sessionError: HostErrorCode?
+    @Published private(set) var dictation: DictationStatus?
+    @Published private(set) var level: Float = 0
+    @Published private(set) var isDictationInProgress = false
+    /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
+    @Published var bounceVisible = false
+    /// "Try it" has the keyboard in this app, so an admission there must not cover it.
+    var tryItVisible = false
+
+    let configuration: LocalFlowConfiguration?
+    let preferences = AppPreferences()
+    let settings: SharedSettingsModel
+    let transcriber: ParakeetTranscriber
+    /// Nil when the build is misconfigured (missing identifiers or App Group).
+    let core: HostSessionCore?
+    private let store: SharedDictationStore?
+    private var timer: Timer?
+    private var intentObservation: DarwinNotifier.Observation?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var lastAdmittedRequestID: UUID?
+    private var hapticRequestID: UUID?
+
+    private init() {
+        configuration = LocalFlowConfiguration.main
+        transcriber = ParakeetTranscriber(preferences: preferences)
+        let store = configuration.flatMap(SharedDictationStore.init(configuration:))
+        let sharedSettings = configuration.flatMap(LocalFlowSettings.init(configuration:))
+        self.store = store
+        settings = SharedSettingsModel(settings: sharedSettings)
+        guard let configuration, let store, let sharedSettings else {
+            core = nil
+            return
+        }
+        let buffer = DictationSampleBuffer()
+        let relay = CaptureRelay()
+        let deliver: @Sendable (DictationSampleBuffer.AppendOutcome) -> Void = { relay.deliver($0) }
+        let capture: HostCapture
+        #if LOCALFLOW_SELFTEST
+        capture = SelfTest.syntheticCapture(buffer: buffer, deliver: deliver) ?? MicrophoneCapture(buffer: buffer, deliver: deliver)
+        #else
+        capture = MicrophoneCapture(buffer: buffer, deliver: deliver)
+        #endif
+        let core = HostSessionCore(store: store, settings: sharedSettings, buffer: buffer, capture: capture,
+                                   transcriber: transcriber, notifier: DarwinNotifier(configuration: configuration),
+                                   environment: Self.environment)
+        self.core = core
+        relay.core = core
+        if let microphone = capture as? MicrophoneCapture {
+            microphone.onInterruption = { [weak core] in core?.captureInterrupted() }
+            microphone.onFailure = { [weak core] in core?.captureFailed() }
+        }
+        transcriber.onStateChange = { [weak core] in core?.modelStateChanged() }
+        core.onChange = { [weak self] in self?.refresh() }
+    }
+
+    /// Call once UIKit has finished launching: run recovery, the launch reconciliation, then the timer
+    /// and observers.
+    func launch() {
+        guard let core, !core.isLaunched else { return }
+        core.launch()
+        let timer = Timer(timeInterval: HostSessionPolicy.tickInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        intentObservation = configuration.map(DarwinNotifier.init(configuration:))?.observe(.intent) { [weak self] in
+            self?.core?.reconcile(.intentSignal)
+        }
+        observeLifecycle()
+        refresh()
+    }
+
+    var isConfigured: Bool { core != nil }
+
+    // MARK: User actions
+
+    func startSession() {
+        core?.userStartSession()
+    }
+
+    func endSession() {
+        core?.userEndSession()
+    }
+
+    func stopDictation() {
+        core?.userStopDictation()
+    }
+
+    func cancelDictation() {
+        core?.userCancelDictation()
+    }
+
+    func prepareModel() {
+        transcriber.prepare()
+    }
+
+    /// Diagnostics: frees the runtime now, to measure a cold preparation.
+    func releaseModel() {
+        guard core?.isDictationInProgress != true else { return }
+        transcriber.releaseIfIdle()
+    }
+
+    func setComputePolicy(_ policy: ComputePolicy) {
+        transcriber.setPolicy(policy)
+        // A live session keeps a prepared model, so the next dictation does not pay for it.
+        if session != .inactive, transcriber.modelState == .notPrepared { transcriber.prepare() }
+    }
+
+    /// `<scheme>://dictate` only brings the app forward and runs one reconciliation pass. It never
+    /// starts capture by itself: only a fresh record intent admitted here can.
+    func open(_ url: URL) {
+        guard let configuration, HostURLRoute(url: url, scheme: configuration.urlScheme) != nil else { return }
+        core?.reconcile(.urlOpen)
+    }
+
+    var microphonePermission: CapturePermission { core?.capture.permission ?? .undetermined }
+
+    /// Onboarding's request, made in the foreground only.
+    func requestMicrophonePermission() async -> Bool {
+        guard let capture = core?.capture, UIApplication.shared.applicationState != .background else { return false }
+        return await capture.requestPermission()
+    }
+
+    /// Whether a keyboard with Full Access has written presence, so setup can show it as done.
+    var keyboardHasFullAccess: Bool { store?.readPresence().value != nil }
+
+    // MARK: Private
+
+    private static var environment: HostEnvironment {
+        HostEnvironment(
+            now: { Date() },
+            isForeground: { UIApplication.shared.applicationState != .background },
+            beginBackgroundTask: { onExpiration in
+                let task = BackgroundTask()
+                task.identifier = UIApplication.shared.beginBackgroundTask(withName: "LocalFlow transcription") {
+                    MainActor.assumeIsolated { onExpiration() }
+                }
+                return { task.end() }
+            },
+            formatTranscript: { text, pressEnterEnabled, spokenDelimitersEnabled in
+                let processed = LocalDictationCore.process(text, macros: [], pressEnterEnabled: pressEnterEnabled,
+                                                           spokenDelimitersEnabled: spokenDelimitersEnabled)
+                return (processed.output, processed.shouldPressEnter)
+            })
+    }
+
+    private func tick() {
+        core?.tick()
+        if dictation?.phase == .recording { refresh() }   // the level meter
+    }
+
+    private func refresh() {
+        guard let core else { return }
+        set(\.session, core.session)
+        set(\.sessionExpiresAt, core.sessionExpiresAt)
+        set(\.sessionError, core.sessionError)
+        set(\.dictation, core.current)
+        set(\.level, core.level)
+        set(\.isDictationInProgress, core.isDictationInProgress)
+        // A request admitted while the app is in front came from the bounce (the keyboard opened the
+        // app), unless the keyboard is in "Try it", where a cover would hide the text field.
+        if let current = core.current, core.isDictationInProgress, current.requestID != lastAdmittedRequestID {
+            lastAdmittedRequestID = current.requestID
+            if UIApplication.shared.applicationState != .background, !tryItVisible { bounceVisible = true }
+        }
+        if let current = core.current, current.phase == .recording, current.requestID != hapticRequestID {
+            hapticRequestID = current.requestID
+            if bounceVisible, settings.hapticsEnabled { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+        }
+    }
+
+    private func set<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<HostSessionController, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
+    private func observeLifecycle() {
+        let center = NotificationCenter.default
+        func on(_ name: Notification.Name, _ action: @escaping @MainActor (HostSessionController) -> Void) {
+            lifecycleObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    action(self)
+                }
+            })
+        }
+        on(UIApplication.willEnterForegroundNotification) { $0.core?.foregroundChanged() }
+        on(UIApplication.didBecomeActiveNotification) {
+            $0.core?.foregroundChanged()
+            $0.core?.reconcile(.activation)
+        }
+        on(UIApplication.didEnterBackgroundNotification) {
+            $0.core?.foregroundChanged()
+            if $0.core?.isDictationInProgress != true { $0.bounceVisible = false }
+        }
+        on(UIApplication.protectedDataWillBecomeUnavailableNotification) { $0.core?.deviceWillLock() }
+        on(UIApplication.didReceiveMemoryWarningNotification) { $0.core?.memoryWarning() }
+    }
+}
+
+/// Forwards the capture thread's buffer outcomes to the core, which hops to main itself.
+private final class CaptureRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var target: HostSessionCore?
+
+    var core: HostSessionCore? {
+        get { lock.lock(); defer { lock.unlock() }; return target }
+        set { lock.lock(); target = newValue; lock.unlock() }
+    }
+
+    func deliver(_ outcome: DictationSampleBuffer.AppendOutcome) {
+        switch outcome {
+        case .dropped, .accepted: return
+        case .started, .reachedLimit: core?.captureDelivered(outcome)
+        }
+    }
+}
+
+/// Ends a UIKit background task exactly once.
+@MainActor
+private final class BackgroundTask {
+    var identifier = UIBackgroundTaskIdentifier.invalid
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}

@@ -3,23 +3,95 @@ import CoreML
 import Darwin
 import Foundation
 
-/// Self-test builds only. Transcribes an invented synthetic recording with the
-/// bundled model and prints one content-free line: never the transcript, the
-/// audio path, or error messages.
+/// Self-test builds only. Options come from the launch environment (`SIMCTL_CHILD_…`):
+/// - `LOCALFLOW_SELFTEST_AUDIO=<path>`: transcribes an invented synthetic recording with the bundled
+///   model and prints one content-free line, never the transcript, the audio path or error messages,
+///   then exits. `LOCALFLOW_SELFTEST_EXPECTED` and `LOCALFLOW_SELFTEST_COMPUTE=cpuOnly` refine it.
+/// - `LOCALFLOW_SYNTHETIC_MIC=<path>`: replaces the microphone with that recording (`SyntheticCapture`).
+/// - `LOCALFLOW_SELFTEST_SKIP_ONBOARDING=1`: lands on Home.
+/// - `LOCALFLOW_SELFTEST_SCREEN=<screen>`: opens one screen, for screenshots without taps.
+/// - `LOCALFLOW_SELFTEST_START_SESSION=1`: starts a session once the app is active.
+///
+/// Relative paths resolve inside the app's data container.
 enum SelfTest {
     private static let defaultPhrase = "The blue lantern is beside the green notebook."
+    private static let environment = ProcessInfo.processInfo.environment
+
+    /// Screens `LOCALFLOW_SELFTEST_SCREEN` can open.
+    enum Screen: String {
+        case onboarding, onboardingMicrophone = "onboarding-microphone", onboardingKeyboard = "onboarding-keyboard",
+             onboardingModel = "onboarding-model", home, tryIt = "tryit", keyboardSetup = "keyboard-setup", diagnostics
+    }
+
+    static var launchOptions: LaunchOptions {
+        var options = LaunchOptions()
+        options.skipOnboarding = environment["LOCALFLOW_SELFTEST_SKIP_ONBOARDING"] == "1"
+        options.startSession = environment["LOCALFLOW_SELFTEST_START_SESSION"] == "1"
+        switch environment["LOCALFLOW_SELFTEST_SCREEN"].flatMap(Screen.init(rawValue:)) {
+        case .onboarding?: options.onboardingStep = .welcome
+        case .onboardingMicrophone?: options.onboardingStep = .microphone
+        case .onboardingKeyboard?: options.onboardingStep = .keyboard
+        case .onboardingModel?: options.onboardingStep = .model
+        case .home?: options.skipOnboarding = true
+        case .tryIt?: options.skipOnboarding = true; options.homePath = [.tryIt]
+        case .keyboardSetup?: options.skipOnboarding = true; options.homePath = [.keyboardSetup]
+        case .diagnostics?: options.skipOnboarding = true; options.homePath = [.diagnostics]
+        case nil: break
+        }
+        return options
+    }
+
+    /// The synthetic microphone, if `LOCALFLOW_SYNTHETIC_MIC` names a readable recording. Prints one
+    /// content-free line either way, so a test can tell a missing file from a silent one.
+    @MainActor
+    static func syntheticCapture(buffer: DictationSampleBuffer,
+                                 deliver: @escaping @Sendable (DictationSampleBuffer.AppendOutcome) -> Void) -> HostCapture? {
+        guard let path = environment["LOCALFLOW_SYNTHETIC_MIC"], !path.isEmpty else { return nil }
+        var samples: [Float] = []
+        do {
+            try ParakeetAudioReader.read(fileURL: resolve(path), check: {}) { samples.append(contentsOf: $0) }
+        } catch {
+            print("LocalFlow self-test: synthetic_mic=unreadable")
+            fflush(stdout)
+            return nil
+        }
+        print(String(format: "LocalFlow self-test: synthetic_mic=loaded audio_s=%.2f",
+                     Double(samples.count) / DictationSampleBuffer.sampleRate))
+        fflush(stdout)
+        return SyntheticCapture(samples: samples, buffer: buffer, deliver: deliver)
+    }
+
+    /// One content-free line per dictation, so end-to-end runs record latency and memory.
+    static func report(_ measurement: DictationMeasurement) {
+        print(String(format: "LocalFlow self-test: dictation outcome=%@ audio_s=%.2f wait_ms=%.0f transcription_ms=%.0f compute=%@ background=%@ footprint_mb=%.0f peak_footprint_mb=%.0f",
+                     measurement.outcome.rawValue, measurement.audioSeconds, measurement.waitMilliseconds,
+                     measurement.transcriptionMilliseconds, measurement.computeUnits.replacingOccurrences(of: " ", with: "_"),
+                     String(measurement.inBackground), measurement.footprint?.currentMB ?? -1,
+                     measurement.footprint?.peakMB ?? -1))
+        fflush(stdout)
+    }
+
+    static func report(_ preparation: PreparationMeasurement) {
+        print(String(format: "LocalFlow self-test: preparation result=%@ seconds=%.1f compute=%@ background=%@ footprint_mb=%.0f peak_footprint_mb=%.0f",
+                     preparation.succeeded ? "ready" : "failed", preparation.seconds,
+                     preparation.computeUnits.replacingOccurrences(of: " ", with: "_"), String(preparation.inBackground),
+                     preparation.footprint?.currentMB ?? -1, preparation.footprint?.peakMB ?? -1))
+        fflush(stdout)
+    }
 
     static func startIfRequested() {
-        let environment = ProcessInfo.processInfo.environment
         guard let path = environment["LOCALFLOW_SELFTEST_AUDIO"], !path.isEmpty else { return }
-        // Relative paths resolve inside the app's data container.
-        let audio = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
+        let audio = resolve(path)
         let expected = environment["LOCALFLOW_SELFTEST_EXPECTED"] ?? defaultPhrase
         let cpuOnly = environment["LOCALFLOW_SELFTEST_COMPUTE"] == "cpuOnly"
         Task.detached(priority: .userInitiated) {
             let passed = await run(audio: audio, expected: expected, computeUnits: cpuOnly ? .cpuOnly : .cpuAndNeuralEngine)
             exit(passed ? 0 : 1)
         }
+    }
+
+    private static func resolve(_ path: String) -> URL {
+        URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
     }
 
     private static func run(audio: URL, expected: String, computeUnits: MLComputeUnits) async -> Bool {
@@ -53,7 +125,7 @@ enum SelfTest {
         print(String(format: "LocalFlow self-test: result=%@ stage=%@ transcript_match=%@ app_group=%@ compute=%@ preparation_s=%.3f transcription_s=%.3f audio_s=%.2f peak_footprint_mb=%.0f available_devices=%@ error=%@",
                      passed ? "pass" : "fail", stage, String(matched), appGroup,
                      computeUnits == .cpuOnly ? "cpuOnly" : "cpuAndNeuralEngine", preparation, transcription, seconds,
-                     peakFootprintMB(), availableDevices(), failure))
+                     ProcessMemory.footprint()?.peakMB ?? -1, availableDevices(), failure))
         return passed
     }
 
@@ -92,17 +164,6 @@ enum SelfTest {
             @unknown default: return "other"
             }
         }.joined(separator: ",")
-    }
-
-    private static func peakFootprintMB() -> Double {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
-        let status = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        return status == KERN_SUCCESS ? Double(info.ledger_phys_footprint_peak) / 1_048_576 : -1
     }
 }
 

@@ -314,5 +314,119 @@ smoke-sim:
 		*) echo "$$result" >&2; echo "See $(SMOKE_LOG)" >&2; exit 1 ;; \
 	esac
 
+.PHONY: e2e-sim e2e-sim-probe
+
+E2E_BUILD_DIR ?= build/e2e-simulator
+E2E_SIM_DEVICE ?= LocalFlow-E2E
+E2E_PHRASE ?= $(SMOKE_PHRASE)
+E2E_AUDIO = tmp/localflow-synthetic-mic.wav
+E2E_LOG = $(E2E_BUILD_DIR)/obj/e2e-app.log
+# Launch options of the self-test build (see App/SelfTest.swift).
+E2E_SKIP_ONBOARDING ?=
+E2E_SCREEN ?=
+E2E_START_SESSION ?=
+# e2e-sim-probe: seconds between recording and finish, the completion timeout,
+# whether to send the app to the background while it records, and whether to
+# also open <scheme>://dictate (the simulator asks "Open in …?", which needs a tap).
+# E2E_FROM_BACKGROUND=1 needs a running session: LocalFlow goes to the background
+# first and the request is admitted there, as for every dictation after the first.
+E2E_SPEAK_SECONDS ?= 4
+E2E_TIMEOUT ?= 600
+E2E_BACKGROUND ?=
+E2E_OPEN_URL ?=
+E2E_FROM_BACKGROUND ?=
+E2E_KEEP_PRESENCE = $(strip $(E2E_BACKGROUND)$(E2E_FROM_BACKGROUND))
+
+# Installs the self-test variant on a dedicated simulator with the synthetic
+# microphone (`say` speech, fed at real-time pace when a dictation starts) and
+# leaves it running for a GUI or scripted end-to-end test. It does not open
+# Simulator.app, and the Mac microphone is never used.
+e2e-sim: SIM_DEVICE = $(E2E_SIM_DEVICE)
+e2e-sim:
+	@[ -n "$(strip $(PARAKEET_BUNDLE_DIR))" ] || { echo "e2e-sim needs PARAKEET_BUNDLE_DIR (the Parakeet model bundle)." >&2; exit 1; }
+	@$(MAKE) --no-print-directory all PLATFORM=simulator BUILD_DIR="$(E2E_BUILD_DIR)" SWIFT_FLAGS="$(SWIFT_FLAGS) -D LOCALFLOW_SELFTEST"
+	@set -e; $(SIM_RESOLVE); $(SIM_BOOT); \
+	xcrun simctl terminate "$$udid" "$(BUNDLE_ID)" >/dev/null 2>&1 || true; \
+	xcrun simctl install "$$udid" "$(E2E_BUILD_DIR)/LocalFlow.app"; \
+	container=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" data); \
+	group=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" "$(APP_GROUP)"); \
+	mkdir -p "$$container/tmp"; \
+	say -o "$(E2E_BUILD_DIR)/obj/synthetic-mic.wav" --data-format=LEI16@16000 "$(E2E_PHRASE)"; \
+	mv "$(E2E_BUILD_DIR)/obj/synthetic-mic.wav" "$$container/$(E2E_AUDIO)"; \
+	rm -f "$(E2E_LOG)"; \
+	SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" \
+	SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
+	SIMCTL_CHILD_LOCALFLOW_SELFTEST_SCREEN="$(E2E_SCREEN)" \
+	SIMCTL_CHILD_LOCALFLOW_SELFTEST_START_SESSION="$(E2E_START_SESSION)" \
+		xcrun simctl launch --terminate-running-process --stdout="$(CURDIR)/$(E2E_LOG)" \
+		"$$udid" "$(BUNDLE_ID)" >/dev/null; \
+	echo "LocalFlow (self-test build, synthetic microphone) is running on $(E2E_SIM_DEVICE) $$udid."; \
+	echo "  Window:        open -a Simulator --args -CurrentDeviceUDID $$udid"; \
+	echo "  Keyboard:      Settings > General > Keyboard > Keyboards > Add New Keyboard > $(DISPLAY_NAME), then Allow Full Access"; \
+	echo "  Every dictation hears the invented phrase \"$(E2E_PHRASE)\", then silence."; \
+	echo "  Headless test: make -C iOS e2e-sim-probe [E2E_BACKGROUND=1 or E2E_FROM_BACKGROUND=1]"; \
+	echo "  Shared files:  $$group/Library/Caches/LocalFlowDictation"; \
+	echo "  App output:    $(E2E_LOG) (content-free self-test lines only)"; \
+	echo "  Shut down:     xcrun simctl shutdown $$udid"
+
+# Scripted round trip against an e2e-sim install, playing the keyboard's part
+# through the shared files: a record intent, the app brought to the foreground
+# (as when the user opens it), a finish intent, then the result is compared with
+# E2E_PHRASE. Prints phases and pass/fail only, never the
+# transcript; the result file is claimed (deleted) afterwards.
+# `simctl launch` activates the running app; its environment matters only if the
+# app has to start again, and keeps the synthetic microphone in that case.
+e2e-sim-probe:
+	@set -e; \
+	udid=$$(xcrun simctl list devices | grep -F "    $(E2E_SIM_DEVICE) (" | grep -F "(Booted)" | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/'); \
+	[ -n "$$udid" ] || { echo "$(E2E_SIM_DEVICE) is not booted; run make e2e-sim first." >&2; exit 1; }; \
+	group=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" "$(APP_GROUP)"); \
+	dir="$$group/Library/Caches/LocalFlowDictation"; mkdir -p "$$dir"; \
+	request=$$(uuidgen); instance=$$(uuidgen); \
+	intent() { printf '{"action":"%s","issuedAt":%s,"keyboardInstanceID":"%s","requestID":"%s","schema":1}' \
+		"$$1" "$$(date +%s)" "$$instance" "$$request" > "$$dir/.e2e-intent.tmp"; mv "$$dir/.e2e-intent.tmp" "$$dir/intent.json"; }; \
+	presence() { printf '{"keyboardInstanceID":"%s","schema":1,"seenAt":%s}' "$$instance" "$$(date +%s)" > "$$dir/.e2e-presence.tmp"; \
+		mv "$$dir/.e2e-presence.tmp" "$$dir/presence.json"; }; \
+	field() { plutil -extract "$$1" raw -o - "$$dir/status.json" 2>/dev/null || true; }; \
+	phase() { if [ "$$(field dictation.requestID)" = "$$request" ]; then field dictation.phase; else echo none; fi; }; \
+	wait_for() { deadline=$$(( $$(date +%s) + $$2 )); last=; while :; do \
+		p=$$(phase); [ "$$p" = "$$last" ] || { echo "  $$(date +%T) phase=$$p session=$$(field session) model=$$(field model)"; last=$$p; }; \
+		case " $$1 " in *" $$p "*) return 0 ;; esac; [ "$$(date +%s)" -lt "$$deadline" ] || return 1; \
+		if [ -n "$(E2E_KEEP_PRESENCE)" ]; then presence; fi; sleep 0.25; done; }; \
+	if [ -n "$(E2E_FROM_BACKGROUND)" ]; then \
+		[ "$$(field session)" = active ] || { echo "E2E_FROM_BACKGROUND needs an active session." >&2; exit 1; }; \
+		presence; xcrun simctl launch "$$udid" com.apple.Preferences >/dev/null; sleep 1; presence; \
+		echo "Request $$request: record intent with LocalFlow in the background"; \
+		intent record; \
+	else \
+		echo "Request $$request: record intent, then LocalFlow to the foreground"; \
+		intent record; \
+		SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
+			xcrun simctl launch "$$udid" "$(BUNDLE_ID)" >/dev/null; \
+		if [ -n "$(E2E_OPEN_URL)" ]; then xcrun simctl openurl "$$udid" "$(URL_SCHEME)://dictate"; fi; \
+	fi; \
+	wait_for "recording failed cancelled" 30 || { echo "Timed out before recording" >&2; exit 1; }; \
+	[ "$$(phase)" = recording ] || { echo "Not recording: $$(field dictation.error)" >&2; exit 1; }; \
+	if [ -n "$(E2E_BACKGROUND)" ]; then \
+		presence; xcrun simctl launch "$$udid" com.apple.Preferences >/dev/null; \
+		echo "  $$(date +%T) LocalFlow sent to the background; writing keyboard presence"; \
+	fi; \
+	end=$$(( $$(date +%s) + $(E2E_SPEAK_SECONDS) )); \
+	while [ "$$(date +%s)" -lt "$$end" ]; do if [ -n "$(E2E_KEEP_PRESENCE)" ]; then presence; fi; sleep 0.5; done; \
+	echo "  $$(date +%T) finish intent"; \
+	intent finish; \
+	wait_for "completed failed cancelled" $(E2E_TIMEOUT) || { echo "Timed out waiting for the result" >&2; exit 1; }; \
+	p=$$(phase); \
+	[ "$$p" = completed ] || { echo "Dictation $$p: $$(field dictation.error)" >&2; exit 1; }; \
+	result="$$dir/result-$$request.json"; \
+	[ -f "$$result" ] || { echo "Completed without a result file" >&2; exit 1; }; \
+	norm() { tr 'A-Z' 'a-z' | tr -cd 'a-z \n' | tr -s ' ' | sed -E 's/^ +| +$$//g'; }; \
+	actual=$$(plutil -extract text raw -o - "$$result" | norm); \
+	expected=$$(printf '%s\n' "$(E2E_PHRASE)" | norm); \
+	enter=$$(plutil -extract pressEnter raw -o - "$$result"); \
+	rm -f "$$result"; \
+	if [ "$$actual" = "$$expected" ]; then echo "e2e: result=pass transcript_match=true press_enter=$$enter"; \
+	else echo "e2e: result=fail transcript_match=false press_enter=$$enter" >&2; exit 1; fi
+
 clean:
 	rm -rf build "$(BUILD_DIR)" "$(SMOKE_BUILD_DIR)" "$(HOST_BUILD_DIR)"
