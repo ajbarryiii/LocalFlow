@@ -25,6 +25,42 @@ struct LocalModelSettingsView: View {
     }
 }
 
+struct DictationPaceView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var isConfirmingReset = false
+
+    var body: some View {
+        let stats = appState.dictationStats
+        VStack(alignment: .leading, spacing: 4) {
+            if let wordsPerMinute = stats.wordsPerMinute {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(wordsPerMinute)")
+                        .font(.system(size: 40, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Text("words per minute").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset") { isConfirmingReset = true }.controlSize(.small)
+                }
+                Text(summary(stats)).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Dictate a few times to see your speaking pace.").foregroundStyle(.secondary)
+            }
+        }
+        .confirmationDialog("Reset speaking pace?", isPresented: $isConfirmingReset) {
+            Button("Reset", role: .destructive) { appState.resetDictationStats() }
+        } message: {
+            Text("This clears the word and time totals. Dictation history is not affected.")
+        }
+    }
+
+    private func summary(_ stats: DictationStats) -> String {
+        var parts = ["\(stats.dictationCount.formatted()) \(stats.dictationCount == 1 ? "dictation" : "dictations")",
+                     "\(stats.totalWords.formatted()) words"]
+        if let last = stats.lastWordsPerMinute { parts.append("Last: \(last) WPM") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var updateManager = UpdateManager.shared
@@ -37,6 +73,7 @@ struct GeneralSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
+                SettingsCard("Speaking Pace", icon: "speedometer") { DictationPaceView() }
                 SettingsCard("Local Model", icon: "waveform") { LocalModelSettingsView() }
                 SettingsCard("App", icon: "power") {
                     Toggle("Launch \(AppName.displayName) at login", isOn: $appState.launchAtLogin)

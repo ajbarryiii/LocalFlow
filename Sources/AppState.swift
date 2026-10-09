@@ -242,6 +242,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private static let dictationStatsStorageKey = "dictation_stats"
+    @Published private(set) var dictationStats = AppState.loadDictationStats() {
+        didSet {
+            if let data = try? JSONEncoder().encode(dictationStats) {
+                UserDefaults.standard.set(data, forKey: Self.dictationStatsStorageKey)
+            }
+        }
+    }
+
     @Published var isRecording = false {
         didSet {
             guard oldValue != isRecording else { return }
@@ -1458,8 +1467,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             self.transcriptionTask?.cancel()
             self.transcriptionTask = Task {
                 do {
+                    // Read off the main thread, alongside transcription, so it never delays it.
+                    async let audioSeconds = Self.audioDuration(of: input)
                     let raw = try await LocalParakeetService.shared.transcribe(fileURL: input)
                     try Task.checkCancellation()
+                    let seconds = await audioSeconds
                     await MainActor.run {
                         guard self.isTranscribing else { return }
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
@@ -1494,6 +1506,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 }
                             }
                         }
+                        // After the paste is triggered, so the counter never delays it. Count spoken
+                        // words: macros can expand the output and commands remove words.
+                        if let seconds {
+                            self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
+                                                       seconds: seconds)
+                        }
                         self.audioRecorder.cleanup()
                         self.refreshAvailableMicrophonesIfNeeded()
                         self.scheduleReadyStatusReset(after: 3, matching: [completionStatus, "Nothing to transcribe", enterStatus])
@@ -1523,6 +1541,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    func resetDictationStats() {
+        dictationStats = DictationStats()
+    }
+
+    private static func loadDictationStats() -> DictationStats {
+        guard let data = UserDefaults.standard.data(forKey: dictationStatsStorageKey),
+              let stats = try? JSONDecoder().decode(DictationStats.self, from: data) else {
+            return DictationStats()
+        }
+        return stats
+    }
+
+    /// Reads only the file header. Called off the main thread during transcription.
+    private static func audioDuration(of url: URL) -> TimeInterval? {
+        guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
+        return Double(file.length) / file.fileFormat.sampleRate
     }
 
     private func recordPipelineHistoryEntry(rawTranscript: String, transcript: String, status: String, audioFileName: String?) {

@@ -15,6 +15,7 @@ SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 TEST_RUNNER = $(BUILD_DIR)/LocalFlowTests
 TEST_PRODUCTION_SOURCES = \
 	Sources/AppName.swift \
+	Sources/DictationStats.swift \
 	Sources/PrivacyPermission.swift \
 	Sources/LocalDictationCore.swift \
 	Sources/PipelineHistoryItem.swift \
