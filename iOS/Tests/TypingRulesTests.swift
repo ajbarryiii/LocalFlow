@@ -14,6 +14,7 @@ enum TypingRulesTests {
             ("autoCapitalizationModes", testAutoCapitalizationModes),
             ("contextTailTracksOwnEdits", testContextTailTracksOwnEdits),
             ("contextTailYieldsToTheProxy", testContextTailYieldsToTheProxy),
+            ("contextTailExpiresAndTypingCannotExtendIt", testContextTailExpiresAndTypingCannotExtendIt),
         ]
     }
 
@@ -71,7 +72,7 @@ enum TypingRulesTests {
 
     private static func testContextTailIsReleasedOnceAcknowledged() {
         var tail = ContextTail()
-        tail.inserted("t", proxyBefore: "Typed tex")
+        tail.inserted("t", proxyBefore: "Typed tex", at: 1)
         TestSupport.expectEqual(tail.known, "Typed text")
         // The proxy has not caught up: the model stays.
         tail.acknowledge(proxyBefore: "Typed tex")
@@ -187,30 +188,49 @@ enum TypingRulesTests {
     private static func testContextTailTracksOwnEdits() {
         var tail = ContextTail()
         TestSupport.expectEqual(tail.current(proxyBefore: "From the proxy"), "From the proxy")
-        tail.inserted("a", proxyBefore: "Hello")
+        tail.inserted("a", proxyBefore: "Hello", at: 1)
         // The proxy has not caught up yet: the model wins.
         TestSupport.expectEqual(tail.current(proxyBefore: "Hello"), "Helloa")
-        tail.inserted(" ", proxyBefore: "Hello")
+        tail.inserted(" ", proxyBefore: "Hello", at: 1)
         TestSupport.expectEqual(tail.current(proxyBefore: "Hello"), "Helloa ")
-        tail.deleted(graphemes: 2, proxyBefore: "Helloa")
+        tail.deleted(graphemes: 2, proxyBefore: "Helloa", at: 1)
         TestSupport.expectEqual(tail.current(proxyBefore: "Helloa"), "Hello")
         // Deleting more than is known leaves the proxy to answer.
-        tail.deleted(graphemes: 10, proxyBefore: nil)
+        tail.deleted(graphemes: 10, proxyBefore: nil, at: 1)
         TestSupport.expectEqual(tail.known, nil)
         // Bounded, and nothing kept beyond the tail.
-        tail.inserted(String(repeating: "x", count: 1_000), proxyBefore: nil)
+        tail.inserted(String(repeating: "x", count: 1_000), proxyBefore: nil, at: 1)
         TestSupport.expectEqual(tail.known?.count, ContextTail.limit)
         tail.forget()
         TestSupport.expectEqual(tail.known, nil)
         // Emoji count as one grapheme each.
-        tail.inserted("ok \u{1F44D}\u{1F3FD}", proxyBefore: nil)
-        tail.deleted(graphemes: 1, proxyBefore: nil)
+        tail.inserted("ok \u{1F44D}\u{1F3FD}", proxyBefore: nil, at: 1)
+        tail.deleted(graphemes: 1, proxyBefore: nil, at: 1)
         TestSupport.expectEqual(tail.known, "ok ")
+    }
+
+    private static func testContextTailExpiresAndTypingCannotExtendIt() {
+        // Regression: typing cancelled the timer that forgot the typed text. Its lifetime now starts
+        // when it is first held, and more typing never extends it.
+        var tail = ContextTail()
+        tail.inserted("a", proxyBefore: "Lag", at: 100)
+        TestSupport.expectEqual(tail.expiresAt, 100 + ContextTail.lifetime)
+        tail.inserted("b", proxyBefore: "Lag", at: 105)
+        tail.deleted(graphemes: 1, proxyBefore: "Lag", at: 108)
+        TestSupport.expectEqual(tail.expiresAt, 100 + ContextTail.lifetime)
+        tail.expire(now: 100 + ContextTail.lifetime - 0.1)
+        TestSupport.expectEqual(tail.known, "Laga")
+        tail.expire(now: 100 + ContextTail.lifetime)
+        TestSupport.expectEqual(tail.known, nil)
+        TestSupport.expectEqual(tail.expiresAt, nil)
+        // A new model starts a new lifetime.
+        tail.inserted("c", proxyBefore: "Lag", at: 200)
+        TestSupport.expectEqual(tail.expiresAt, 200 + ContextTail.lifetime)
     }
 
     private static func testContextTailYieldsToTheProxy() {
         var tail = ContextTail()
-        tail.inserted("b", proxyBefore: "a")
+        tail.inserted("b", proxyBefore: "a", at: 1)
         // Once the proxy shows the edit, its longer view is used.
         TestSupport.expectEqual(tail.current(proxyBefore: "Earlier text ab"), "Earlier text ab")
         tail.proxyChanged(before: "Earlier text ab")

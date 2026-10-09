@@ -20,18 +20,30 @@ import Foundation
 /// lands the caret on a line whose start is hidden and the host then shows more of it, the snapshot
 /// is refreshed and the point keeps its column.
 ///
-/// Safety rules (ARCHITECTURE.md, "Trackpad safety"):
-/// - The unit is learned only from fresh, discriminating evidence: the context must agree with the
-///   caret where that unit puts it, and must have changed by exactly that many code units. A probe
-///   steps across a multi-unit cluster by its UTF-16 length, so neither unit leaves the caret inside
-///   it (or by the crossing-side scalar when the snapshot has too few clusters, never mid-pair).
-/// - A probe is read only once the host has sent `textDidChange` for every adjustment, or after the
-///   timeout: the proxy's immediate answer is provisional. A context that shows the caret exactly at
-///   the snapshot's edge is never read as a crossing.
-/// - An unchanged context after an edge probe is ambiguous (an ignored step at the document's edge
-///   looks the same as a move between blank lines), never a boundary. The overshoot is dropped, so
-///   further probes need new finger travel, and they are bounded.
-/// - Cancellation moves the caret back to where an outstanding probe started.
+/// The point is the intended target and is kept apart from how the caret gets there (probes, a
+/// walk to the snapshot's edge, refreshed snapshots). After the finger lifts the point stays where it
+/// was, and settling keeps re-anchoring and snapping it until the caret is there.
+///
+/// Safety rules (ARCHITECTURE.md, "Trackpad safety", "Undo ownership v2", "Probes only where units
+/// can differ"):
+/// - Moves across single-code-point BMP characters need no probe: both units count them alike.
+///   Only crossing a multi-unit cluster with the unit unknown probes, by the cluster's UTF-16 length
+///   (or the crossing-side scalar when the snapshot has too few clusters, never mid-pair).
+/// - Each adjustment carries a consumable expectation: where it should leave the caret. A host
+///   callback counts as the gesture's own only if it matches one (`acknowledge`); anything else is
+///   an outside change, and the keyboard ends the gesture. There are no time windows.
+/// - A probe is read only once its callback matched, or after the timeout: the proxy's immediate
+///   answer is provisional. Its outcome is placed through overlapping local anchors; the unit is
+///   learned only when exactly one unit explains it. An outcome inside a cluster is completed (or,
+///   after cancellation, rolled back) to a real boundary; one that cannot be placed is rolled back
+///   to where the probe started. A caret left inside a cluster is always repaired.
+/// - A context that shows the caret exactly at the snapshot's edge is never read as a crossing. An
+///   unchanged context after an edge probe is ambiguous (an ignored step at the document's edge looks
+///   like a move between blank lines), never a boundary. Further probes need new finger travel;
+///   after `maximumAmbiguousProbes` the edge holds, and new travel past it allows one more at a time.
+/// - Probes whose outcome could not be placed are retried at most `automaticProbeRetries` times
+///   without new finger travel.
+/// - Cancellation rolls an outstanding probe back at once and ends the gesture.
 /// The keyboard re-validates the field and the edit generation before every adjustment.
 struct TrackpadSession {
     struct Context: Equatable {
@@ -44,25 +56,49 @@ struct TrackpadSession {
 
     enum Edge: Hashable { case start, end }
 
-    private enum Flight {
-        case move
-        /// `step` units across the cluster after `from`.
+    private enum Flight: Equatable {
+        /// To `committed`, a caret position of the snapshot, from UTF-16 offset `from` of the snapshot (nil:
+        /// unknown, so only its callback or the timeout lands it).
+        case move(from: Int?)
+        /// `step` units across the cluster after `from` (before it, for `direction` -1).
         case unitProbe(from: Int, direction: Int, step: Int)
         /// A jump just past the snapshot's edge, to reveal the line beyond it.
         case edgeProbe(Edge)
+        /// From inside a cluster to its edge; `target` is that edge's position, unless the snapshot
+        /// could not show the cluster (a split surrogate pair reads as two U+FFFD).
+        case repair(target: Int?)
     }
 
-    let parameters: TrackpadParameters
+    private struct InFlight {
+        var kind: Flight
+        var issuedAt: TimeInterval
+        var context: Context
+        var expectation: Int
+        /// A host callback matched this adjustment's expectation.
+        var acknowledged = false
+    }
+
+    /// An issued adjustment whose callback has not arrived: the contexts it may leave.
+    private struct Pending {
+        var id: Int
+        var outcomes: [CaretExpectation]
+    }
+
+    private(set) var parameters: TrackpadParameters
     /// Known from an earlier gesture in this field, or learned from discriminating evidence.
     private(set) var unit: CursorOffsetUnit?
     private(set) var navigator: TextNavigator
     /// Where the host's caret is, or will be once the adjustment in flight lands.
     private(set) var committed: Int
-    /// The floating point, in the snapshot's layout.
+    /// The floating point, in the snapshot's layout: the intended target.
     private(set) var point: FloatingCursor
     /// Edge probes at each edge whose outcome was ambiguous since the context last changed.
     private(set) var ambiguousProbes: [Edge: Int] = [:]
     private(set) var isCancelled = false
+    /// Probes whose outcome could not be placed may still be retried this many times.
+    private(set) var retriesLeft: Int
+    /// The next step needs a probe, and none may run until the finger moves on.
+    private(set) var isStalled = false
     private let layout: any LineLayout
     private let lineHeight: Double
     private let layoutWidth: Double
@@ -75,15 +111,25 @@ struct TrackpadSession {
     private var snapshotContext: Context
     /// The point is on a line the snapshot does not show.
     private var blocked: Edge?
-    private var flight: (kind: Flight, issuedAt: TimeInterval, context: Context)?
+    /// A position the caret must reach first (the snapshot's edge, walked to before a jump past it);
+    /// the target itself stays where the point is.
+    private var waypoint: Int?
+    /// The adopted context leaves the caret inside a cluster.
+    private var needsRepair = false
+    private var repairs = 0
+    /// Finger travel since probes stalled, and past each held edge.
+    private var retryTravel = 0.0
+    private var edgeTravel: [Edge: Double] = [:]
+    /// The direction of the last move toward the target, for repairs.
+    private var travelDirection = 1
+    private var flight: InFlight?
+    private var pending: [Pending] = []
+    private var lastConsumed: [CaretExpectation] = []
+    /// Callbacks the issued adjustments may still cause: one each.
+    private(set) var unconfirmedAdjustments = 0
+    private var nextExpectation = 1
     private var endedAt: TimeInterval?
     private var lastIssuedAt: TimeInterval?
-    /// Adjustments whose `textDidChange` has not arrived. Measured in UIKit: the proxy answers an
-    /// adjustment at once from the context it last reported, clamped to that text, and the host's own
-    /// context follows with `textDidChange` about 10 ms later. A jump past the window's edge therefore
-    /// reads first as the caret sitting at that edge. Probes are read only once every adjustment has
-    /// been acknowledged, or after the timeout.
-    private var unacknowledged = 0
 
     init(before: String?, after: String?, unit: CursorOffsetUnit?, parameters: TrackpadParameters,
          layout: any LineLayout, lineHeight: Double, layoutWidth: Double) {
@@ -91,7 +137,8 @@ struct TrackpadSession {
         self.unit = unit
         self.layout = layout
         self.lineHeight = max(lineHeight, 1)
-        self.layoutWidth = max(layoutWidth, 2 * parameters.horizontalInset + 1)
+        self.layoutWidth = max(layoutWidth, parameters.leftInset + parameters.rightInset + 1)
+        retriesLeft = parameters.automaticProbeRetries
         snapshotContext = Self.visible(before: before, after: after)
         navigator = TextNavigator(before: snapshotContext.before, after: snapshotContext.after)
         committed = navigator.cursor
@@ -102,10 +149,20 @@ struct TrackpadSession {
                                y: (Double(line) + 0.5) * max(lineHeight, 1))
         firstAnchoredLine = Self.firstAnchoredLine(navigator.text, lines: lines, startsLine: snapshotContext.startsLine)
         xIsReal = line >= firstAnchoredLine
+        // Only a host that counts UTF-16 units leaves the caret inside a cluster.
+        if navigator.snapshotSplit != nil || Self.splitsSurrogatePair(snapshotContext) { self.unit = .utf16 }
     }
 
-    /// Nothing is in flight and the host has been told where the caret is.
-    var isSettled: Bool { flight == nil && committed == navigator.cursor }
+    /// Nothing is in flight, and the caret is at the target or can get no closer for now.
+    var isSettled: Bool {
+        // A cancelled gesture issues nothing more; its last adjustment only has to be heard from.
+        if isCancelled { return true }
+        guard flight == nil, !needsRepair else { return false }
+        if isStalled { return true }
+        if committed != (waypoint ?? navigator.cursor) { return false }
+        if let edge = blocked, !isSoftEdge(edge) { return false }
+        return true
+    }
 
     var isEnded: Bool { endedAt != nil }
 
@@ -119,136 +176,204 @@ struct TrackpadSession {
         ambiguousProbes[edge, default: 0] >= parameters.maximumAmbiguousProbes
     }
 
-    /// After the finger lifts: settled, or out of time to finish. Each adjustment issued after the
-    /// lift (a correction or a rollback) gets its own time to land.
+    /// After the finger lifts: settled and its callbacks seen (or overdue), or out of time to finish.
+    /// Each adjustment issued after the lift gets its own time to land.
     func isFinished(at timestamp: TimeInterval) -> Bool {
         guard let endedAt else { return false }
-        return isSettled || timestamp - max(endedAt, lastIssuedAt ?? endedAt) >= parameters.settleTimeout
+        let lastActivity = max(endedAt, lastIssuedAt ?? endedAt)
+        if timestamp - lastActivity >= parameters.settleTimeout { return true }
+        guard isSettled else { return false }
+        return unconfirmedAdjustments == 0 || timestamp - lastActivity >= parameters.syncTimeout
+    }
+
+    /// The touch rate changed (`TouchRateEstimator`); applies to the next touch events.
+    mutating func setEventStepScale(_ scale: Double) {
+        guard scale.isFinite, scale > 0 else { return }
+        parameters.eventStepScale = scale
+        point.parameters.eventStepScale = scale
     }
 
     /// One delivered touch event's finger movement. The point moves at once; the caret follows.
     mutating func drag(dx: Double, dy: Double) {
         guard endedAt == nil else { return }
-        point.move(dx: dx, dy: dy)
+        let moved = point.move(dx: dx, dy: dy)
+        let distance = (moved.dx * moved.dx + moved.dy * moved.dy).squareRoot()
+        if distance > 0, retriesLeft <= 0 {
+            // New finger travel allows another probe.
+            retryTravel += distance
+            if retryTravel >= parameters.probeTravelLines * lineHeight {
+                retryTravel = 0
+                retriesLeft = 1
+                isStalled = false
+            }
+        }
         retarget()
     }
 
-    /// The finger lifted: the caret stops where it is headed (lift stops dead), and pending
-    /// adjustments still land.
+    /// The finger lifted: the target stays where the point is, and settling continues toward it.
     mutating func end(at timestamp: TimeInterval) {
         guard endedAt == nil else { return }
         endedAt = timestamp
-        blocked = nil
     }
 
-    /// The system cancelled the gesture: stop where the host is, except that an outstanding probe is
-    /// rolled back to where it started.
-    mutating func cancel(at timestamp: TimeInterval) {
+    /// The system cancelled the gesture, or the keyboard is hiding: stop where the host is. An
+    /// outstanding probe is rolled back at once (the same count back returns to where it started, in
+    /// either unit); the returned offset must be issued now. Nothing else follows.
+    mutating func cancel(at timestamp: TimeInterval) -> Int? {
         end(at: timestamp)
+        guard !isCancelled else { return nil }
         isCancelled = true
-        if case .unitProbe(let from, _, _)? = flight?.kind {
-            navigator.setCursor(from)
-        } else {
+        waypoint = nil
+        needsRepair = false
+        blocked = nil
+        guard let current = flight, case .unitProbe(let from, let direction, let step) = current.kind else {
             navigator.setCursor(committed)
+            return nil
         }
+        committed = from
+        navigator.setCursor(from)
+        return launch(.move(from: nil), offset: -direction * step, outcomes: [navigator.expectation(at: from)],
+                      context: current.context, at: timestamp)
     }
 
     /// Call once per display frame with the proxy's current context. Returns the offset to pass to
     /// `adjustTextPosition`, if any.
     mutating func frame(before: String?, after: String?, timestamp: TimeInterval) -> Int? {
+        guard !isCancelled else { return nil }
         let context = Self.visible(before: before, after: after)
-        if let flight {
-            let timedOut = timestamp - flight.issuedAt >= parameters.syncTimeout
-            let fresh = context != flight.context
-            switch flight.kind {
-            case .move:
-                if navigator.agrees(before: context.before, after: context.after, at: committed)
-                    // Nothing to compare, but the host moved and has said so itself: take it as landed.
-                    || (!navigator.canCompare(before: context.before, after: context.after, at: committed) && fresh
-                        && unacknowledged == 0) {
-                    self.flight = nil
+        if let current = flight {
+            let timedOut = timestamp - current.issuedAt >= parameters.syncTimeout
+            let fresh = context != current.context
+            switch current.kind {
+            case .move(let from):
+                // Agreement lands the move only if it tells the two ends apart: in repetitive text a narrow
+                // window can fit where the caret was as well as where it goes. Then wait for the callback.
+                let arrived = navigator.agrees(before: context.before, after: context.after, at: committed)
+                let distinct = from.map {
+                    $0 == navigator.boundaries[committed]
+                        || !navigator.agrees(before: context.before, after: context.after, atUTF16: $0)
+                } ?? false
+                if (arrived && (distinct || current.acknowledged))
+                    // Nothing to compare, but the host moved and confirmed it: take it as landed.
+                    || (fresh && current.acknowledged
+                        && !navigator.canCompare(before: context.before, after: context.after, at: committed)) {
+                    flight = nil
                 } else if timedOut {
                     // The host did something else; trust what it reports.
-                    self.flight = nil
-                    unacknowledged = 0
-                    resnapshot(context)
-                    retarget()
+                    flight = nil
+                    adopt(context)
+                } else {
+                    return nil
+                }
+            case .repair(let target):
+                if let target, navigator.agrees(before: context.before, after: context.after, at: target) {
+                    flight = nil
+                    repairs = 0
+                } else if (fresh && current.acknowledged) || timedOut {
+                    flight = nil
+                    adopt(context)
                 } else {
                     return nil
                 }
             case .unitProbe(let from, let direction, let step):
-                guard (fresh && unacknowledged == 0) || timedOut else { return nil }
-                self.flight = nil
-                unacknowledged = 0
+                guard (fresh && current.acknowledged) || timedOut else { return nil }
+                flight = nil
                 if fresh {
-                    if let offset = resolveProbe(from: from, direction: direction, step: step, issued: flight.context,
-                                                 context: context, timestamp: timestamp) {
-                        return issue(offset, at: timestamp)
+                    if let offset = resolveProbe(from: from, direction: direction, step: step, context: context,
+                                                 timestamp: timestamp) {
+                        return offset
                     }
                 } else {
-                    // Nothing observed in time: the step may land later or never. Learn nothing; the caret
-                    // is where the host says, and only new finger travel asks again.
-                    resnapshotAtCaret(context)
+                    // Nothing observed in time: the host did not take the step. Learn nothing; the
+                    // target stays, and the retry budget bounds another attempt.
+                    retriesLeft -= 1
+                    adopt(context)
                 }
             case .edgeProbe(let edge):
                 // The caret at the snapshot's edge, not past it, is the proxy's provisional answer (or a
                 // host that clamps instead of ignoring): no line was crossed.
                 let crossed = fresh && !showsCaretAtEdge(edge, context)
-                if crossed && (unacknowledged == 0 || timedOut) {
+                if crossed && (current.acknowledged || timedOut) {
                     // The caret crossed into text the snapshot did not show: one line toward the point.
-                    self.flight = nil
-                    unacknowledged = 0
-                    resnapshot(context, linesCrossed: edge == .end ? 1 : -1)
-                    retarget()
-                } else if timedOut {
+                    flight = nil
+                    adopt(context, linesCrossed: edge == .end ? 1 : -1)
+                } else if timedOut || (current.acknowledged && !fresh) {
                     // Unchanged, or still the provisional edge: the host ignored the jump (measured at
                     // the document's edge) and the caret is where it was.
-                    self.flight = nil
-                    unacknowledged = 0
+                    flight = nil
                     ambiguousStep(at: edge)
                 } else {
                     return nil
                 }
             }
         }
-        if let offset = nextAdjustment(timestamp: timestamp, context: context) { return issue(offset, at: timestamp) }
-        guard endedAt == nil else { return nil }
-        return extendSnapshot(context, timestamp: timestamp).map { issue($0, at: timestamp) }
+        return advance(context, timestamp: timestamp)
     }
 
-    /// Whether a host callback fits this session's own adjustments: the context shows the caret where
-    /// an adjustment in flight will put it, or still where it was.
-    func explains(before: String?, after: String?) -> Bool {
+    /// The host's `textDidChange` for one of this session's adjustments. Consumes the expectation it
+    /// matches, and every older one (a host may report several adjustments at once). Returns false
+    /// when it matches none, or no adjustment is owed a callback: an outside change.
+    mutating func acknowledge(before: String?, after: String?) -> Bool {
         let context = Self.visible(before: before, after: after)
-        if context == snapshotContext { return true }
-        if let flight {
-            if flight.context == context { return true }
-            // A probe lands where the snapshot cannot always confirm it.
-            if case .move = flight.kind {} else { return true }
+        guard unconfirmedAdjustments > 0 else { return false }
+        if let index = pending.firstIndex(where: { Self.fits(context, $0.outcomes) }) {
+            let entry = pending[index]
+            pending.removeFirst(index + 1)
+            lastConsumed = entry.outcomes
+            unconfirmedAdjustments -= 1
+            if var current = flight, current.expectation <= entry.id {
+                current.acknowledged = true
+                flight = current
+            }
+            return true
         }
+        // A second report of the state already confirmed.
+        if Self.fits(context, lastConsumed) {
+            unconfirmedAdjustments -= 1
+            return true
+        }
+        return false
+    }
+
+    /// Whether another host callback (`selectionDidChange`) fits this session: an expected outcome,
+    /// or the caret where the session has it. Consumes nothing.
+    func fits(before: String?, after: String?) -> Bool {
+        let context = Self.visible(before: before, after: after)
+        if context == snapshotContext || Self.fits(context, lastConsumed) { return true }
+        if pending.contains(where: { Self.fits(context, $0.outcomes) }) { return true }
         return navigator.agrees(before: context.before, after: context.after, at: committed)
     }
 
-    /// The host's `textDidChange` for one of this session's adjustments: the context now read is the
-    /// host's own.
-    mutating func hostDidChange() {
-        unacknowledged = max(unacknowledged - 1, 0)
+    private static func fits(_ context: Context, _ outcomes: [CaretExpectation]) -> Bool {
+        outcomes.contains { $0.matches(before: context.before, after: context.after) }
     }
 
-    private mutating func issue(_ offset: Int, at timestamp: TimeInterval) -> Int {
+    /// Records an adjustment and its expected outcomes, and returns its offset.
+    private mutating func launch(_ kind: Flight, offset: Int, outcomes: [CaretExpectation], context: Context,
+                                 at timestamp: TimeInterval) -> Int {
+        let id = nextExpectation
+        nextExpectation += 1
+        pending.append(Pending(id: id, outcomes: outcomes))
+        if pending.count > 16 { pending.removeFirst(pending.count - 16) }
+        unconfirmedAdjustments += 1
+        flight = InFlight(kind: kind, issuedAt: timestamp, context: context, expectation: id)
         lastIssuedAt = timestamp
-        if offset != 0 { unacknowledged += 1 }
         return offset
     }
 
-    /// The context as the session reads it. A before-context that starts with a line break (UIKit
-    /// shows just "\n" right after one) ends a line whose text is hidden; the break is dropped, so the
-    /// snapshot's first line is a real one and reaching the line above takes an edge probe.
+    /// The context as the session reads it. A before-context that starts with a line break ends a
+    /// line whose text is hidden; the break is dropped, so the snapshot's first line is a real one and
+    /// reaching the line above takes an edge probe.
     private static func visible(before: String?, after: String?) -> Context {
         var before = before ?? ""
         let startsLine = before.isEmpty || before.first?.isNewline == true
         if before.first?.isNewline == true { before.removeFirst() }
         return Context(before: before, after: after ?? "", startsLine: startsLine)
+    }
+
+    /// A caret between the halves of a surrogate pair: Swift shows each half as U+FFFD.
+    private static func splitsSurrogatePair(_ context: Context) -> Bool {
+        context.before.unicodeScalars.last == "\u{FFFD}" && context.after.unicodeScalars.first == "\u{FFFD}"
     }
 
     /// The first line known to start where the snapshot shows it: the first, if the snapshot starts a
@@ -277,19 +402,30 @@ struct TrackpadSession {
 
     private func center(_ line: Int) -> Double { (Double(line) + 0.5) * lineHeight }
 
-    /// Clamps the point and sends the virtual caret to the boundary nearest it.
+    /// Clamps the point and sends the target to the boundary nearest it. Also after the lift: a new
+    /// snapshot re-anchors the point, and the target is snapped again.
     private mutating func retarget() {
-        guard endedAt == nil, !lines.isEmpty else { return }
+        guard !isCancelled, !lines.isEmpty else { return }
         let last = lines.count - 1
         let reach = parameters.pendingLines * lineHeight
         let top = isSoftEdge(.start) ? center(0) - parameters.topOvershoot : center(0) - reach
         let bottom = isSoftEdge(.end) ? center(last) + parameters.bottomOvershoot : center(last) + reach
-        point.clamp(x: parameters.horizontalInset ... layoutWidth - parameters.horizontalInset, y: top ... bottom)
+        // New finger travel past a held edge allows one more probe there.
+        if isSoftEdge(.end), point.y > bottom { creditTravel(point.y - bottom, at: .end) }
+        if isSoftEdge(.start), point.y < top { creditTravel(top - point.y, at: .start) }
+        point.clamp(x: parameters.leftInset ... layoutWidth - parameters.rightInset, y: top ... bottom)
         // The line whose center is nearest the point.
         let ideal = Int((point.y / lineHeight).rounded(.down))
         blocked = ideal < 0 ? .start : (ideal > last ? .end : nil)
         let line = min(max(ideal, 0), last)
         navigator.setCursor(navigator.position(nearestX: point.x, onLine: line, lines: lines, layout: layout))
+    }
+
+    private mutating func creditTravel(_ distance: Double, at edge: Edge) {
+        edgeTravel[edge, default: 0] += distance
+        guard edgeTravel[edge, default: 0] >= parameters.probeTravelLines * lineHeight else { return }
+        edgeTravel[edge] = 0
+        ambiguousProbes[edge, default: 0] -= 1
     }
 
     /// An edge probe left the context unchanged: the host ignored it (the document's edge) or moved
@@ -307,46 +443,78 @@ struct TrackpadSession {
 
     // MARK: Units
 
-    /// Reads a probe's outcome from a changed context. Returns an offset to issue at once: the rest of
-    /// the cluster when a UTF-16 host stopped inside it, or the way back after cancellation.
+    /// Places a probe's outcome through overlapping local anchors and returns an offset to issue at
+    /// once, if any: the rest of a cluster a UTF-16 host stopped inside (or the way back after
+    /// cancellation), or the way back to `from` when the outcome cannot be placed.
     ///
-    /// Evidence must discriminate: the context must agree with the caret where that unit would put it,
-    /// and the context must have shrunk on one side and grown on the other by exactly the code units
-    /// that unit would cross. Repetitive text ("e\u{301}e\u{301}") can agree with several carets, but not
-    /// with several move lengths; a window that merely widened or shifted fits neither.
-    private mutating func resolveProbe(from: Int, direction: Int, step: Int, issued: Context, context: Context,
+    /// The unit is learned only when exactly one unit explains the outcome: the context fits the caret
+    /// where that unit would put it and not where the other would. Repetitive text
+    /// ("e\u{301}e\u{301}") can fit several carets; then nothing is learned.
+    private mutating func resolveProbe(from: Int, direction: Int, step: Int, context: Context,
                                        timestamp: TimeInterval) -> Int? {
-        let clusterLength = abs(navigator.utf16Distance(from: from, to: from + direction))
         let utf16Split = navigator.boundaries[from] + direction * step
         let graphemePosition = from + direction * step
-        let shrunk = context.before.utf16.count - issued.before.utf16.count
-        let grown = context.after.utf16.count - issued.after.utf16.count
-        func moved(by units: Int) -> Bool { shrunk == direction * units && grown == -direction * units }
-        let utf16 = moved(by: step) && navigator.agrees(before: context.before, after: context.after, atUTF16: utf16Split)
-        let grapheme = navigator.boundaries.indices.contains(graphemePosition)
-            && moved(by: abs(navigator.utf16Distance(from: from, to: graphemePosition)))
-            && navigator.agrees(before: context.before, after: context.after, at: graphemePosition)
-        switch (utf16, grapheme) {
-        case (true, false):
+        let graphemeSplit = navigator.boundaries.indices.contains(graphemePosition)
+            ? navigator.boundaries[graphemePosition] : nil
+        let fits = navigator.locate(before: context.before, after: context.after)
+        let utf16Fits = fits.contains(utf16Split)
+        // Only a single place counts: a context that also fits elsewhere (where the caret was, or where
+        // the other unit would put it) teaches nothing.
+        let located = fits.count == 1 ? fits[0] : nil
+        if located == utf16Split {
             unit = .utf16
-            if step >= clusterLength {
-                committed = from + direction
-                return nil
-            }
-            // Inside the cluster: finish crossing it, or after cancellation go back to its start.
-            committed = isCancelled ? from : from + direction
-            flight = (.move, timestamp, context)
-            return isCancelled ? -direction * step : direction * (clusterLength - step)
-        case (false, true):
-            // Past `step` whole clusters; the next adjustment moves back if that overshot.
+        } else if let graphemeSplit, located == graphemeSplit {
             unit = .grapheme
-            committed = graphemePosition
-            return nil
-        default:
-            // Moved somewhere this snapshot cannot place: trust the host, learn nothing.
-            resnapshotAtCaret(context)
+        }
+        if graphemeSplit == nil, !utf16Fits,
+           !navigator.expectation(atUTF16: utf16Split).matches(before: context.before, after: context.after),
+           graphemeOutcome(from: from, direction: direction, step: step)
+               .matches(before: context.before, after: context.after) {
+            // Only a grapheme host leaves the context this way: past the snapshot's edge by clusters it did
+            // not show. Re-snapshot there, keeping the point where it was relative to the text.
+            unit = .grapheme
+            let edge = direction > 0 ? navigator.lastPosition : 0
+            committed = edge
+            adopt(context, advance: from + direction * step - edge)
             return nil
         }
+        guard let located else {
+            // Not placed: back to where the probe started. The same count back returns there in either
+            // unit; then the target stays and the retry budget bounds another attempt.
+            retriesLeft -= 1
+            committed = from
+            return launch(.move(from: nil), offset: -direction * step, outcomes: [navigator.expectation(at: from)],
+                          context: context, at: timestamp)
+        }
+        if let position = navigator.position(atUTF16: located), position != navigator.splitPosition {
+            committed = position
+            return nil
+        }
+        guard let cluster = navigator.cluster(aroundUTF16: located) else {
+            committed = from
+            return launch(.move(from: nil), offset: -direction * step, outcomes: [navigator.expectation(at: from)],
+                          context: context, at: timestamp)
+        }
+        // Inside a cluster: only a UTF-16 host stops there. Finish crossing it. (A cancellation rolls the
+        // probe back before its outcome is read.)
+        unit = .utf16
+        let boundary = direction > 0 ? cluster.end : cluster.start
+        committed = navigator.position(atUTF16: boundary) ?? from
+        return launch(.move(from: located), offset: boundary - located, outcomes: [navigator.expectation(atUTF16: boundary)],
+                      context: context, at: timestamp)
+    }
+
+    /// Where a grapheme host's probe step leaves the caret: a position of the snapshot, or (with too
+    /// few clusters left in it) that many characters past its edge, where only the snapshot's side can
+    /// be checked.
+    private func graphemeOutcome(from: Int, direction: Int, step: Int) -> CaretExpectation {
+        let position = from + direction * step
+        if navigator.boundaries.indices.contains(position) { return navigator.expectation(at: position) }
+        let units = navigator.units
+        return direction > 0
+            ? CaretExpectation(before: Array(units.suffix(CaretExpectation.window)), after: nil,
+                               hiddenBefore: position - navigator.lastPosition)
+            : CaretExpectation(before: nil, after: Array(units.prefix(CaretExpectation.window)), hiddenAfter: -position)
     }
 
     /// The probe step for the cluster after `from`: its UTF-16 length when the snapshot has that many
@@ -372,35 +540,84 @@ struct TrackpadSession {
 
     // MARK: Host
 
-    private mutating func nextAdjustment(timestamp: TimeInterval, context: Context) -> Int? {
-        let target = navigator.cursor
-        guard flight == nil, committed != target else { return nil }
-        let direction = target > committed ? 1 : -1
-        if let unit {
-            let offset = unit == .utf16 ? navigator.utf16Distance(from: committed, to: target) : target - committed
+    /// The next step toward the target: a repair, a move, a probe, or reaching past the snapshot.
+    private mutating func advance(_ context: Context, timestamp: TimeInterval) -> Int? {
+        if needsRepair { return repair(context, timestamp: timestamp) }
+        if let offset = nextAdjustment(timestamp: timestamp, context: context) { return offset }
+        return extendSnapshot(context, timestamp: timestamp)
+    }
+
+    /// Moves a caret the adopted context shows inside a cluster to the cluster's edge, in the direction
+    /// of travel. The host counts UTF-16 units (no other can stop there).
+    private mutating func repair(_ context: Context, timestamp: TimeInterval) -> Int? {
+        needsRepair = false
+        guard repairs < parameters.maximumRepairs else {
+            isStalled = true
+            return nil
+        }
+        repairs += 1
+        let position = navigator.snapshotPosition
+        if let split = navigator.snapshotSplit {
+            let target = travelDirection > 0 ? position + 1 : position - 1
             committed = target
-            flight = (.move, timestamp, context)
-            return offset
+            return launch(.repair(target: target), offset: travelDirection > 0 ? split.forward : -split.back,
+                          outcomes: [navigator.expectation(at: target)], context: context, at: timestamp)
+        }
+        // Between the halves of a surrogate pair, which the snapshot shows as two U+FFFD: one unit to
+        // the pair's edge. Only the side away from the pair can be checked.
+        let target = min(max(position + travelDirection, 0), navigator.lastPosition)
+        let split = navigator.boundaries[target]
+        let units = navigator.units
+        let outcome = travelDirection > 0
+            ? CaretExpectation(before: nil, after: Array(units[split ..< min(units.count, split + CaretExpectation.window)]))
+            : CaretExpectation(before: Array(units[max(0, split - CaretExpectation.window) ..< split]), after: nil)
+        committed = target
+        return launch(.repair(target: nil), offset: travelDirection, outcomes: [outcome], context: context, at: timestamp)
+    }
+
+    private mutating func nextAdjustment(timestamp: TimeInterval, context: Context) -> Int? {
+        isStalled = false
+        if let waypoint, committed == waypoint { self.waypoint = nil }
+        let goal = waypoint ?? navigator.cursor
+        guard flight == nil, committed != goal else { return nil }
+        let direction = goal > committed ? 1 : -1
+        if let unit {
+            let offset = unit == .utf16 ? navigator.utf16Distance(from: committed, to: goal) : goal - committed
+            travelDirection = direction
+            let from = navigator.boundaries[committed]
+            committed = goal
+            return launch(.move(from: from), offset: offset, outcomes: [navigator.expectation(at: goal)],
+                          context: context, at: timestamp)
         }
         // Until the unit is known, move only across single-code-unit characters, which both count alike.
         var reach = committed
-        while reach != target, abs(navigator.utf16Distance(from: reach, to: reach + direction)) == 1 {
+        while reach != goal, abs(navigator.utf16Distance(from: reach, to: reach + direction)) == 1 {
             reach += direction
         }
         if reach != committed {
             let offset = reach - committed
+            travelDirection = direction
+            let from = navigator.boundaries[committed]
             committed = reach
-            flight = (.move, timestamp, context)
-            return offset
+            return launch(.move(from: from), offset: offset, outcomes: [navigator.expectation(at: reach)],
+                          context: context, at: timestamp)
         }
+        guard retriesLeft > 0 else {
+            isStalled = true
+            return nil
+        }
+        travelDirection = direction
         let step = probeStep(from: committed, direction: direction)
-        flight = (.unitProbe(from: committed, direction: direction, step: step), timestamp, context)
-        return direction * step
+        let outcomes = [navigator.expectation(atUTF16: navigator.boundaries[committed] + direction * step),
+                        graphemeOutcome(from: committed, direction: direction, step: step)]
+        return launch(.unitProbe(from: committed, direction: direction, step: step), offset: direction * step,
+                      outcomes: outcomes, context: context, at: timestamp)
     }
 
     /// The host is caught up. Re-snapshots when the caret is near the snapshot's edge and the host
     /// shows more, and reaches for the line beyond the snapshot when the point is on it.
     private mutating func extendSnapshot(_ context: Context, timestamp: TimeInterval) -> Int? {
+        guard flight == nil, waypoint == nil else { return nil }
         let knownBefore = navigator.boundaries[committed]
         let knownAfter = navigator.units.count - knownBefore
         let hostBefore = context.before.utf16.count
@@ -408,58 +625,75 @@ struct TrackpadSession {
         if let edge = blocked, !isSoftEdge(edge) {
             let hostShowsMore = edge == .end ? hostAfter > knownAfter : hostBefore > knownBefore
             if hostShowsMore {
-                resnapshot(context)
-                retarget()
-                return nextAdjustment(timestamp: timestamp, context: context)
+                adopt(context)
+                return continueAfterAdopting(context, timestamp: timestamp)
             }
             // One jump just past the snapshot's edge, from where the caret is. A host ignores an offset
             // past the document's edge, so at the first or last line nothing visibly moves.
             let edgePosition = edge == .end ? navigator.lastPosition : 0
             guard let distance = hostOffset(from: committed, to: edgePosition) else {
                 // The unit is still unknown across multi-unit text: walk to the edge first.
-                navigator.setCursor(edgePosition)
+                waypoint = edgePosition
                 return nextAdjustment(timestamp: timestamp, context: context)
             }
             blocked = nil
-            flight = (.edgeProbe(edge), timestamp, context)
-            return distance + (edge == .end ? 1 : -1)
+            travelDirection = edge == .end ? 1 : -1
+            let units = navigator.units
+            let crossed = edge == .end
+                ? CaretExpectation(before: Array(units.suffix(CaretExpectation.window)), after: nil, hiddenBefore: 1)
+                : CaretExpectation(before: nil, after: Array(units.prefix(CaretExpectation.window)), hiddenAfter: 1)
+            return launch(.edgeProbe(edge), offset: distance + (edge == .end ? 1 : -1),
+                          outcomes: [navigator.expectation(at: committed), crossed], context: context, at: timestamp)
         }
         // The caret reached a line whose start the snapshot does not show, coming from one it does.
         // When the host now shows more before it, re-snapshot and keep the point's real column.
         if xIsReal, navigator.line(of: committed, in: lines) < firstAnchoredLine, hostBefore > knownBefore {
-            resnapshot(context, keepingColumn: true)
-            retarget()
-            return nextAdjustment(timestamp: timestamp, context: context)
+            adopt(context, keepingColumn: true)
+            return continueAfterAdopting(context, timestamp: timestamp)
         }
         let margin = parameters.resnapshotMargin
         let nearEnd = navigator.lastPosition - committed <= margin && hostAfter > knownAfter
         let nearStart = committed <= margin && hostBefore > knownBefore
         guard nearEnd || nearStart else { return nil }
-        resnapshot(context)
-        retarget()
-        return nextAdjustment(timestamp: timestamp, context: context)
+        adopt(context)
+        return continueAfterAdopting(context, timestamp: timestamp)
     }
 
-    /// After a probe with no usable answer: the host's context becomes the snapshot and the point moves
-    /// onto the caret, so the caret stays until the finger moves again.
-    private mutating func resnapshotAtCaret(_ context: Context) {
-        resnapshot(context)
-        let line = navigator.line(of: committed, in: lines)
-        point.place(x: navigator.x(of: committed, lines: lines, layout: layout), y: center(line))
-        xIsReal = line >= firstAnchoredLine
+    /// After adopting a context: repair the caret if it is inside a cluster, else head for the target.
+    private mutating func continueAfterAdopting(_ context: Context, timestamp: TimeInterval) -> Int? {
+        needsRepair ? repair(context, timestamp: timestamp) : nextAdjustment(timestamp: timestamp, context: context)
+    }
+
+    /// Takes the host's context as the snapshot, re-anchors the point and snaps the target again. A
+    /// caret the context shows inside a cluster is marked for repair.
+    private mutating func adopt(_ context: Context, linesCrossed: Int = 0, keepingColumn: Bool = false, advance: Int = 0) {
+        resnapshot(context, linesCrossed: linesCrossed, keepingColumn: keepingColumn, advance: advance)
+        waypoint = nil
         retarget()
+        needsRepair = navigator.snapshotSplit != nil || Self.splitsSurrogatePair(context)
+        if needsRepair {
+            unit = .utf16
+        } else {
+            repairs = 0
+        }
     }
 
     /// Takes the host's context as the new snapshot and re-anchors the point: the vertical offset from
     /// the caret's line is kept, less the lines the caret crossed to get here. The snapshot may start
     /// mid-paragraph, where its x coordinates are not real columns, so on the same line the point keeps
     /// its offset from the caret; after crossing a line, or when asked, x is kept as the column.
-    private mutating func resnapshot(_ context: Context, linesCrossed: Int = 0, keepingColumn: Bool = false) {
+    /// `advance`: the caret went this many characters past `committed`, beyond what the old snapshot
+    /// showed; the point keeps its offset from where `committed` is in the new one.
+    private mutating func resnapshot(_ context: Context, linesCrossed: Int = 0, keepingColumn: Bool = false,
+                                     advance: Int = 0) {
         let oldLine = navigator.line(of: committed, in: lines)
         let offset = point.y - center(oldLine)
         let columnOffset = point.x - navigator.x(of: committed, lines: lines, layout: layout)
         // Ambiguity is counted only while nothing changes.
-        if context != snapshotContext { ambiguousProbes = [:] }
+        if context != snapshotContext {
+            ambiguousProbes = [:]
+            edgeTravel = [:]
+        }
         snapshotContext = context
         navigator = TextNavigator(before: context.before, after: context.after)
         committed = navigator.cursor
@@ -467,7 +701,8 @@ struct TrackpadSession {
         firstAnchoredLine = Self.firstAnchoredLine(navigator.text, lines: lines, startsLine: context.startsLine)
         let line = navigator.line(of: committed, in: lines)
         let keepsColumn = linesCrossed != 0 || keepingColumn
-        let x = keepsColumn ? point.x : navigator.x(of: committed, lines: lines, layout: layout) + columnOffset
+        let anchor = min(max(committed - advance, 0), navigator.lastPosition)
+        let x = keepsColumn ? point.x : navigator.x(of: anchor, lines: lines, layout: layout) + columnOffset
         if !keepsColumn { xIsReal = line >= firstAnchoredLine }
         point.place(x: x, y: center(line) + offset - Double(linesCrossed) * lineHeight)
     }

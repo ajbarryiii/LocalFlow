@@ -60,6 +60,14 @@ struct KeyboardResultLedger: Equatable, Sendable {
         }
     }
 
+    /// Call when the keyboard hides: no field identity outlives it. Every binding becomes an
+    /// invalidation, so its request is never rebound to whatever field is focused later; its result
+    /// is still offered through "Insert last dictation".
+    mutating func forgetFieldBindings() {
+        invalidated.formUnion(bindings.keys)
+        bindings = [:]
+    }
+
     func disposition(of result: DictationResult, documentID: UUID?, now: Date) -> Disposition {
         guard result.schema == DictationProtocol.schema, !consumed.contains(result.requestID),
               DictationProtocol.isFresh(result.createdAt, ttl: DictationProtocol.resultTTL, now: now)

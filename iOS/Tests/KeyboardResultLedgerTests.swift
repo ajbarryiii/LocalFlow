@@ -21,6 +21,7 @@ enum KeyboardResultLedgerTests {
             ("emptyResultDoesNotHideTheChip", testEmptyResultDoesNotHideTheChip),
             ("pruneRetiresOldBookkeeping", testPruneRetiresOldBookkeeping),
             ("pruneKeepsInFlightAndRecentClaims", testPruneKeepsInFlightAndRecentClaims),
+            ("hidingForgetsFieldBindings", testHidingForgetsFieldBindings),
         ]
     }
 
@@ -175,6 +176,21 @@ enum KeyboardResultLedgerTests {
         // Still displaying the request in the new field does not rebind it there.
         ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: Fixture.documentA)
         TestSupport.expectEqual(disposition(ledger, documentID: Fixture.documentA), .offerManualInsert)
+    }
+
+    private static func testHidingForgetsFieldBindings() {
+        // Third keyboard review: no field identity outlives hiding. The request is not rebound to
+        // whatever field shows next; its result is offered as "Insert last dictation" instead.
+        var ledger = KeyboardResultLedger()
+        ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
+        ledger.forgetFieldBindings()
+        TestSupport.expectEqual(ledger.bindings, [:])
+        TestSupport.expectEqual(ledger.invalidated, [Fixture.requestID])
+        ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: Fixture.documentA)
+        TestSupport.expectEqual(disposition(ledger), .offerManualInsert)
+        // Stopping it again in a field binds it there, as with any invalidation.
+        ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentB)
+        TestSupport.expectEqual(disposition(ledger, documentID: Fixture.documentB), .autoInsert)
     }
 
     private static func testExplicitFinishRebindsAfterInvalidation() {

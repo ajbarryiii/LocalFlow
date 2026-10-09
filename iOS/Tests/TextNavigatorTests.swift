@@ -10,6 +10,10 @@ enum TextNavigatorTests {
             ("linesAndColumns", testLinesAndColumns),
             ("nearestPositionNeverPassesALineBreak", testNearestPositionNeverPassesALineBreak),
             ("fixedWidthLayoutFake", testFixedWidthLayoutFake),
+            ("splitIsKnownAndNeverATarget", testSplitIsKnownAndNeverATarget),
+            ("locateUsesOverlappingAnchors", testLocateUsesOverlappingAnchors),
+            ("clusterAroundAnOffset", testClusterAroundAnOffset),
+            ("expectationsMatchAsFarAsVisible", testExpectationsMatchAsFarAsVisible),
         ]
     }
 
@@ -112,5 +116,52 @@ enum TextNavigatorTests {
         TestSupport.expectEqual(layout.lines(in: "abcd"), [0 ..< 3, 3 ..< 4])
         TestSupport.expectEqual(layout.lines(in: "a\(thumbs)b"), [0 ..< 6])
         TestSupport.expectEqual(layout.x(atUTF16: 5, line: 0 ..< 6, in: "a\(thumbs)b"), 20)
+    }
+
+    private static func testSplitIsKnownAndNeverATarget() {
+        let navigator = TextNavigator(before: "a\u{1F44D}", after: "\u{1F3FD}b")
+        TestSupport.expect(navigator.snapshotSplit! == (back: 2, forward: 2), "split lengths")
+        TestSupport.expectEqual(navigator.splitPosition, 2)
+        // Nearest x to the split, in a fixed-width layout: the split is skipped for a real boundary.
+        let layout = FixedWidthLayout(columns: 100)
+        let lines = layout.lines(in: navigator.text)
+        let target = navigator.position(nearestX: 20, onLine: 0, lines: lines, layout: layout)
+        TestSupport.expect(target != 2, "the split position was a target")
+        TestSupport.expect(TextNavigator(before: "ab", after: "cd").snapshotSplit == nil, "a split at a boundary")
+    }
+
+    private static func testLocateUsesOverlappingAnchors() {
+        let navigator = TextNavigator(before: "Hello there", after: " world.")
+        // A shifted, narrower window places the caret by what it shows on both sides.
+        TestSupport.expectEqual(navigator.locate(before: "there", after: " wor"), [11])
+        TestSupport.expectEqual(navigator.locate(before: "Earlier. Hello th", after: "ere world."), [8])
+        // Inside a cluster.
+        let thumbs = TextNavigator(before: "a\(thumbs)", after: "b")
+        TestSupport.expectEqual(thumbs.locate(before: "a\u{1F44D}", after: "\u{1F3FD}b"), [3])
+        // Repetitive text fits several places; unrelated text none.
+        let repeated = TextNavigator(before: "\(accented)\(accented)", after: "")
+        TestSupport.expectEqual(repeated.locate(before: accented, after: accented), [0, 2, 4])
+        TestSupport.expectEqual(navigator.locate(before: "Other", after: "text"), [])
+    }
+
+    private static func testClusterAroundAnOffset() {
+        let navigator = TextNavigator(before: "a\(thumbs)\(accented)", after: "")
+        TestSupport.expect(navigator.cluster(aroundUTF16: 3)! == (start: 1, end: 5), "inside the emoji")
+        TestSupport.expect(navigator.cluster(aroundUTF16: 6)! == (start: 5, end: 7), "inside the accent")
+        TestSupport.expect(navigator.cluster(aroundUTF16: 5) == nil, "at a boundary")
+        TestSupport.expectEqual(navigator.position(atUTF16: 5), 2)
+        TestSupport.expectEqual(navigator.position(atUTF16: 3), nil)
+    }
+
+    private static func testExpectationsMatchAsFarAsVisible() {
+        let navigator = TextNavigator(before: "Hello there", after: " world.")
+        let expected = navigator.expectation(at: 11)
+        TestSupport.expect(expected.matches(before: "there", after: " w"), "a narrower window")
+        TestSupport.expect(expected.matches(before: "Earlier. Hello there", after: " world. More."), "a wider window")
+        TestSupport.expect(!expected.matches(before: "Hello ther", after: "e world."), "one character off")
+        // One hidden character past the snapshot's end (a jump past its edge).
+        let crossed = CaretExpectation(before: Array("world.".utf16), after: nil, hiddenBefore: 1)
+        TestSupport.expect(crossed.matches(before: "Hello world.\n", after: "Next line"), "crossed a line break")
+        TestSupport.expect(!crossed.matches(before: "Something else\n", after: "Next line"), "other text")
     }
 }

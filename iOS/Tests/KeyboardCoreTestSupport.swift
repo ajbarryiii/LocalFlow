@@ -49,19 +49,33 @@ func testAdvance(_ grapheme: String) -> Double {
     }
 }
 
+/// What the proxy shows around the caret.
+enum FakeContextModel {
+    /// The whole document.
+    case whole
+    /// As measured in UIKit (iOS 26.4 simulator, a UITextView, 2026-10-09): before the caret, from the
+    /// start of the sentence two before the one the caret ends (spanning line breaks); after it, to
+    /// the end of the caret's sentence or the next line break, whichever comes first.
+    case uikit
+    /// An earlier reading, kept for the original undo regression: right after a line break only "\n"
+    /// shows before the caret, further into a line the text after the break; after it, up to the
+    /// next line break.
+    case lineBreakOnly
+}
+
 /// A host document as a keyboard sees it through the proxy, with the behavior measured in the
 /// simulator: `adjustTextPosition` counts UTF-16 code units (UIKit) or grapheme clusters (WebKit),
-/// an offset past either end is ignored, the context window can be limited and stop at line
-/// breaks (UIKit), and adjustments can land a few frames late.
+/// an offset past either end is ignored, the context window can be limited, and adjustments can
+/// land a few frames late. `insertText` and `deleteBackward` change the text at once and send no
+/// callback; an adjustment sends `textDidChange` after it lands.
 struct FakeTextHost {
     var text: String
     /// The caret as a UTF-16 offset.
     private(set) var caret: Int
     var unit: CursorOffsetUnit
-    /// Graphemes shown on each side of the caret; nil shows everything.
+    var model: FakeContextModel
+    /// Graphemes shown at most on each side of the caret; nil: as the model says.
     var window: Int?
-    /// UIKit's window stops at line breaks; only "\n" itself shows, right after one.
-    var windowStopsAtLineBreaks: Bool
     var lagFrames: Int
     /// `textDidChange` arrives this many frames after each adjustment lands, even an ignored one (the
     /// proxy shows the caret unmoved afterwards, as measured); nil sends none.
@@ -74,14 +88,13 @@ struct FakeTextHost {
     private var provisional: (units: [UInt16], caret: Int)?
     private(set) var adjustmentCount = 0
 
-    init(text: String, caret: Int? = nil, unit: CursorOffsetUnit = .utf16, window: Int? = nil,
-         windowStopsAtLineBreaks: Bool = false, lagFrames: Int = 0, callbackFrames: Int? = 1,
-         provisionalContext: Bool = false) {
+    init(text: String, caret: Int? = nil, unit: CursorOffsetUnit = .utf16, model: FakeContextModel = .whole,
+         window: Int? = nil, lagFrames: Int = 0, callbackFrames: Int? = 1, provisionalContext: Bool = false) {
         self.text = text
         self.caret = caret ?? text.utf16.count
         self.unit = unit
+        self.model = model
         self.window = window
-        self.windowStopsAtLineBreaks = windowStopsAtLineBreaks
         self.lagFrames = lagFrames
         self.callbackFrames = callbackFrames
         self.provisionalContext = provisionalContext
@@ -120,6 +133,33 @@ struct FakeTextHost {
         return due
     }
 
+    // MARK: Edits
+
+    mutating func insertText(_ inserted: String) {
+        provisional = nil
+        let units = Array(text.utf16)
+        text = String(decoding: units[..<caret], as: UTF16.self) + inserted
+            + String(decoding: units[caret...], as: UTF16.self)
+        caret += inserted.utf16.count
+    }
+
+    /// Deletes the grapheme before the caret, as UIKit does (a decomposed é goes whole).
+    mutating func deleteBackward() {
+        provisional = nil
+        guard caret > 0 else { return }
+        let offsets = graphemeOffsets()
+        let start = offsets.last { $0 < caret } ?? 0
+        let units = Array(text.utf16)
+        text = String(decoding: units[..<start], as: UTF16.self) + String(decoding: units[caret...], as: UTF16.self)
+        caret = start
+    }
+
+    /// The host app moves the caret (a tap, or code).
+    mutating func moveCaret(to offset: Int) {
+        provisional = nil
+        caret = min(max(offset, 0), text.utf16.count)
+    }
+
     private mutating func apply(_ offset: Int) {
         let total = text.utf16.count
         switch unit {
@@ -128,9 +168,10 @@ struct FakeTextHost {
             if (0...total).contains(target) { caret = target }
         case .grapheme:
             let offsets = graphemeOffsets()
-            guard let index = offsets.firstIndex(of: caret) else { return }
-            let target = index + offset
-            if offsets.indices.contains(target) { caret = offsets[target] }
+            if let index = offsets.firstIndex(of: caret) {
+                let target = index + offset
+                if offsets.indices.contains(target) { caret = offsets[target] }
+            }
         }
         if let callbackFrames { callbacks.append(callbackFrames) }
     }
@@ -144,6 +185,17 @@ struct FakeTextHost {
         return offsets
     }
 
+    /// Sentence ranges (UTF-16, with trailing spaces and line breaks), as Foundation finds them.
+    private func sentences() -> [Range<Int>] {
+        let string = text as NSString
+        var ranges: [Range<Int>] = []
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length),
+                                   options: [.bySentences, .substringNotRequired]) { _, _, enclosing, _ in
+            ranges.append(enclosing.location ..< enclosing.location + enclosing.length)
+        }
+        return ranges
+    }
+
     /// What the proxy reports now.
     var context: (before: String, after: String) {
         if let provisional {
@@ -152,9 +204,17 @@ struct FakeTextHost {
         }
         let units = Array(text.utf16)
         var start = 0, end = units.count
-        if windowStopsAtLineBreaks {
-            // As measured in UIKit: right after a line break the context before is just "\n";
-            // further into the line it starts after the break. After never includes the break.
+        switch model {
+        case .whole:
+            break
+        case .uikit:
+            let ranges = sentences()
+            if caret > 0, let ending = ranges.lastIndex(where: { $0.lowerBound <= caret - 1 }) {
+                start = ranges[max(ending - 2, 0)].lowerBound
+            }
+            end = ranges.first(where: { $0.contains(caret) })?.upperBound ?? caret
+            if let lineBreak = units[caret ..< max(end, caret)].firstIndex(of: 10) { end = lineBreak }
+        case .lineBreakOnly:
             if let lineBreak = units[..<caret].lastIndex(of: 10) { start = lineBreak == caret - 1 ? lineBreak : lineBreak + 1 }
             if let lineBreak = units[caret...].firstIndex(of: 10) { end = lineBreak }
         }
@@ -182,6 +242,45 @@ struct FakeTextHost {
     }
 }
 
+/// A field for `EditingCore`: a fake host with an identity. The host app can move the caret, edit,
+/// and send callbacks the way the proxy delivers them.
+final class FakeDocument: TextDocument {
+    var host: FakeTextHost
+    var documentID: UUID?
+
+    init(_ host: FakeTextHost, documentID: UUID? = UUID()) {
+        self.host = host
+        self.documentID = documentID
+    }
+
+    var text: String { host.text }
+    var contextBefore: String? { host.context.before.isEmpty ? nil : host.context.before }
+    var contextAfter: String? { host.context.after.isEmpty ? nil : host.context.after }
+
+    func insertText(_ text: String) {
+        host.insertText(text)
+    }
+
+    func deleteBackward() {
+        host.deleteBackward()
+    }
+}
+
+/// An owner of adjustments for `EditingCore` tests: active while told, and explaining callbacks as
+/// told.
+final class FakeAdjustments: AdjustmentOwner {
+    var isActive = false
+    var explains = true
+    private(set) var acknowledged = 0
+
+    func acknowledge(before: String?, after: String?) -> Bool {
+        if explains { acknowledged += 1 }
+        return explains
+    }
+
+    func fits(before: String?, after: String?) -> Bool { explains }
+}
+
 /// One display frame: the host's due `textDidChange` callbacks reach the session as in
 /// `KeyboardInput`, then the session reads the context and may adjust. A callback the session cannot
 /// explain would end the gesture, so it fails the test.
@@ -189,9 +288,8 @@ func runFrame(_ session: inout TrackpadSession, host: inout FakeTextHost, at tim
     host.advanceFrame()
     for _ in 0 ..< host.takeCallbacks() {
         let context = host.context
-        TestSupport.expect(session.explains(before: context.before, after: context.after),
+        TestSupport.expect(session.acknowledge(before: context.before, after: context.after),
                            "a callback for the session's own adjustment was not explained")
-        session.hostDidChange()
     }
     let context = host.context
     if let offset = session.frame(before: context.before, after: context.after, timestamp: time) {
@@ -200,8 +298,8 @@ func runFrame(_ session: inout TrackpadSession, host: inout FakeTextHost, at tim
 }
 
 /// Drives a session against a host: one touch event per 120 Hz frame, then a rest and the lift (or a
-/// system cancellation) and the settling frames. Returns the
-/// time after the gesture.
+/// system cancellation, whose rollback is issued at once) and the settling frames. Returns the time
+/// after the gesture.
 @discardableResult
 func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samples: [(dx: Double, dy: Double)],
                 start: TimeInterval = 100, frameInterval: TimeInterval = 1.0 / 120, end: Bool = true,
@@ -222,7 +320,7 @@ func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samp
     }
     guard end || cancel else { return time }
     if cancel {
-        session.cancel(at: time)
+        if let rollback = session.cancel(at: time) { host.adjust(by: rollback) }
     } else {
         session.end(at: time)
     }
@@ -230,6 +328,8 @@ func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samp
         frame()
         time += frameInterval
     }
+    // Whatever is still in flight lands.
+    for _ in 0 ..< 10 { host.advanceFrame() }
     return time
 }
 

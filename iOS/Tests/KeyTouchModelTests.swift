@@ -16,6 +16,7 @@ enum KeyTouchModelTests {
             ("vanishedFunctionKeysAreDropped", testVanishedFunctionKeysAreDropped),
             ("pressedKeysAndCallout", testPressedKeysAndCallout),
             ("cancelAllEndsEverything", testCancelAllEndsEverything),
+            ("cancelledDeleteIsNotARelease", testCancelledDeleteIsNotARelease),
         ]
     }
 
@@ -170,7 +171,7 @@ enum KeyTouchModelTests {
         TestSupport.expectEqual(model.began(1, x: delete.x, y: delete.y), [.beginDelete])
         TestSupport.expectEqual(model.began(2, x: numbersKey.x, y: numbersKey.y), [.type(.layer(.numbers))])
         TestSupport.expectEqual(model.keysChanged(keys(.numbers), layer: .numbers), [])
-        TestSupport.expectEqual(model.ended(1, x: delete.x, y: delete.y), [.endDelete])
+        TestSupport.expectEqual(model.ended(1, x: delete.x, y: delete.y), [.endDelete(cancelled: false)])
     }
 
     private static func testVanishedFunctionKeysAreDropped() {
@@ -199,12 +200,25 @@ enum KeyTouchModelTests {
         TestSupport.expectEqual(model.pressedActions, [])
     }
 
+    private static func testCancelledDeleteIsNotARelease() {
+        // Regression: a delete touch the system cancels (or the menu opening over the keys) ended like a
+        // release, and a release before the first deletion deletes once.
+        var model = model()
+        let delete = center(.delete)
+        TestSupport.expectEqual(model.began(1, x: delete.x, y: delete.y), [.beginDelete])
+        TestSupport.expectEqual(model.cancelled(1), [.endDelete(cancelled: true)])
+        var released = self.model()
+        _ = released.began(1, x: delete.x, y: delete.y)
+        TestSupport.expectEqual(released.ended(1, x: delete.x, y: delete.y), [.endDelete(cancelled: false)])
+    }
+
     private static func testCancelAllEndsEverything() {
         var model = model()
         let space = center(.space), delete = center(.delete)
         _ = model.began(1, x: delete.x, y: delete.y)
         _ = model.began(2, x: space.x, y: space.y)
-        TestSupport.expectEqual(model.cancelAll(), [.endDelete, .cancelHoldTimer(2)])
+        // Cancelled, not released: a cancelled tap on delete deletes nothing.
+        TestSupport.expectEqual(model.cancelAll(), [.endDelete(cancelled: true), .cancelHoldTimer(2)])
         TestSupport.expect(model.touches.isEmpty, "touches kept")
         var trackpad = self.model()
         _ = trackpad.began(1, x: space.x, y: space.y)

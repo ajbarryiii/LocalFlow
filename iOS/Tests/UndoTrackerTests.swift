@@ -1,237 +1,231 @@
 import Foundation
 
+/// The proof rules of "Undo ownership v2". Ownership through the edit generation and real callback
+/// sequences is covered by `EditingCoreTests`.
 enum UndoTrackerTests {
     static var tests: [TestCase] {
         [
-            ("offeredOnlyWhileOwned", testOfferedOnlyWhileOwned),
-            ("anyOtherEditEndsItForGood", testAnyOtherEditEndsItForGood),
-            ("withinThirtySeconds", testWithinThirtySeconds),
-            ("neverOfferedWithoutEvidence", testNeverOfferedWithoutEvidence),
-            ("caretMovedToAnotherNewlineIsNotUndone", testCaretMovedToAnotherNewlineIsNotUndone),
-            ("deletesOnlyWhatTheContextProves", testDeletesOnlyWhatTheContextProves),
-            ("stopsAtTheFirstMismatch", testStopsAtTheFirstMismatch),
+            ("fullAnchorsProveTheInsertion", testFullAnchorsProveTheInsertion),
+            ("anchorsAreRecordedFromTheContextBeforeInserting", testAnchorsAreRecordedFromTheContextBeforeInserting),
+            ("shortInsertionsNeedBothAnchorsInFull", testShortInsertionsNeedBothAnchorsInFull),
+            ("truncatedContextNeedsSixteenVisibleCharacters", testTruncatedContextNeedsSixteenVisibleCharacters),
+            ("afterAnchorAsFarAsVisible", testAfterAnchorAsFarAsVisible),
+            ("emptyDocumentNeedsTheExactWholeContext", testEmptyDocumentNeedsTheExactWholeContext),
+            ("neverOfferedWithoutProof", testNeverOfferedWithoutProof),
+            ("progressiveDeletionReverifiesContinuity", testProgressiveDeletionReverifiesContinuity),
+            ("stopsWhenContinuityBreaks", testStopsWhenContinuityBreaks),
             ("waitsForTheContextThenTimesOut", testWaitsForTheContextThenTimesOut),
-            ("stopsWhenOwnershipEndsMidway", testStopsWhenOwnershipEndsMidway),
             ("countsGraphemes", testCountsGraphemes),
-            ("explainsItsOwnSteps", testExplainsItsOwnSteps),
-            ("expireForgets", testExpireForgets),
+            ("acknowledgesOnlyStatesOfTheInsertion", testAcknowledgesOnlyStatesOfTheInsertion),
+            ("withinThirtySeconds", testWithinThirtySeconds),
         ]
     }
 
     private static let document = Fixture.documentA
-    private static let inserted = " Invented dictation."
+    private static let inserted = " Invented dictation, long enough."
 
-    private static func tracker(_ text: String = inserted, generation: Int = 7, at time: TimeInterval = 100) -> UndoTracker {
+    private static func tracker(_ text: String = inserted, before: String? = "Earlier words here.",
+                                after: String? = nil, at time: TimeInterval = 100) -> UndoTracker {
         var tracker = UndoTracker()
-        tracker.recordInsertion(text, documentID: document, generation: generation, at: time)
+        tracker.recordInsertion(text, contextBefore: before, contextAfter: after, documentID: document, generation: 7,
+                                at: time)
         return tracker
     }
 
-    /// A field: the text before the caret, as UIKit's window would show it, and what undo did to it.
+    private static func offered(_ tracker: UndoTracker, before: String?, after: String? = nil, now: TimeInterval = 101) -> Bool {
+        tracker.isOffered(documentID: document, generation: 7, before: before, after: after, now: now)
+    }
+
+    /// A field: the document, a caret at its end unless `after` follows, and a window of graphemes the
+    /// proxy shows before the caret.
     private struct Field {
         var text: String
-        /// Graphemes the proxy shows before the caret; nil shows all.
+        var after = ""
         var window: Int?
-        /// UIKit shows only "\n" right after a line break.
-        var stopsAtLineBreaks = true
         var deletions = 0
 
         var before: String {
-            var visible = Substring(text)
-            if stopsAtLineBreaks, let lineBreak = text.lastIndex(where: \.isNewline) {
-                visible = text.index(after: lineBreak) == text.endIndex ? text[lineBreak...] : text[text.index(after: lineBreak)...]
-            }
-            if let window { visible = visible.suffix(window) }
-            return String(visible)
+            guard let window else { return text }
+            return String(text.suffix(window))
         }
 
         mutating func delete(_ count: Int) {
-            text.removeLast(min(count, text.count))
+            text = String(text.dropLast(count))
             deletions += count
         }
     }
 
-    /// Runs an undo to the end, with the context updating at once after each step.
-    private static func runUndo(_ undo: inout UndoTracker, field: inout Field, generation: Int = 7,
-                                now: TimeInterval = 101) -> UndoTracker.Step {
-        var step = undo.begin(documentID: document, generation: generation, contextBefore: field.before, now: now)
-        var steps = 0
-        while case .delete(let count) = step, steps < 50 {
-            field.delete(count)
-            step = undo.step(documentID: document, generation: generation, contextBefore: field.before, now: now)
-            steps += 1
+    /// Runs an undo to the end against `field`, deleting what each step asks.
+    private static func runUndo(_ tracker: inout UndoTracker, _ field: inout Field) -> UndoTracker.Step {
+        var now = 101.0
+        var step = tracker.begin(documentID: document, generation: 7, before: field.before, after: field.after, now: now)
+        while true {
+            switch step {
+            case .delete(let count):
+                field.delete(count)
+            case .wait:
+                now += 0.6
+            case .finished, .stopped:
+                return step
+            }
+            step = tracker.step(documentID: document, generation: 7, before: field.before, after: field.after, now: now)
         }
-        return step
     }
 
-    private static func testOfferedOnlyWhileOwned() {
-        let undo = tracker()
-        TestSupport.expect(undo.isOffered(documentID: document, generation: 7, contextBefore: "Earlier." + inserted, now: 100),
-                           "right after the insertion")
-        TestSupport.expect(!undo.isOffered(documentID: Fixture.documentB, generation: 7, contextBefore: inserted, now: 100),
-                           "another field")
-        TestSupport.expect(!undo.isOffered(documentID: nil, generation: 7, contextBefore: inserted, now: 100), "no field")
-        TestSupport.expect(!undo.isOffered(documentID: document, generation: 8, contextBefore: inserted, now: 100),
-                           "a later edit generation")
-        TestSupport.expect(!UndoTracker().isOffered(documentID: document, generation: 7, contextBefore: inserted, now: 100),
-                           "nothing inserted")
-        var empty = UndoTracker()
-        empty.recordInsertion("", documentID: document, generation: 7, at: 100)
-        TestSupport.expectEqual(empty.insertion, nil)
-        var noDocument = UndoTracker()
-        noDocument.recordInsertion(inserted, documentID: nil, generation: 7, at: 100)
-        TestSupport.expectEqual(noDocument.insertion, nil)
-    }
-
-    private static func testAnyOtherEditEndsItForGood() {
-        // The keyboard advances the generation for typing, each delete repeat, trackpad movement,
-        // another insertion and any outside callback. Going back to the same text does not revive it.
-        let undo = tracker(generation: 7)
-        TestSupport.expect(!undo.isOffered(documentID: document, generation: 8, contextBefore: inserted, now: 101),
-                           "after an edit")
-        var invalidated = tracker()
-        invalidated.invalidate()
-        TestSupport.expectEqual(invalidated.insertion, nil)
-        TestSupport.expect(!invalidated.isOffered(documentID: document, generation: 7, contextBefore: inserted, now: 101),
-                           "after hiding")
-        // A later insertion replaces the earlier one.
-        var replaced = tracker()
-        replaced.recordInsertion(" Second.", documentID: document, generation: 9, at: 105)
-        var field = Field(text: "Start." + inserted + " Second.")
-        TestSupport.expectEqual(runUndo(&replaced, field: &field, generation: 9, now: 106), .finished)
-        TestSupport.expectEqual(field.text, "Start." + inserted)
-    }
-
-    private static func testWithinThirtySeconds() {
-        let undo = tracker(at: 100)
-        TestSupport.expectEqual(UndoTracker.window, 30)
-        TestSupport.expect(undo.isOffered(documentID: document, generation: 7, contextBefore: inserted, now: 129.999), "29.999 s")
-        TestSupport.expect(!undo.isOffered(documentID: document, generation: 7, contextBefore: inserted, now: 130), "30 s")
-        TestSupport.expect(!undo.isOffered(documentID: document, generation: 7, contextBefore: inserted, now: 99), "clock back")
-    }
-
-    private static func testNeverOfferedWithoutEvidence() {
-        let undo = tracker()
-        for context in [nil, "", "Other text", inserted + "x", "dictation"] as [String?] {
-            TestSupport.expect(!undo.isOffered(documentID: document, generation: 7, contextBefore: context, now: 101),
-                               "offered with \(String(describing: context))")
-        }
-        // A visible tail of the insertion is evidence for that tail only.
-        TestSupport.expect(undo.isOffered(documentID: document, generation: 7, contextBefore: "dictation.", now: 101),
-                           "a truncated window")
-        TestSupport.expectEqual(UndoTracker.provenTail(of: inserted, contextBefore: "dictation."), 10)
-        TestSupport.expectEqual(UndoTracker.provenTail(of: inserted, contextBefore: "Earlier." + inserted), 20)
-        TestSupport.expectEqual(UndoTracker.provenTail(of: inserted, contextBefore: "Dictation."), 0)
-    }
-
-    private static func testCaretMovedToAnotherNewlineIsNotUndone() {
-        // Regression: " Send this\n" was inserted, then the caret moved to another line break. The
-        // "\n" suffix once authorized 11 deletions. The move is an outside callback, which advances
-        // the generation; even if it were missed, only the proven "\n" could go, and the next step
-        // stops because "Other line" is not " Send this".
-        let undo = tracker(" Send this\n")
-        TestSupport.expect(!undo.isOffered(documentID: document, generation: 8, contextBefore: "\n", now: 101),
-                           "offered after the caret moved")
-        var missed = tracker(" Send this\n")
-        var field = Field(text: "Other line\nmore\n Send this\n")
-        field.text = "Other line\n"
-        TestSupport.expectEqual(runUndo(&missed, field: &field), .stopped)
-        TestSupport.expectEqual(field.deletions, 1)
-        TestSupport.expectEqual(missed.insertion, nil)
-    }
-
-    private static func testDeletesOnlyWhatTheContextProves() {
-        // UIKit shows only "\n" right after a line break: undo deletes the line break, waits for the
-        // context to show the line, re-checks it, then deletes the rest.
-        var undo = tracker(" Send this\n")
-        var field = Field(text: "Hi. Send this\n")
-        var step = undo.begin(documentID: document, generation: 7, contextBefore: field.before, now: 101)
-        TestSupport.expectEqual(field.before, "\n")
-        TestSupport.expectEqual(step, .delete(1))
-        field.delete(1)
-        step = undo.step(documentID: document, generation: 7, contextBefore: field.before, now: 101)
-        TestSupport.expectEqual(step, .delete(10))
-        field.delete(10)
-        step = undo.step(documentID: document, generation: 7, contextBefore: field.before, now: 101)
-        TestSupport.expectEqual(step, .finished)
-        TestSupport.expectEqual(field.text, "Hi.")
-        // A window shorter than the insertion: one sentence at a time.
-        var long = tracker(" First invented sentence. Second invented sentence here.")
-        var longField = Field(text: "Start. First invented sentence. Second invented sentence here.", window: 30)
-        TestSupport.expectEqual(runUndo(&long, field: &longField), .finished)
-        TestSupport.expectEqual(longField.text, "Start.")
-    }
-
-    private static func testStopsAtTheFirstMismatch() {
-        // Something before the insertion changed while undoing: stop and keep the rest.
-        var undo = tracker(" Send this\n")
-        var field = Field(text: "Hi. Send this\n")
-        TestSupport.expectEqual(undo.begin(documentID: document, generation: 7, contextBefore: field.before, now: 101),
-                                .delete(1))
-        field.delete(1)
-        field.text = "Hi. Sent this"
-        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, contextBefore: field.before, now: 101),
-                                .stopped)
+    private static func testFullAnchorsProveTheInsertion() {
+        var undo = tracker()
+        var field = Field(text: "Earlier words here." + inserted)
+        TestSupport.expect(offered(undo, before: field.before), "not offered with both anchors")
+        TestSupport.expectEqual(runUndo(&undo, &field), .finished)
+        TestSupport.expectEqual(field.text, "Earlier words here.")
         TestSupport.expectEqual(undo.insertion, nil)
     }
 
-    private static func testWaitsForTheContextThenTimesOut() {
-        var undo = tracker(" Send this\n")
-        let before = "\n"
-        TestSupport.expectEqual(undo.begin(documentID: document, generation: 7, contextBefore: before, now: 101), .delete(1))
-        // The proxy has not shown the deletion yet.
-        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, contextBefore: before, now: 101.2), .wait)
-        TestSupport.expect(undo.isUndoing, "still undoing")
-        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, contextBefore: before,
-                                          now: 101 + UndoTracker.stepTimeout), .stopped)
-        TestSupport.expect(!undo.isUndoing, "kept undoing after the timeout")
+    private static func testAnchorsAreRecordedFromTheContextBeforeInserting() {
+        let undo = tracker(before: String(repeating: "x", count: 40) + " tail of what came before", after: "Rest of the line and more.")
+        TestSupport.expectEqual(undo.insertion?.anchorBefore, "x tail of what came before".suffix(24).description)
+        TestSupport.expectEqual(undo.insertion?.anchorBefore.count, UndoTracker.anchorLength)
+        TestSupport.expectEqual(undo.insertion?.anchorAfter, "Rest of the line and mor")
+        // Nothing to anchor without a field identity: no undo.
+        var anonymous = UndoTracker()
+        anonymous.recordInsertion(inserted, contextBefore: "x", contextAfter: nil, documentID: nil, generation: 7, at: 100)
+        TestSupport.expectEqual(anonymous.insertion, nil)
     }
 
-    private static func testStopsWhenOwnershipEndsMidway() {
-        var undo = tracker(" Send this\n")
-        TestSupport.expectEqual(undo.begin(documentID: document, generation: 7, contextBefore: "\n", now: 101), .delete(1))
-        TestSupport.expectEqual(undo.step(documentID: document, generation: 8, contextBefore: "Hi. Send this", now: 101),
+    private static func testShortInsertionsNeedBothAnchorsInFull() {
+        // Regression (third keyboard review): a lone "\n" was offered wherever the visible context ended
+        // in "\n", so moving the caret to another line break could delete it there.
+        let undo = tracker("\n", before: "First note.\nSecond note.", after: "")
+        TestSupport.expect(offered(undo, before: "First note.\nSecond note.\n"), "not offered in place")
+        TestSupport.expect(!offered(undo, before: "First note.\n"), "offered at another line break")
+        TestSupport.expect(!offered(undo, before: "\n"), "offered on a context of just \"\\n\"")
+        TestSupport.expect(!offered(undo, before: "note.\n"), "offered on a partial anchor")
+        // The after-anchor too, in full.
+        let middle = tracker("\n", before: "Line one", after: "Line two")
+        TestSupport.expect(offered(middle, before: "Line one\n", after: "Line two"), "not offered in place")
+        TestSupport.expect(!offered(middle, before: "Line one\n", after: "Line"), "offered on a partial after-anchor")
+        TestSupport.expect(!offered(middle, before: "Line one\n", after: "Other two"), "offered before other text")
+    }
+
+    private static func testTruncatedContextNeedsSixteenVisibleCharacters() {
+        let long = " Forty characters of invented dictation."
+        let undo = tracker(long)
+        TestSupport.expect(offered(undo, before: String(long.suffix(16))), "16 visible characters")
+        TestSupport.expect(!offered(undo, before: String(long.suffix(15))), "15 visible characters")
+        // A truncated context that shows part of the anchor and all of the insertion.
+        TestSupport.expect(offered(undo, before: "here." + long), "anchor partly visible")
+        // What is visible must be the end of anchor and insertion.
+        TestSupport.expect(!offered(undo, before: "Changed " + String(long.suffix(20))), "a different context")
+    }
+
+    private static func testAfterAnchorAsFarAsVisible() {
+        let undo = tracker(inserted, after: "Rest of the line.")
+        let before = "Earlier words here." + inserted
+        TestSupport.expect(offered(undo, before: before, after: "Rest of the line."), "full after-anchor")
+        TestSupport.expect(offered(undo, before: before, after: "Rest"), "truncated after-context")
+        TestSupport.expect(offered(undo, before: before, after: nil), "no after-context shown")
+        TestSupport.expect(!offered(undo, before: before, after: "Other text"), "other text after")
+    }
+
+    private static func testEmptyDocumentNeedsTheExactWholeContext() {
+        let undo = tracker("Hi", before: nil, after: nil)
+        TestSupport.expect(offered(undo, before: "Hi", after: nil), "not offered in the empty document")
+        TestSupport.expect(!offered(undo, before: "Oh Hi", after: nil), "offered with text before")
+        TestSupport.expect(!offered(undo, before: "Hi", after: " there"), "offered with text after")
+    }
+
+    private static func testNeverOfferedWithoutProof() {
+        let undo = tracker()
+        TestSupport.expect(!offered(undo, before: nil), "nil context")
+        TestSupport.expect(!offered(undo, before: ""), "empty context")
+        TestSupport.expect(!offered(undo, before: "Something else entirely"), "other text")
+        var stopped = undo
+        TestSupport.expectEqual(stopped.begin(documentID: document, generation: 7, before: "Other", after: nil, now: 101), .stopped)
+        TestSupport.expectEqual(stopped.insertion, nil)
+        // Another field is not ours. (Generations change only through real callbacks and edits; see
+        // `EditingCoreTests`.)
+        TestSupport.expect(!undo.isOffered(documentID: UUID(), generation: 7, before: "Earlier words here." + inserted,
+                                           after: nil, now: 101), "another field")
+        TestSupport.expect(!undo.isOffered(documentID: nil, generation: 7, before: "Earlier words here." + inserted,
+                                           after: nil, now: 101), "no field identity")
+    }
+
+    private static func testProgressiveDeletionReverifiesContinuity() {
+        // A window of 20 graphemes: the first step deletes what it shows (at least 16 characters of the
+        // insertion), each next step only what still continues the insertion, until the anchor shows.
+        let long = " First invented sentence. Second invented sentence. Third one."
+        var undo = tracker(long)
+        var field = Field(text: "Earlier words here." + long, window: 20)
+        TestSupport.expect(offered(undo, before: field.before), "not offered on a truncated context")
+        TestSupport.expectEqual(runUndo(&undo, &field), .finished)
+        TestSupport.expectEqual(field.text, "Earlier words here.")
+        TestSupport.expectEqual(field.deletions, long.count)
+    }
+
+    private static func testStopsWhenContinuityBreaks() {
+        let long = " First invented sentence. Second invented sentence. Third one."
+        var undo = tracker(long)
+        var field = Field(text: "Earlier words here." + long, window: 20)
+        guard case .delete(let first) = undo.begin(documentID: document, generation: 7, before: field.before,
+                                                    after: nil, now: 101) else {
+            return TestSupport.expect(false, "no first step")
+        }
+        field.delete(first)
+        // The host changed the text before the caret meanwhile: the rest is not proven.
+        field.text = "Earlier words here. Something the host typed."
+        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, before: field.before, after: nil, now: 101.1),
                                 .stopped)
-        var moved = tracker(" Send this\n")
-        _ = moved.begin(documentID: document, generation: 7, contextBefore: "\n", now: 101)
-        TestSupport.expectEqual(moved.step(documentID: Fixture.documentB, generation: 7, contextBefore: "Hi. Send this",
-                                           now: 101), .stopped)
+        TestSupport.expectEqual(field.deletions, 20)
+    }
+
+    private static func testWaitsForTheContextThenTimesOut() {
+        // A truncated context: the first step deletes only what it shows, and the rest needs to see it go.
+        var undo = tracker()
+        let before = String(inserted.suffix(20))
+        TestSupport.expectEqual(undo.begin(documentID: document, generation: 7, before: before, after: nil, now: 101),
+                                .delete(20))
+        // The deletion never shows: wait, then give up.
+        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, before: before, after: nil, now: 101.2), .wait)
+        TestSupport.expectEqual(undo.step(documentID: document, generation: 7, before: before, after: nil, now: 101.6), .stopped)
+        TestSupport.expectEqual(undo.insertion, nil)
     }
 
     private static func testCountsGraphemes() {
-        let emoji = " Nice \u{1F44D}\u{1F3FD}"
-        var emojiUndo = tracker(emoji)
-        var emojiField = Field(text: "Ok." + emoji)
-        TestSupport.expectEqual(emojiUndo.begin(documentID: document, generation: 7, contextBefore: emojiField.before,
-                                                now: 101), .delete(7))
-        emojiField.delete(7)
-        TestSupport.expectEqual(emojiField.text, "Ok.")
-        let accent = " cafe\u{301}"
-        var accentUndo = tracker(accent)
-        var accentField = Field(text: "Hi." + accent)
-        TestSupport.expectEqual(runUndo(&accentUndo, field: &accentField), .finished)
-        TestSupport.expectEqual(accentField.text, "Hi.")
-        // A context ending in the accent's base letter alone is not the insertion.
-        TestSupport.expect(!tracker(accent).isOffered(documentID: document, generation: 7, contextBefore: " cafe", now: 101),
-                           "a lone base letter")
-        let flag = "\u{1F1EB}\u{1F1F7}"
-        TestSupport.expectEqual(UndoTracker.provenTail(of: flag, contextBefore: flag), 1)
+        let text = " Thumbs \u{1F44D}\u{1F3FD} and caf\u{E9} and cafe\u{301} too."
+        var undo = tracker(text)
+        var field = Field(text: "Earlier words here." + text)
+        TestSupport.expectEqual(runUndo(&undo, &field), .finished)
+        TestSupport.expectEqual(field.deletions, text.count)
+        TestSupport.expectEqual(field.text, "Earlier words here.")
     }
 
-    private static func testExplainsItsOwnSteps() {
-        var undo = tracker(" Send this\n")
-        TestSupport.expect(!undo.explains(contextBefore: "\n"), "explains before undoing")
-        _ = undo.begin(documentID: document, generation: 7, contextBefore: "\n", now: 101)
-        TestSupport.expect(undo.explains(contextBefore: "\n"), "the state before the step")
-        TestSupport.expect(undo.explains(contextBefore: "Hi. Send this"), "the state after the step")
-        TestSupport.expect(!undo.explains(contextBefore: "Elsewhere"), "an outside change")
+    private static func testAcknowledgesOnlyStatesOfTheInsertion() {
+        var undo = tracker()
+        let after = "Earlier words here." + inserted
+        // The insertion may cause one callback, which must show it.
+        TestSupport.expect(!undo.acknowledge(before: "Somewhere else", after: nil), "another place")
+        TestSupport.expect(undo.acknowledge(before: after, after: nil), "the insertion's own state")
+        TestSupport.expect(!undo.acknowledge(before: after, after: nil), "consumed twice")
+        // Each deletion may cause one, showing what is left.
+        var field = Field(text: after, window: 20)
+        guard case .delete(let count) = undo.begin(documentID: document, generation: 7, before: field.before,
+                                                    after: nil, now: 101) else {
+            return TestSupport.expect(false, "no first step")
+        }
+        field.delete(count)
+        TestSupport.expect(undo.acknowledge(before: field.before, after: nil), "a partly undone state")
+        TestSupport.expect(!undo.acknowledge(before: "Earlier words here.\nOther", after: nil), "not a state of it")
     }
 
-    private static func testExpireForgets() {
-        var expiring = tracker(at: 100)
-        expiring.expire(now: 129)
-        TestSupport.expect(expiring.insertion != nil, "expired early")
-        expiring.expire(now: 130)
-        TestSupport.expectEqual(expiring.insertion, nil)
+    private static func testWithinThirtySeconds() {
+        var undo = tracker(at: 100)
+        let before = "Earlier words here." + inserted
+        TestSupport.expect(offered(undo, before: before, now: 129.9), "not offered within the window")
+        TestSupport.expect(!offered(undo, before: before, now: 130), "offered after the window")
+        TestSupport.expect(!offered(undo, before: before, now: 99), "offered before the insertion")
+        undo.expire(now: 129)
+        TestSupport.expect(undo.insertion != nil, "expired early")
+        undo.expire(now: 130)
+        TestSupport.expectEqual(undo.insertion, nil)
     }
 }

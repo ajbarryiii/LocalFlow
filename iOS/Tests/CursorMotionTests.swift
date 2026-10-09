@@ -24,8 +24,9 @@ enum CursorMotionTests {
     }
 
     private static func testMeasuredActivationAndSlop() {
-        TestSupport.expectEqual(measured.holdDuration, 0.381)
-        // 16.0 pt (straight line from touch-down) activates and 16.33 pt does not.
+        // Device (iPhone 15 Pro): 0.403 ± 0.004 s with a thumb, 0.399 s with XCUITest (0.381 s in the
+        // simulator). Up to 16 pt (straight line from touch-down) activates and 18 pt does not.
+        TestSupport.expectEqual(measured.holdDuration, 0.40)
         TestSupport.expectEqual(measured.holdSlop, 16)
         // Apple has no drag-to-activate.
         TestSupport.expectEqual(measured.dragActivationDistance, .infinity)
@@ -95,7 +96,8 @@ enum CursorMotionTests {
         TestSupport.expectEqual(measured.eventStepScale, 1)
         var halved = measured
         halved.eventStepScale = 2
-        // A 120 Hz device delivering half-size steps reads them as the simulator's full steps.
+        // 120 Hz delivery carries half-size steps; scale 2 reads them as the 60 Hz steps the curve was
+        // measured with.
         close(halved.gain(forStep: 3.5), measured.gain(forStep: 7), 1e-12, "scaled step")
     }
 
@@ -141,7 +143,9 @@ enum CursorMotionTests {
     }
 
     private static func testMeasuredClamps() {
-        TestSupport.expectEqual(measured.horizontalInset, 1.5)
+        // Device: the left clamp is x = 1.0 (1.5 in the simulator); the right one is unmeasured on device.
+        TestSupport.expectEqual(measured.leftInset, 1.0)
+        TestSupport.expectEqual(measured.rightInset, 1.5)
         TestSupport.expectEqual(measured.topOvershoot, 7)
         TestSupport.expectEqual(measured.bottomOvershoot, 8)
     }

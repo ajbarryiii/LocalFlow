@@ -83,6 +83,8 @@ private struct CursorTuningSection: View {
     let settings: LocalFlowSettings?
     @State private var sensitivity = 1.0
     @State private var acceleration = 1.0
+    @State private var touchRate: Double?
+    @State private var stepScale: Double?
 
     var body: some View {
         Section {
@@ -93,14 +95,21 @@ private struct CursorTuningSection: View {
                 acceleration = 1
             }
             .disabled(sensitivity == 1 && acceleration == 1)
+            // Measured by the keyboard from its own touch events, written once per gesture; read-only.
+            LabeledContent("Touch rate", value: touchRate.map { String(format: "%.0f Hz", $0) } ?? "Not measured yet")
+                .accessibilityIdentifier("diagnostics.cursorTouchRate")
+            LabeledContent("Step scale", value: stepScale.map { String(format: "%.2f×", $0) } ?? "Not measured yet")
+                .accessibilityIdentifier("diagnostics.cursorStepScale")
         } header: {
             Text("Cursor")
         } footer: {
-            Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple's keyboard in Try it's practice field: touch and hold the space bar with each and match the feel. Changes apply to the next gesture.")
+            Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple's keyboard in Try it's practice field: touch and hold the space bar with each and match the feel. Changes apply to the next gesture. The step scale makes each touch event count as a 60 Hz one would (2× at 120 Hz).")
         }
         .onAppear {
             sensitivity = settings?.cursorSensitivity ?? 1
             acceleration = settings?.cursorAcceleration ?? 1
+            touchRate = settings?.cursorTouchRate
+            stepScale = settings?.cursorEventStepScale
         }
         .onChange(of: sensitivity) { _, value in settings?.cursorSensitivity = value }
         .onChange(of: acceleration) { _, value in settings?.cursorAcceleration = value }

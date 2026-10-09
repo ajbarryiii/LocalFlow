@@ -10,6 +10,9 @@ protocol KeyboardTextTarget: AnyObject {
     /// The view haptics attach to; nil before it loads.
     var feedbackView: UIView? { get }
     func insert(_ text: String)
+    /// The editing side is busy (a trackpad gesture is running or settling): results stay in the
+    /// shared files until it is done, rather than waiting in memory.
+    var isEditingBusy: Bool { get }
     /// "Undo last dictation" is owned by the editing side (`KeyboardInput`), which sees every edit.
     var canUndoLastDictation: Bool { get }
     func undoLastDictation()
@@ -22,6 +25,8 @@ struct KeyboardViewState: Equatable {
     var mode: KeyboardMode = .hostUnavailable
     var title = ""
     var hint: String?
+    /// A short-lived notice (a failed write, no speech, open LocalFlow). Shown before any idle hint.
+    var notice: String?
     var canInsertLast = false
     /// The last inserted dictation can still be removed (see `UndoTracker`).
     var canUndo = false
@@ -119,6 +124,10 @@ final class KeyboardDictationClient: ObservableObject {
         observations = []
         levels = []
         levelSampledAt = nil
+        // No field identity outlives the keyboard being visible: a request bound to a field is never
+        // auto-inserted after hiding (it stays available as "Insert last dictation").
+        ledger.forgetFieldBindings()
+        manualInsertID = nil
     }
 
     /// Call from `viewWillAppear` and `textDidChange`: a new field invalidates bindings to others.
@@ -158,7 +167,7 @@ final class KeyboardDictationClient: ObservableObject {
     /// The "Insert last dictation" chip: claims the offered result and inserts it into this field.
     func insertLastDictation() {
         notice = nil
-        if let store, let target, let requestID = manualInsertID,
+        if let store, let target, !target.isEditingBusy, let requestID = manualInsertID,
            let result = store.readResult(requestID: requestID).value,
            ledger.disposition(of: result, documentID: target.documentID, now: Date()) != .ignore {
             var context = target.contextBeforeInput
@@ -293,7 +302,8 @@ final class KeyboardDictationClient: ObservableObject {
         store.purgeExpiredResults(now: now)
         let results = store.resultRequestIDs().compactMap { store.readResult(requestID: $0).value }
         let plan = ledger.plan(for: results, documentID: documentID, now: now)
-        if !plan.autoInsert.isEmpty {
+        // While a trackpad gesture runs, results stay unclaimed in the shared files for a later pass.
+        if !plan.autoInsert.isEmpty, target?.isEditingBusy != true {
             var context = target?.contextBeforeInput
             for result in plan.autoInsert { insert(result, context: &context) }
         }
@@ -337,12 +347,10 @@ final class KeyboardDictationClient: ObservableObject {
         if mode == .starting, let pending = unlaunchedRequestID, intent.value?.requestID == pending {
             title = KeyboardMessages.openLocalFlow
         }
-        if let current = notice, current.until > now {
-            title = current.text
-        } else {
-            notice = nil
-        }
+        // A notice is rendered on its own, so no mode (ready included) can hide it.
+        if let current = notice, current.until <= now { notice = nil }
         let next = KeyboardViewState(mode: mode, title: title, hint: KeyboardMessages.hint(for: status.value, now: now),
+                                     notice: notice?.text,
                                      canInsertLast: manualInsertID != nil,
                                      canUndo: target?.canUndoLastDictation == true,
                                      sessionSummary: KeyboardMessages.sessionSummary(for: status.value, now: now),
@@ -352,8 +360,12 @@ final class KeyboardDictationClient: ObservableObject {
             if case .recording = mode { playHaptic(.listening) }
             if case .error = mode { playHaptic(.failure) }
         }
-        if title != state.title, UIAccessibility.isVoiceOverRunning {
-            UIAccessibility.post(notification: .announcement, argument: title)
+        if UIAccessibility.isVoiceOverRunning {
+            if let notice = next.notice, notice != state.notice {
+                UIAccessibility.post(notification: .announcement, argument: notice)
+            } else if title != state.title {
+                UIAccessibility.post(notification: .announcement, argument: title)
+            }
         }
         state = next
     }

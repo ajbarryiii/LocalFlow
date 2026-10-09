@@ -34,7 +34,8 @@ struct LocalFlowIOSTests {
             ("KeyboardLayout", KeyboardLayoutTests.tests),
             ("TypingRules", TypingRulesTests.tests),
             ("UndoTracker", UndoTrackerTests.tests),
-            ("EditTracker", EditTrackerTests.tests),
+            ("EditingCore", EditingCoreTests.tests),
+            ("TouchRate", TouchRateTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
         ]
         var count = 0

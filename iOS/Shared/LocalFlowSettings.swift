@@ -16,7 +16,14 @@ struct LocalFlowSettings {
         static let hapticsEnabled = "hapticsEnabled"
         static let cursorSensitivity = "cursorSensitivity"
         static let cursorAcceleration = "cursorAcceleration"
+        static let cursorTouchRate = "cursorTouchRate"
+        static let cursorEventStepScale = "cursorEventStepScale"
     }
+
+    /// Accepted values of the keyboard's measured touch rate (events per second) and the step scale
+    /// it derives (`TouchRateEstimator.scaleRange`).
+    static let cursorTouchRateRange: ClosedRange<Double> = 1...1_000
+    static let cursorEventStepScaleRange: ClosedRange<Double> = 0.5...2.5
 
     let defaults: UserDefaults
 
@@ -70,6 +77,20 @@ struct LocalFlowSettings {
         nonmutating set { setMultiplier(newValue, forKey: Key.cursorAcceleration) }
     }
 
+    /// Diagnostics the keyboard writes, at most once per trackpad gesture: the rate at which it
+    /// receives touch events and the step scale it uses. Numbers only; nil until measured.
+    var cursorTouchRate: Double? { number(Key.cursorTouchRate, in: Self.cursorTouchRateRange) }
+
+    var cursorEventStepScale: Double? { number(Key.cursorEventStepScale, in: Self.cursorEventStepScaleRange) }
+
+    /// Records the keyboard's measurement; values outside the accepted ranges are ignored.
+    func recordCursorTouchRate(_ rate: Double, eventStepScale scale: Double) {
+        guard rate.isFinite, scale.isFinite, Self.cursorTouchRateRange.contains(rate),
+              Self.cursorEventStepScaleRange.contains(scale) else { return }
+        defaults.set(rate, forKey: Key.cursorTouchRate)
+        defaults.set(scale, forKey: Key.cursorEventStepScale)
+    }
+
     // Every boolean setting defaults to on.
     private func bool(_ key: String) -> Bool {
         defaults.object(forKey: key) as? Bool ?? true
@@ -81,6 +102,13 @@ struct LocalFlowSettings {
         else { return 1 }
         let value = number.doubleValue
         return value.isFinite && Self.cursorMultiplierRange.contains(value) ? value : 1
+    }
+
+    private func number(_ key: String, in range: ClosedRange<Double>) -> Double? {
+        guard let number = defaults.object(forKey: key) as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return nil }
+        let value = number.doubleValue
+        return value.isFinite && range.contains(value) ? value : nil
     }
 
     private func setMultiplier(_ value: Double, forKey key: String) {

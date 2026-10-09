@@ -3,12 +3,13 @@ import Foundation
 /// Every held-delete constant, in one place. Times are seconds.
 ///
 /// Measured on Apple's keyboard (ARCHITECTURE.md, "Measured Apple keyboard behavior", and the
-/// calibration report; iOS 26.4 simulator, XCUITest): the first deletion 0.087 s after touch-down, or
-/// at lift if the key is released sooner; the first repeat 0.50 s after that, then a character every
-/// 0.10 s; after 21 single characters (about 2.52 s after the first deletion) word mode, 2 words every
-/// 0.354 s, each word with the space before it.
+/// calibration report): the first deletion 0.12 s after touch-down on device (0.087 s in the
+/// simulator), or at lift if the key is released sooner; the first repeat 0.50 s after that (0.494 s
+/// on device), then a character every 0.10 s (0.101 s); after 21 single characters (about 2.52 s after
+/// touch-down on device) word mode, 2 words every 0.354 s (0.351 s), each word with the space before
+/// it. A touch the system cancels deletes nothing.
 struct DeleteRepeatParameters: Equatable, Sendable {
-    var firstDeletionDelay: TimeInterval = 0.087
+    var firstDeletionDelay: TimeInterval = 0.12
     var initialDelay: TimeInterval = 0.50
     var characterInterval: TimeInterval = 0.10
     /// Character deletions, the first one included, before word mode.

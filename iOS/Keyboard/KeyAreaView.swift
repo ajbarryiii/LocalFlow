@@ -6,10 +6,13 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// touch-down; delete here only from VoiceOver (a held delete uses the begin and end calls).
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, timestamp: TimeInterval)
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval)
-    func keyAreaEndedDelete(_ keyArea: KeyAreaView)
+    /// `cancelled`: the system cancelled the touch, or the key area dropped it (the menu opening, the
+    /// keyboard hiding), which is not a release.
+    func keyAreaEndedDelete(_ keyArea: KeyAreaView, cancelled: Bool)
     func keyAreaBeganTrackpad(_ keyArea: KeyAreaView)
-    /// Finger movement in points for one delivered touch event (Apple's gain is per event).
-    func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double)
+    /// Finger movement in points for one delivered touch event (Apple's gain is per event), at the
+    /// touch's timestamp (for the delivery rate).
+    func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double, timestamp: TimeInterval)
     /// `cancelled`: the system cancelled the touch, which is not a lift.
     func keyAreaEndedTrackpad(_ keyArea: KeyAreaView, timestamp: TimeInterval, cancelled: Bool)
 }
@@ -198,7 +201,8 @@ final class KeyAreaView: UIView {
                 // One step per delivered event, not per coalesced sample: Apple's gain was measured
                 // per event (ARCHITECTURE.md, "Measured Apple keyboard behavior").
                 let point = touch.location(in: self)
-                delegate?.keyArea(self, movedTrackpadBy: Double(point.x - last.x), dy: Double(point.y - last.y))
+                delegate?.keyArea(self, movedTrackpadBy: Double(point.x - last.x), dy: Double(point.y - last.y),
+                                  timestamp: touch.timestamp)
                 trackpadLast = point
                 continue
             }
@@ -241,8 +245,8 @@ final class KeyAreaView: UIView {
                 delegate?.keyArea(self, typed: action, timestamp: timestamp)
             case .beginDelete:
                 delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
-            case .endDelete:
-                delegate?.keyAreaEndedDelete(self)
+            case .endDelete(let cancelled):
+                delegate?.keyAreaEndedDelete(self, cancelled: cancelled)
             case .startHoldTimer(let id):
                 startHoldTimer(id)
             case .cancelHoldTimer(let id):

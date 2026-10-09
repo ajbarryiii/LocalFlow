@@ -64,7 +64,8 @@ struct DictationBarView: View {
     }
 }
 
-/// Chips when there is something to act on; otherwise one line of status.
+/// Chips when there is something to act on, and a notice whenever one is up; otherwise one line of
+/// status.
 private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -89,8 +90,16 @@ private struct Middle: View {
                 .accessibilityLabel("Insert last dictation")
                 .accessibilityIdentifier("lf.insertLast")
             }
-            if !(state.canUndo && !state.mode.isInProgress), !(state.canInsertLast && !state.mode.isRecording),
-               let status = statusLine {
+            if let notice = state.notice {
+                // Notices render on their own, ahead of any idle hint or status, in every mode.
+                Text(notice)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityIdentifier("lf.notice")
+            } else if !(state.canUndo && !state.mode.isInProgress), !(state.canInsertLast && !state.mode.isRecording),
+                      let status = statusLine {
                 Text(status)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(state.mode.needsAttention ? .primary : .secondary)

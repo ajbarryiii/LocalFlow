@@ -36,7 +36,9 @@ struct KeyTouchModel: Equatable, Sendable {
     enum Effect: Equatable, Sendable {
         case type(KeyAction)
         case beginDelete
-        case endDelete
+        /// `cancelled`: the system cancelled the touch (or the key area dropped it), which is not a
+        /// release: a cancelled tap deletes nothing.
+        case endDelete(cancelled: Bool)
         case startHoldTimer(TouchID)
         case cancelHoldTimer(TouchID)
         case beginTrackpad
@@ -144,7 +146,7 @@ struct KeyTouchModel: Equatable, Sendable {
         case .returnKey:
             if !touch.committed, nearestAction(x: x, y: y) == .returnKey { effects.append(.type(.returnKey)) }
         case .delete:
-            effects.append(.endDelete)
+            effects.append(.endDelete(cancelled: false))
         case .shift, .layer:
             break
         }
@@ -242,11 +244,11 @@ struct KeyTouchModel: Equatable, Sendable {
         return [.cancelHoldTimer(touch.id), .beginTrackpad]
     }
 
-    /// Effects of dropping a held finger without typing.
+    /// Effects of dropping a held finger without typing: a cancellation, not a release.
     private func release(_ touch: Touch) -> [Effect] {
         switch touch.role {
         case .space: return [.cancelHoldTimer(touch.id)]
-        case .delete: return [.endDelete]
+        case .delete: return [.endDelete(cancelled: true)]
         default: return []
         }
     }

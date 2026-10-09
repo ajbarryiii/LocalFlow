@@ -170,10 +170,17 @@ enum DoubleSpacePeriod {
 
 /// The text before the caret as this keyboard last changed it. The proxy's context can lag the
 /// keyboard's own edits by a frame or more, so typing decisions read this model until the proxy
-/// agrees. Memory only, a bounded tail, forgotten on any outside change.
+/// agrees. Memory only, a bounded tail, forgotten on any outside change, once the proxy shows it, and
+/// at the latest `lifetime` after it was first held: more typing never extends that.
 struct ContextTail: Equatable, Sendable {
     static let limit = 256
+    static let lifetime: TimeInterval = 10
     private(set) var known: String?
+    /// When the current model was first held.
+    private(set) var knownSince: TimeInterval?
+
+    /// When the model must be forgotten, if one is held.
+    var expiresAt: TimeInterval? { knownSince.map { $0 + Self.lifetime } }
 
     /// The best estimate of the text before the caret.
     func current(proxyBefore: String?) -> String? {
@@ -182,18 +189,29 @@ struct ContextTail: Equatable, Sendable {
         return known
     }
 
-    mutating func inserted(_ text: String, proxyBefore: String?) {
+    mutating func inserted(_ text: String, proxyBefore: String?, at time: TimeInterval) {
         let base = current(proxyBefore: proxyBefore) ?? ""
-        known = String((base + text).suffix(Self.limit))
+        hold(String((base + text).suffix(Self.limit)), at: time)
     }
 
-    mutating func deleted(graphemes count: Int, proxyBefore: String?) {
+    mutating func deleted(graphemes count: Int, proxyBefore: String?, at time: TimeInterval) {
         guard let base = current(proxyBefore: proxyBefore), base.count > count else {
             // Deleted past what is known: what precedes is unknown until the proxy says.
-            known = nil
+            forget()
             return
         }
-        known = String(base.dropLast(count))
+        hold(String(base.dropLast(count)), at: time)
+    }
+
+    /// Forgets the model once its lifetime is over.
+    mutating func expire(now: TimeInterval) {
+        guard let expiresAt, now >= expiresAt else { return }
+        forget()
+    }
+
+    private mutating func hold(_ text: String, at time: TimeInterval) {
+        if known == nil { knownSince = time }
+        known = text
     }
 
     /// Call when the document changed outside this keyboard's edits. Keeps the model only if the
@@ -201,17 +219,18 @@ struct ContextTail: Equatable, Sendable {
     mutating func proxyChanged(before: String?) {
         guard let known else { return }
         if let before, before.hasSuffix(known) { return }
-        self.known = nil
+        forget()
     }
 
     mutating func forget() {
         known = nil
+        knownSince = nil
     }
 
     /// Releases the model once the proxy shows it: the proxy is then the only copy, so the typed text
     /// is not held a moment longer than the edit that needed it.
     mutating func acknowledge(proxyBefore: String?) {
         guard let known, let proxyBefore, proxyBefore.hasSuffix(known) else { return }
-        self.known = nil
+        forget()
     }
 }

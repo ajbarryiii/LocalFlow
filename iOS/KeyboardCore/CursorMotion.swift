@@ -7,7 +7,7 @@ import Foundation
 /// `TrackpadSession`. There is no hysteresis, dead zone or momentum, and clamped overshoot is
 /// forgotten, so reversals respond at once. Pure; no clocks are involved.
 struct FloatingCursor: Equatable, Sendable {
-    let parameters: TrackpadParameters
+    var parameters: TrackpadParameters
     /// Points from the leading edge of the text, as a column kept across lines.
     private(set) var x: Double
     /// Points from the top of the first known line.

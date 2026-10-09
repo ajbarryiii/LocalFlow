@@ -8,6 +8,7 @@ enum LocalFlowSettingsTests {
             ("sessionMinutesAcceptsOnlyOptions", testSessionMinutesAcceptsOnlyOptions),
             ("cursorMultipliersDefaultToOne", testCursorMultipliersDefaultToOne),
             ("cursorMultipliersAcceptOnlyTheRange", testCursorMultipliersAcceptOnlyTheRange),
+            ("cursorTouchRateIsRecordedAsNumbersOnly", testCursorTouchRateIsRecordedAsNumbersOnly),
         ]
     }
 
@@ -23,6 +24,23 @@ enum LocalFlowSettingsTests {
             // Independent of the other settings.
             TestSupport.expectEqual(reread.sessionMinutes, 5)
             TestSupport.expect(reread.hapticsEnabled, "haptics untouched")
+        }
+    }
+
+    private static func testCursorTouchRateIsRecordedAsNumbersOnly() {
+        withSettings { settings, defaults in
+            TestSupport.expectEqual(settings.cursorTouchRate, nil)
+            TestSupport.expectEqual(settings.cursorEventStepScale, nil)
+            settings.recordCursorTouchRate(120, eventStepScale: 2)
+            let reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expectEqual(reread.cursorTouchRate, 120)
+            TestSupport.expectEqual(reread.cursorEventStepScale, 2)
+            // Out-of-range or broken values are ignored, and a stray Bool reads as nothing.
+            settings.recordCursorTouchRate(.nan, eventStepScale: 1)
+            settings.recordCursorTouchRate(60, eventStepScale: 9)
+            TestSupport.expectEqual(settings.cursorTouchRate, 120)
+            defaults.set(true, forKey: "cursorTouchRate")
+            TestSupport.expectEqual(settings.cursorTouchRate, nil)
         }
     }
 

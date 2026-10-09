@@ -41,6 +41,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.onTrackpadChange = { [weak self] active in self?.trackpadChanged(active) }
         input.onUndoAvailabilityChanged = { [weak self] in self?.client.publishUndoState() }
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
+        input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
 
         let bar = UIHostingController(rootView: DictationBarView(
             client: client, chrome: chrome,
@@ -141,6 +142,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         return (settings.cursorSensitivity, settings.cursorAcceleration)
     }
 
+    /// Diagnostics: the measured touch rate and step scale, numbers only, at most once per gesture.
+    /// Written only with Full Access, when the App Group is reachable.
+    private func recordTouchRate(_ rate: Double, scale: Double) {
+        guard hasFullAccess, let configuration = LocalFlowConfiguration.main,
+              let settings = LocalFlowSettings(configuration: configuration) else { return }
+        settings.recordCursorTouchRate(rate, eventStepScale: scale)
+    }
+
     /// The menu panel covers the key area; a tap outside its card, or on the menu button, closes it.
     private func setMenu(visible: Bool) {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
@@ -181,6 +190,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     func insert(_ text: String) {
         input.insertDictation(text)
     }
+
+    var isEditingBusy: Bool { input.isBusy }
 
     var canUndoLastDictation: Bool { input.canUndoLastDictation }
 

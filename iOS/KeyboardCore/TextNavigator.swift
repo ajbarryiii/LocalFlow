@@ -32,6 +32,10 @@ struct TextNavigator {
     private(set) var cursor: Int
     let units: [UInt16]
     private let graphemes: [String]
+    /// The host's caret splits a cluster (a UTF-16 host stopped between its scalars, or the host put
+    /// it there): the code units from the cluster's start to the caret and from the caret to its end.
+    /// Only hosts that count UTF-16 units can leave the caret there.
+    let snapshotSplit: (back: Int, forward: Int)?
 
     init(before: String, after: String) {
         let text = before + after
@@ -41,12 +45,14 @@ struct TextNavigator {
         var offsets = [0]
         var pieces: [String] = []
         var offset = 0
+        var split: (back: Int, forward: Int)?
         for character in text {
             let piece = String(character)
             let length = piece.utf16.count
             if caret > offset, caret < offset + length {
                 // The host's caret sits inside this cluster after a UTF-16 step; keep it as a position.
                 let codeUnits = Array(piece.utf16)
+                split = (caret - offset, offset + length - caret)
                 pieces.append(String(decoding: codeUnits[..<(caret - offset)], as: UTF16.self))
                 offsets.append(caret)
                 pieces.append(String(decoding: codeUnits[(caret - offset)...], as: UTF16.self))
@@ -58,11 +64,15 @@ struct TextNavigator {
         }
         boundaries = offsets
         graphemes = pieces
+        snapshotSplit = split
         snapshotPosition = offsets.firstIndex(of: caret) ?? offsets.count - 1
         cursor = snapshotPosition
     }
 
     var lastPosition: Int { boundaries.count - 1 }
+
+    /// The position inside a cluster where the host left the caret, if it did. Never a target.
+    var splitPosition: Int? { snapshotSplit == nil ? nil : snapshotPosition }
 
     var cursorUTF16Offset: Int { boundaries[cursor] }
 
@@ -103,6 +113,47 @@ struct TextNavigator {
         return expectedBefore.isEmpty == hostBefore.isEmpty && expectedAfter.isEmpty == hostAfter.isEmpty
     }
 
+    /// What a host context with the caret at UTF-16 `split` of this snapshot shows around it.
+    func expectation(atUTF16 split: Int) -> CaretExpectation {
+        CaretExpectation(units: units, split: split)
+    }
+
+    func expectation(at position: Int) -> CaretExpectation {
+        expectation(atUTF16: boundaries[position])
+    }
+
+    /// The UTF-16 offsets in this snapshot where a host context fits, found through overlapping local
+    /// anchors: on each side, all the text both show is the same, and at least one code unit
+    /// overlaps. One offset places the host's caret; several, or none, do not.
+    func locate(before: String, after: String) -> [Int] {
+        let hostBefore = Array(before.utf16)
+        let hostAfter = Array(after.utf16)
+        var fits: [Int] = []
+        for split in 0 ... units.count {
+            let n = min(split, hostBefore.count)
+            let m = min(units.count - split, hostAfter.count)
+            guard n + m > 0,
+                  units[(split - n) ..< split].elementsEqual(hostBefore[(hostBefore.count - n)...]),
+                  units[split ..< (split + m)].elementsEqual(hostAfter[..<m]) else { continue }
+            fits.append(split)
+        }
+        return fits
+    }
+
+    /// The position at UTF-16 `offset`, if it is a caret position of this snapshot.
+    func position(atUTF16 offset: Int) -> Int? {
+        boundaries.firstIndex(of: offset)
+    }
+
+    /// The cluster around a UTF-16 offset that falls inside one: its start and end. Nil at a
+    /// boundary or outside the text.
+    func cluster(aroundUTF16 offset: Int) -> (start: Int, end: Int)? {
+        guard offset > 0, offset < units.count, position(atUTF16: offset) == nil,
+              let end = boundaries.first(where: { $0 > offset }),
+              let start = boundaries.last(where: { $0 < offset }) else { return nil }
+        return (start, end)
+    }
+
     /// Whether the host's context shares any text with this snapshot around `position`. When it
     /// does not (the snapshot knows nothing on one side and the host shows nothing on the other,
     /// as at the end of a UIKit paragraph), `agrees` cannot tell where the caret is.
@@ -135,6 +186,7 @@ struct TextNavigator {
         for (position, offset) in boundaries.enumerated() {
             guard offset >= line.lowerBound else { continue }
             guard offset <= line.upperBound else { break }
+            if position == splitPosition { continue }
             // The position after a line break starts the next line.
             if offset > line.lowerBound, graphemes[position - 1].first?.isNewline == true { break }
             let distance = abs(layout.x(atUTF16: offset, line: line, in: text) - x)
