@@ -924,3 +924,42 @@ Self-test with invented synthetic speech (2.42 s):
 - **Space bar label:** "LocalFlow".
 - This supersedes the earlier dictation-bar layout. The key area is
   unchanged (Apple's layout).
+
+### Measured Apple keyboard behavior (simulator, iOS 26.4, XCUITest, 2026-10-09)
+
+The values below come from velocity-controlled XCUITest drags against Apple's
+keyboard, with the floating cursor logged through UITextInput. They replace
+the researched defaults in `TrackpadParameters` and `DeleteRepeatParameters`.
+The harness lives outside the repository
+(`/Users/ajbarry/localflow-ios/cursor-calibration/`).
+
+- **Activation:** trackpad mode begins **0.381 s** after touch-down on space
+  (±0.002, n=85). Movement up to **16 pt** in either axis before then is
+  tolerated; 18 pt or more cancels.
+- **Gain** depends on the **2D finger step per delivered touch event**,
+  s = |Δ| in points. One gain applies to both axes, the same for both
+  directions, and is independent of the time between events:
+
+  ```
+  g(s) = 1 + 0.04·s²                 for s ≤ 2
+       = 1.16 + 0.16·(s − 2)         for 2 < s ≤ 5.92
+       = 1.787·(s / 5.92)^0.389      for s > 5.92
+  ```
+
+  The maximum absolute residual is 0.034. The cursor moves `g(s)·Δ` per
+  event.
+- **Snapping:** on lift, horizontal motion snaps to the nearest character
+  boundary. Vertical motion snaps to the line whose center is nearest the
+  floating cursor's y (252 of 256 trials), keeping the column in points.
+- **Delete key:**
+  - The first deletion happens at touch-down.
+  - The first repeat follows **0.50 s** later; after that, characters repeat
+    every **0.10 s**.
+  - After **21 characters** (about **2.52 s**), it switches to word mode,
+    deleting **2 words every 0.354 s**.
+- **Open question, settled only by the device sweep:** the simulator delivers
+  60 events/s. A 120 Hz device may deliver smaller steps per event. If
+  Apple's device curve is per event, as it is in the simulator, our keyboard
+  matches automatically by applying `g` per delivered event.
+  `TrackpadParameters.eventStepScale` (default 1.0) is the correction knob if
+  the device shows otherwise.
