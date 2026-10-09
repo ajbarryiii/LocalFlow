@@ -16,6 +16,9 @@ APP_PROFILE ?=
 KEYBOARD_PROFILE ?=
 BUILD_DIR ?= build/$(PLATFORM)
 SWIFT_FLAGS ?=
+# Optional keychain holding the signing identity (device builds signed over SSH).
+CODESIGN_KEYCHAIN ?=
+CODESIGN_KEYCHAIN_FLAG = $(if $(strip $(CODESIGN_KEYCHAIN)),--keychain "$(CODESIGN_KEYCHAIN)")
 SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
 ICON_SOURCE ?= ../Resources/AppIcon-Dev-Source.png
 PYTHON ?= python3
@@ -224,8 +227,8 @@ ifeq ($(PLATFORM),device)
 	@cp "$(KEYBOARD_PROFILE)" "$(APPEX_BUNDLE)/embedded.mobileprovision"
 endif
 	@# The extension is sealed inside the app, so it must be signed first.
-	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(SIGNED_KEYBOARD_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APPEX_BUNDLE)"
-	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(SIGNED_APP_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APP_BUNDLE)"
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_KEYBOARD_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APPEX_BUNDLE)"
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_APP_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 check: typecheck test lint
