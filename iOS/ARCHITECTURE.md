@@ -1035,3 +1035,21 @@ The harness lives outside the repository
   single-code-point BMP characters need no unit probe, because UTF-16 and
   grapheme counts agree there. Probes happen only when crossing clusters, and
   always finish or roll back to a real cluster boundary.
+- **Microphone choice (user request 2026-10-09).** The setting "Use iPhone
+  microphone" is on by default and stored in the app's own UserDefaults; it
+  is not shared with the keyboard.
+  - **When on:** the session uses `.playAndRecord` with
+    `[.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]` and **no**
+    `.allowBluetoothHFP`. Bluetooth headphones therefore stay in A2DP
+    playback, with no hands-free switch, its lower quality or its added
+    latency. `setPreferredInput` picks the `.builtInMic` port and re-asserts
+    it on every route change, which also overrides a wired or USB headset
+    microphone.
+  - **When off:** the previous behavior, `.allowBluetoothHFP` with the
+    system-chosen input.
+  - A change applies at the next session start, or immediately when it is
+    made in the foreground during a session, by reconfiguring and restarting
+    the engine.
+  - The selection logic is pure in HostCore and tested. Home shows the input
+    port type in use (content-free: iPhone microphone, Bluetooth, headset,
+    USB).
