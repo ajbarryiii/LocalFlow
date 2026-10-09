@@ -846,3 +846,22 @@ Self-test with invented synthetic speech (2.42 s):
 
   The device plan includes battery drain over 30 minutes, comparing an idle
   session against no session, and against Wispr Flow if it is installed.
+
+### Layout and undo (user feedback 2026-10-09; the user dictated it with the prototype)
+
+- **Compact key row** (dictation pad, and any non-QWERTY row): delete is the
+  wide key and return is the compact key at the right edge. The QWERTY area
+  follows Apple's layout.
+- **Undo last dictation.** After an insertion, auto or manual, the dictation
+  bar shows **Undo**, which removes exactly what was inserted, including a
+  trailing `"\n"` from "press enter". It is offered only while all of the
+  following hold:
+  - the `documentIdentifier` is unchanged
+  - `documentContextBeforeInput` still ends with the inserted text
+  - no other edit or cursor movement happened since: no typing, trackpad
+    movement or another insertion
+  - fewer than 30 s have passed
+
+  Removal uses `deleteBackward()` once per inserted grapheme. The inserted
+  text is held in instance memory only during that window, then dropped
+  (`KeyboardCore/UndoTracker`; pure, tested).
