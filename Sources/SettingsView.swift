@@ -89,7 +89,7 @@ struct GeneralSettingsView: View {
                     }
                 }
                 SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
-                    DictationShortcutEditor(onCaptureStateChange: { capturing in
+                    DictationShortcutEditor(showsPromptShortcut: true, onCaptureStateChange: { capturing in
                         if capturing { appState.suspendHotkeyMonitoringForShortcutCapture() }
                         else { appState.resumeHotkeyMonitoringAfterShortcutCapture() }
                     })

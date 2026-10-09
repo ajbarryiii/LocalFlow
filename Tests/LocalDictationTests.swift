@@ -24,6 +24,27 @@ enum LocalDictationTests {
         TestSupport.expectEqual(item.displayTranscript, "Synthetic raw")
         TestSupport.expectEqual(try! JSONDecoder().decode(PipelineHistoryItem.self, from: JSONEncoder().encode(item)).displayTranscript, "Synthetic raw")
         runSpokenDelimiterTests()
+        runPromptTagTests()
+    }
+
+    private static func runPromptTagTests() {
+        let tagged = process("  Rename the helper.  ", promptTag: "  [dictated]  ")
+        TestSupport.expectEqual(tagged.output, "[dictated] Rename the helper.")
+        TestSupport.expectEqual(tagged.rawTranscript, "Rename the helper.")
+        TestSupport.expect(tagged.addedPromptTag, "A prompt dictation must report its tag")
+        TestSupport.expectEqual(tagged.status, "Local transcription; added prompt tag")
+        TestSupport.expectEqual(process("Rename the helper.").output, "Rename the helper.")
+        TestSupport.expectEqual(process("Rename the helper.", promptTag: "   ").output, "Rename the helper.")
+        let formatted = process("Run quote make check end quote, press enter.", promptTag: "[dictated]")
+        TestSupport.expectEqual(formatted.output, "[dictated] Run \"make check\"")
+        TestSupport.expect(formatted.shouldPressEnter, "The prompt tag must compose with press enter")
+        let enterOnly = process("Press enter.", promptTag: "[dictated]")
+        TestSupport.expectEqual(enterOnly.output, "")
+        TestSupport.expect(!enterOnly.addedPromptTag, "A tag alone must never be pasted")
+        let macro = process("Blue bird", macros: [VoiceMacro(command: "Blue bird", payload: "Synthetic saved prompt.")],
+                            promptTag: "[dictated]")
+        TestSupport.expectEqual(macro.output, "Synthetic saved prompt.")
+        TestSupport.expect(!macro.addedPromptTag, "Macro payloads are saved text, not speech-to-text")
     }
 
     private static func runSpokenDelimiterTests() {
@@ -140,8 +161,8 @@ enum LocalDictationTests {
     }
 
     private static func process(_ transcript: String, macros: [VoiceMacro] = [], pressEnterEnabled: Bool = true,
-                                spokenDelimitersEnabled: Bool = true) -> LocalDictationResult {
+                                spokenDelimitersEnabled: Bool = true, promptTag: String? = nil) -> LocalDictationResult {
         LocalDictationCore.process(transcript, macros: macros, pressEnterEnabled: pressEnterEnabled,
-                                   spokenDelimitersEnabled: spokenDelimitersEnabled)
+                                   spokenDelimitersEnabled: spokenDelimitersEnabled, promptTag: promptTag)
     }
 }

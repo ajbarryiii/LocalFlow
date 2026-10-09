@@ -9,6 +9,11 @@ enum DictationShortcutAction: Equatable {
 final class DictationShortcutSessionController {
     private(set) var activeMode: RecordingTriggerMode?
     private(set) var toggleStopArmed = false
+    /// Whether the latest session should be tagged as a prompt. It survives `reset()` so the
+    /// session can still be read while it is being transcribed; the next session start replaces it.
+    private(set) var isPromptSession = false
+    /// A hold session started by the prompt shortcut stops when that shortcut is released.
+    private var promptStartedHold = false
 
     func handle(event: ShortcutEvent, isTranscribing: Bool) -> DictationShortcutAction? {
         // Paste Again is handled before this controller runs; if it ever
@@ -19,14 +24,16 @@ final class DictationShortcutSessionController {
             guard !isTranscribing else { return nil }
             switch event {
             case .toggleActivated:
-                activeMode = .toggle
-                toggleStopArmed = false
+                begin(.toggle, prompt: false)
                 return .start(.toggle)
             case .holdActivated:
-                activeMode = .hold
-                toggleStopArmed = false
+                begin(.hold, prompt: false)
                 return .start(.hold)
-            case .holdDeactivated, .toggleDeactivated:
+            case .promptActivated:
+                begin(.hold, prompt: true)
+                promptStartedHold = true
+                return .start(.hold)
+            case .holdDeactivated, .toggleDeactivated, .promptDeactivated:
                 return nil
             case .copyAgainTriggered:
                 return nil
@@ -35,6 +42,12 @@ final class DictationShortcutSessionController {
 
         guard let mode = activeMode else { return nil }
 
+        // Pressing the prompt shortcut during any recording tags that recording.
+        if event == .promptActivated {
+            isPromptSession = true
+            return nil
+        }
+
         switch mode {
         case .hold:
             switch event {
@@ -42,10 +55,10 @@ final class DictationShortcutSessionController {
                 activeMode = .toggle
                 toggleStopArmed = false
                 return .switchedToToggle
-            case .holdDeactivated:
+            case .holdDeactivated where !promptStartedHold, .promptDeactivated where promptStartedHold:
                 reset()
                 return .stop
-            case .holdActivated, .toggleDeactivated:
+            case .holdActivated, .holdDeactivated, .toggleDeactivated, .promptActivated, .promptDeactivated:
                 return nil
             case .copyAgainTriggered:
                 return nil
@@ -60,7 +73,7 @@ final class DictationShortcutSessionController {
                 guard toggleStopArmed else { return nil }
                 reset()
                 return .stop
-            case .holdActivated, .holdDeactivated:
+            case .holdActivated, .holdDeactivated, .promptActivated, .promptDeactivated:
                 return nil
             case .copyAgainTriggered:
                 return nil
@@ -69,8 +82,7 @@ final class DictationShortcutSessionController {
     }
 
     func beginManual(mode: RecordingTriggerMode) {
-        activeMode = mode
-        toggleStopArmed = false
+        begin(mode, prompt: false)
     }
 
     func forceToggleMode() {
@@ -81,5 +93,13 @@ final class DictationShortcutSessionController {
     func reset() {
         activeMode = nil
         toggleStopArmed = false
+        promptStartedHold = false
+    }
+
+    private func begin(_ mode: RecordingTriggerMode, prompt: Bool) {
+        activeMode = mode
+        toggleStopArmed = false
+        isPromptSession = prompt
+        promptStartedHold = false
     }
 }

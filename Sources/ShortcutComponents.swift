@@ -5,15 +5,19 @@ struct DictationShortcutEditor: View {
     @EnvironmentObject var appState: AppState
 
     let showsIntroText: Bool
+    let showsPromptShortcut: Bool
     let onCaptureStateChange: ((Bool) -> Void)?
 
     @State private var activeCaptureRole: ShortcutRole?
     @State private var holdValidationMessage: String?
     @State private var toggleValidationMessage: String?
     @State private var copyAgainValidationMessage: String?
+    @State private var promptValidationMessage: String?
 
-    init(showsIntroText: Bool = true, onCaptureStateChange: ((Bool) -> Void)? = nil) {
+    init(showsIntroText: Bool = true, showsPromptShortcut: Bool = false,
+         onCaptureStateChange: ((Bool) -> Void)? = nil) {
         self.showsIntroText = showsIntroText
+        self.showsPromptShortcut = showsPromptShortcut
         self.onCaptureStateChange = onCaptureStateChange
     }
 
@@ -69,6 +73,22 @@ struct DictationShortcutEditor: View {
                     copyAgainValidationMessage = appState.setShortcut(binding, for: .copyAgain)
                 }
             )
+
+            if showsPromptShortcut {
+                ShortcutRoleSection(
+                    role: .prompt,
+                    selection: appState.promptShortcut,
+                    validationMessage: promptValidationMessage,
+                    isCapturing: Binding(
+                        get: { activeCaptureRole == .prompt },
+                        set: { activeCaptureRole = $0 ? .prompt : nil }
+                    ),
+                    onSelect: { binding in
+                        promptValidationMessage = appState.setShortcut(binding, for: .prompt)
+                    }
+                )
+                PromptTagField()
+            }
 
             Text("Custom shortcuts can use regular keys, modifier-only shortcuts, or modifier combinations.")
                 .font(.caption)
@@ -131,6 +151,47 @@ struct ShortcutRoleSection: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+        }
+    }
+}
+
+/// Edits the tag placed before prompt dictations. Commits on Return or focus loss, not per keystroke,
+/// so typing does not republish app state. An empty tag restores the default.
+private struct PromptTagField: View {
+    @EnvironmentObject var appState: AppState
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Prompt tag")
+                TextField(AppState.defaultPromptTag, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .focused($isFocused)
+                    .onSubmit(commit)
+            }
+            Text("Hold to dictate a prompt for an AI agent: \(appState.promptTag) is added before the text so the agent knows it came from speech-to-text. Pressing it during any recording tags that recording.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Tell agents how to read \(appState.promptTag) messages, such as expecting misheard words and following self-corrections, in your global AGENTS.md or CLAUDE.md.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { text = appState.promptTag }
+        .onChange(of: isFocused) { focused in
+            if !focused { commit() }
+        }
+        .onDisappear(perform: commit)
+    }
+
+    private func commit() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tag = trimmed.isEmpty ? AppState.defaultPromptTag : trimmed
+        text = tag
+        if appState.promptTag != tag {
+            appState.promptTag = tag
         }
     }
 }
