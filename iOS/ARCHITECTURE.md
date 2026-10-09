@@ -881,3 +881,24 @@ Self-test with invented synthetic speech (2.42 s):
   audio-session state is invalid, so resuming requires a new foreground
   start. Background engine restarts remain only for configuration changes
   within a surviving session.
+- **Undo ownership (after the keyboard-round review).** A suffix match alone
+  never authorizes deletion.
+  - **Invalidation.** Undo is permanently invalidated by any
+    `selectionDidChange` or `textDidChange` callback that our own pending
+    operation did not cause (an edit-generation token), by any typing, delete
+    (including each repeat), trackpad movement or insertion, by a focus
+    change, and by hiding the keyboard.
+  - **Execution.** Undo deletes progressively. It deletes only the portion of
+    the inserted text that the current context proves, then waits for the
+    context to update. It re-verifies that the remaining inserted prefix is
+    now the context's suffix, and repeats. It stops at the first mismatch or
+    timeout. It is never offered when the context shows none of the
+    insertion.
+  - **Lifetime.** The inserted text and any typing-context tail are cleared
+    when the keyboard hides or the 30 s window ends, whichever comes first.
+- **Trackpad safety.** Every adjustment re-validates the document identifier
+  and edit generation, and a stale session terminates. System cancellation
+  rolls back an outstanding one-unit probe before ending. Unit learning needs
+  fresh, discriminating evidence; ambiguous probes are not cached. Unchanged
+  context is ambiguous, never a document boundary, so further movement needs
+  new finger travel. The unit cache holds only the current field.
