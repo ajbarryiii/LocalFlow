@@ -994,3 +994,14 @@ The harness lives outside the repository
     a 0.3 s timeout. A caret shown exactly at the snapshot's edge is never
     taken as a line crossing.
   - Whether devices behave the same is part of the device plan.
+- **Device calibration (iPhone 15 Pro, iOS 26.6.2) confirms the per-event law
+  and curve.** Device values supersede the simulator's:
+  - Activation is **0.40 s** after touch-down; slop stays 16 pt.
+  - The first deletion comes **0.12 s** after touch-down.
+  - The left clamp is x = 1.0.
+  - There is no axis lock.
+
+  The keyboard normalizes each touch step to a 60 Hz event: `eventStepScale`
+  is `(1/60 s) / median touch interval`, measured from the extension's own
+  touches. Apple's behavior in 120 Hz (ProMotion) host apps is still
+  unmeasured; a test variant is ready.
