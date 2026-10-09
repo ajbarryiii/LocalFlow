@@ -1072,3 +1072,8 @@ The harness lives outside the repository
     debug readout in the keyboard menu.
   - **Later:** learning a width correction from the user's sideways nudges
     may come as a third layer.
+  - **Update (user, 2026-10-09):** the full-width profile is the current
+    tuning, unchanged; it already works well in T3 Code. Only Messages gets a
+    new measured profile. If the trait fingerprints cannot distinguish
+    Messages from full-width fields, the default is decided with the user
+    once the data is in. It is not automatically Messages.
