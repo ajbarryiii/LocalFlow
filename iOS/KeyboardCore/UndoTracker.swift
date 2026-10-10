@@ -10,11 +10,17 @@ import Foundation
 ///   truncated, its visible part may instead be a suffix of the insertion at least
 ///   `minimumVisibleSuffix` characters long, and deletion then proceeds progressively, re-verifying
 ///   continuity each step. Shorter insertions, such as a lone "\n", need both anchors in full; with an
-///   empty document, the exact whole context.
+///   empty document, the exact whole context. Both ends of what is deleted must be character
+///   boundaries in the current context, so a deletion never takes a neighbouring character the
+///   insertion merged with ("\r" + "\n", a letter + a combining mark).
 /// - **Attribution.** The insertion and each deletion may cause one host callback, which counts as
-///   ours only if it shows a state of this insertion (`acknowledge`, consumable). Anything else is an
-///   outside change: the owner advances the edit generation and the undo is gone for good. No time
-///   windows. A host that edits without callbacks is a residual risk the anchors mitigate.
+///   ours only if it shows a state of this insertion (`acknowledge`, consumable) and arrives within
+///   `callbackTimeout` of the operation. Anything else is an outside change: the owner advances the
+///   edit generation and the undo is gone for good. Time never makes a callback ours; it only ends
+///   what may still be: measured UIKit hosts send no callback for `insertText` or `deleteBackward`,
+///   so an owed one would otherwise wait for any later change that shows the same text (the host
+///   moving the caret to an identical passage, which UIKit reports with `textDidChange`). A host that
+///   edits without callbacks is a residual risk the anchors mitigate.
 /// - **No proof, no Undo.**
 /// - **Lifetime.** The text and anchors are held in memory for at most `window` and dropped on
 ///   invalidation.
@@ -24,6 +30,8 @@ struct UndoTracker: Equatable, Sendable {
     static let stepTimeout: TimeInterval = 0.5
     static let anchorLength = 24
     static let minimumVisibleSuffix = 16
+    /// How long after one of our operations its callback, if the host sends one, may arrive.
+    static let callbackTimeout: TimeInterval = 0.3
 
     struct Insertion: Equatable, Sendable {
         var text: String
@@ -50,8 +58,10 @@ struct UndoTracker: Equatable, Sendable {
     private(set) var remaining: String?
     private var stepContext: String?
     private var stepAt: TimeInterval?
-    /// Our own operations (the insertion, each deletion) whose callback may still arrive.
+    /// Our own operations (the insertion, each deletion) whose callback may still arrive, and when the
+    /// last of them was issued.
     private(set) var unconfirmedOperations = 0
+    private var lastOperationAt: TimeInterval = 0
 
     var isUndoing: Bool { remaining != nil }
 
@@ -64,6 +74,7 @@ struct UndoTracker: Equatable, Sendable {
                               anchorAfter: String((contextAfter ?? "").prefix(Self.anchorLength)),
                               documentID: documentID, generation: generation, insertedAt: time)
         unconfirmedOperations = 1
+        lastOperationAt = time
     }
 
     /// Drops the text and anchors: any other edit, a focus change, hiding, or the end of the window.
@@ -94,17 +105,38 @@ struct UndoTracker: Equatable, Sendable {
         // The after-anchor: in full for a short insertion, else as far as both are visible.
         let compared = isShort ? insertion.anchorAfter.count : min(insertion.anchorAfter.count, after.count)
         guard after.count >= compared, after.prefix(compared) == insertion.anchorAfter.prefix(compared) else { return 0 }
+        // The caret must sit on a character boundary: text that merged with what follows it (a
+        // combining mark after it) cannot be deleted without its neighbour.
+        let joined = before + after
+        guard isBoundary(before.utf16.count, in: joined) else { return 0 }
+        let proven: Int
         if isShort, insertion.anchorBefore.isEmpty, insertion.anchorAfter.isEmpty {
             // Inserted into an empty document: the context must be exactly what is left of it.
-            return before == part && after.isEmpty ? part.count : 0
+            proven = before == part && after.isEmpty ? part.count : 0
+        } else if before.hasSuffix(insertion.anchorBefore + part) {
+            proven = part.count
+        } else {
+            // A truncated context shows less than the anchor and the insertion; what it shows must be the
+            // end of them.
+            let anchored = insertion.anchorBefore + part
+            guard !isShort, !before.isEmpty, before.count < anchored.count, anchored.hasSuffix(before) else { return 0 }
+            let visible = min(before.count, part.count)
+            proven = continuing || visible >= minimumVisibleSuffix ? visible : 0
         }
-        let anchored = insertion.anchorBefore + part
-        if before.hasSuffix(anchored) { return part.count }
-        // A truncated context shows less than the anchor and the insertion; what it shows must be the
-        // end of them.
-        guard !isShort, !before.isEmpty, before.count < anchored.count, anchored.hasSuffix(before) else { return 0 }
-        let visible = min(before.count, part.count)
-        return continuing || visible >= minimumVisibleSuffix ? visible : 0
+        guard proven > 0, proven == part.count else { return proven }
+        // Deleting all of it reaches its start, which must also be a character boundary: a lone "\n"
+        // inserted after "\r" forms one "\r\n" character, and deleting it would take the "\r" too.
+        let start = before.utf16.count - part.utf16.count
+        if start > 0 { return isBoundary(start, in: joined) ? proven : 0 }
+        let merged = insertion.anchorBefore + part
+        return merged.count == insertion.anchorBefore.count + part.count ? proven : 0
+    }
+
+    /// Whether UTF-16 `offset` of `text` falls between two characters.
+    static func isBoundary(_ offset: Int, in text: String) -> Bool {
+        let units = text.utf16
+        guard offset >= 0, offset <= units.count else { return false }
+        return String.Index(units.index(units.startIndex, offsetBy: offset), within: text) != nil
     }
 
     /// Whether to show Undo: the insertion is still owned (field, generation, window) and the
@@ -150,9 +182,11 @@ struct UndoTracker: Equatable, Sendable {
     }
 
     /// A host callback while this undo is the pending operation. Ours if one of our operations still
-    /// owes a callback and the context shows a state of this insertion: all of it, or what this undo
-    /// has left of it so far. Consumes one.
-    mutating func acknowledge(before: String?, after: String?) -> Bool {
+    /// owes a callback (issued at most `callbackTimeout` ago) and the context shows a state of this
+    /// insertion: all of it, or what this undo has left of it so far. Consumes one.
+    mutating func acknowledge(before: String?, after: String?, now: TimeInterval) -> Bool {
+        let age = now - lastOperationAt
+        if age < 0 || age > Self.callbackTimeout { unconfirmedOperations = 0 }
         guard unconfirmedOperations > 0, fits(before: before, after: after) else { return false }
         unconfirmedOperations -= 1
         return true
@@ -195,6 +229,7 @@ struct UndoTracker: Equatable, Sendable {
         stepContext = before
         stepAt = now
         unconfirmedOperations += proven
+        lastOperationAt = now
         return .delete(proven)
     }
 

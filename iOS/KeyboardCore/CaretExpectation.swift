@@ -18,11 +18,18 @@ struct CaretExpectation: Equatable, Sendable {
     /// Up to this many code units on each side are compared.
     static let window = 32
 
-    /// The caret at UTF-16 `split` of `units`.
+    /// The caret at UTF-16 `split` of `units`. A split between the halves of a surrogate pair is
+    /// expected as the host reports it: each lone half reads as U+FFFD.
     init(units: [UInt16], split: Int) {
         let split = min(max(split, 0), units.count)
-        before = Array(units[max(0, split - Self.window) ..< split])
-        after = Array(units[split ..< min(units.count, split + Self.window)])
+        var before = Array(units[max(0, split - Self.window) ..< split])
+        var after = Array(units[split ..< min(units.count, split + Self.window)])
+        if let last = before.last, let first = after.first, UTF16.isLeadSurrogate(last), UTF16.isTrailSurrogate(first) {
+            before[before.count - 1] = 0xFFFD
+            after[0] = 0xFFFD
+        }
+        self.before = before
+        self.after = after
     }
 
     init(before: [UInt16]?, after: [UInt16]?, hiddenBefore: Int = 0, hiddenAfter: Int = 0) {
@@ -32,9 +39,14 @@ struct CaretExpectation: Equatable, Sendable {
         self.hiddenAfter = hiddenAfter
     }
 
+    /// Something about this outcome is unknown: a side, or characters the snapshot never showed.
+    var hasUnknowns: Bool { before == nil || after == nil || hiddenBefore > 0 || hiddenAfter > 0 }
+
     /// Whether a host context fits: on each side, the text both show is the same. A side the host
-    /// shows nothing of cannot disagree; but when neither side can be compared, the expectation fits
-    /// only if both agree on which sides are empty, unless something it expects is unknown.
+    /// shows nothing of cannot disagree. An outcome with unknowns needs affirmative evidence: some
+    /// text compared equal, text on the side it could not predict, or the characters it expected the
+    /// snapshot not to show (an emptied field shows none of these). Without unknowns and with nothing
+    /// to compare, both must agree on which sides are empty.
     func matches(before hostBefore: String, after hostAfter: String) -> Bool {
         let visibleBefore = hostBefore.dropLast(hiddenBefore)
         let visibleAfter = hostAfter.dropFirst(hiddenAfter)
@@ -52,7 +64,11 @@ struct CaretExpectation: Equatable, Sendable {
             compared += m
         }
         if compared > 0 { return true }
-        if before == nil || after == nil || hiddenBefore > 0 || hiddenAfter > 0 { return true }
+        if hasUnknowns {
+            // Text where nothing was predicted, or the characters the snapshot never showed.
+            return (before == nil && !hostBefore.isEmpty) || (after == nil && !hostAfter.isEmpty)
+                || visibleBefore.count < hostBefore.count || visibleAfter.count < hostAfter.count
+        }
         return before?.isEmpty == hostBeforeUnits.isEmpty && after?.isEmpty == hostAfterUnits.isEmpty
     }
 }

@@ -77,7 +77,7 @@ final class TextKitLineLayout: LineLayout {
 
 extension FieldTraits {
     /// The traits the field reports through the proxy. Content-free by construction: enum raw values,
-    /// flags, and a content type identifier (any non-identifier reads as "custom").
+    /// flags, and one of Apple's content type constants (any other value reads as "custom").
     @MainActor
     init(proxy: UITextDocumentProxy) {
         self.init()
@@ -95,9 +95,22 @@ extension FieldTraits {
         writingToolsBehavior = proxy.writingToolsBehavior?.rawValue ?? -1
         enablesReturnKeyAutomatically = proxy.enablesReturnKeyAutomatically ?? false
         isSecureTextEntry = proxy.isSecureTextEntry ?? false
-        textContentType = proxy.textContentType.map { type in
-            let raw = type.rawValue
-            return raw.count <= 40 && raw.allSatisfy({ $0.isASCII && $0.isLetter }) ? raw : "custom"
-        }
+        textContentType = Self.contentTypeLabel(proxy.textContentType?.rawValue, known: Self.appleContentTypes)
     }
+
+    /// Apple's `UITextContentType` constants, by raw value. An app may set any string as a content type,
+    /// so nothing else is ever encoded, hashed or shown.
+    static let appleContentTypes: Set<String> = {
+        let types: [UITextContentType] = [
+            .name, .namePrefix, .givenName, .middleName, .familyName, .nameSuffix, .nickname, .jobTitle,
+            .organizationName, .location, .fullStreetAddress, .streetAddressLine1, .streetAddressLine2,
+            .addressCity, .addressState, .addressCityAndState, .sublocality, .countryName, .postalCode,
+            .telephoneNumber, .emailAddress, .URL, .creditCardNumber, .username, .password, .newPassword,
+            .oneTimeCode, .shipmentTrackingNumber, .flightNumber, .dateTime, .birthdate, .birthdateDay,
+            .birthdateMonth, .birthdateYear, .creditCardSecurityCode, .creditCardName, .creditCardGivenName,
+            .creditCardMiddleName, .creditCardFamilyName, .creditCardExpiration, .creditCardExpirationMonth,
+            .creditCardExpirationYear, .creditCardType, .cellularEID, .cellularIMEI,
+        ]
+        return Set(types.map(\.rawValue))
+    }()
 }

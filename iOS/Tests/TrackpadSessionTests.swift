@@ -53,6 +53,10 @@ enum TrackpadSessionTests {
             ("callbacksMustMatchAnExpectedOutcome", testCallbacksMustMatchAnExpectedOutcome),
             ("probeCallbacksAreValidated", testProbeCallbacksAreValidated),
             ("finishesOnlyAfterItsCallbacks", testFinishesOnlyAfterItsCallbacks),
+            ("cancelledJumpIntoAHiddenClusterIsRepaired", testCancelledJumpIntoAHiddenClusterIsRepaired),
+            ("emptiedFieldIsNotACrossing", testEmptiedFieldIsNotACrossing),
+            ("singleEmojiFieldIsReachedInEitherUnit", testSingleEmojiFieldIsReachedInEitherUnit),
+            ("webKitReportsEachAdjustmentTwice", testWebKitReportsEachAdjustmentTwice),
         ]
     }
 
@@ -299,12 +303,35 @@ enum TrackpadSessionTests {
         TestSupport.expectEqual(session.frame(before: "Alpha beta gamma.", after: nil, timestamp: 1.01), nil)
         // The host's own context after the jump: the start of the next paragraph, then the column.
         TestSupport.expectEqual(session.frame(before: "Alpha beta gamma.\n", after: "Short line.", timestamp: 1.02), 8)
-        // Confirmed unchanged: the jump was ignored (the document's end) and the caret is where it was.
+        // Reported unchanged: the jump was ignored (the document's end) and the caret is where it was, or
+        // this is WebKit's first report of it (as issued). WebKit's second report confirms it.
         var ignored = makeDown()
         TestSupport.expect(ignored.acknowledge(before: "Alpha be", after: "ta gamma."), "ignored jump not expected")
         TestSupport.expectEqual(ignored.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1.02), nil)
+        TestSupport.expectEqual(ignored.ambiguousProbes[.end], nil)
+        TestSupport.expect(ignored.acknowledge(before: "Alpha be", after: "ta gamma."), "second report not expected")
+        TestSupport.expectEqual(ignored.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1.03), nil)
         TestSupport.expectEqual(ignored.committed, 8)
         TestSupport.expectEqual(ignored.ambiguousProbes[.end], 1)
+        // A host that reports once: with nothing else known, the timeout tells.
+        var once = makeDown()
+        TestSupport.expect(once.acknowledge(before: "Alpha be", after: "ta gamma."), "ignored jump not expected")
+        TestSupport.expectEqual(once.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1.31), nil)
+        TestSupport.expectEqual(once.committed, 8)
+        TestSupport.expectEqual(once.ambiguousProbes[.end], 1)
+        // Known to report once (a move reported only as it landed): confirmed at once.
+        var known = TrackpadSession(before: "Alpha be", after: "ta gamma.", unit: nil, parameters: .flat,
+                                    layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        known.drag(dx: -10, dy: 0)
+        TestSupport.expectEqual(known.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1), -1)
+        TestSupport.expect(known.acknowledge(before: "Alpha b", after: "eta gamma."), "move not expected")
+        TestSupport.expectEqual(known.frame(before: "Alpha b", after: "eta gamma.", timestamp: 1.01), nil)
+        known.drag(dx: 0, dy: 20)
+        TestSupport.expect(known.frame(before: "Alpha b", after: "eta gamma.", timestamp: 1.02) != nil, "no jump")
+        TestSupport.expect(known.acknowledge(before: "Alpha b", after: "eta gamma."), "ignored jump not expected")
+        TestSupport.expectEqual(known.frame(before: "Alpha b", after: "eta gamma.", timestamp: 1.03), nil)
+        TestSupport.expectEqual(known.committed, 7)
+        TestSupport.expectEqual(known.ambiguousProbes[.end], 1)
         // Still the provisional edge at the timeout: the same.
         var late = makeDown()
         TestSupport.expectEqual(late.frame(before: "Alpha beta gamma.", after: nil, timestamp: 1.31), nil)
@@ -365,7 +392,9 @@ enum TrackpadSessionTests {
     private static func testIgnoredProbesAreBoundedUntilNewTravel() {
         let parameters = TrackpadParameters.standard
         var host = FakeTextHost(text: "abc", caret: 3)
-        var session = makeSession(host)
+        // A field an earlier gesture showed to report each adjustment once (UIKit): an unchanged report is
+        // an ignored jump at once.
+        var session = makeSession(host, reportsTwice: false)
         // Each ignored jump drops the overshoot, so the next one needs new travel; after eight the edge
         // holds like Apple's last line, 8 points below its center.
         var time = runGesture(&session, host: &host, samples: slowDrag(dy: 0.5, samples: 60), end: false, restFrames: 2)
@@ -658,11 +687,14 @@ enum TrackpadSessionTests {
         // not the host moved, so a changed context (here, a wider window) once taught UTF-16.
         var (session, _, offset) = probedSession()
         TestSupport.expectEqual(offset, -2)
-        // It is not an outcome of the probe: as a callback it is an outside change.
-        TestSupport.expect(!session.acknowledge(before: "Earlier text. Hi e\u{301}e\u{301}", after: ""), "stale context accepted")
-        // Read at the timeout it places the caret where it was and teaches nothing.
-        _ = session.frame(before: "Earlier text. Hi e\u{301}e\u{301}", after: "", timestamp: 1.31)
+        // It shows the caret where it was: the probe's "ignored" outcome. It teaches nothing, and the
+        // next probe from there takes the smallest step.
+        TestSupport.expect(session.acknowledge(before: "Earlier text. Hi e\u{301}e\u{301}", after: ""), "ignored outcome")
+        TestSupport.expectEqual(session.frame(before: "Earlier text. Hi e\u{301}e\u{301}", after: "", timestamp: 1.01), -1)
         TestSupport.expectEqual(session.unit, nil)
+        TestSupport.expectEqual(session.retriesLeft, TrackpadParameters.standard.automaticProbeRetries - 1)
+        // A context that is no outcome of the probe is an outside change.
+        TestSupport.expect(!session.acknowledge(before: "Other text", after: ""), "unrelated context accepted")
     }
 
     private static func testUnitNeedsDiscriminatingEvidence() {
@@ -732,9 +764,10 @@ enum TrackpadSessionTests {
 
     private static func testUnanswerableProbesAreRetriedWithinBudget() {
         var (session, before, _) = probedSession()
-        // The context never changes: wait, retry within the budget, then stall until the finger moves.
+        // The context never changes: wait, then take the probe as ignored and retry with the smallest
+        // step within the budget, then stall until the finger moves.
         TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.1), nil)
-        TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.31), -2)
+        TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.31), -1)
         TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.62), nil)
         TestSupport.expectEqual(session.unit, nil)
         TestSupport.expect(session.isStalled, "not stalled")
@@ -744,7 +777,7 @@ enum TrackpadSessionTests {
         session.drag(dx: -5, dy: 0)
         TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.71), nil)
         session.drag(dx: 5, dy: 0)
-        TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.72), -2)
+        TestSupport.expectEqual(session.frame(before: before, after: "", timestamp: 1.72), -1)
     }
 
     private static func testProbesNeverStopInsideASurrogatePair() {
@@ -827,13 +860,16 @@ enum TrackpadSessionTests {
         session.drag(dx: -20, dy: 0)
         let before = host.context
         TestSupport.expectEqual(session.frame(before: before.before, after: before.after, timestamp: 1), -2)
-        // Before the adjustment lands, a selection callback showing the old state fits.
-        TestSupport.expect(session.fits(before: before.before, after: before.after), "before landing")
+        // A selection callback fits only an outcome of an adjustment still owed one: not the old state.
+        TestSupport.expect(!session.fits(before: before.before, after: before.after), "the old state fits")
         host.adjust(by: -2)
         let landed = host.context
+        TestSupport.expect(session.fits(before: landed.before, after: landed.after), "own outcome, selection")
         TestSupport.expect(session.acknowledge(before: landed.before, after: landed.after), "own outcome")
-        // One callback per adjustment: a second one is an outside change.
+        // One callback per adjustment: a second one is an outside change, and so is a selection callback
+        // once nothing is owed (the fourth review: the caret where the session has it is not proof).
         TestSupport.expect(!session.acknowledge(before: landed.before, after: landed.after), "consumed twice")
+        TestSupport.expect(!session.fits(before: landed.before, after: landed.after), "selection fits after consumption")
         // Anything else is an outside change.
         TestSupport.expect(!session.fits(before: "Other", after: " text"), "outside change")
         TestSupport.expect(!session.fits(before: "a", after: "bcdef"), "a different caret")
@@ -888,5 +924,119 @@ enum TrackpadSessionTests {
         _ = silentSession.frame(before: silent.context.before, after: silent.context.after, timestamp: 1.01)
         TestSupport.expect(!silentSession.isFinished(at: 1.2), "finished before the timeout")
         TestSupport.expect(silentSession.isFinished(at: 1.31), "not finished after the timeout")
+    }
+
+    private static func testCancelledJumpIntoAHiddenClusterIsRepaired() {
+        // The fourth review's P1: "ab" shows before a hidden "👍🏽"; the jump past the snapshot's end (+3)
+        // stops between the halves of a surrogate pair, and cancelling handled only unit probes.
+        var host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16, window: 2)
+        var session = makeSession(host)
+        session.drag(dx: 0, dy: 20)
+        let jump = session.frame(before: host.context.before, after: host.context.after, timestamp: 1)
+        TestSupport.expectEqual(jump, 3)
+        host.adjust(by: jump!)
+        TestSupport.expect(host.caretSplitsSurrogatePair, "the jump did not stop inside the pair")
+        TestSupport.expectEqual(session.cancel(at: 1.001), nil)
+        var time = 1.01
+        for _ in 0 ..< 120 where !session.isFinished(at: time) {
+            runFrame(&session, host: &host, at: time)
+            time += 1.0 / 120
+        }
+        TestSupport.expect(session.isFinished(at: time), "not finished")
+        TestSupport.expect(host.caretIsOnBoundary, "left inside a cluster at \(host.caret)")
+        TestSupport.expectEqual(host.caret, 2)
+        // A jump that crossed a line break cleanly, or that the host ignored, is left where it is.
+        for (text, caret, landing) in [("first\nsecond", 2, 6), ("only line", 4, 4)] {
+            var clean = FakeTextHost(text: text, caret: caret, model: .lineBreakOnly)
+            var cleanSession = makeSession(clean)
+            cleanSession.drag(dx: 0, dy: 20)
+            clean.adjust(by: cleanSession.frame(before: clean.context.before, after: clean.context.after, timestamp: 1)!)
+            _ = cleanSession.cancel(at: 1.001)
+            var t = 1.01
+            for _ in 0 ..< 120 where !cleanSession.isFinished(at: t) {
+                runFrame(&cleanSession, host: &clean, at: t)
+                t += 1.0 / 120
+            }
+            TestSupport.expectEqual(clean.caret, landing)
+            TestSupport.expectEqual(clean.adjustmentCount, 1)
+        }
+    }
+
+    private static func testEmptiedFieldIsNotACrossing() {
+        // The fourth review's P1: while a jump past the snapshot's edge was pending, the host cleared the
+        // field and reported empty contexts, which matched the crossing with nothing compared.
+        func makeJump() -> TrackpadSession {
+            var jump = TrackpadSession(before: "Alpha be", after: "ta gamma.", unit: nil, parameters: .flat,
+                                       layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+            jump.drag(dx: 0, dy: 20)
+            TestSupport.expectEqual(jump.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1), 10)
+            return jump
+        }
+        var emptied = makeJump()
+        TestSupport.expect(!emptied.acknowledge(before: nil, after: nil), "an emptied field taken for the crossing")
+        TestSupport.expect(!emptied.acknowledge(before: "", after: ""), "an emptied field taken for the crossing")
+        TestSupport.expect(!emptied.fits(before: nil, after: nil), "an emptied field fits")
+        // Affirmative evidence: the text before the edge, then the hidden line break.
+        var blank = makeJump()
+        TestSupport.expect(blank.acknowledge(before: "Alpha beta gamma.\n", after: nil), "a crossing onto a blank line")
+        var next = makeJump()
+        TestSupport.expect(next.acknowledge(before: "\n", after: "Short line."), "a crossing with text after")
+    }
+
+    private static func testSingleEmojiFieldIsReachedInEitherUnit() {
+        // The fourth review's P2: in a grapheme field holding only "👍🏽", a left probe of two units asks
+        // for two clusters, the host ignores it, and the probe was retried that way forever.
+        for unit in [CursorOffsetUnit.grapheme, .utf16] {
+            var host = FakeTextHost(text: "\u{1F44D}\u{1F3FD}", unit: unit)
+            var session = makeSession(host)
+            runGesture(&session, host: &host, samples: slowDrag(dx: -0.5, samples: 20))
+            TestSupport.expectEqual(host.caret, 0)
+            TestSupport.expect(host.caretIsOnBoundary, "inside the emoji in \(unit)")
+            TestSupport.expectEqual(session.unit, unit)
+        }
+        // As a WKWebView reports it (measured): each adjustment twice, the ignored probe included.
+        var webKit = FakeTextHost(text: "\u{1F44D}\u{1F3FD}", unit: .grapheme, provisionalContext: true)
+        webKit.reportsAsIssuedFirst = true
+        var session = makeSession(webKit)
+        runGesture(&session, host: &webKit, samples: slowDrag(dx: -0.5, samples: 20))
+        TestSupport.expectEqual(webKit.caret, 0)
+        TestSupport.expectEqual(session.unit, .grapheme)
+    }
+
+    private static func testWebKitReportsEachAdjustmentTwice() {
+        // Measured in a WKWebView (round 6): after adjustTextPosition the proxy answers provisionally,
+        // then textDidChange shows the context the adjustment was issued in, then the one it landed in.
+        // The first report was an unexplained callback, which ended every gesture after one step.
+        let text = "Invented ab\u{1F44D}\u{1F3FD}cd words and more text"
+        let caret = 23
+        var plain = FakeTextHost(text: text, caret: caret, unit: .grapheme, model: .uikit)
+        var plainSession = makeSession(plain)
+        runGesture(&plainSession, host: &plain, samples: slowDrag(dx: -1, samples: 140))
+        var webKit = FakeTextHost(text: text, caret: caret, unit: .grapheme, model: .uikit, provisionalContext: true)
+        webKit.reportsAsIssuedFirst = true
+        var session = makeSession(webKit)
+        runGesture(&session, host: &webKit, samples: slowDrag(dx: -1, samples: 140))
+        TestSupport.expect(plain.caret < caret - 8, "the gesture did not get far")
+        TestSupport.expectEqual(webKit.caret, plain.caret)
+        TestSupport.expectEqual(session.unit, .grapheme)
+        // The report as issued confirms nothing and is accepted once per adjustment.
+        var direct = TrackpadSession(before: "Alpha beta", after: " gamma.", unit: .utf16, parameters: .flat,
+                                     layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        direct.drag(dx: -30, dy: 0)
+        TestSupport.expectEqual(direct.frame(before: "Alpha beta", after: " gamma.", timestamp: 1), -3)
+        TestSupport.expect(direct.acknowledge(before: "Alpha beta", after: " gamma."), "the report as issued")
+        TestSupport.expectEqual(direct.frame(before: "Alpha beta", after: " gamma.", timestamp: 1.01), nil)
+        TestSupport.expectEqual(direct.unconfirmedAdjustments, 1)
+        TestSupport.expect(!direct.acknowledge(before: "Alpha beta", after: " gamma."), "reported as issued twice")
+        TestSupport.expect(direct.acknowledge(before: "Alpha b", after: "eta gamma."), "the report as landed")
+        TestSupport.expectEqual(direct.unconfirmedAdjustments, 0)
+        TestSupport.expectEqual(direct.reportsTwice, true)
+        // In a field known to report once (UIKit), the same report is no adjustment of this session's.
+        var single = TrackpadSession(before: "Alpha beta", after: " gamma.", unit: .utf16, reportsTwice: false,
+                                     parameters: .flat, layout: FixedWidthLayout(columns: 1_000), linePitch: 20,
+                                     layoutWidth: 10_000)
+        single.drag(dx: -30, dy: 0)
+        TestSupport.expectEqual(single.frame(before: "Alpha beta", after: " gamma.", timestamp: 1), -3)
+        TestSupport.expect(!single.acknowledge(before: "Alpha beta", after: " gamma."), "an unmoved report taken as issued")
     }
 }

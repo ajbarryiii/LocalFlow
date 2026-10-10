@@ -302,10 +302,13 @@ final class KeyboardDictationClient: ObservableObject {
         store.purgeExpiredResults(now: now)
         let results = store.resultRequestIDs().compactMap { store.readResult(requestID: $0).value }
         let plan = ledger.plan(for: results, documentID: documentID, now: now)
-        // While a trackpad gesture runs, results stay unclaimed in the shared files for a later pass.
-        if !plan.autoInsert.isEmpty, target?.isEditingBusy != true {
-            var context = target?.contextBeforeInput
-            for result in plan.autoInsert { insert(result, context: &context) }
+        // At most one result per pass, oldest first: what it inserts (a Return) can move the host to
+        // another field, so each one is bound again right before it is claimed, on a later pass. While
+        // the editing side is busy (a trackpad gesture, queued edits), results stay in the shared files.
+        if let next = plan.autoInsert.first, let target, !target.isEditingBusy,
+           ledger.disposition(of: next, documentID: target.documentID, now: Date()) == .autoInsert {
+            var context = target.contextBeforeInput
+            insert(next, context: &context)
         }
         // The ledger never offers a result that would insert nothing.
         manualInsertID = plan.manualInsert?.requestID

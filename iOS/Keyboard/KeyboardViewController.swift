@@ -42,7 +42,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.onUndoAvailabilityChanged = { [weak self] in self?.client.publishUndoState() }
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
-        input.fieldLayout = { [weak self] in self?.refreshFieldLayout() ?? FieldLayoutParameters.standard.defaultLayout }
+        input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
 
         let bar = UIHostingController(rootView: DictationBarView(
             client: client, chrome: chrome,
@@ -101,6 +101,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.viewDidDisappear(animated)
         client.stop()
         input.stop()
+        fieldProfile.forget()
         setMenu(visible: false)
     }
 
@@ -112,7 +113,13 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
+        readField()
         input.hostChanged(textChanged: false)
+    }
+
+    override func textWillChange(_ textInput: UITextInput?) {
+        super.textWillChange(textInput)
+        readField()
     }
 
     private func documentDidChange() {
@@ -123,7 +130,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // which also tracks a live switch; pinning `.light` here would not.
         let style: UIUserInterfaceStyle = proxy.keyboardAppearance == .dark ? .dark : .unspecified
         if overrideUserInterfaceStyle != style { overrideUserInterfaceStyle = style }
-        refreshFieldLayout()
+        readField()
     }
 
     // MARK: Field layout
@@ -138,11 +145,19 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         return LocalFlowSettings(configuration: configuration)
     }
 
-    /// The field's content-free fingerprint: its input traits, and the unit the trackpad learned here.
-    private var fieldFingerprint: FieldFingerprint {
+    /// The field's fingerprint as last read with a field identity, and the layout of the gesture
+    /// running (`FieldProfileTracker`). In memory; forgotten on hiding.
+    private var fieldProfile = FieldProfileTracker()
+
+    /// Reads the field's content-free fingerprint (its input traits as raw values, and the unit the
+    /// trackpad learned here) and updates the menu's readout. A reading without a field identity is
+    /// the proxy's placeholder and is ignored.
+    private func readField() {
         let proxy = textDocumentProxy
-        return FieldFingerprint(traits: FieldTraits(proxy: proxy),
-                                unit: input.trackpad.learnedUnit(for: proxy.documentIdentifierIfAvailable))
+        let documentID = proxy.documentIdentifierIfAvailable
+        fieldProfile.read(FieldFingerprint(traits: FieldTraits(proxy: proxy), unit: input.trackpad.learnedUnit(for: documentID)),
+                          documentID: documentID)
+        updateLayoutReadout()
     }
 
     private var layoutOverrides: [String: FieldLayout] {
@@ -153,28 +168,50 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         return overrides.merging(layoutChoices) { _, chosenHere in chosenHere }
     }
 
-    /// Picks the field's layout and updates the menu's readout.
-    @discardableResult
-    private func refreshFieldLayout() -> FieldLayout {
-        let fingerprint = fieldFingerprint
-        let layout = FieldLayoutChooser.layout(for: fingerprint, overrides: layoutOverrides)
+    private func updateLayoutReadout() {
+        let layout = fieldProfile.displayedLayout(overrides: layoutOverrides, geometry: fieldGeometry)
         if chrome.layout != layout { chrome.layout = layout }
-        if chrome.fieldSummary != fingerprint.summary { chrome.fieldSummary = fingerprint.summary }
+        let summary = fieldProfile.fingerprint?.summary ?? ""
+        if chrome.fieldSummary != summary { chrome.fieldSummary = summary }
+    }
+
+    /// A trackpad gesture starts: the field is read again, and its layout holds until the finger lifts.
+    private func layoutForGesture() -> FieldLayout {
+        readField()
+        let layout = fieldProfile.gestureBegan(overrides: layoutOverrides, geometry: fieldGeometry)
+        updateLayoutReadout()
         return layout
     }
 
-    /// The menu's one-tap switch: the other layout, remembered for this fingerprint.
+    /// The keyboard's width and orientation: the Messages geometry applies on its own only where it was
+    /// measured (portrait iPhones at validated widths).
+    private var fieldGeometry: FieldGeometry {
+        let width = view.bounds.width > 0 ? view.bounds.width : (view.window?.windowScene?.screen.bounds.width ?? 0)
+        let isPortrait = traitCollection.verticalSizeClass == .regular && traitCollection.horizontalSizeClass == .compact
+        return FieldGeometry(keyboardWidth: Double(width), isPortrait: isPortrait)
+    }
+
+    /// The menu's one-tap switch: the other layout, remembered for this fingerprint with each unit and
+    /// with none, so it holds after hiding forgets the learned unit.
+    /// Nothing is remembered before the field has been read with its identity.
     private func toggleFieldLayout() {
-        let fingerprint = fieldFingerprint
-        let layout = refreshFieldLayout().other
-        layoutChoices[fingerprint.key] = layout
-        fieldSettings?.setFieldLayout(layout.rawValue, forKey: fingerprint.key)
-        refreshFieldLayout()
+        readField()
+        let layout = fieldProfile.layout(overrides: layoutOverrides, geometry: fieldGeometry).other
+        for (key, chosen) in fieldProfile.choiceEntries(layout) {
+            layoutChoices[key] = chosen
+            fieldSettings?.setFieldLayout(chosen.rawValue, forKey: key)
+        }
+        updateLayoutReadout()
     }
 
     // MARK: Trackpad and menu
 
     private func trackpadChanged(_ active: Bool) {
+        if !active {
+            // The finger lifted: a fingerprint read meanwhile applies from the next gesture.
+            fieldProfile.gestureEnded()
+            updateLayoutReadout()
+        }
         if active { setMenu(visible: false) }
         UIView.animate(withDuration: 0.15) { self.bar?.view.alpha = active ? 0.3 : 1 }
         guard active, client.hapticsAllowed else { return }
@@ -203,7 +240,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
         if visible, menuPanel == nil {
             keyArea.cancelAllTouches()
-            refreshFieldLayout()
+            readField()
             let panel = UIHostingController(rootView: MenuPanelView(
                 client: client, chrome: chrome,
                 onClose: { [weak self] in self?.setMenu(visible: false) },

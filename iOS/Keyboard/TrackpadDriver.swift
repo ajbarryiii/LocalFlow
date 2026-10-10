@@ -11,7 +11,8 @@ import UIKit
 /// edits queued behind the gesture are flushed only after a completion.
 ///
 /// The context snapshot lives only in the session and is dropped when it ends; on hiding, at once.
-/// The learned offset unit is kept for the current field only, and forgotten on hiding.
+/// The learned offset unit, and whether the field reports each adjustment twice, are kept for the
+/// current field only, and forgotten on hiding.
 @MainActor
 final class TrackpadDriver: AdjustmentOwner {
     private weak var controller: UIInputViewController?
@@ -20,7 +21,11 @@ final class TrackpadDriver: AdjustmentOwner {
     private var documentID: UUID?
     private var generation = 0
     private var unitCache: (documentID: UUID, unit: CursorOffsetUnit)?
+    /// Whether the field reports each adjustment twice (WebKit), once learned; kept like the unit.
+    private var reportsCache: (documentID: UUID, reportsTwice: Bool)?
     private var touchRate = TouchRateEstimator()
+    /// The keyboard hid while a cancelled session still watches a jump; see `hide`.
+    private var isHiding = false
     var parameters = TrackpadParameters.standard
     /// The current edit generation, owned by `EditingCore`.
     var currentGeneration: () -> Int = { 0 }
@@ -53,12 +58,14 @@ final class TrackpadDriver: AdjustmentOwner {
         generation = currentGeneration()
         let unit = unitCache.flatMap { $0.documentID == documentID ? $0.unit : nil }
         if unit == nil { unitCache = nil }
+        let reportsTwice = reportsCache.flatMap { $0.documentID == documentID ? $0.reportsTwice : nil }
+        if reportsTwice == nil { reportsCache = nil }
         touchRate.beginGesture()
         var parameters = self.parameters
         parameters.eventStepScale = touchRate.eventStepScale
         session = TrackpadSession(
             before: proxy.documentContextBeforeInput, after: proxy.documentContextAfterInput,
-            unit: unit, parameters: parameters,
+            unit: unit, reportsTwice: reportsTwice, parameters: parameters,
             layout: layout, linePitch: layout.linePitch, layoutWidth: Double(width))
         if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
@@ -96,13 +103,20 @@ final class TrackpadDriver: AdjustmentOwner {
         if let rollback, rollback != 0 { proxy.adjustTextPosition(byCharacterOffset: rollback) }
     }
 
-    /// The keyboard is hiding: roll back an outstanding probe now, then drop the session, its
-    /// snapshot, the field's identity and its unit at once.
+    /// The keyboard is hiding: roll back an outstanding probe now and drop the snapshot, every expected
+    /// context and the learned unit at once. Only a jump past the edge still out keeps the text-free
+    /// session (and the field's identity) until its time limit, at most `syncTimeout`.
     func hide() {
         cancel(at: CACurrentMediaTime())
         unitCache = nil
+        reportsCache = nil
+        // The cancelled session already holds no text. A jump past the edge still out is watched until its
+        // time limit, so a caret it leaves inside a hidden cluster is repaired; nothing else is kept.
+        if let session, !session.isSettled {
+            isHiding = true
+            return
+        }
         abort()
-        documentID = nil
     }
 
     nonisolated func acknowledge(before: String?, after: String?) -> Bool {
@@ -119,7 +133,19 @@ final class TrackpadDriver: AdjustmentOwner {
         finish(completed: false)
     }
 
+    /// The editing side saw another field, or none (as it does for every callback once hidden): end the
+    /// gesture, unless a hidden keyboard is still watching a cancelled jump, which checks the field on
+    /// every frame itself.
+    func fieldChanged() {
+        guard !isHiding else { return }
+        abort()
+    }
+
     private func finish(completed: Bool) {
+        if isHiding {
+            isHiding = false
+            documentID = nil
+        }
         guard session != nil || displayLink != nil else { return }
         session = nil
         displayLink?.invalidate()
@@ -127,11 +153,15 @@ final class TrackpadDriver: AdjustmentOwner {
         onFinished?(completed)
     }
 
-    /// The proxy, if the field and the generation are still the ones the gesture started on.
+    /// The proxy, if the field and the generation are still the ones the gesture started on. While a
+    /// hidden keyboard finishes watching a cancelled jump, only the field counts: hiding itself advanced
+    /// the generation.
     private var validProxy: UITextDocumentProxy? {
         guard let controller, let documentID else { return nil }
         let proxy = controller.textDocumentProxy
-        guard proxy.documentIdentifierIfAvailable == documentID, currentGeneration() == generation else { return nil }
+        guard proxy.documentIdentifierIfAvailable == documentID, isHiding || currentGeneration() == generation else {
+            return nil
+        }
         return proxy
     }
 
@@ -140,7 +170,10 @@ final class TrackpadDriver: AdjustmentOwner {
         let offset = session.frame(before: proxy.documentContextBeforeInput, after: proxy.documentContextAfterInput,
                                    timestamp: link.timestamp)
         if let offset, offset != 0 { proxy.adjustTextPosition(byCharacterOffset: offset) }
-        if let unit = session.unit, let documentID { unitCache = (documentID, unit) }
+        if !isHiding, let documentID {
+            if let unit = session.unit { unitCache = (documentID, unit) }
+            if let reportsTwice = session.reportsTwice { reportsCache = (documentID, reportsTwice) }
+        }
         self.session = session
         if session.isFinished(at: link.timestamp) { finish(completed: !session.isCancelled) }
     }

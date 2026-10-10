@@ -83,9 +83,16 @@ struct FakeTextHost {
     /// As measured in UIKit: until that callback the proxy answers from the context it last reported,
     /// the caret moved by the offset in code units and clamped to that text.
     var provisionalContext: Bool
+    /// As measured in a WKWebView (round 6): every adjustment is reported twice, first with the context
+    /// it was issued in, a frame later as it landed; each report shows the caret as of that adjustment,
+    /// in order, and the proxy keeps showing it until the next report.
+    var reportsAsIssuedFirst = false
     private var queued: [(offset: Int, frames: Int)] = []
-    private var callbacks: [Int] = []
+    /// Callbacks still to come: in how many frames, and (WebKit) the caret the report shows.
+    private var callbacks: [(frames: Int, shows: Int?)] = []
     private var provisional: (units: [UInt16], caret: Int)?
+    /// The caret the proxy shows since WebKit's last report.
+    private var shownAsIssued: Int?
     private(set) var adjustmentCount = 0
 
     init(text: String, caret: Int? = nil, unit: CursorOffsetUnit = .utf16, model: FakeContextModel = .whole,
@@ -117,7 +124,7 @@ struct FakeTextHost {
     mutating func advanceFrame(applyingDueOnly: Bool = false) {
         if !applyingDueOnly {
             queued = queued.map { (offset: $0.offset, frames: $0.frames - 1) }
-            callbacks = callbacks.map { $0 - 1 }
+            callbacks = callbacks.map { (frames: $0.frames - 1, shows: $0.shows) }
         }
         while let first = queued.first, first.frames <= 0 {
             queued.removeFirst()
@@ -125,27 +132,46 @@ struct FakeTextHost {
         }
     }
 
-    /// The `textDidChange` callbacks due now. The first one replaces any provisional context.
-    mutating func takeCallbacks() -> Int {
-        let due = callbacks.filter { $0 <= 0 }.count
-        callbacks.removeAll { $0 <= 0 }
-        if due > 0 { provisional = nil }
-        return due
+    /// The next `textDidChange` due now, as the context the proxy shows when it arrives. The first one
+    /// replaces any provisional context.
+    mutating func takeCallback() -> (before: String, after: String)? {
+        guard let index = callbacks.firstIndex(where: { $0.frames <= 0 }) else { return nil }
+        let callback = callbacks.remove(at: index)
+        provisional = nil
+        shownAsIssued = callback.shows
+        return context
     }
 
     // MARK: Edits
 
+    /// Selected code units after the caret; the context after starts past them.
+    private(set) var selectionLength = 0
+
+    var hasSelection: Bool { selectionLength > 0 }
+
+    /// Inserts at the caret, replacing any selection.
     mutating func insertText(_ inserted: String) {
         provisional = nil
+        shownAsIssued = nil
         let units = Array(text.utf16)
         text = String(decoding: units[..<caret], as: UTF16.self) + inserted
-            + String(decoding: units[caret...], as: UTF16.self)
+            + String(decoding: units[(caret + selectionLength)...], as: UTF16.self)
         caret += inserted.utf16.count
+        selectionLength = 0
     }
 
-    /// Deletes the grapheme before the caret, as UIKit does (a decomposed é goes whole).
+    /// Deletes the selection, or the grapheme before the caret, as UIKit does (a decomposed é goes
+    /// whole; so does "\r\n").
     mutating func deleteBackward() {
         provisional = nil
+        shownAsIssued = nil
+        if selectionLength > 0 {
+            let units = Array(text.utf16)
+            text = String(decoding: units[..<caret], as: UTF16.self)
+                + String(decoding: units[(caret + selectionLength)...], as: UTF16.self)
+            selectionLength = 0
+            return
+        }
         guard caret > 0 else { return }
         let offsets = graphemeOffsets()
         let start = offsets.last { $0 < caret } ?? 0
@@ -157,10 +183,19 @@ struct FakeTextHost {
     /// The host app moves the caret (a tap, or code).
     mutating func moveCaret(to offset: Int) {
         provisional = nil
+        shownAsIssued = nil
+        selectionLength = 0
         caret = min(max(offset, 0), text.utf16.count)
     }
 
+    /// The host app selects `length` code units from `offset`.
+    mutating func select(from offset: Int, length: Int) {
+        moveCaret(to: offset)
+        selectionLength = max(0, min(length, text.utf16.count - caret))
+    }
+
     private mutating func apply(_ offset: Int) {
+        let issued = caret
         let total = text.utf16.count
         switch unit {
         case .utf16:
@@ -173,7 +208,14 @@ struct FakeTextHost {
                 if offsets.indices.contains(target) { caret = offsets[target] }
             }
         }
-        if let callbackFrames { callbacks.append(callbackFrames) }
+        if let callbackFrames {
+            if reportsAsIssuedFirst {
+                callbacks.append((callbackFrames, issued))
+                callbacks.append((callbackFrames + 1, caret))
+            } else {
+                callbacks.append((callbackFrames, nil))
+            }
+        }
     }
 
     private func graphemeOffsets() -> [Int] {
@@ -202,6 +244,12 @@ struct FakeTextHost {
             return (String(decoding: provisional.units[..<provisional.caret], as: UTF16.self),
                     String(decoding: provisional.units[provisional.caret...], as: UTF16.self))
         }
+        if let shownAsIssued { return window(at: shownAsIssued) }
+        // With a selection, the context before ends at its start and the one after begins at its end.
+        return (window(at: caret).before, window(at: caret + selectionLength).after)
+    }
+
+    private func window(at caret: Int) -> (before: String, after: String) {
         let units = Array(text.utf16)
         var start = 0, end = units.count
         switch model {
@@ -247,6 +295,13 @@ struct FakeTextHost {
 final class FakeDocument: TextDocument {
     var host: FakeTextHost
     var documentID: UUID?
+    /// The host reports our own `insertText` and `deleteBackward` with `textDidChange` this many run-loop
+    /// turns later; nil reports nothing, as UIKit was measured to do.
+    var editCallbackDelay: Int?
+    /// A Return typed here moves focus to this other field one turn later, as a form's return key can.
+    var returnMovesFocusTo: (host: FakeTextHost, id: UUID)?
+    /// Host events still to come: in how many turns, an action, and the callback that reports it.
+    private var scheduled: [(turns: Int, action: (() -> Void)?, textChanged: Bool)] = []
 
     init(_ host: FakeTextHost, documentID: UUID? = UUID()) {
         self.host = host
@@ -256,13 +311,61 @@ final class FakeDocument: TextDocument {
     var text: String { host.text }
     var contextBefore: String? { host.context.before.isEmpty ? nil : host.context.before }
     var contextAfter: String? { host.context.after.isEmpty ? nil : host.context.after }
+    var hasSelection: Bool { host.hasSelection }
 
     func insertText(_ text: String) {
         host.insertText(text)
+        if let editCallbackDelay { scheduled.append((editCallbackDelay, nil, true)) }
+        if text.contains("\n"), let other = returnMovesFocusTo {
+            returnMovesFocusTo = nil
+            scheduled.append((1, { [weak self] in self?.switchField(to: other.host, id: other.id) }, true))
+        }
     }
 
     func deleteBackward() {
         host.deleteBackward()
+        if let editCallbackDelay { scheduled.append((editCallbackDelay, nil, true)) }
+    }
+
+    // MARK: The host app
+
+    /// Moves the caret (a tap, or code), reported next turn by `selectionDidChange` or `textDidChange`.
+    func moveCaret(to offset: Int, reportedAsTextChange: Bool = false) {
+        host.moveCaret(to: offset)
+        scheduled.append((1, nil, reportedAsTextChange))
+    }
+
+    /// Selects text, reported next turn by `selectionDidChange`.
+    func select(from offset: Int, length: Int) {
+        host.select(from: offset, length: length)
+        scheduled.append((1, nil, false))
+    }
+
+    /// Focus moves to another field, reported next turn by `textDidChange`.
+    func focus(_ other: FakeTextHost, id: UUID?) {
+        scheduled.append((1, { [weak self] in self?.switchField(to: other, id: id) }, true))
+    }
+
+    /// Focus moves at once, before any callback reports it (the proxy already serves the new field).
+    func switchField(to other: FakeTextHost, id: UUID?) {
+        host = other
+        documentID = id
+    }
+
+    /// Callbacks still scheduled.
+    var pendingCallbacks: Int { scheduled.count }
+
+    /// One run-loop turn, at `now`: due host events happen and their callbacks reach `core`, in order.
+    @discardableResult
+    func pump<Edit>(_ core: EditingCore<Edit>, at now: TimeInterval) -> [EditingCore<Edit>.CallbackOutcome] {
+        scheduled = scheduled.map { (turns: $0.turns - 1, action: $0.action, textChanged: $0.textChanged) }
+        var outcomes: [EditingCore<Edit>.CallbackOutcome] = []
+        while let index = scheduled.firstIndex(where: { $0.turns <= 0 }) {
+            let event = scheduled.remove(at: index)
+            event.action?()
+            outcomes.append(core.hostChanged(textChanged: event.textChanged, now: now))
+        }
+        return outcomes
     }
 }
 
@@ -286,8 +389,7 @@ final class FakeAdjustments: AdjustmentOwner {
 /// explain would end the gesture, so it fails the test.
 func runFrame(_ session: inout TrackpadSession, host: inout FakeTextHost, at time: TimeInterval) {
     host.advanceFrame()
-    for _ in 0 ..< host.takeCallbacks() {
-        let context = host.context
+    while let context = host.takeCallback() {
         TestSupport.expect(session.acknowledge(before: context.before, after: context.after),
                            "a callback for the session's own adjustment was not explained")
     }
@@ -333,11 +435,12 @@ func runGesture(_ session: inout TrackpadSession, host: inout FakeTextHost, samp
     return time
 }
 
-func makeSession(_ host: FakeTextHost, unit: CursorOffsetUnit? = nil, columns: Int = 1_000,
+func makeSession(_ host: FakeTextHost, unit: CursorOffsetUnit? = nil, reportsTwice: Bool? = nil, columns: Int = 1_000,
                  advance: ((String) -> Double)? = nil, layoutWidth: Double = 10_000,
                  parameters: TrackpadParameters = .flat) -> TrackpadSession {
     let context = host.context
-    return TrackpadSession(before: context.before, after: context.after, unit: unit, parameters: parameters,
+    return TrackpadSession(before: context.before, after: context.after, unit: unit, reportsTwice: reportsTwice,
+                           parameters: parameters,
                            layout: FixedWidthLayout(columns: columns, advance: advance), linePitch: 20,
                            layoutWidth: layoutWidth)
 }

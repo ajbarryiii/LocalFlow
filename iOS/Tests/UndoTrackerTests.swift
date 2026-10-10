@@ -18,6 +18,7 @@ enum UndoTrackerTests {
             ("countsGraphemes", testCountsGraphemes),
             ("acknowledgesOnlyStatesOfTheInsertion", testAcknowledgesOnlyStatesOfTheInsertion),
             ("withinThirtySeconds", testWithinThirtySeconds),
+            ("bothEndsMustBeCharacterBoundaries", testBothEndsMustBeCharacterBoundaries),
         ]
     }
 
@@ -203,9 +204,9 @@ enum UndoTrackerTests {
         var undo = tracker()
         let after = "Earlier words here." + inserted
         // The insertion may cause one callback, which must show it.
-        TestSupport.expect(!undo.acknowledge(before: "Somewhere else", after: nil), "another place")
-        TestSupport.expect(undo.acknowledge(before: after, after: nil), "the insertion's own state")
-        TestSupport.expect(!undo.acknowledge(before: after, after: nil), "consumed twice")
+        TestSupport.expect(!undo.acknowledge(before: "Somewhere else", after: nil, now: 100.01), "another place")
+        TestSupport.expect(undo.acknowledge(before: after, after: nil, now: 100.02), "the insertion's own state")
+        TestSupport.expect(!undo.acknowledge(before: after, after: nil, now: 100.03), "consumed twice")
         // Each deletion may cause one, showing what is left.
         var field = Field(text: after, window: 20)
         guard case .delete(let count) = undo.begin(documentID: document, generation: 7, before: field.before,
@@ -213,8 +214,32 @@ enum UndoTrackerTests {
             return TestSupport.expect(false, "no first step")
         }
         field.delete(count)
-        TestSupport.expect(undo.acknowledge(before: field.before, after: nil), "a partly undone state")
-        TestSupport.expect(!undo.acknowledge(before: "Earlier words here.\nOther", after: nil), "not a state of it")
+        TestSupport.expect(undo.acknowledge(before: field.before, after: nil, now: 101.01), "a partly undone state")
+        TestSupport.expect(!undo.acknowledge(before: "Earlier words here.\nOther", after: nil, now: 101.02),
+                           "not a state of it")
+        // A callback owed is owed only briefly: measured hosts send none for our edits, and a later change
+        // that shows the same text (the caret moved to an identical passage) is not ours.
+        var late = tracker()
+        TestSupport.expect(!late.acknowledge(before: after, after: nil, now: 100 + UndoTracker.callbackTimeout + 0.01),
+                           "a late callback taken for the insertion's")
+        TestSupport.expect(!late.acknowledge(before: after, after: nil, now: 100.02), "a lapsed callback owed again")
+    }
+
+    private static func testBothEndsMustBeCharacterBoundaries() {
+        // The fourth review's P1: deletion counts characters, so the insertion's start must not have merged
+        // with the character before it ("\r" + "\n") and the caret must not sit inside a character (text
+        // followed by a combining mark that joined its last letter).
+        let crlf = tracker("\n", before: "Line one\r", after: "")
+        TestSupport.expect(!offered(crlf, before: "Line one\r\n"), "offered across \"\\r\\n\"")
+        let merged = tracker(" Invented words, long enough to show", before: "Earlier words here.", after: "\u{301} tail")
+        TestSupport.expect(!offered(merged, before: "Earlier words here. Invented words, long enough to show",
+                                    after: "\u{301} tail"), "offered with the caret inside a character")
+        // Truncated contexts: deleting only what is visible never reaches the start, so only the caret counts.
+        let long = " Forty characters of invented dictation."
+        let undo = tracker(long, before: "Earlier words here\r")
+        TestSupport.expect(offered(undo, before: String(long.suffix(20))), "a truncated context")
+        TestSupport.expect(UndoTracker.isBoundary(9, in: "Line one\r\n") == false, "inside \"\\r\\n\"")
+        TestSupport.expect(UndoTracker.isBoundary(10, in: "Line one\r\n"), "after \"\\r\\n\"")
     }
 
     private static func testWithinThirtySeconds() {

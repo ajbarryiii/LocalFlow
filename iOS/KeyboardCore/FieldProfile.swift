@@ -44,6 +44,13 @@ struct FieldLayoutParameters: Equatable, Sendable {
     var lineFragmentPadding = 0.0
     /// Never lay text out narrower than this.
     var minimumWidth = 40.0
+    /// Keyboard widths (portrait iPhones, points) where the Messages geometry was measured or follows
+    /// directly from measurement: 390 (17e), 402 (17, 17 Pro), 420 (Air), 440 (Pro Max), and 393 (the
+    /// iPhone 15 Pro, between two measured widths with the same margin). Display Zoom changes the width
+    /// in points, so a zoomed screen counts only if it lands on one of these.
+    var messagesValidatedWidths: [Double] = [390, 393, 402, 420, 440]
+    /// How close to a validated width counts as that width.
+    var messagesWidthTolerance = 1.0
     /// Messages' compose field as it reports itself (iOS 26.4 simulator, 2026-10-09): default keyboard
     /// and return key, sentence capitalization, autocorrection and spell checking left at their
     /// defaults, smart quotes and dashes off, smart insert/delete on. No other field measured has
@@ -58,6 +65,12 @@ struct FieldLayoutParameters: Equatable, Sendable {
     }()
 
     static let standard = FieldLayoutParameters()
+
+    /// Whether the Messages geometry applies here on its own: portrait, at a validated width. Elsewhere
+    /// (landscape, iPad, unmeasured widths) only a manual choice selects it.
+    func messagesGeometryApplies(keyboardWidth: Double, isPortrait: Bool) -> Bool {
+        isPortrait && messagesValidatedWidths.contains { abs($0 - keyboardWidth) <= messagesWidthTolerance }
+    }
 
     func margin(keyboardWidth: Double) -> Double {
         keyboardWidth < wideKeyboardWidth ? narrowMargin : wideMargin
@@ -98,8 +111,16 @@ struct FieldTraits: Hashable, Codable, Sendable {
     var writingToolsBehavior = 0
     var enablesReturnKeyAutomatically = false
     var isSecureTextEntry = false
-    /// One of Apple's `UITextContentType` identifiers, "custom" for any other, or nil.
+    /// One of Apple's `UITextContentType` constants (its raw value), "custom" for any other, or nil.
     var textContentType: String?
+
+    /// A field's content type as the fingerprint may hold it: an app can set any string here (a draft's
+    /// name, an identifier), so only Apple's own constants (`known`, raw values) pass; anything else
+    /// is "custom" before it is encoded, hashed or displayed.
+    static func contentTypeLabel(_ raw: String?, known: Set<String>) -> String? {
+        guard let raw else { return nil }
+        return known.contains(raw) ? raw : "custom"
+    }
 
     /// A stable, readable encoding, the input to the fingerprint's hash. The keyboard appearance is
     /// left out: Messages reports light or dark with the system appearance, and other fields switch it
@@ -158,20 +179,108 @@ struct FieldFingerprint: Hashable, Sendable {
     }
 }
 
+/// Where the keyboard is: its width and whether the device is in portrait.
+struct FieldGeometry: Equatable, Sendable {
+    var keyboardWidth: Double
+    var isPortrait: Bool
+}
+
 /// Picks a field's layout: the user's remembered choice for its fingerprint (with the unit, then
-/// without), else Messages for a field that looks like Messages' compose field, else the default.
-/// Pure.
+/// without), else Messages for a field that looks like Messages' compose field where the Messages
+/// geometry was measured (portrait, validated widths), else the default. Pure.
 enum FieldLayoutChooser {
-    static func layout(for fingerprint: FieldFingerprint, overrides: [String: FieldLayout],
+    static func layout(for fingerprint: FieldFingerprint, overrides: [String: FieldLayout], geometry: FieldGeometry,
                        parameters: FieldLayoutParameters = .standard) -> FieldLayout {
+        // A manual choice applies everywhere.
         if let chosen = overrides[fingerprint.key] ?? overrides[fingerprint.traitsKey] { return chosen }
-        if looksLikeMessages(fingerprint, parameters: parameters) { return .messages }
+        // The measured Messages geometry only where it was measured.
+        if looksLikeMessages(fingerprint, parameters: parameters),
+           parameters.messagesGeometryApplies(keyboardWidth: geometry.keyboardWidth, isPortrait: geometry.isPortrait) {
+            return .messages
+        }
         return parameters.defaultLayout
+    }
+
+    /// The overrides a manual choice writes: the fingerprint with each unit and with none, so the choice
+    /// holds whether or not the trackpad has learned the unit (hiding forgets it) and a later choice
+    /// replaces it whatever was known then.
+    static func choiceEntries(for fingerprint: FieldFingerprint, layout: FieldLayout) -> [String: FieldLayout] {
+        var entries: [String: FieldLayout] = [:]
+        for unit in [nil, CursorOffsetUnit.utf16, .grapheme] {
+            entries[FieldFingerprint(traits: fingerprint.traits, unit: unit).key] = layout
+        }
+        return entries
     }
 
     /// Messages' compose field: its measured trait signature, in a UIKit text view (a field where the
     /// trackpad learned grapheme units is WebKit, not Messages).
     static func looksLikeMessages(_ fingerprint: FieldFingerprint, parameters: FieldLayoutParameters = .standard) -> Bool {
         fingerprint.unit != .grapheme && fingerprint.traits.matchesSignature(parameters.messagesSignature)
+    }
+}
+
+/// The current field's fingerprint as the keyboard reads it, and the layout each trackpad gesture uses.
+/// Pure, in memory only.
+/// - **Readings.** The proxy's traits are read at every host callback and at each gesture's start (raw
+///   values, cheap). A reading without a field identity is a placeholder and is never used: measured
+///   at the keyboard's first appearance (iOS 26.4 simulator, round 6), the proxy reports default
+///   traits with no `documentIdentifier` until its first `textDidChange`.
+/// - **Gestures.** A gesture's layout is chosen when it starts, from the latest reading, and holds
+///   until it ends; a fingerprint that changes meanwhile (the trackpad learning the unit, the traits
+///   arriving late) applies from the next gesture.
+/// - **Choices.** A manual choice is remembered only for a real reading.
+struct FieldProfileTracker: Equatable, Sendable {
+    /// The latest reading taken with a field identity, and that identity.
+    private(set) var fingerprint: FieldFingerprint?
+    private(set) var documentID: UUID?
+    /// The layout of the gesture running, fixed at its start.
+    private(set) var gestureLayout: FieldLayout?
+
+    /// A reading of the proxy. Returns whether the fingerprint the next gesture would use changed.
+    @discardableResult
+    mutating func read(_ reading: FieldFingerprint, documentID: UUID?) -> Bool {
+        guard let documentID else { return false }
+        guard reading != fingerprint || documentID != self.documentID else { return false }
+        fingerprint = reading
+        self.documentID = documentID
+        return true
+    }
+
+    /// The keyboard is hiding: the field is forgotten.
+    mutating func forget() {
+        fingerprint = nil
+        documentID = nil
+        gestureLayout = nil
+    }
+
+    /// The layout for the field as last read; the default until a real reading.
+    func layout(overrides: [String: FieldLayout], geometry: FieldGeometry,
+                parameters: FieldLayoutParameters = .standard) -> FieldLayout {
+        guard let fingerprint else { return parameters.defaultLayout }
+        return FieldLayoutChooser.layout(for: fingerprint, overrides: overrides, geometry: geometry, parameters: parameters)
+    }
+
+    /// A gesture starts: its layout, fixed until it ends.
+    mutating func gestureBegan(overrides: [String: FieldLayout], geometry: FieldGeometry,
+                               parameters: FieldLayoutParameters = .standard) -> FieldLayout {
+        let chosen = layout(overrides: overrides, geometry: geometry, parameters: parameters)
+        gestureLayout = chosen
+        return chosen
+    }
+
+    mutating func gestureEnded() {
+        gestureLayout = nil
+    }
+
+    /// What the menu shows: the running gesture's layout, else the one the next gesture will use.
+    func displayedLayout(overrides: [String: FieldLayout], geometry: FieldGeometry,
+                         parameters: FieldLayoutParameters = .standard) -> FieldLayout {
+        gestureLayout ?? layout(overrides: overrides, geometry: geometry, parameters: parameters)
+    }
+
+    /// The overrides a manual switch to `chosen` writes: none without a real reading.
+    func choiceEntries(_ chosen: FieldLayout) -> [String: FieldLayout] {
+        guard let fingerprint else { return [:] }
+        return FieldLayoutChooser.choiceEntries(for: fingerprint, layout: chosen)
     }
 }

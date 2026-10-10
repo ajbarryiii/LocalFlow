@@ -7,6 +7,7 @@ enum DeleteRepeatTests {
             ("charactersThenTwoWords", testCharactersThenTwoWords),
             ("scheduleTimes", testScheduleTimes),
             ("parametersDropIn", testParametersDropIn),
+            ("heldKeyIsBoundToItsPressAndField", testHeldKeyIsBoundToItsPressAndField),
         ]
     }
 
@@ -67,5 +68,46 @@ enum DeleteRepeatTests {
         close(schedule.repeatAt(5).time, 0.84, "switch")
         close(schedule.repeatAt(6).time, 1.14, "word interval")
         TestSupport.expectEqual(DeleteRepeatParameters.standard, DeleteRepeatParameters())
+    }
+
+    private static func testHeldKeyIsBoundToItsPressAndField() {
+        // The fourth review's P1: a held delete's timers outlived a focus change. Each deletion belongs to
+        // its press and its field.
+        let fieldA = UUID(), fieldB = UUID()
+        let schedule = DeleteRepeat()
+        var key = HeldDeleteKey(schedule: schedule)
+        TestSupport.expect(key.began(at: 10, documentID: nil) == nil, "a press without a field")
+        let first = key.began(at: 10, documentID: fieldA)!
+        close(first.firstAt, schedule.firstDeletion, "first deletion")
+        // The schedule as before: one character, then the repeats.
+        let fired = key.fire(token: first.token, documentID: fieldA)!
+        TestSupport.expectEqual(fired.unit, .character)
+        close(fired.nextAt, schedule.repeatAt(1).time, "first repeat")
+        for index in 1 ... 25 {
+            let next = key.fire(token: first.token, documentID: fieldA)!
+            TestSupport.expectEqual(next.unit, schedule.repeatAt(index).unit)
+            close(next.nextAt, schedule.repeatAt(index + 1).time, "repeat \(index)")
+        }
+        // A new press supersedes the old one's timers.
+        let second = key.began(at: 20, documentID: fieldA)!
+        TestSupport.expect(key.fire(token: first.token, documentID: fieldA) == nil, "an old press fired")
+        TestSupport.expect(key.press?.token == second.token, "the new press ended by an old timer")
+        // A release before the first deletion deletes once, only in the field it began in.
+        TestSupport.expectEqual(key.ended(cancelled: false, documentID: fieldA)?.deleteOnce, true)
+        _ = key.began(at: 30, documentID: fieldA)
+        TestSupport.expectEqual(key.ended(cancelled: false, documentID: fieldB)?.deleteOnce, false)
+        _ = key.began(at: 40, documentID: fieldA)
+        TestSupport.expectEqual(key.ended(cancelled: false, documentID: nil)?.deleteOnce, false)
+        _ = key.began(at: 50, documentID: fieldA)
+        TestSupport.expectEqual(key.ended(cancelled: true, documentID: fieldA)?.deleteOnce, false)
+        // After a deletion, a release deletes nothing more; a second release is nothing.
+        let held = key.began(at: 60, documentID: fieldA)!
+        _ = key.fire(token: held.token, documentID: fieldA)
+        TestSupport.expectEqual(key.ended(cancelled: false, documentID: fieldA)?.deleteOnce, false)
+        TestSupport.expect(key.ended(cancelled: false, documentID: fieldA) == nil, "released twice")
+        // A timer in another field ends the press without deleting.
+        let moved = key.began(at: 70, documentID: fieldA)!
+        TestSupport.expect(key.fire(token: moved.token, documentID: fieldB) == nil, "deleted in another field")
+        TestSupport.expect(key.press == nil, "press kept in another field")
     }
 }
