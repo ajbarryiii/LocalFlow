@@ -1088,3 +1088,14 @@ The harness lives outside the repository
   - **Tests match measurement:** `FakeTextHost` models the measured UIKit
     context: two sentences back across line breaks, and forward to the end of
     the sentence or line.
+- **Field profile parameters (measured, iOS 26.4 simulators).**
+  - **Messages profile:** wrap width = keyboard width − (2·m + 117.33), with
+    m = 16 below 414 pt and 20 otherwise. That is 243.7 pt on a 393 pt
+    iPhone 15 Pro. It uses the Dynamic Type body font, TextKit 1 and
+    line-fragment padding 0.
+  - **Full-width profile:** the current chrome of 40 total on 16 pt-margin
+    phones, and 48 on 20 pt-margin phones.
+  - **Line pitch in both profiles** is the layout's real line advance,
+    lineHeight + leading (24.00 pt at the default size), not
+    `font.lineHeight`. The 22.29 pt used before made every vertical step
+    7.7 % short.
