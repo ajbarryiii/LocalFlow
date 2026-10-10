@@ -1183,3 +1183,25 @@ The harness lives outside the repository
     gestures, probes, lag and WebKit double reports. It asserts the document
     equals the keys applied in press order and that every completed gesture
     ends on a character boundary.
+- **Keyboard round 8 notes and residual risks.**
+  - **Key waits:** keys wait (one deadline, 0.4 s from the earliest waiting
+    key) for an identity, the Return barrier, a probe, a jump past the
+    visible text, or a cluster repair. A probe or jump that a key waits on is
+    resolved by its report, not by timeout.
+  - **Snapshots:** the snapshot is never retaken from a view that does not
+    show where the caret was put. Hosts that report each move twice are owed
+    both reports.
+  - **Shift:** shift is re-checked every frame for 0.5 s after each edit.
+  - **Residual risks:**
+    - Host reports later than 0.3 s are outside the trackpad's guarantees:
+      a probe resolved by timeout may learn the wrong unit, so on-device
+      latency under load needs measuring.
+    - Auto-capitalization assumes the visible context starts a sentence or
+      line, as measured in UIKit.
+    - Fields not yet known to report once are assumed to double-report, so
+      for about 1 s after a gesture one outside change can be mistaken for
+      ours.
+    - Hiding drops keys still waiting behind the Return barrier or without
+      an identity.
+  - **Torture coverage:** `TypingTorture` passes seeds 1–6000, with report
+    delays capped at 30 frames.
