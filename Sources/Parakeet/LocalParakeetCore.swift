@@ -15,7 +15,25 @@ enum LocalParakeetCore {
     static let buckets = [4, 8, 15, 30]
 
     static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        hex(SHA256.hash(data: data))
+    }
+
+    // Bounded reads keep a 330 MB encoder out of memory while verifying it.
+    static func sha256(fileURL: URL, chunkSize: Int = 1 << 20) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        // Drain each chunk's autoreleased buffer before reading the next.
+        while try autoreleasepool(invoking: {
+            guard let data = try handle.read(upToCount: chunkSize), !data.isEmpty else { return false }
+            hasher.update(data: data)
+            return true
+        }) {}
+        return hex(hasher.finalize())
+    }
+
+    private static func hex(_ digest: SHA256.Digest) -> String {
+        digest.map { String(format: "%02x", $0) }.joined()
     }
 
     static func bucket(samples: Int) throws -> Int {
@@ -57,6 +75,37 @@ enum LocalParakeetCore {
             frame += advance
         }
         return tokens
+    }
+}
+
+/// Consecutive chunks of exactly `size` samples; only the final one may be
+/// shorter. Streamed files and in-memory recordings share it, so both split
+/// the same audio at the same boundaries.
+struct ParakeetChunker {
+    let size: Int
+    private var pending: [Float] = []
+
+    init(size: Int) {
+        precondition(size > 0, "Chunk size must be positive")
+        self.size = size
+    }
+
+    mutating func append(_ samples: [Float], emit: ([Float]) throws -> Void) rethrows {
+        var rest = samples[...]
+        while pending.count + rest.count >= size {
+            let take = size - pending.count
+            let chunk = pending + rest.prefix(take)
+            pending = []
+            rest = rest.dropFirst(take)
+            try emit(chunk)
+        }
+        pending.append(contentsOf: rest)
+    }
+
+    mutating func finish(emit: ([Float]) throws -> Void) rethrows {
+        let chunk = pending
+        pending = []
+        if !chunk.isEmpty { try emit(chunk) }
     }
 }
 

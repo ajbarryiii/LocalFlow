@@ -22,13 +22,17 @@ final class LocalParakeetService: @unchecked Sendable {
     private let preparationQueue = DispatchQueue(label: "localflow.local-model-optimization", qos: .utility)
     private var runtime: LocalParakeetRuntime?
     private let startupStrategy: ParakeetStartupStrategy
+    private let computeUnits: MLComputeUnits
     private let onBucketUsed: (@Sendable (Int) -> Void)?
 
     // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
     // its serial queue. Benchmarks can compare startup policies explicitly.
+    // A host that may lose the Neural Engine in the background can use .cpuOnly.
     init(startupStrategy: ParakeetStartupStrategy = .applicationDefault,
+         computeUnits: MLComputeUnits = .cpuAndNeuralEngine,
          onBucketUsed: (@Sendable (Int) -> Void)? = nil) {
         self.startupStrategy = startupStrategy
+        self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
     }
 
@@ -70,6 +74,7 @@ final class LocalParakeetService: @unchecked Sendable {
     private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
         if let runtime, runtime.directory == directory { return runtime }
         let runtime = try LocalParakeetRuntime(directory: directory, startupStrategy: startupStrategy,
+                                               computeUnits: computeUnits,
                                                ownerQueue: queue, preparationQueue: preparationQueue,
                                                onBucketUsed: onBucketUsed)
         self.runtime?.cancelBackgroundPreparation()
@@ -87,6 +92,28 @@ final class LocalParakeetService: @unchecked Sendable {
     // Explicit directory also permits a synthetic-audio smoke check without
     // launching the app, reading user settings, or requesting microphone access.
     func transcribe(fileURL: URL, directory: URL) async throws -> String {
+        try await transcribe(directory: directory) { runtime, check in
+            try runtime.transcribe(fileURL: fileURL, check: check)
+        }
+    }
+
+    func transcribe(samples: [Float]) async throws -> String {
+        guard Self.isAvailable, let directory = Self.bundleDirectory else {
+            throw LocalParakeetError.invalid("The bundled LocalFlow model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
+        }
+        return try await transcribe(samples: samples, directory: directory)
+    }
+
+    // 16 kHz mono samples that are already in memory, such as a live capture
+    // buffer. Nothing is written to disk.
+    func transcribe(samples: [Float], directory: URL) async throws -> String {
+        try await transcribe(directory: directory) { runtime, check in
+            try runtime.transcribe(samples: samples, check: check)
+        }
+    }
+
+    private func transcribe(directory: URL,
+                            _ operation: @escaping @Sendable (LocalParakeetRuntime, () throws -> Void) throws -> String) async throws -> String {
         let cancellation = ParakeetCancellation()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -94,7 +121,7 @@ final class LocalParakeetService: @unchecked Sendable {
                 queue.async {
                     do {
                         try cancellation.check()
-                        let text = try self.runtime(for: directory).transcribe(fileURL: fileURL, check: cancellation.check)
+                        let text = try operation(self.runtime(for: directory), cancellation.check)
                         try cancellation.check()
                         continuation.resume(returning: text)
                     } catch {
@@ -130,14 +157,16 @@ private final class LocalParakeetRuntime {
     let vocabulary: [String]
     private let models = ParakeetModelCache<MLModel>()
     private let startupStrategy: ParakeetStartupStrategy
+    private let computeUnits: MLComputeUnits
     private var backgroundPreparation: ParakeetBackgroundPreparation<MLModel>?
     private let onBucketUsed: (@Sendable (Int) -> Void)?
 
-    init(directory: URL, startupStrategy: ParakeetStartupStrategy,
+    init(directory: URL, startupStrategy: ParakeetStartupStrategy, computeUnits: MLComputeUnits,
          ownerQueue: DispatchQueue, preparationQueue: DispatchQueue,
          onBucketUsed: (@Sendable (Int) -> Void)?) throws {
         self.directory = directory
         self.startupStrategy = startupStrategy
+        self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
         let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
         guard let manifest = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -149,7 +178,7 @@ private final class LocalParakeetRuntime {
         }
         for (name, digest) in files {
             guard !name.hasPrefix("/"), !name.split(separator: "/").contains(".."),
-                  LocalParakeetCore.sha256(try Data(contentsOf: directory.appendingPathComponent(name))) == digest else {
+                  try LocalParakeetCore.sha256(fileURL: directory.appendingPathComponent(name)) == digest else {
                 throw LocalParakeetError.invalid("Bundled LocalFlow integrity check failed. Rebuild the app.")
             }
         }
@@ -165,7 +194,7 @@ private final class LocalParakeetRuntime {
                 ownerQueue: ownerQueue, workerQueue: preparationQueue, buckets: startupStrategy.backgroundBuckets,
                 makeReady: { bucket in
                     try autoreleasepool {
-                        let model = try ParakeetEncoder.load(bucket: bucket, directory: directory)
+                        let model = try ParakeetEncoder.load(bucket: bucket, directory: directory, computeUnits: computeUnits)
                         try ParakeetEncoder.warm(bucket: bucket, model: model)
                         return model
                     }
@@ -186,22 +215,28 @@ private final class LocalParakeetRuntime {
     }
 
     private func loadModel(bucket: Int) throws -> MLModel {
-        try ParakeetEncoder.load(bucket: bucket, directory: directory)
+        try ParakeetEncoder.load(bucket: bucket, directory: directory, computeUnits: computeUnits)
     }
 
     func transcribe(fileURL: URL, check: () throws -> Void) throws -> String {
-        // Installs also run on this queue, so readiness is fixed for the recording.
-        let chunk = models.chunkSamples(strategy: startupStrategy)
-        var pending: [Float] = [], pieces: [String] = []
+        var chunker = makeChunker(), pieces: [String] = []
         try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
-            pending.append(contentsOf: samples)
-            while pending.count >= chunk {
-                pieces.append(try transcribeChunk(Array(pending.prefix(chunk)), check: check))
-                pending.removeFirst(chunk)
-            }
+            try chunker.append(samples) { pieces.append(try transcribeChunk($0, check: check)) }
         }
-        if !pending.isEmpty { pieces.append(try transcribeChunk(pending, check: check)) }
+        try chunker.finish { pieces.append(try transcribeChunk($0, check: check)) }
         return pieces.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
+        var chunker = makeChunker(), pieces: [String] = []
+        try chunker.append(samples) { pieces.append(try transcribeChunk($0, check: check)) }
+        try chunker.finish { pieces.append(try transcribeChunk($0, check: check)) }
+        return pieces.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    // Installs also run on this queue, so readiness is fixed for the recording.
+    private func makeChunker() -> ParakeetChunker {
+        ParakeetChunker(size: models.chunkSamples(strategy: startupStrategy))
     }
 
     private func transcribeChunk(_ input: [Float], check: () throws -> Void) throws -> String {
@@ -248,9 +283,9 @@ private final class LocalParakeetRuntime {
 }
 
 private enum ParakeetEncoder {
-    static func load(bucket: Int, directory: URL) throws -> MLModel {
+    static func load(bucket: Int, directory: URL, computeUnits: MLComputeUnits) throws -> MLModel {
         let config = MLModelConfiguration()
-        config.computeUnits = .cpuAndNeuralEngine
+        config.computeUnits = computeUnits
         if #available(macOS 15, *) { config.functionName = "b\(bucket)" }
         else { throw LocalParakeetError.invalid("LocalFlow requires macOS 26 or newer.") }
         return try MLModel(contentsOf: directory.appendingPathComponent("Encoder.mlmodelc"), configuration: config)

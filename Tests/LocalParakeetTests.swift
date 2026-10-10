@@ -38,7 +38,74 @@ enum LocalParakeetTests {
         testBlobBounds()
         testPreparedModelReuse()
         testFifteenSecondBootstrap()
+        testSharedChunking()
+        testInMemoryTranscriptionFailures()
+        testStreamingDigest()
         ParakeetBackgroundPreparationTests.run()
+    }
+
+    // Model verification hashes files in bounded reads; the digest must match
+    // hashing the whole file at once, including partial and empty reads.
+    private static func testStreamingDigest() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("synthetic.bin")
+        let data = Data((0..<10_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        try! data.write(to: url)
+        for chunkSize in [1, 4096, 5000, 10_000, 1 << 20] {
+            TestSupport.expectEqual(try! LocalParakeetCore.sha256(fileURL: url, chunkSize: chunkSize), LocalParakeetCore.sha256(data))
+        }
+        TestSupport.expect(try! LocalParakeetCore.sha256(fileURL: url, chunkSize: 4096) != LocalParakeetCore.sha256(data.dropLast()),
+                           "A truncated file must not match")
+        try! Data().write(to: url)
+        TestSupport.expectEqual(try! LocalParakeetCore.sha256(fileURL: url, chunkSize: 4096), LocalParakeetCore.sha256(Data()))
+        expectFailure { _ = try LocalParakeetCore.sha256(fileURL: directory.appendingPathComponent("missing.bin")) }
+    }
+
+    // Files arrive as bounded reads and in-memory recordings as one array;
+    // both must reach the encoder as the same chunks.
+    private static func testSharedChunking() {
+        func chunks(_ samples: [Float], size: Int, read: Int) -> [[Float]] {
+            var chunker = ParakeetChunker(size: size), result: [[Float]] = []
+            for start in stride(from: 0, to: samples.count, by: read) {
+                chunker.append(Array(samples[start..<min(start + read, samples.count)])) { result.append($0) }
+                chunker.append([]) { _ in fatalError("Empty reads must not emit chunks") }
+            }
+            chunker.finish { result.append($0) }
+            chunker.finish { _ in fatalError("A finished chunker must not emit again") }
+            return result
+        }
+        let samples = (0..<10).map(Float.init)
+        for read in [1, 3, 4, 7, 10] {
+            TestSupport.expectEqual(chunks(samples, size: 4, read: read), [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]])
+            TestSupport.expectEqual(chunks(Array(samples.prefix(8)), size: 4, read: read), [[0, 1, 2, 3], [4, 5, 6, 7]])
+        }
+        TestSupport.expectEqual(chunks([], size: 4, read: 1), [])
+        let recording = [Float](repeating: 0.25, count: 600_001)
+        TestSupport.expectEqual(chunks(recording, size: 240_000, read: 8192).map(\.count), [240_000, 240_000, 120_001])
+        TestSupport.expectEqual(chunks(recording, size: 240_000, read: recording.count).map(\.count), [240_000, 240_000, 120_001])
+        var failing = ParakeetChunker(size: 2)
+        expectFailure { try failing.append([1, 2, 3]) { _ in throw CancellationError() } }
+    }
+
+    // No model is needed: in-memory transcription must expose only
+    // content-free errors and honor cancellation like the file path.
+    private static func testInMemoryTranscriptionFailures() {
+        final class Outcome: @unchecked Sendable { var missing: Error?, cancelled: Error? }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst)
+        let outcome = Outcome(), done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do { _ = try await service.transcribe(samples: [0.25, -0.25], directory: directory) } catch { outcome.missing = error }
+            withUnsafeCurrentTask { $0?.cancel() }
+            do { _ = try await service.transcribe(samples: [0.25], directory: directory) } catch { outcome.cancelled = error }
+            done.signal()
+        }
+        TestSupport.expect(done.wait(timeout: .now() + 5) == .success, "In-memory transcription must finish")
+        TestSupport.expectEqual((outcome.missing as? LocalParakeetError)?.errorDescription,
+                                "Local transcription failed while loading the model or processing audio.")
+        TestSupport.expect(outcome.cancelled is CancellationError, "Cancelled in-memory transcription must throw CancellationError")
     }
 
     private static func testFifteenSecondBootstrap() {

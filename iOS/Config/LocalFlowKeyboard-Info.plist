@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>$(DISPLAY_NAME)</string>
+    <key>CFBundleExecutable</key>
+    <string>LocalFlowKeyboard</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(BUNDLE_ID).keyboard</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>LocalFlowKeyboard</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>$(SUPPORTED_PLATFORM)</string>
+    </array>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>DTPlatformName</key>
+    <string>$(SDK)</string>
+    <key>DTPlatformVersion</key>
+    <string>$(SDK_VERSION)</string>
+    <key>DTSDKName</key>
+    <string>$(SDK)$(SDK_VERSION)</string>
+    <key>LocalFlowAppGroupIdentifier</key>
+    <string>$(APP_GROUP)</string>
+    <key>LocalFlowURLScheme</key>
+    <string>$(URL_SCHEME)</string>
+    <key>MinimumOSVersion</key>
+    <string>$(DEPLOYMENT_TARGET)</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>IsASCIICapable</key>
+            <false/>
+            <key>PrefersRightToLeft</key>
+            <false/>
+            <key>PrimaryLanguage</key>
+            <string>en-US</string>
+            <key>RequestsOpenAccess</key>
+            <true/>
+        </dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.keyboard-service</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>LocalFlowKeyboard.KeyboardViewController</string>
+    </dict>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+    </array>
+</dict>
+</plist>
