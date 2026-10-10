@@ -19,6 +19,8 @@ final class MicrophoneCapture: HostCapture {
     var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
     /// The input in use changed or became known; nil once capture stops. Content-free.
     var onInputChanged: (@MainActor (InputPortKind?) -> Void)?
+    /// Whether the built-in microphone choice is in effect changed. Content-free.
+    var onRoutingChanged: (@MainActor (MicrophoneRouting) -> Void)?
     /// "Use iPhone microphone": the desired choice, kept apart from the one the session was configured
     /// with (`MicrophoneRouter`).
     let router = MicrophoneRouter()
@@ -113,6 +115,7 @@ final class MicrophoneCapture: HostCapture {
         tearDownEngine()
         onInputChanged?(nil)
         router.sessionEnded()
+        onRoutingChanged?(router.routing)
         guard activatedSession else { return }
         activatedSession = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -127,19 +130,35 @@ final class MicrophoneCapture: HostCapture {
     /// The applied choice's input, then mono input for the port now in use (the channel preference
     /// belongs to the port).
     private func applyInputChoice() {
-        router.applyInput(routeSession)
+        if router.applyInput(routeSession) { scheduleRoutingCheck() }
         AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance())
+        onRoutingChanged?(router.routing)
     }
 
-    /// Headphones plugged in or out, AirPods connecting: if the system moved the input off the built-in
-    /// microphone, ask for it again. The engine's configuration-change report then rebuilds it for the
-    /// new input (in the background too, within this session), through the usual grace period.
+    /// A request iOS answers with no route change at all is judged after `requestSettleTime`.
+    private func scheduleRoutingCheck() {
+        let requestID = router.requestID
+        DispatchQueue.main.asyncAfter(deadline: .now() + MicrophoneRouter.requestSettleTime) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.activatedSession else { return }
+                self.router.verify(self.routeSession, requestID: requestID)
+                self.onRoutingChanged?(self.router.routing)
+            }
+        }
+    }
+
+    /// Headphones plugged in or out, AirPods connecting, or iOS answering a request: the router reads the
+    /// route and, if the system moved the input off the built-in microphone, asks again. The engine's
+    /// configuration-change report then rebuilds it for the new input (in the background too, within
+    /// this session), through the usual grace period.
     private func routeChanged() {
         guard activatedSession else { return }
         // Only the applied choice: one deferred from the background must not move the input while the
         // category options still belong to the old one.
-        if router.routeChanged(routeSession) { AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance()) }
+        if router.routeChanged(routeSession) { scheduleRoutingCheck() }
+        AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance())
         onInputChanged?(routeSession.currentInput)
+        onRoutingChanged?(router.routing)
     }
 
     /// Every audio object is invalid, including the session this object activated, so there is nothing to
@@ -149,6 +168,7 @@ final class MicrophoneCapture: HostCapture {
         guard activatedSession else { return }
         activatedSession = false
         router.sessionEnded()
+        onRoutingChanged?(router.routing)
         tearDownEngine()
         onMediaServicesReset?()
     }
@@ -355,8 +375,14 @@ private final class SystemAudioRouteSession: AudioRouteSession {
         try session.setCategory(.playAndRecord, mode: .default, options: AVAudioSession.CategoryOptions(options))
     }
 
-    func setPreferredInput(_ kind: InputPortKind?) {
-        let port = kind.flatMap { kind in session.availableInputs?.first { InputPortKind($0.portType) == kind } }
-        try? session.setPreferredInput(port)
+    func setPreferredInput(_ kind: InputPortKind?) throws {
+        var port: AVAudioSessionPortDescription?
+        if let kind {
+            port = session.availableInputs?.first { InputPortKind($0.portType) == kind }
+            guard port != nil else { throw RouteError.inputUnavailable }
+        }
+        try session.setPreferredInput(port)
     }
+
+    private enum RouteError: Error { case inputUnavailable }
 }

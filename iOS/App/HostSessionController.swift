@@ -19,6 +19,8 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var captureConfiguration: CaptureConfiguration?
     /// The input in use while capturing, nil otherwise. Content-free; Home shows `currentInput?.label`.
     @Published private(set) var currentInput: InputPortKind?
+    /// Whether "Use iPhone microphone" is in effect; Home shows `microphoneRouting.problem` when it is not.
+    @Published private(set) var microphoneRouting = MicrophoneRouting.systemChoice
     /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
     @Published var bounceVisible = false
     /// "Try it" has the keyboard in this app, so an admission there must not cover it.
@@ -69,6 +71,9 @@ final class HostSessionController: ObservableObject {
             microphone.onMediaServicesReset = { [weak core] in core?.captureMediaServicesReset() }
             microphone.onConfigured = { [weak self] in self?.configured($0) }
             microphone.onInputChanged = { [weak self] in self?.inputChanged($0) }
+            microphone.onRoutingChanged = { [weak self] routing in
+                if self?.microphoneRouting != routing { self?.microphoneRouting = routing }
+            }
             microphone.router.setDesired(preferences.useBuiltInMicrophone)
         }
         #if LOCALFLOW_SELFTEST

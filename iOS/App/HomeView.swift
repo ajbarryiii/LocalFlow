@@ -109,7 +109,13 @@ private struct SessionCard: View {
                 if host.session == .active { remaining }
             }
 
-            if host.session == .active, let input = host.currentInput {
+            if host.session == .active, let problem = host.microphoneRouting.problem {
+                // The choice could not be honored; dictation goes on with the other input.
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("session.input")
+            } else if host.session == .active, let input = host.currentInput {
                 Label("Input: \(input.label)", systemImage: input == .builtInMic ? "iphone" : "headphones")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.secondary)

@@ -48,6 +48,7 @@ enum HostSessionCoreTests {
             ("microphoneChoiceAppliesInTheForegroundOnly", isolated(testMicrophoneChoiceAppliesInTheForegroundOnly)),
             ("staleConversionFailureAfterReconfigurationIsIgnored", isolated(testStaleConversionFailureAfterReconfigurationIsIgnored)),
             ("backgroundChoiceIsDeferredOnTheRoutePath", isolated(testBackgroundChoiceIsDeferredOnTheRoutePath)),
+            ("unresolvedMicrophoneChoiceKeepsDictating", isolated(testUnresolvedMicrophoneChoiceKeepsDictating)),
         ]
     }
 
@@ -1099,6 +1100,29 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(session.preferences.count, count)
         h.core.foregroundChanged()
         TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+    }
+
+    /// The built-in microphone cannot be selected (iOS refuses the request, a headset stays in use): the
+    /// routing is unresolved, which Home reports, and dictation goes on with the headset.
+    @MainActor
+    private static func testUnresolvedMicrophoneChoiceKeepsDictating() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.capture.routeSession.current = .headset
+        h.capture.routeSession.answer = .fail
+        h.record(R)
+        TestSupport.expectEqual(h.capture.router.routing, .unresolved(.headset))
+        TestSupport.expectEqual(h.status?.session, .active)
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "dictation stopped")
+        h.transcriber.complete(.success("words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .completed }, "not completed")
+        // The headset is unplugged: the next route change retries and resolves.
+        h.capture.routeSession.answer = .immediately
+        h.capture.routeChanged(to: .headset)
+        TestSupport.expectEqual(h.capture.router.routing, .builtInMicrophone)
     }
 }
 
