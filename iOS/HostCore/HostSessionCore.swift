@@ -172,6 +172,8 @@ final class HostSessionCore {
         let now = environment.now()
         if noteForeground(now) {
             if let pending = pendingStart { continueSessionStart(pending, now) }
+            // A choice made while the app could not apply it takes effect now that it is in front.
+            if session == .active, capture.needsReconfiguration { reconfigureCapture(now) }
             reconcilePass(.activation, now)
         }
         needsPublish = true
@@ -245,16 +247,7 @@ final class HostSessionCore {
         guard isLaunched, session == .active else { return }
         let now = environment.now()
         guard noteForeground(now) else { return }
-        do {
-            try capture.reconfigure()
-        } catch {
-            endSession(.engineFailed, now)
-            flush(now)
-            return
-        }
-        captureStartedAt = now
-        captureFailingSince = nil
-        needsPublish = true
+        reconfigureCapture(now)
         flush(now)
     }
 
@@ -401,8 +394,9 @@ final class HostSessionCore {
             finish(ticket.requestID, now)
         case .tailComplete(let generation):
             if closing?.ticket.generation == generation { drainClosing(now) }
-        case .conversionFailed(let generation):
-            guard let ticket = slot.ticket, ticket.generation == generation,
+        case .conversionFailed(let generation, let engine):
+            // A pipeline of an engine since replaced (a live reconfiguration or restart) no longer converts.
+            guard engine == capture.engineGeneration, let ticket = slot.ticket, ticket.generation == generation,
                   slot.phase == .starting || slot.phase == .recording else { break }
             endInProgress(.failed(.audioSessionFailed), now)
             noteCaptureFailure(now)   // a rebuilt engine gets a fresh converter
@@ -462,6 +456,19 @@ final class HostSessionCore {
         guard let since = captureFailingSince else { return }
         let pending = now.timeIntervalSince(since)
         if pending < 0 || pending >= HostSessionPolicy.captureStallGrace { recoverCapture(now) }
+    }
+
+    /// Applies changed capture settings in the foreground; the session ends if that fails.
+    private func reconfigureCapture(_ now: Date) {
+        do {
+            try capture.reconfigure()
+        } catch {
+            endSession(.engineFailed, now)
+            return
+        }
+        captureStartedAt = now
+        captureFailingSince = nil
+        needsPublish = true
     }
 
     /// While the audio session is active the engine may be rebuilt even in the background: `restart()`

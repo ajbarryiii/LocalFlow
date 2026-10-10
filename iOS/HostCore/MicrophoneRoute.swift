@@ -51,3 +51,67 @@ enum MicrophoneRoute {
         return currentInput != .builtInMic
     }
 }
+
+/// The audio session as `MicrophoneRouter` needs it: `AVAudioSession` in the app, a fake in tests.
+@MainActor
+protocol AudioRouteSession: AnyObject {
+    var availableInputs: [InputPortKind] { get }
+    var currentInput: InputPortKind? { get }
+    func setCategoryOptions(_ options: Set<MicrophoneRoute.CategoryOption>) throws
+    /// Prefers an input of `kind`, or clears the preference when nil.
+    func setPreferredInput(_ kind: InputPortKind?)
+}
+
+/// Keeps the user's desired microphone choice apart from the choice the active audio session was
+/// configured with. Route changes re-assert only the applied choice, so a change that has not been
+/// applied yet (one deferred because it arrived in the background) never mixes a new preferred input
+/// with the old category options. The desired choice takes effect at the next session start or
+/// foreground reconfiguration.
+@MainActor
+final class MicrophoneRouter {
+    /// What the user asked for; stored, not yet necessarily in effect.
+    private(set) var desired: Bool
+    /// What the active session was configured with; nil while no session is configured.
+    private(set) var applied: Bool?
+
+    init(desired: Bool = MicrophoneRoute.defaultUseBuiltInMicrophone) {
+        self.desired = desired
+    }
+
+    /// The active session was configured with another choice than the one now desired.
+    var needsReconfiguration: Bool { applied.map { $0 != desired } ?? false }
+
+    /// Records the choice only. Nothing about the session changes until `configure` runs.
+    func setDesired(_ value: Bool) {
+        desired = value
+    }
+
+    /// Session start or foreground reconfiguration: the desired choice becomes the applied one, category
+    /// options first. Call `applyInput` once the session is active.
+    func configureCategory(_ session: AudioRouteSession) throws {
+        try session.setCategoryOptions(MicrophoneRoute.categoryOptions(useBuiltInMicrophone: desired))
+        applied = desired
+    }
+
+    /// Prefers the built-in microphone under the applied choice, or clears any preference.
+    func applyInput(_ session: AudioRouteSession) {
+        guard let applied else { return }
+        session.setPreferredInput(MicrophoneRoute.preferredInput(useBuiltInMicrophone: applied,
+                                                                 availableInputs: session.availableInputs))
+    }
+
+    /// A route change: re-asserts the built-in microphone if the applied choice wants it and the system
+    /// moved the input away. Returns whether it did.
+    @discardableResult
+    func routeChanged(_ session: AudioRouteSession) -> Bool {
+        guard let applied, MicrophoneRoute.needsReassertion(useBuiltInMicrophone: applied, currentInput: session.currentInput,
+                                                            availableInputs: session.availableInputs) else { return false }
+        session.setPreferredInput(.builtInMic)
+        return true
+    }
+
+    /// The session ended or was lost: nothing is applied any more.
+    func sessionEnded() {
+        applied = nil
+    }
+}

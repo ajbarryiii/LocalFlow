@@ -11,6 +11,9 @@ enum MicrophoneRouteTests {
             ("systemChoiceClearsThePreference", testSystemChoiceClearsThePreference),
             ("reassertOnlyWhenMovedOffTheBuiltInMicrophone", testReassertOnlyWhenMovedOffTheBuiltInMicrophone),
             ("labelsAreContentFree", testLabelsAreContentFree),
+            ("deferredChoiceKeepsRoutingOnTheAppliedOne", isolated(testDeferredChoiceKeepsRoutingOnTheAppliedOne)),
+            ("deferredBuiltInChoiceDoesNotOverrideTheSystem", isolated(testDeferredBuiltInChoiceDoesNotOverrideTheSystem)),
+            ("noRoutingWithoutAConfiguredSession", isolated(testNoRoutingWithoutAConfiguredSession)),
         ]
     }
 
@@ -65,5 +68,108 @@ enum MicrophoneRouteTests {
 
     private static func testLabelsAreContentFree() {
         TestSupport.expectEqual(InputPortKind.allCases.map(\.label), ["iPhone microphone", "Bluetooth", "Headset", "USB", "Other"])
+    }
+
+    private static func isolated(_ body: @escaping @MainActor () -> Void) -> () -> Void {
+        { MainActor.assumeIsolated { body() } }
+    }
+
+    /// P1: a change deferred from the background must not move the input while the category options
+    /// still belong to the applied choice. Route changes re-assert only the applied choice; the next
+    /// configuration applies the desired one.
+    @MainActor
+    private static func testDeferredChoiceKeepsRoutingOnTheAppliedOne() {
+        let session = FakeRouteSession(available: [.builtInMic, .headset])
+        let router = MicrophoneRouter(desired: true)
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        TestSupport.expectEqual(session.categories, [MicrophoneRoute.categoryOptions(useBuiltInMicrophone: true)])
+        TestSupport.expectEqual(session.preferences, [.builtInMic])
+        TestSupport.expect(!router.needsReconfiguration, "fresh session needs reconfiguration")
+
+        router.setDesired(false)   // changed while the app could not apply it
+        TestSupport.expect(router.needsReconfiguration, "deferred change not pending")
+        TestSupport.expectEqual(session.categories.count, 1)
+        TestSupport.expectEqual(session.preferences, [.builtInMic])
+        // Headphones plugged in: the applied choice (built-in) is re-asserted, the old category kept.
+        session.current = .headset
+        TestSupport.expect(router.routeChanged(session), "applied choice not re-asserted")
+        TestSupport.expectEqual(session.preferences, [.builtInMic, .builtInMic])
+        TestSupport.expectEqual(session.categories.count, 1)
+
+        // The foreground reconfiguration applies the desired choice: hands-free category, preference cleared.
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        TestSupport.expectEqual(session.categories.last, MicrophoneRoute.categoryOptions(useBuiltInMicrophone: false))
+        TestSupport.expectEqual(session.preferences.last, .some(nil))
+        TestSupport.expect(!router.needsReconfiguration, "still pending after applying")
+        session.current = .headset
+        let count = session.preferences.count
+        TestSupport.expect(!router.routeChanged(session), "overrode the system choice")
+        TestSupport.expectEqual(session.preferences.count, count)
+    }
+
+    @MainActor
+    private static func testDeferredBuiltInChoiceDoesNotOverrideTheSystem() {
+        let session = FakeRouteSession(available: [.builtInMic, .headset])
+        let router = MicrophoneRouter(desired: false)
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        router.setDesired(true)
+        session.current = .headset
+        TestSupport.expect(!router.routeChanged(session), "a deferred choice moved the input")
+        TestSupport.expectEqual(session.preferences, [nil])
+        // A configuration that fails keeps the applied choice.
+        session.failCategory = true
+        TestSupport.expect((try? router.configureCategory(session)) == nil, "failure not reported")
+        TestSupport.expectEqual(router.applied, false)
+        session.failCategory = false
+        try! router.configureCategory(session)
+        TestSupport.expectEqual(router.applied, true)
+        TestSupport.expect(router.routeChanged(session), "applied built-in choice not re-asserted")
+    }
+
+    @MainActor
+    private static func testNoRoutingWithoutAConfiguredSession() {
+        let session = FakeRouteSession(available: [.builtInMic, .headset])
+        session.current = .headset
+        let router = MicrophoneRouter()
+        router.applyInput(session)
+        TestSupport.expect(!router.routeChanged(session), "routed without a session")
+        try! router.configureCategory(session)
+        router.sessionEnded()
+        TestSupport.expect(!router.routeChanged(session), "routed after the session ended")
+        TestSupport.expect(!router.needsReconfiguration, "an ended session needs reconfiguration")
+        TestSupport.expectEqual(session.preferences, [])
+    }
+}
+
+/// Records what the router asked of the audio session.
+@MainActor
+final class FakeRouteSession: AudioRouteSession {
+    var availableInputs: [InputPortKind]
+    var currentInput: InputPortKind?
+    var failCategory = false
+    private(set) var categories: [Set<MicrophoneRoute.CategoryOption>] = []
+    private(set) var preferences: [InputPortKind?] = []
+
+    init(available: [InputPortKind]) {
+        availableInputs = available
+        currentInput = available.first
+    }
+
+    var current: InputPortKind? {
+        get { currentInput }
+        set { currentInput = newValue }
+    }
+
+    func setCategoryOptions(_ options: Set<MicrophoneRoute.CategoryOption>) throws {
+        guard !failCategory else { throw CocoaError(.featureUnsupported) }
+        categories.append(options)
+    }
+
+    func setPreferredInput(_ kind: InputPortKind?) {
+        preferences.append(kind)
+        if let kind { currentInput = kind }
     }
 }

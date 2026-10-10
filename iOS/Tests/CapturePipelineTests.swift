@@ -171,7 +171,7 @@ enum CapturePipelineTests {
         for _ in 0..<(HostSessionPolicy.maxConsecutiveConversionFailures - 1) { h.pipeline.process(h.input([0.1])) }
         TestSupport.expectEqual(h.events.current, [])
         h.pipeline.process(h.input([0.1]))
-        TestSupport.expectEqual(h.events.current, [.conversionFailed(generation: generation)])
+        TestSupport.expectEqual(h.events.current, [.conversionFailed(generation: generation, engine: 7)])
         for _ in 0..<10 { h.pipeline.process(h.input([0.1])) }
         TestSupport.expectEqual(h.events.current.count, 1)
         // A success in between restarts the count.
@@ -228,7 +228,7 @@ private final class PipelineHarness {
         let clock = self.clock
         let events = self.events
         buffer = DictationSampleBuffer(maxDuration: maxDuration, hostClock: { clock.current })
-        pipeline = CapturePipeline(buffer: buffer, converter: converter, ticksPerSecond: 1_000_000_000,
+        pipeline = CapturePipeline(buffer: buffer, converter: converter, engineGeneration: 7, ticksPerSecond: 1_000_000_000,
                                    hostClock: { clock.current }) { event in events.update { $0.append(event) } }
     }
 

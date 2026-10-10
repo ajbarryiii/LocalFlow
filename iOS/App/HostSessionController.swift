@@ -69,7 +69,7 @@ final class HostSessionController: ObservableObject {
             microphone.onMediaServicesReset = { [weak core] in core?.captureMediaServicesReset() }
             microphone.onConfigured = { [weak self] in self?.configured($0) }
             microphone.onInputChanged = { [weak self] in self?.inputChanged($0) }
-            microphone.useBuiltInMicrophone = preferences.useBuiltInMicrophone
+            microphone.router.setDesired(preferences.useBuiltInMicrophone)
         }
         #if LOCALFLOW_SELFTEST
         (capture as? SyntheticCapture)?.onConfigured = { [weak self] in self?.configured($0) }
@@ -125,12 +125,13 @@ final class HostSessionController: ObservableObject {
         _ = transcriber.releaseIfIdle()
     }
 
-    /// "Use iPhone microphone". Stored now; applied at the next session start, or at once when changed in
-    /// the foreground during a session (never in the background).
+    /// "Use iPhone microphone". Stored and recorded as desired now; the session applies it at the next
+    /// start, at once when changed in the foreground during a session, or when the app next arrives in
+    /// the foreground. Until then routing keeps the applied choice (`MicrophoneRouter`).
     func setUseBuiltInMicrophone(_ value: Bool) {
         guard value != preferences.useBuiltInMicrophone else { return }
         preferences.useBuiltInMicrophone = value
-        (core?.capture as? MicrophoneCapture)?.useBuiltInMicrophone = value
+        (core?.capture as? MicrophoneCapture)?.router.setDesired(value)
         core?.captureSettingsChanged()
     }
 

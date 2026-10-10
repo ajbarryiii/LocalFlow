@@ -49,17 +49,21 @@ final class CapturePipeline<Converter: SampleConverter>: @unchecked Sendable {
     private var converting = false
     private var resetPending = false
     private var convertedToken: UInt64?
+    private var engine: UInt64
 
     // Confined to the capture thread.
     private var consecutiveFailures = 0
     private var tailReported: UInt64?
     private var anchor: (hostTime: UInt64, sampleTime: Int64)?
 
-    init(buffer: DictationSampleBuffer, converter: Converter, ticksPerSecond: Double = CaptureTiming.hostTicksPerSecond,
+    /// `engineGeneration` names the engine this pipeline converts for, in its conversion-failure reports.
+    init(buffer: DictationSampleBuffer, converter: Converter, engineGeneration: UInt64 = 0,
+         ticksPerSecond: Double = CaptureTiming.hostTicksPerSecond,
          hostClock: @escaping @Sendable () -> UInt64 = { mach_absolute_time() },
          deliver: @escaping @Sendable (CaptureEvent) -> Void) {
         self.buffer = buffer
         self.converter = converter
+        engine = engineGeneration
         self.ticksPerSecond = ticksPerSecond
         self.hostClock = hostClock
         self.deliver = deliver
@@ -84,7 +88,7 @@ final class CapturePipeline<Converter: SampleConverter>: @unchecked Sendable {
             } else {
                 consecutiveFailures += 1
                 if consecutiveFailures == HostSessionPolicy.maxConsecutiveConversionFailures {
-                    deliver(.conversionFailed(generation: window.token))
+                    deliver(.conversionFailed(generation: window.token, engine: engineGeneration))
                 }
             }
         }
@@ -105,6 +109,12 @@ final class CapturePipeline<Converter: SampleConverter>: @unchecked Sendable {
             convertedToken = nil
             resetPending = false
         }
+    }
+
+    /// The engine this pipeline now converts for, when one pipeline outlives several engines.
+    var engineGeneration: UInt64 {
+        get { lock.lock(); defer { lock.unlock() }; return engine }
+        set { lock.lock(); engine = newValue; lock.unlock() }
     }
 
     /// Forgets the arrival time, when the engine that fed this pipeline stops.

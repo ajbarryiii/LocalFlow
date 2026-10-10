@@ -19,6 +19,8 @@ protocol HostCapture: AnyObject {
     /// Applies changed capture settings (the microphone choice) inside the active session: category,
     /// preferred input and a new engine. Foreground only.
     func reconfigure() throws
+    /// Settings changed while they could not be applied (in the background): reconfigure once in front.
+    var needsReconfiguration: Bool { get }
     /// Stops the engine and deactivates the audio session. Idempotent.
     func stop()
     var isRunning: Bool { get }
@@ -38,8 +40,9 @@ enum CaptureEvent: Equatable, Sendable {
     case started(generation: UInt64)
     /// Recording `generation` filled the buffer to the maximum duration.
     case reachedLimit(generation: UInt64)
-    /// Input for recording `generation` repeatedly failed to convert.
-    case conversionFailed(generation: UInt64)
+    /// Input for recording `generation` repeatedly failed to convert in engine `engine`'s pipeline. The
+    /// engine generation fences the report: one queued before the engine was replaced is ignored.
+    case conversionFailed(generation: UInt64, engine: UInt64)
     /// Closing recording `generation` has received every frame captured before its end.
     case tailComplete(generation: UInt64)
 
@@ -64,6 +67,7 @@ final class UnavailableCapture: HostCapture {
     func start() throws { throw Unavailable() }
     func restart() throws { throw Unavailable() }
     func reconfigure() throws { throw Unavailable() }
+    var needsReconfiguration: Bool { false }
     func stop() {}
     var isRunning: Bool { false }
     var lastBufferAt: Date? { nil }

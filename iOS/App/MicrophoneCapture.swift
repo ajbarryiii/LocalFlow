@@ -19,8 +19,10 @@ final class MicrophoneCapture: HostCapture {
     var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
     /// The input in use changed or became known; nil once capture stops. Content-free.
     var onInputChanged: (@MainActor (InputPortKind?) -> Void)?
-    /// "Use iPhone microphone": read at every start, reconfiguration and route change.
-    var useBuiltInMicrophone = MicrophoneRoute.defaultUseBuiltInMicrophone
+    /// "Use iPhone microphone": the desired choice, kept apart from the one the session was configured
+    /// with (`MicrophoneRouter`).
+    let router = MicrophoneRouter()
+    private let routeSession = SystemAudioRouteSession()
 
     private(set) var engineGeneration: UInt64 = 0
     private let buffer: DictationSampleBuffer
@@ -75,11 +77,11 @@ final class MicrophoneCapture: HostCapture {
     func start() throws {
         stop()
         let session = AVAudioSession.sharedInstance()
-        try setCategory(on: session)
+        try router.configureCategory(routeSession)
         requested = AudioSessionTuning.requestPreferences(on: session)
         try session.setActive(true)
         activatedSession = true
-        applyInputChoice(on: session)
+        applyInputChoice()
         do {
             try startEngine()
         } catch {
@@ -102,15 +104,15 @@ final class MicrophoneCapture: HostCapture {
     func reconfigure() throws {
         guard activatedSession else { throw CaptureError.noSession }
         tearDownEngine()
-        let session = AVAudioSession.sharedInstance()
-        try setCategory(on: session)
-        applyInputChoice(on: session)
+        try router.configureCategory(routeSession)
+        applyInputChoice()
         try startEngine()
     }
 
     func stop() {
         tearDownEngine()
         onInputChanged?(nil)
+        router.sessionEnded()
         guard activatedSession else { return }
         activatedSession = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -120,20 +122,13 @@ final class MicrophoneCapture: HostCapture {
         pipeline?.boundaryPassed()
     }
 
-    private func setCategory(on session: AVAudioSession) throws {
-        let options = MicrophoneRoute.categoryOptions(useBuiltInMicrophone: useBuiltInMicrophone)
-        try session.setCategory(.playAndRecord, mode: .default, options: AVAudioSession.CategoryOptions(options))
-    }
+    var needsReconfiguration: Bool { activatedSession && router.needsReconfiguration }
 
-    /// Prefers the built-in microphone, or clears any preference so the system chooses; then mono input
-    /// for the port now in use (the channel preference belongs to the port).
-    private func applyInputChoice(on session: AVAudioSession) {
-        let available = session.availableInputs ?? []
-        let preferred = MicrophoneRoute.preferredInput(useBuiltInMicrophone: useBuiltInMicrophone,
-                                                       availableInputs: available.map { InputPortKind($0.portType) })
-        let port = preferred.flatMap { kind in available.first { InputPortKind($0.portType) == kind } }
-        try? session.setPreferredInput(port)
-        AudioSessionTuning.preferMonoInput(on: session)
+    /// The applied choice's input, then mono input for the port now in use (the channel preference
+    /// belongs to the port).
+    private func applyInputChoice() {
+        router.applyInput(routeSession)
+        AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance())
     }
 
     /// Headphones plugged in or out, AirPods connecting: if the system moved the input off the built-in
@@ -141,16 +136,10 @@ final class MicrophoneCapture: HostCapture {
     /// new input (in the background too, within this session), through the usual grace period.
     private func routeChanged() {
         guard activatedSession else { return }
-        let session = AVAudioSession.sharedInstance()
-        if MicrophoneRoute.needsReassertion(useBuiltInMicrophone: useBuiltInMicrophone, currentInput: Self.currentInput(session),
-                                            availableInputs: (session.availableInputs ?? []).map { InputPortKind($0.portType) }) {
-            applyInputChoice(on: session)
-        }
-        onInputChanged?(Self.currentInput(session))
-    }
-
-    private static func currentInput(_ session: AVAudioSession) -> InputPortKind? {
-        session.currentRoute.inputs.first.map { InputPortKind($0.portType) }
+        // Only the applied choice: one deferred from the background must not move the input while the
+        // category options still belong to the old one.
+        if router.routeChanged(routeSession) { AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance()) }
+        onInputChanged?(routeSession.currentInput)
     }
 
     /// Every audio object is invalid, including the session this object activated, so there is nothing to
@@ -159,6 +148,7 @@ final class MicrophoneCapture: HostCapture {
     private func mediaServicesWereReset() {
         guard activatedSession else { return }
         activatedSession = false
+        router.sessionEnded()
         tearDownEngine()
         onMediaServicesReset?()
     }
@@ -168,7 +158,10 @@ final class MicrophoneCapture: HostCapture {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.noInput }
-        let pipeline = CapturePipeline(buffer: buffer, converter: try InputConverter(input: format), deliver: deliver)
+        // Numbered before its pipeline exists, so the pipeline's reports carry the engine they belong to.
+        engineGeneration &+= 1
+        let pipeline = CapturePipeline(buffer: buffer, converter: try InputConverter(input: format),
+                                       engineGeneration: engineGeneration, deliver: deliver)
         let tapFrames = AudioSessionTuning.tapBufferFrames(sampleRate: format.sampleRate)
         input.installTap(onBus: 0, bufferSize: tapFrames, format: format, block: Self.tapBlock(for: pipeline))
         engine.prepare()
@@ -178,7 +171,6 @@ final class MicrophoneCapture: HostCapture {
             input.removeTap(onBus: 0)
             throw error
         }
-        engineGeneration &+= 1
         self.engine = engine
         self.pipeline = pipeline
         observe(engine, generation: engineGeneration)
@@ -187,8 +179,8 @@ final class MicrophoneCapture: HostCapture {
             source: "microphone", requestedIOBufferDuration: requested.ioBufferDuration,
             actualIOBufferDuration: session.ioBufferDuration, requestedSampleRate: requested.sampleRate,
             actualSampleRate: session.sampleRate, inputSampleRate: format.sampleRate, inputChannels: Int(format.channelCount),
-            tapBufferFrames: Int(tapFrames), inputPort: Self.currentInput(session)))
-        onInputChanged?(Self.currentInput(session))
+            tapBufferFrames: Int(tapFrames), inputPort: routeSession.currentInput))
+        onInputChanged?(routeSession.currentInput)
     }
 
     private func tearDownEngine() {
@@ -347,5 +339,24 @@ extension AVAudioSession.CategoryOptions {
             case .allowBluetoothHFP: insert(.allowBluetoothHFP)
             }
         }
+    }
+}
+
+/// `AVAudioSession` as the router sees it.
+@MainActor
+private final class SystemAudioRouteSession: AudioRouteSession {
+    private var session: AVAudioSession { AVAudioSession.sharedInstance() }
+
+    var availableInputs: [InputPortKind] { (session.availableInputs ?? []).map { InputPortKind($0.portType) } }
+
+    var currentInput: InputPortKind? { session.currentRoute.inputs.first.map { InputPortKind($0.portType) } }
+
+    func setCategoryOptions(_ options: Set<MicrophoneRoute.CategoryOption>) throws {
+        try session.setCategory(.playAndRecord, mode: .default, options: AVAudioSession.CategoryOptions(options))
+    }
+
+    func setPreferredInput(_ kind: InputPortKind?) {
+        let port = kind.flatMap { kind in session.availableInputs?.first { InputPortKind($0.portType) == kind } }
+        try? session.setPreferredInput(port)
     }
 }

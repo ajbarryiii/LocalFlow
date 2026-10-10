@@ -71,6 +71,8 @@ final class SyntheticCapture: HostCapture {
         guard activatedSession else { throw SyntheticError.noSession }
     }
 
+    var needsReconfiguration: Bool { false }
+
     func recordingBoundary() {
         pipeline.boundaryPassed()
     }
@@ -82,8 +84,9 @@ final class SyntheticCapture: HostCapture {
         engine.connect(silence, to: engine.mainMixerNode, format: AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
         try engine.start()
         keepAlive = engine
-        feeder.start()
         engineGeneration &+= 1
+        pipeline.engineGeneration = engineGeneration
+        feeder.start()
         let session = AVAudioSession.sharedInstance()
         onConfigured?(CaptureConfiguration(
             source: "synthetic", requestedIOBufferDuration: requested.ioBufferDuration,

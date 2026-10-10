@@ -46,6 +46,8 @@ enum HostSessionCoreTests {
             ("sessionEndDuringTheTailTranscribes", isolated(testSessionEndDuringTheTailTranscribes)),
             ("mediaServicesResetEndsTheSession", isolated(testMediaServicesResetEndsTheSession)),
             ("microphoneChoiceAppliesInTheForegroundOnly", isolated(testMicrophoneChoiceAppliesInTheForegroundOnly)),
+            ("staleConversionFailureAfterReconfigurationIsIgnored", isolated(testStaleConversionFailureAfterReconfigurationIsIgnored)),
+            ("backgroundChoiceIsDeferredOnTheRoutePath", isolated(testBackgroundChoiceIsDeferredOnTheRoutePath)),
         ]
     }
 
@@ -708,10 +710,11 @@ enum HostSessionCoreTests {
         defer { h.cleanup() }
         h.record(R)
         let generation = h.buffer.generation
-        h.core.captureDelivered(.conversionFailed(generation: generation &- 1))   // an older recording's
+        let engine = h.capture.engineGeneration
+        h.core.captureDelivered(.conversionFailed(generation: generation &- 1, engine: engine))   // an older recording's
         _ = TestSupport.waitUntil(timeout: 0.1) { false }
         TestSupport.expectEqual(h.core.current?.phase, .recording)
-        h.core.captureDelivered(.conversionFailed(generation: generation))
+        h.core.captureDelivered(.conversionFailed(generation: generation, engine: engine))
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .failed }, "conversion failure ignored")
         TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
         h.clock.now += grace
@@ -1035,6 +1038,68 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
         TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
     }
+
+    /// P1: a conversion failure the old pipeline queued just before a live reconfiguration replaced its
+    /// engine arrives afterwards. It must neither fail the recording nor rebuild the new engine.
+    @MainActor
+    private static func testStaleConversionFailureAfterReconfigurationIsIgnored() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.record(R)
+        let oldEngine = h.capture.engineGeneration
+        h.core.captureDelivered(.conversionFailed(generation: h.buffer.generation, engine: oldEngine))   // queued
+        h.setUseBuiltInMicrophone(false)   // the foreground swap runs before the queued event
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+        _ = TestSupport.waitUntil(timeout: 0.2) { false }   // the queued event is delivered now
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
+        h.clock.now += grace
+        h.feed()
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+        // The replacement engine's own failure still counts.
+        h.core.captureDelivered(.conversionFailed(generation: h.buffer.generation, engine: h.capture.engineGeneration))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .failed }, "current failure ignored")
+        TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
+    }
+
+    /// P1, through the controller and route path: a choice changed while the app is in the background is
+    /// only recorded. Route changes keep re-asserting the applied choice under its own category, and the
+    /// desired one is applied when the app is next in front.
+    @MainActor
+    private static func testBackgroundChoiceIsDeferredOnTheRoutePath() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        let session = h.capture.routeSession
+        h.core.userStartSession()
+        let builtIn = MicrophoneRoute.categoryOptions(useBuiltInMicrophone: true)
+        TestSupport.expectEqual(session.categories, [builtIn])
+        TestSupport.expectEqual(session.preferences, [.builtInMic])
+
+        h.clock.isForeground = false
+        h.setUseBuiltInMicrophone(false)   // deferred
+        TestSupport.expectEqual(h.capture.reconfigureCount, 0)
+        TestSupport.expect(h.capture.needsReconfiguration, "deferred change not pending")
+        // Headphones plugged in while in the background: the applied (built-in) choice is re-asserted,
+        // and the category is still the built-in one.
+        h.capture.routeChanged(to: .headset)
+        TestSupport.expectEqual(session.preferences, [.builtInMic, .builtInMic])
+        TestSupport.expectEqual(session.categories, [builtIn])
+
+        // Back in front: the desired choice is applied (hands-free category, preference cleared), and
+        // from then on the system's choice stands.
+        h.clock.isForeground = true
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+        TestSupport.expectEqual(session.categories.last, MicrophoneRoute.categoryOptions(useBuiltInMicrophone: false))
+        TestSupport.expectEqual(session.preferences.last, .some(nil))
+        TestSupport.expect(!h.capture.needsReconfiguration, "still pending")
+        let count = session.preferences.count
+        h.capture.routeChanged(to: .headset)
+        TestSupport.expectEqual(session.preferences.count, count)
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.capture.reconfigureCount, 1)
+    }
 }
 
 // MARK: Harness
@@ -1127,6 +1192,13 @@ private final class CoreHarness {
     /// Samples arriving while recording, between ticks.
     func feed(count: Int = 1_600) { deliver(count: count) }
 
+    /// What `HostSessionController.setUseBuiltInMicrophone` does: record the desired choice on the
+    /// capture's router, then let the core apply it if it may.
+    func setUseBuiltInMicrophone(_ value: Bool) {
+        capture.router.setDesired(value)
+        core.captureSettingsChanged()
+    }
+
     /// The capture reports that every frame captured before the finish has arrived.
     func completeTail() {
         core.captureDelivered(.tailComplete(generation: buffer.generation))
@@ -1157,6 +1229,9 @@ private final class FakeCapture: HostCapture {
     var failReconfigure = false
     var boundaryCount = 0
     var isRunning = false
+    /// The route path of `MicrophoneCapture`: the real router over a fake audio session.
+    let router = MicrophoneRouter()
+    let routeSession = FakeRouteSession(available: [.builtInMic, .headset])
     private(set) var engineGeneration: UInt64 = 0
     private var delivering = true
     private var stalledAt: Date?
@@ -1189,6 +1264,8 @@ private final class FakeCapture: HostCapture {
         TestSupport.expect(clock.isForeground, "a session was started in the background")
         guard !failStart else { throw CocoaError(.featureUnsupported) }
         startCount += 1
+        try router.configureCategory(routeSession)
+        router.applyInput(routeSession)
         isRunning = true
         engineGeneration += 1
     }
@@ -1205,12 +1282,25 @@ private final class FakeCapture: HostCapture {
         TestSupport.expect(isRunning, "reconfigured without a session")
         guard !failReconfigure else { throw CocoaError(.featureUnsupported) }
         reconfigureCount += 1
+        try router.configureCategory(routeSession)
+        router.applyInput(routeSession)
         engineGeneration += 1
     }
 
-    func stop() { isRunning = false }
+    func stop() {
+        isRunning = false
+        router.sessionEnded()
+    }
 
     func recordingBoundary() { boundaryCount += 1 }
+
+    var needsReconfiguration: Bool { isRunning && router.needsReconfiguration }
+
+    /// A route notification, as `MicrophoneCapture` handles it.
+    func routeChanged(to input: InputPortKind) {
+        routeSession.current = input
+        if isRunning { router.routeChanged(routeSession) }
+    }
 }
 
 /// A model that answers when told to. It honors cancellation like `TranscriptionEngine`, unless a test
