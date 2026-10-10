@@ -1119,3 +1119,26 @@ The harness lives outside the repository
     with the learned unit first, then the key with traits alone.
   - **Risk:** apps that also disable smart punctuation, such as code-oriented
     inputs, may be detected as Messages. The override fixes that in one tap.
+- **Keyboard round 6 notes (host behavior measured in the simulator).**
+  - **WebKit double-reports moves:** WebKit reports every caret move twice,
+    first with the pre-move text and then where the caret landed. The first
+    report is accepted once per move and confirms nothing. Whether a field
+    double-reports is learned and cached per field, like the unit.
+  - **UIKit reports moves as text changes:** UIKit sends no callback for the
+    keyboard's own inserts and reports host caret moves as `textDidChange`.
+    The allowance for a callback caused by our own insert or delete therefore
+    expires after 0.3 s. This only makes Undo stricter. A selection callback
+    counts as ours only for a still-pending trackpad adjustment.
+  - **Undo boundaries:** Undo requires both ends of the deletion to be
+    grapheme boundaries in the current context (CRLF, combining marks).
+  - **Re-checks:** queued edits drain one per frame, and auto-inserted
+    results go in one per pass. Each is re-validated against the field and
+    the edit generation. Held keys and deletes are bound to their press and
+    field.
+  - **Placeholder traits:** at first appearance the proxy reports default
+    traits and no field identity. Such readings are ignored, and traits are
+    re-read on every text or selection callback, on menu open, and at each
+    gesture start. The layout is fixed per gesture.
+  - **Measured widths:** the Messages layout is chosen automatically only in
+    portrait at measured widths of 390, 393, 402, 420 and 440 pt (±1). A
+    manual choice applies everywhere.
