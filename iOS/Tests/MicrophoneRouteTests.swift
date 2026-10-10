@@ -18,6 +18,9 @@ enum MicrophoneRouteTests {
             ("unsatisfiedRequestIsUnresolvedAndRetriedLater", isolated(testUnsatisfiedRequestIsUnresolvedAndRetriedLater)),
             ("failedRequestIsUnresolvedAtOnce", isolated(testFailedRequestIsUnresolvedAtOnce)),
             ("silentRequestIsJudgedAfterTheSettleTime", isolated(testSilentRequestIsJudgedAfterTheSettleTime)),
+            ("lateAndRepeatedEchoesAfterSettlementNeverRequest", isolated(testLateAndRepeatedEchoesAfterSettlementNeverRequest)),
+            ("newDeviceAfterFailureRetriesExactlyOnce", isolated(testNewDeviceAfterFailureRetriesExactlyOnce)),
+            ("changedInputsCountAsExternal", isolated(testChangedInputsCountAsExternal)),
             ("problemsAreContentFree", testProblemsAreContentFree),
         ]
     }
@@ -59,20 +62,20 @@ enum MicrophoneRouteTests {
         for moved in [InputPortKind.headset, .usb, .bluetooth, .other] {
             let (session, router) = configured(available: [.builtInMic, moved])
             session.current = moved   // headphones plugged in
-            router.routeChanged(session)
+            router.routeChanged(session, change: plugged)
             TestSupport.expectEqual(session.preferences, [.builtInMic, .builtInMic])
             TestSupport.expectEqual(router.routing, .builtInMicrophone)
         }
         let (session, router) = configured(available: [.builtInMic, .headset])
         let requests = session.preferences.count
-        TestSupport.expect(!router.routeChanged(session), "re-asserted on the built-in microphone")
+        TestSupport.expect(!router.routeChanged(session, change: echo), "re-asserted on the built-in microphone")
         TestSupport.expectEqual(session.preferences.count, requests)
         let (offSession, off) = configured(available: [.builtInMic, .headset], useBuiltIn: false)
         offSession.current = .headset
-        TestSupport.expect(!off.routeChanged(offSession), "overrode the system choice")
+        TestSupport.expect(!off.routeChanged(offSession, change: plugged), "overrode the system choice")
         TestSupport.expectEqual(off.routing, .systemChoice)
         let (usbSession, noBuiltIn) = configured(available: [.usb])
-        TestSupport.expect(!noBuiltIn.routeChanged(usbSession), "re-asserted without a built-in microphone")
+        TestSupport.expect(!noBuiltIn.routeChanged(usbSession, change: plugged), "re-asserted without a built-in microphone")
         TestSupport.expectEqual(noBuiltIn.routing, .unresolved(.usb))
     }
 
@@ -103,7 +106,7 @@ enum MicrophoneRouteTests {
         TestSupport.expectEqual(session.preferences, [.builtInMic])
         // Headphones plugged in: the applied choice (built-in) is re-asserted, the old category kept.
         session.current = .headset
-        router.routeChanged(session)
+        router.routeChanged(session, change: plugged)
         TestSupport.expectEqual(session.preferences, [.builtInMic, .builtInMic])
         TestSupport.expectEqual(session.categories.count, 1)
 
@@ -115,7 +118,7 @@ enum MicrophoneRouteTests {
         TestSupport.expect(!router.needsReconfiguration, "still pending after applying")
         session.current = .headset
         let count = session.preferences.count
-        TestSupport.expect(!router.routeChanged(session), "overrode the system choice")
+        TestSupport.expect(!router.routeChanged(session, change: plugged), "overrode the system choice")
         TestSupport.expectEqual(session.preferences.count, count)
     }
 
@@ -127,7 +130,7 @@ enum MicrophoneRouteTests {
         router.applyInput(session)
         router.setDesired(true)
         session.current = .headset
-        TestSupport.expect(!router.routeChanged(session), "a deferred choice moved the input")
+        TestSupport.expect(!router.routeChanged(session, change: plugged), "a deferred choice moved the input")
         TestSupport.expectEqual(session.preferences, [nil])
         // A configuration that fails keeps the applied choice.
         session.failCategory = true
@@ -136,7 +139,7 @@ enum MicrophoneRouteTests {
         session.failCategory = false
         try! router.configureCategory(session)
         TestSupport.expectEqual(router.applied, true)
-        router.routeChanged(session)
+        router.routeChanged(session, change: plugged)
         TestSupport.expectEqual(session.preferences.last, .builtInMic)
     }
 
@@ -146,14 +149,19 @@ enum MicrophoneRouteTests {
         session.current = .headset
         let router = MicrophoneRouter()
         router.applyInput(session)
-        TestSupport.expect(!router.routeChanged(session), "routed without a session")
+        TestSupport.expect(!router.routeChanged(session, change: plugged), "routed without a session")
         try! router.configureCategory(session)
         router.sessionEnded()
-        TestSupport.expect(!router.routeChanged(session), "routed after the session ended")
+        TestSupport.expect(!router.routeChanged(session, change: plugged), "routed after the session ended")
         TestSupport.expect(!router.needsReconfiguration, "an ended session needs reconfiguration")
         TestSupport.expectEqual(session.preferences, [])
     }
 
+
+    private static let plugged = RouteChange(reason: .newDeviceAvailable, previousInputs: [.builtInMic])
+    private static let unplugged = RouteChange(reason: .oldDeviceUnavailable, previousInputs: [.headset])
+    /// What a preferred-input request itself causes.
+    private static let echo = RouteChange(reason: .override, previousInputs: [.headset])
 
     /// A router with a session configured and its input applied.
     @MainActor
@@ -178,7 +186,7 @@ enum MicrophoneRouteTests {
         TestSupport.expectEqual(router.routing, .awaitingRoute)
         TestSupport.expectEqual(router.routing.problem, nil)
         session.deliverPendingRoute()
-        TestSupport.expect(!router.routeChanged(session), "requested again on its own answer")
+        TestSupport.expect(!router.routeChanged(session, change: echo), "requested again on its own answer")
         TestSupport.expectEqual(router.routing, .builtInMicrophone)
         TestSupport.expectEqual(session.preferences, [.builtInMic])
         router.verify(session, requestID: router.requestID)   // the delayed check finds it settled
@@ -186,8 +194,7 @@ enum MicrophoneRouteTests {
     }
 
     /// iOS accepts the request but keeps the headset. The answering route change marks it unresolved
-    /// without asking again (no loop); a later change from elsewhere retries, and a satisfiable retry
-    /// resolves it.
+    /// without asking again (no loop); a later device change retries, and a satisfiable retry resolves it.
     @MainActor
     private static func testUnsatisfiedRequestIsUnresolvedAndRetriedLater() {
         let session = FakeRouteSession(available: [.headset, .builtInMic])
@@ -196,25 +203,25 @@ enum MicrophoneRouteTests {
         try! router.configureCategory(session)
         TestSupport.expect(router.applyInput(session), "no check scheduled")
         TestSupport.expectEqual(router.routing, .awaitingRoute)
-        TestSupport.expect(!router.routeChanged(session), "requested again on its own answer")
+        TestSupport.expect(!router.routeChanged(session, change: echo), "requested again on its own answer")
         TestSupport.expectEqual(router.routing, .unresolved(.headset))
         TestSupport.expectEqual(router.routing.problem, "Using headset microphone: couldn't switch to iPhone microphone")
         TestSupport.expectEqual(session.preferences.count, 1)
-        // Something else changes the route (AirPods connect and disconnect): one retry.
-        TestSupport.expect(router.routeChanged(session), "not retried at the next route change")
+        // A device comes or goes (AirPods connect): one retry.
+        TestSupport.expect(router.routeChanged(session, change: plugged), "not retried at the next device change")
         TestSupport.expectEqual(session.preferences.count, 2)
         TestSupport.expectEqual(router.routing, .awaitingRoute)
-        TestSupport.expect(!router.routeChanged(session), "retried on its own answer")
+        TestSupport.expect(!router.routeChanged(session, change: echo), "retried on its own answer")
         TestSupport.expectEqual(router.routing, .unresolved(.headset))
         // The headset is unplugged and iOS honors the next request.
         session.answer = .immediately
-        router.routeChanged(session)
+        router.routeChanged(session, change: unplugged)
         TestSupport.expectEqual(session.preferences.count, 3)
         TestSupport.expectEqual(router.routing, .builtInMicrophone)
         TestSupport.expectEqual(router.routing.problem, nil)
     }
 
-    /// A request that throws is unresolved at once and retried at the next route change.
+    /// A request that throws is unresolved at once and retried at the next device change.
     @MainActor
     private static func testFailedRequestIsUnresolvedAtOnce() {
         let session = FakeRouteSession(available: [.usb, .builtInMic])
@@ -225,7 +232,7 @@ enum MicrophoneRouteTests {
         TestSupport.expectEqual(router.routing, .unresolved(.usb))
         TestSupport.expectEqual(router.routing.problem, "Using USB microphone: couldn't switch to iPhone microphone")
         session.answer = .immediately
-        router.routeChanged(session)
+        router.routeChanged(session, change: unplugged)
         TestSupport.expectEqual(session.preferences.count, 2)
         TestSupport.expectEqual(router.routing, .builtInMicrophone)
         // Ending the session clears the status.
@@ -248,7 +255,7 @@ enum MicrophoneRouteTests {
         TestSupport.expectEqual(router.routing, .unresolved(.bluetooth))
         // A later request that iOS delays is not cut short by an older check.
         session.answer = .later
-        router.routeChanged(session)
+        router.routeChanged(session, change: plugged)
         router.verify(session, requestID: first)
         TestSupport.expectEqual(router.routing, .awaitingRoute)
         session.deliverPendingRoute()
@@ -264,6 +271,71 @@ enum MicrophoneRouteTests {
         for settled in [MicrophoneRouting.systemChoice, .builtInMicrophone, .awaitingRoute] {
             TestSupport.expectEqual(settled.problem, nil)
         }
+    }
+
+    /// P1: the 1 s check settles an unsuccessful request; its own notifications then arrive late and
+    /// repeatedly, with every reason a request can cause. None of them requests again.
+    @MainActor
+    private static func testLateAndRepeatedEchoesAfterSettlementNeverRequest() {
+        let session = FakeRouteSession(available: [.headset, .builtInMic])
+        session.answer = .never
+        let router = MicrophoneRouter()
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        router.verify(session, requestID: router.requestID)   // settled before any notification
+        TestSupport.expectEqual(router.routing, .unresolved(.headset))
+        let reasons: [RouteChange.Reason] = [.override, .categoryChange, .routeConfigurationChange, .override, .unknown,
+                                             .wakeFromSleep, .categoryChange, .override]
+        for reason in reasons {
+            TestSupport.expect(!router.routeChanged(session, change: RouteChange(reason: reason, previousInputs: [.headset])),
+                               "\(reason) requested again")
+            TestSupport.expectEqual(router.routing, .unresolved(.headset))
+        }
+        TestSupport.expectEqual(session.preferences, [.builtInMic])
+    }
+
+    /// After a failed request, a genuinely new device is one external change: exactly one retry, whose
+    /// own late echoes then request nothing.
+    @MainActor
+    private static func testNewDeviceAfterFailureRetriesExactlyOnce() {
+        let session = FakeRouteSession(available: [.headset, .builtInMic])
+        session.answer = .never
+        let router = MicrophoneRouter()
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        router.routeChanged(session, change: echo)
+        TestSupport.expectEqual(router.routing, .unresolved(.headset))
+        session.availableInputs.append(.usb)   // a USB microphone is plugged in
+        TestSupport.expect(router.routeChanged(session, change: RouteChange(reason: .newDeviceAvailable, previousInputs: [.headset])),
+                           "a new device was not retried")
+        TestSupport.expectEqual(session.preferences.count, 2)
+        for _ in 0..<3 {
+            TestSupport.expect(!router.routeChanged(session, change: echo), "an echo requested again")
+        }
+        router.verify(session, requestID: router.requestID)
+        router.routeChanged(session, change: echo)
+        TestSupport.expectEqual(session.preferences.count, 2)
+        TestSupport.expectEqual(router.routing, .unresolved(.headset))
+    }
+
+    /// A notification of any reason whose available inputs differ from the ones the failed request saw is
+    /// external: one retry. The same inputs again are not.
+    @MainActor
+    private static func testChangedInputsCountAsExternal() {
+        let session = FakeRouteSession(available: [.headset, .builtInMic])
+        session.answer = .fail
+        let router = MicrophoneRouter()
+        try! router.configureCategory(session)
+        router.applyInput(session)
+        TestSupport.expectEqual(router.routing, .unresolved(.headset))
+        let unexplained = RouteChange(reason: .unknown, previousInputs: [.headset])
+        TestSupport.expect(!router.routeChanged(session, change: unexplained), "same inputs requested again")
+        TestSupport.expectEqual(session.preferences.count, 1)
+        session.availableInputs.append(.bluetooth)
+        router.routeChanged(session, change: unexplained)
+        TestSupport.expectEqual(session.preferences.count, 2)
+        router.routeChanged(session, change: unexplained)
+        TestSupport.expectEqual(session.preferences.count, 2)
     }
 }
 

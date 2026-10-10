@@ -54,8 +54,9 @@ final class MicrophoneCapture: HostCapture {
             center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.mediaServicesWereReset() }
             },
-            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.routeChanged() }
+            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
+                let change = RouteChange(note)
+                MainActor.assumeIsolated { self?.routeChanged(change) }
             },
         ]
     }
@@ -151,11 +152,11 @@ final class MicrophoneCapture: HostCapture {
     /// route and, if the system moved the input off the built-in microphone, asks again. The engine's
     /// configuration-change report then rebuilds it for the new input (in the background too, within
     /// this session), through the usual grace period.
-    private func routeChanged() {
+    private func routeChanged(_ change: RouteChange) {
         guard activatedSession else { return }
         // Only the applied choice: one deferred from the background must not move the input while the
         // category options still belong to the old one.
-        if router.routeChanged(routeSession) { scheduleRoutingCheck() }
+        if router.routeChanged(routeSession, change: change) { scheduleRoutingCheck() }
         AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance())
         onInputChanged?(routeSession.currentInput)
         onRoutingChanged?(router.routing)
@@ -385,4 +386,23 @@ private final class SystemAudioRouteSession: AudioRouteSession {
     }
 
     private enum RouteError: Error { case inputUnavailable }
+}
+
+extension RouteChange {
+    /// The notification's reason and previous route, reduced to content-free values.
+    init(_ note: Notification) {
+        let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+        switch raw.flatMap(AVAudioSession.RouteChangeReason.init) {
+        case .newDeviceAvailable?: reason = .newDeviceAvailable
+        case .oldDeviceUnavailable?: reason = .oldDeviceUnavailable
+        case .categoryChange?: reason = .categoryChange
+        case .override?: reason = .override
+        case .wakeFromSleep?: reason = .wakeFromSleep
+        case .noSuitableRouteForCategory?: reason = .noSuitableRouteForCategory
+        case .routeConfigurationChange?: reason = .routeConfigurationChange
+        default: reason = .unknown
+        }
+        let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+        previousInputs = previous?.inputs.map { InputPortKind($0.portType) } ?? []
+    }
 }

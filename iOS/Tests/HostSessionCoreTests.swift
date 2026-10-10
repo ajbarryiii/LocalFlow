@@ -1323,7 +1323,7 @@ private final class FakeCapture: HostCapture {
     /// A route notification, as `MicrophoneCapture` handles it.
     func routeChanged(to input: InputPortKind) {
         routeSession.current = input
-        if isRunning { router.routeChanged(routeSession) }
+        if isRunning { router.routeChanged(routeSession, change: RouteChange(reason: .newDeviceAvailable)) }
     }
 }
 

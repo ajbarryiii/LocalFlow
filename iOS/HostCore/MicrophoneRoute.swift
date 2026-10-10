@@ -79,6 +79,23 @@ enum MicrophoneRouting: Equatable, Sendable {
     }
 }
 
+/// One route-change notification, content-free: `AVAudioSessionRouteChangeReasonKey` and the input port
+/// types of `AVAudioSessionRouteChangePreviousRouteKey`.
+struct RouteChange: Equatable, Sendable {
+    /// `AVAudioSession.RouteChangeReason`, mirrored.
+    enum Reason: String, Sendable {
+        case newDeviceAvailable, oldDeviceUnavailable, categoryChange, override, wakeFromSleep,
+             noSuitableRouteForCategory, routeConfigurationChange, unknown
+    }
+
+    var reason: Reason
+    var previousInputs: [InputPortKind] = []
+
+    /// A device came or went: a change from outside, never the echo of a preferred-input request (those
+    /// report `override`, `categoryChange` or `routeConfigurationChange`).
+    var isDeviceChange: Bool { reason == .newDeviceAvailable || reason == .oldDeviceUnavailable }
+}
+
 /// Keeps the user's desired microphone choice apart from the choice the active audio session was
 /// configured with, and tracks whether the built-in microphone actually became the input.
 ///
@@ -88,10 +105,11 @@ enum MicrophoneRouting: Equatable, Sendable {
 /// reconfiguration.
 ///
 /// `setPreferredInput` is a request: it can fail, take effect later, or silently not take effect. The
-/// route is therefore read back after each request (at once, at the next route change, and at
-/// `verify` after `requestSettleTime`); a request that does not take is `unresolved`, shown in Home, and
-/// retried at the next route change from elsewhere. The route change that answers the router's own
-/// request never triggers another one, so an unsatisfiable request cannot loop.
+/// route is therefore read back after each request (at once, at route changes, and at `verify` after
+/// `requestSettleTime`); a request that does not take is `unresolved`, shown in Home. It is retried only
+/// on an identifiable external change (a device came or went, or the available inputs differ from the
+/// ones that request saw), never on the notifications a request itself causes, however late or often they
+/// arrive, so an unsatisfiable request cannot loop.
 @MainActor
 final class MicrophoneRouter {
     /// How long to wait for iOS to report the route after a request before calling it unresolved.
@@ -104,7 +122,10 @@ final class MicrophoneRouter {
     private(set) var routing = MicrophoneRouting.systemChoice
     /// Increases with every request, so a delayed `verify` checks only the request it was made for.
     private(set) var requestID = 0
+    /// The latest request still awaits its answer (for `verify`).
     private var outstanding = false
+    /// The inputs available when the latest request was made, to recognize a later external change.
+    private var requestedWith: Set<InputPortKind>?
 
     init(desired: Bool = MicrophoneRoute.defaultUseBuiltInMicrophone) {
         self.desired = desired
@@ -126,7 +147,7 @@ final class MicrophoneRouter {
     }
 
     /// Requests the built-in microphone under the applied choice, or clears any preference. Returns
-    /// whether a request now awaits the route (schedule `verify` after `requestSettleTime`).
+    /// whether a request now awaits iOS (schedule `verify` after `requestSettleTime`).
     @discardableResult
     func applyInput(_ session: AudioRouteSession) -> Bool {
         guard let applied else { return false }
@@ -134,19 +155,20 @@ final class MicrophoneRouter {
             // With the choice off the system chooses. A clearing that fails leaves at most the built-in
             // preference behind, the safe default, so it does not count as unresolved.
             try? session.setPreferredInput(nil)
-            outstanding = false
+            clearRequest()
             routing = .systemChoice
             return false
         }
         return request(session)
     }
 
-    /// A route change. On the built-in microphone, the choice is satisfied. Otherwise, the answer to the
-    /// router's own request means it did not take (unresolved, no new request); any other change
-    /// (headphones plugged in, AirPods connecting, a later change after an unresolved request) requests
-    /// the built-in microphone again. Returns whether a request now awaits iOS (schedule `verify`).
+    /// A route change. On the built-in microphone, the choice is satisfied. If the input moved off it
+    /// after it was satisfied, something outside did that, so it is requested again. While a request is
+    /// awaited or unresolved, only an external change (`isDeviceChange`, or available inputs that differ
+    /// from the ones the request saw) requests again; anything else is that request's own echo and
+    /// leaves it unresolved. Returns whether a request now awaits iOS (schedule `verify`).
     @discardableResult
-    func routeChanged(_ session: AudioRouteSession) -> Bool {
+    func routeChanged(_ session: AudioRouteSession, change: RouteChange) -> Bool {
         guard let applied else { return false }
         guard applied else {
             routing = .systemChoice
@@ -154,16 +176,14 @@ final class MicrophoneRouter {
         }
         let current = session.currentInput
         if current == .builtInMic {
-            outstanding = false
+            clearRequest()
             routing = .builtInMicrophone
             return false
         }
-        if outstanding {
-            outstanding = false
-            routing = .unresolved(current)
-            return false
-        }
-        return request(session)
+        if routing == .builtInMicrophone || isExternal(change, session) { return request(session) }
+        outstanding = false
+        routing = .unresolved(current)
+        return false
     }
 
     /// The delayed check after request `requestID`, for when iOS reports no route change at all.
@@ -176,14 +196,24 @@ final class MicrophoneRouter {
     /// The session ended or was lost: nothing is applied any more.
     func sessionEnded() {
         applied = nil
-        outstanding = false
+        clearRequest()
         routing = .systemChoice
+    }
+
+    private func isExternal(_ change: RouteChange, _ session: AudioRouteSession) -> Bool {
+        change.isDeviceChange || requestedWith.map { $0 != Set(session.availableInputs) } ?? true
+    }
+
+    private func clearRequest() {
+        outstanding = false
+        requestedWith = nil
     }
 
     private func request(_ session: AudioRouteSession) -> Bool {
         let current = session.currentInput
+        requestedWith = Set(session.availableInputs)
+        outstanding = false
         guard MicrophoneRoute.preferredInput(useBuiltInMicrophone: true, availableInputs: session.availableInputs) != nil else {
-            outstanding = false
             routing = current == .builtInMic ? .builtInMicrophone : .unresolved(current)
             return false
         }
@@ -191,12 +221,11 @@ final class MicrophoneRouter {
         do {
             try session.setPreferredInput(.builtInMic)
         } catch {
-            outstanding = false
             routing = .unresolved(current)
             return false
         }
         if session.currentInput == .builtInMic {
-            outstanding = false
+            clearRequest()
             routing = .builtInMicrophone
             return false
         }
