@@ -1158,3 +1158,28 @@ The harness lives outside the repository
   - **Undo fails closed:** any callback whose provenance is ambiguous
     invalidates Undo. UIKit inserts and deletes owe no callback, so no
     allowance is created for them.
+- **Keyboard round 7 notes.**
+  - **New core files:** the typing path is now in `KeyboardCore/KeyboardEditor`
+    and `KeyboardCore/TrackpadController`, both Foundation-only and tested
+    through the real press path. `KeyboardInput` and `TrackpadDriver` are thin
+    UIKit wrappers.
+  - **When keys wait:** a key press settles the trackpad at once. Keys wait
+    (at most 0.3 s) only for an outstanding probe, an edge jump, a previous
+    gesture's owed reports, or a split-cluster repair. A waiting key keeps the
+    text and shift state captured at press. After a Return, the remaining
+    waiting keys run on the next frame.
+  - **Own edits:** reports of our own edits are recognised from the context
+    fingerprint each edit leaves (at most one per edit, within 1 s) and are
+    checked before trackpad expectations.
+  - **Measured in the simulator:** neither UIKit nor WKWebView reports the
+    keyboard's own inserts and deletes.
+  - **Report ordering:** reports are attributed oldest-first. A pre-move
+    report is accepted only for the oldest owed adjustment. Expectations
+    expire after 0.3 s, and an unresolved pre-move report ends the session as
+    ambiguous. A new gesture waits for the previous gesture's owed reports.
+  - **Field binding and context:** each key is bound to the field it touched
+    down in. Cancel and hide release the layout's laid-out text.
+  - **Torture test:** `typingTorture` interleaves random typing with
+    gestures, probes, lag and WebKit double reports. It asserts the document
+    equals the keys applied in press order and that every completed gesture
+    ends on a character boundary.
