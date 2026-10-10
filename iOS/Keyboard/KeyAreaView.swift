@@ -4,7 +4,8 @@ import UIKit
 protocol KeyAreaViewDelegate: AnyObject {
     /// A key acted: characters, space and return on touch-up or rollover; shift and layer keys on
     /// touch-down; delete here only from VoiceOver (a held delete uses the begin and end calls).
-    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, timestamp: TimeInterval)
+    /// `field`: the field the keyboard served when the finger touched down (`currentField`).
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, field: UUID?, timestamp: TimeInterval)
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval)
     /// `cancelled`: the system cancelled the touch, or the key area dropped it (the menu opening, the
     /// keyboard hiding), which is not a release.
@@ -24,6 +25,8 @@ protocol KeyAreaViewDelegate: AnyObject {
 /// cursor.
 final class KeyAreaView: UIView {
     weak var delegate: KeyAreaViewDelegate?
+    /// The field the keyboard serves now, read at each touch-down so a key stays bound to it.
+    var currentField: () -> UUID? = { nil }
     /// The target of the globe key's `handleInputModeList(from:with:)`.
     weak var inputModeController: UIInputViewController? {
         didSet { wireGlobe() }
@@ -187,7 +190,7 @@ final class KeyAreaView: UIView {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
             let touchID = id(for: touch)
-            let effects = model.began(touchID, x: Double(point.x), y: Double(point.y))
+            let effects = model.began(touchID, x: Double(point.x), y: Double(point.y), field: currentField())
             if model.touches.last?.id == touchID { UIDevice.current.playInputClick() }
             perform(effects, timestamp: touch.timestamp)
         }
@@ -241,8 +244,8 @@ final class KeyAreaView: UIView {
     private func perform(_ effects: [KeyTouchModel.Effect], timestamp: TimeInterval) {
         for effect in effects {
             switch effect {
-            case .type(let action):
-                delegate?.keyArea(self, typed: action, timestamp: timestamp)
+            case .type(let action, let field):
+                delegate?.keyArea(self, typed: action, field: field, timestamp: timestamp)
             case .beginDelete:
                 delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
             case .endDelete(let cancelled):
@@ -357,7 +360,7 @@ final class KeyAreaView: UIView {
             }
             element.onActivate = { [weak self] in
                 guard let self else { return }
-                self.delegate?.keyArea(self, typed: action, timestamp: CACurrentMediaTime())
+                self.delegate?.keyArea(self, typed: action, field: self.currentField(), timestamp: CACurrentMediaTime())
             }
             elements.append(element)
         }

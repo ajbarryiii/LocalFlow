@@ -13,14 +13,11 @@ import Foundation
 ///   empty document, the exact whole context. Both ends of what is deleted must be character
 ///   boundaries in the current context, so a deletion never takes a neighbouring character the
 ///   insertion merged with ("\r" + "\n", a letter + a combining mark).
-/// - **Attribution.** The insertion and each deletion may cause one host callback, which counts as
-///   ours only if it shows a state of this insertion (`acknowledge`, consumable) and arrives within
-///   `callbackTimeout` of the operation. Anything else is an outside change: the owner advances the
-///   edit generation and the undo is gone for good. Time never makes a callback ours; it only ends
-///   what may still be: measured UIKit hosts send no callback for `insertText` or `deleteBackward`,
-///   so an owed one would otherwise wait for any later change that shows the same text (the host
-///   moving the caret to an identical passage, which UIKit reports with `textDidChange`). A host that
-///   edits without callbacks is a residual risk the anchors mitigate.
+/// - **Attribution.** None here: no callback ever counts as this undo's (ARCHITECTURE.md, "Typing
+///   correctness is paramount"). UIKit sends none for `insertText` or `deleteBackward`, so none is
+///   owed; any callback that is not a pending trackpad adjustment's ends the undo for good (the owner,
+///   `EditingCore`, invalidates it), our own edits' reports included. A host that edits without
+///   callbacks is a residual risk the anchors mitigate.
 /// - **No proof, no Undo.**
 /// - **Lifetime.** The text and anchors are held in memory for at most `window` and dropped on
 ///   invalidation.
@@ -30,8 +27,6 @@ struct UndoTracker: Equatable, Sendable {
     static let stepTimeout: TimeInterval = 0.5
     static let anchorLength = 24
     static let minimumVisibleSuffix = 16
-    /// How long after one of our operations its callback, if the host sends one, may arrive.
-    static let callbackTimeout: TimeInterval = 0.3
 
     struct Insertion: Equatable, Sendable {
         var text: String
@@ -58,10 +53,6 @@ struct UndoTracker: Equatable, Sendable {
     private(set) var remaining: String?
     private var stepContext: String?
     private var stepAt: TimeInterval?
-    /// Our own operations (the insertion, each deletion) whose callback may still arrive, and when the
-    /// last of them was issued.
-    private(set) var unconfirmedOperations = 0
-    private var lastOperationAt: TimeInterval = 0
 
     var isUndoing: Bool { remaining != nil }
 
@@ -73,8 +64,6 @@ struct UndoTracker: Equatable, Sendable {
         insertion = Insertion(text: text, anchorBefore: String((contextBefore ?? "").suffix(Self.anchorLength)),
                               anchorAfter: String((contextAfter ?? "").prefix(Self.anchorLength)),
                               documentID: documentID, generation: generation, insertedAt: time)
-        unconfirmedOperations = 1
-        lastOperationAt = time
     }
 
     /// Drops the text and anchors: any other edit, a focus change, hiding, or the end of the window.
@@ -83,7 +72,6 @@ struct UndoTracker: Equatable, Sendable {
         remaining = nil
         stepContext = nil
         stepAt = nil
-        unconfirmedOperations = 0
     }
 
     /// Forgets the text once the window has passed.
@@ -181,38 +169,6 @@ struct UndoTracker: Equatable, Sendable {
         return nextStep(before: before, after: after, continuing: true, now: now)
     }
 
-    /// A host callback while this undo is the pending operation. Ours if one of our operations still
-    /// owes a callback (issued at most `callbackTimeout` ago) and the context shows a state of this
-    /// insertion: all of it, or what this undo has left of it so far. Consumes one.
-    mutating func acknowledge(before: String?, after: String?, now: TimeInterval) -> Bool {
-        let age = now - lastOperationAt
-        if age < 0 || age > Self.callbackTimeout { unconfirmedOperations = 0 }
-        guard unconfirmedOperations > 0, fits(before: before, after: after) else { return false }
-        unconfirmedOperations -= 1
-        return true
-    }
-
-    /// Whether a context shows a state of this insertion: all of it, or what this undo has left.
-    func fits(before: String?, after: String?) -> Bool {
-        guard let insertion else { return false }
-        let text = insertion.text
-        let shortest = remaining?.count ?? text.count
-        for length in stride(from: text.count, through: max(shortest, 1), by: -1) {
-            let part = String(text.prefix(length))
-            if Self.provenCount(of: part, insertion: insertion, before: before, after: after, continuing: true) > 0 {
-                return true
-            }
-        }
-        // Everything this undo had to delete is gone: the anchors meet again.
-        if remaining?.isEmpty == true {
-            let anchorAfter = insertion.anchorAfter
-            let visible = min(anchorAfter.count, after?.count ?? 0)
-            return (before ?? "").hasSuffix(insertion.anchorBefore)
-                && (after ?? "").prefix(visible) == anchorAfter.prefix(visible)
-        }
-        return false
-    }
-
     private mutating func nextStep(before: String?, after: String?, continuing: Bool, now: TimeInterval) -> Step {
         guard let insertion, let remaining else { return .stopped }
         if remaining.isEmpty {
@@ -228,8 +184,6 @@ struct UndoTracker: Equatable, Sendable {
         self.remaining = String(remaining.dropLast(proven))
         stepContext = before
         stepAt = now
-        unconfirmedOperations += proven
-        lastOperationAt = now
         return .delete(proven)
     }
 

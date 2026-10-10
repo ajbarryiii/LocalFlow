@@ -17,6 +17,7 @@ enum KeyTouchModelTests {
             ("pressedKeysAndCallout", testPressedKeysAndCallout),
             ("cancelAllEndsEverything", testCancelAllEndsEverything),
             ("cancelledDeleteIsNotARelease", testCancelledDeleteIsNotARelease),
+            ("keysCarryTheFieldOfTheirPress", testKeysCarryTheFieldOfTheirPress),
         ]
     }
 
@@ -225,5 +226,25 @@ enum KeyTouchModelTests {
         _ = trackpad.holdElapsed(1)
         TestSupport.expectEqual(trackpad.cancelAll(), [.endTrackpad(cancelled: true)])
         TestSupport.expect(!trackpad.isTrackpadActive, "trackpad kept")
+    }
+}
+
+extension KeyTouchModelTests {
+    fileprivate static func testKeysCarryTheFieldOfTheirPress() {
+        // The round-6 review's P1: a letter pressed in field A was typed into field B on release. Each
+        // finger keeps the field of its touch-down, on release and on rollover alike.
+        let fieldA = UUID(), fieldB = UUID()
+        var model = model()
+        let a = center(.character("a")), s = center(.character("s"))
+        let space = center(.space), enter = center(.returnKey)
+        _ = model.began(1, x: a.x, y: a.y, field: fieldA)
+        TestSupport.expectEqual(model.began(2, x: s.x, y: s.y, field: fieldB), [.type(.character("a"), field: fieldA)])
+        TestSupport.expectEqual(model.ended(2, x: s.x, y: s.y), [.type(.character("s"), field: fieldB)])
+        TestSupport.expectEqual(model.ended(1, x: a.x, y: a.y), [])
+        _ = model.began(3, x: space.x, y: space.y, field: fieldA)
+        TestSupport.expectEqual(model.ended(3, x: space.x, y: space.y), [.cancelHoldTimer(3), .type(.space, field: fieldA)])
+        _ = model.began(4, x: enter.x, y: enter.y, field: fieldA)
+        TestSupport.expectEqual(model.began(5, x: a.x, y: a.y, field: fieldB), [.type(.returnKey, field: fieldA)])
+        TestSupport.expectEqual(model.ended(5, x: a.x, y: a.y), [.type(.character("a"), field: fieldB)])
     }
 }

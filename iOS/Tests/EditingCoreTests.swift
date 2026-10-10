@@ -8,29 +8,27 @@ enum EditingCoreTests {
         [
             ("caretMovedToAnotherNewlineIsNeverUndone", testCaretMovedToAnotherNewlineIsNeverUndone),
             ("silentCaretMoveIsCaughtByTheAnchors", testSilentCaretMoveIsCaughtByTheAnchors),
-            ("ownCallbackIsConsumedOnce", testOwnCallbackIsConsumedOnce),
+            ("ownEditReportsAreNeverOutsideButEndUndo", testOwnEditReportsAreNeverOutsideButEndUndo),
+            ("ownEditReportsDelayedAndCoalesced", testOwnEditReportsDelayedAndCoalesced),
+            ("ownEditReportsComeBeforeAGesturesOwn", testOwnEditReportsComeBeforeAGesturesOwn),
             ("undoRemovesExactlyTheInsertion", testUndoRemovesExactlyTheInsertion),
             ("progressiveUndoWithTheMeasuredWindow", testProgressiveUndoWithTheMeasuredWindow),
             ("editsEndTheUndo", testEditsEndTheUndo),
             ("trackpadCallbacksAreAttributedToIt", testTrackpadCallbacksAreAttributedToIt),
             ("anotherFieldEndsEverything", testAnotherFieldEndsEverything),
-            ("queuedEditsAreBoundToTheirField", testQueuedEditsAreBoundToTheirField),
-            ("staleCompletionNeverInsertsIntoAnotherField", testStaleCompletionNeverInsertsIntoAnotherField),
             ("hideForgetsAtOnce", testHideForgetsAtOnce),
-            ("queuedReturnThatMovesFocusStopsTheDrain", testQueuedReturnThatMovesFocusStopsTheDrain),
             ("selectionCallbackAtAnIdenticalPassageEndsUndo", testSelectionCallbackAtAnIdenticalPassageEndsUndo),
-            ("lateTextCallbackAtAnIdenticalPassageEndsUndo", testLateTextCallbackAtAnIdenticalPassageEndsUndo),
+            ("hostMoveToAnIdenticalPassageEndsUndoEarlyOrLate", testHostMoveToAnIdenticalPassageEndsUndoEarlyOrLate),
             ("selectedTextRefusesUndo", testSelectedTextRefusesUndo),
             ("undoNeverTakesANeighbourItMergedWith", testUndoNeverTakesANeighbourItMergedWith),
             ("heldDeleteNeverReachesAnotherField", testHeldDeleteNeverReachesAnotherField),
-            ("cancelledDeleteRevokesWhatItQueued", testCancelledDeleteRevokesWhatItQueued),
         ]
     }
 
     private static func core(_ text: String, caret: Int? = nil,
-                             model: FakeContextModel = .uikit) -> (EditingCore<String>, FakeDocument) {
+                             model: FakeContextModel = .uikit) -> (EditingCore, FakeDocument) {
         let document = FakeDocument(FakeTextHost(text: text, caret: caret, model: model))
-        let core = EditingCore<String>(document: document)
+        let core = EditingCore(document: document)
         core.reset()
         return (core, document)
     }
@@ -73,15 +71,72 @@ enum EditingCoreTests {
         }
     }
 
-    private static func testOwnCallbackIsConsumedOnce() {
-        // A host that reports our insertion: the callback shows its state and is ours, once.
-        let (core, _) = core("Earlier note. ")
+    private static func testOwnEditReportsAreNeverOutsideButEndUndo() {
+        // A host that reports our insertion (WebKit echoes edits): the report is our own edit's, never an
+        // outside change, so the generation stays (nothing bound to it ends); but Undo fails closed.
+        let (core, document) = core("Earlier note. ")
+        document.editCallbackDelay = 1
         core.insertDictation("Invented dictation.", now: 10)
-        TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.05), .own)
-        TestSupport.expect(core.canUndo(now: 10.1), "an own callback ended the undo")
-        // A second one has nothing pending to explain it: an outside change.
-        TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.06), .outside)
-        TestSupport.expect(!core.canUndo(now: 10.2), "offered after an unexplained callback")
+        TestSupport.expect(core.canUndo(now: 10.01), "not offered before the report")
+        let generation = core.generation
+        TestSupport.expectEqual(document.pump(core, at: 10.02), [.ownEdit])
+        TestSupport.expectEqual(core.generation, generation)
+        TestSupport.expect(!core.canUndo(now: 10.1), "an own edit's report kept the undo")
+        // A second report of the same state has nothing left to explain it: an outside change.
+        TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.2), .outside)
+        TestSupport.expectEqual(core.generation, generation &+ 1)
+    }
+
+    private static func testOwnEditReportsDelayedAndCoalesced() {
+        // Typed edits reported late, each on its own or several as the latest state: all are ours.
+        for delay in [1, 2, 3] {
+            let (core, document) = core("Notes: ")
+            document.editCallbackDelay = delay
+            var outcomes: [EditingCore.CallbackOutcome] = []
+            var now = 10.0
+            for character in ["a", "b", "c"] {
+                core.userEdit()
+                document.insertText(character)
+                core.recordOwnEdit(now: now)
+                now += 0.01
+                outcomes += document.pump(core, at: now)
+            }
+            core.userEdit()
+            document.deleteBackward()
+            core.recordOwnEdit(now: now)
+            for _ in 0 ..< 4 {
+                now += 0.01
+                outcomes += document.pump(core, at: now)
+            }
+            TestSupport.expectEqual(document.text, "Notes: ab")
+            TestSupport.expect(!outcomes.isEmpty && outcomes.allSatisfy { $0 == .ownEdit },
+                               "an own edit's report taken for an outside change: \(outcomes) at delay \(delay)")
+        }
+        // A report of a state no edit of ours left is an outside change, and so is one long after.
+        let (core, document) = core("Notes: ")
+        core.userEdit()
+        document.insertText("x")
+        core.recordOwnEdit(now: 10)
+        document.host.moveCaret(to: 0)
+        TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.1), .outside)
+        document.host.moveCaret(to: document.text.utf16.count)
+        TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10 + EditingCore.ownEditLifetime + 0.1), .outside)
+    }
+
+    private static func testOwnEditReportsComeBeforeAGesturesOwn() {
+        // Found by the typing torture test: a gesture began right after typing, and the report of the
+        // typing (showing the field before the gesture's probe had landed) was taken for the probe's
+        // "unchanged" outcome, which taught the wrong unit. Reports arrive in order: ours come first.
+        let (core, document) = core("Notes: ")
+        document.editCallbackDelay = 1
+        core.userEdit()
+        document.insertText("x")
+        core.recordOwnEdit(now: 10)
+        let trackpad = FakeAdjustments()
+        core.adjustments = trackpad
+        trackpad.isActive = true
+        TestSupport.expectEqual(document.pump(core, at: 10.02), [.ownEdit])
+        TestSupport.expectEqual(trackpad.acknowledged, 0)
     }
 
     private static func testUndoRemovesExactlyTheInsertion() {
@@ -124,16 +179,18 @@ enum EditingCoreTests {
     }
 
     private static func testTrackpadCallbacksAreAttributedToIt() {
-        let (core, _) = core("Earlier note. ")
+        let (core, document) = core("Earlier note. ")
         let trackpad = FakeAdjustments()
         core.adjustments = trackpad
         core.insertDictation("Invented dictation here.", now: 10)
         trackpad.isActive = true
         TestSupport.expect(!core.canUndo(now: 10.1), "offered while the trackpad is busy")
+        document.host.moveCaret(to: 3)
         TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.15), .own)
         TestSupport.expectEqual(trackpad.acknowledged, 1)
         // One the gesture cannot explain is an outside change, and the undo is gone.
         trackpad.explains = false
+        document.host.moveCaret(to: 5)
         TestSupport.expectEqual(core.hostChanged(textChanged: true, now: 10.16), .outside)
         trackpad.isActive = false
         TestSupport.expect(!core.canUndo(now: 10.2), "offered after an outside change")
@@ -152,123 +209,22 @@ enum EditingCoreTests {
         TestSupport.expect(!core.canUndo(now: 11.1), "offered without a field identity")
     }
 
-    /// Runs a completed gesture's queue the way the keyboard does: one edit per run-loop turn, each a
-    /// typed edit (`userEdit`, then the text), with the host's callbacks delivered between them.
-    /// Returns the edits that ran.
-    @discardableResult
-    private static func drain(_ core: EditingCore<String>, _ document: FakeDocument) -> [String] {
-        var ran: [String] = []
-        core.beginDrain()
-        while let edit = core.nextQueuedEdit() {
-            core.userEdit()
-            document.insertText(edit)
-            core.queuedEditRan()
-            ran.append(edit)
-            document.pump(core, at: 0)
-        }
-        return ran
-    }
-
-    private static func testQueuedEditsAreBoundToTheirField() {
-        let (core, document) = core("Text. ")
-        let trackpad = FakeAdjustments()
-        core.adjustments = trackpad
-        trackpad.isActive = true
-        TestSupport.expect(core.enqueue("a"), "not queued")
-        TestSupport.expect(core.enqueue("b"), "not queued")
-        trackpad.isActive = false
-        // A completed gesture runs them in order, one per turn.
-        TestSupport.expectEqual(drain(core, document), ["a", "b"])
-        TestSupport.expectEqual(document.text, "Text. ab")
-        TestSupport.expect(!core.isDraining, "still draining")
-        // An aborted one discards them.
-        trackpad.isActive = true
-        core.enqueue("c")
-        core.discardQueue()
-        TestSupport.expectEqual(drain(core, document), [])
-        // An outside change while they wait: they belonged to the document as it was.
-        core.enqueue("d")
-        trackpad.explains = false
-        _ = core.hostChanged(textChanged: true, now: 1)
-        TestSupport.expectEqual(drain(core, document), [])
-        // Without a field identity nothing is queued.
-        document.documentID = nil
-        _ = core.hostChanged(textChanged: true, now: 1)
-        TestSupport.expect(!core.enqueue("e"), "queued without a field identity")
-        // Bounded.
-        document.documentID = UUID()
-        _ = core.hostChanged(textChanged: true, now: 1)
-        for index in 0 ..< EditingCore<String>.queueLimit { core.enqueue("\(index)") }
-        TestSupport.expect(!core.enqueue("over"), "past the limit")
-    }
-
-    private static func testStaleCompletionNeverInsertsIntoAnotherField() {
-        // The third review's P1: the trackpad's stale check (the field changed before its callback
-        // arrived) used to flush queued typing into the new field. A completion reported then runs
-        // nothing: the queue is bound to the old field.
-        let (core, document) = core("Old field. ")
-        let trackpad = FakeAdjustments()
-        core.adjustments = trackpad
-        trackpad.isActive = true
-        core.enqueue("typed in the old field")
-        document.switchField(to: FakeTextHost(text: "New field.", model: .uikit), id: UUID())
-        trackpad.isActive = false
-        TestSupport.expectEqual(drain(core, document), [])
-        TestSupport.expectEqual(document.text, "New field.")
-    }
-
-    private static func testQueuedReturnThatMovesFocusStopsTheDrain() {
-        // The fourth review's P1: a queued Return made the host focus field B, and the characters queued
-        // after it for field A ran in B. Each queued edit is bound again right before it runs.
-        let (core, document) = core("Form field A. ")
-        let fieldB = FakeTextHost(text: "Field B.", model: .uikit)
-        document.returnMovesFocusTo = (fieldB, UUID())
-        let trackpad = FakeAdjustments()
-        core.adjustments = trackpad
-        trackpad.isActive = true
-        for edit in ["x", "\n", "y", "z"] { core.enqueue(edit) }
-        trackpad.isActive = false
-        TestSupport.expectEqual(drain(core, document), ["x", "\n"])
-        TestSupport.expectEqual(document.text, "Field B.")
-        TestSupport.expect(core.queue.isEmpty, "the rest kept")
-        // The same when the proxy already serves B before any callback says so.
-        let (quiet, quietDocument) = self.core("Form field A. ")
-        let quietTrackpad = FakeAdjustments()
-        quiet.adjustments = quietTrackpad
-        quietTrackpad.isActive = true
-        for edit in ["x", "y"] { quiet.enqueue(edit) }
-        quietTrackpad.isActive = false
-        quiet.beginDrain()
-        let first = quiet.nextQueuedEdit()
-        TestSupport.expectEqual(first, "x")
-        quietDocument.switchField(to: fieldB, id: UUID())
-        quiet.queuedEditRan()
-        TestSupport.expectEqual(quiet.nextQueuedEdit(), nil)
-        TestSupport.expect(quiet.queue.isEmpty, "the rest kept")
-        // And when anything else changes the document between two queued edits.
-        let (busy, busyDocument) = self.core("Some text. ")
-        let busyTrackpad = FakeAdjustments()
-        busy.adjustments = busyTrackpad
-        busyTrackpad.isActive = true
-        for edit in ["x", "y"] { busy.enqueue(edit) }
-        busyTrackpad.isActive = false
-        busy.beginDrain()
-        _ = busy.nextQueuedEdit()
-        busy.queuedEditRan()
-        busyDocument.moveCaret(to: 0, reportedAsTextChange: true)
-        busyDocument.pump(busy, at: 1)
-        TestSupport.expectEqual(busy.nextQueuedEdit(), nil)
+    private static func testHideForgetsAtOnce() {
+        let (core, _) = core("Earlier note. ")
+        core.insertDictation("Invented dictation here.", now: 10)
+        core.hide()
+        TestSupport.expectEqual(core.documentID, nil)
+        TestSupport.expectEqual(core.undo.insertion, nil)
+        TestSupport.expect(!core.canUndo(now: 10.1), "offered after hiding")
     }
 
     private static func testSelectionCallbackAtAnIdenticalPassageEndsUndo() {
-        // The fourth review's P0: after the insertion's own callback was consumed, the host moved the
-        // caret to an older passage with the same anchors and reported it with selectionDidChange, which
-        // was taken as ours. Selection callbacks are never attributed to insertions or deletions.
+        // The fourth review's P0: the host moved the caret to an older passage with the same anchors and
+        // reported it with selectionDidChange, which was taken as ours. Selection callbacks are never
+        // attributed to insertions or deletions.
         let passage = "Team, send this\n"
         let (core, document) = core(passage + passage + passage + "Team, ")
-        document.editCallbackDelay = 1
         core.insertDictation("send this\n", now: 10)
-        TestSupport.expectEqual(document.pump(core, at: 10.02), [.own])
         TestSupport.expect(core.canUndo(now: 10.1), "not offered in place")
         let inserted = document.text
         // The older passage proves the same anchors: a silent move there would be offered (the residual
@@ -282,32 +238,35 @@ enum EditingCoreTests {
         let (again, againDocument) = self.core("Earlier note. ")
         again.insertDictation("Invented dictation here.", now: 10)
         againDocument.moveCaret(to: againDocument.host.text.utf16.count)
-        TestSupport.expectEqual(againDocument.pump(again, at: 10.05), [.outside])
+        TestSupport.expectEqual(againDocument.pump(again, at: 10.05), [.ownEdit])
         TestSupport.expect(!again.canUndo(now: 10.1), "offered after a selection change in place")
     }
 
-    private static func testLateTextCallbackAtAnIdenticalPassageEndsUndo() {
-        // Measured in the simulator (round 6): UIKit sends no callback for our insertText, and reports
-        // the host moving the caret with textDidChange. The callback the insertion was allowed to cause
-        // was still owed when the host moved the caret to an older passage with the same anchors, and
-        // that textDidChange was taken for the insertion's. An owed callback lapses quickly.
+    private static func testHostMoveToAnIdenticalPassageEndsUndoEarlyOrLate() {
+        // The round-6 review's P0: UIKit sends no callback for our insertText and reports the host moving
+        // the caret with textDidChange. An allowance for the insertion's callback, even a brief one, let
+        // a move to an older passage with the same anchors (here 0.2 s after the insertion) count as the
+        // insertion's report. No allowance is made: any callback but a pending trackpad adjustment's ends
+        // the undo.
         let passage = "Team, send this\n"
-        let (core, document) = core(passage + passage + passage + "Team, ")
-        core.insertDictation("send this\n", now: 10)
-        TestSupport.expect(core.canUndo(now: 10.1), "not offered in place")
-        let inserted = document.text
-        document.moveCaret(to: 3 * passage.utf16.count, reportedAsTextChange: true)
-        TestSupport.expectEqual(document.pump(core, at: 11), [.outside])
-        TestSupport.expect(!core.canUndo(now: 11.1), "offered after the host moved the caret")
-        TestSupport.expectEqual(core.beginUndo(now: 11.1), .stopped)
-        TestSupport.expectEqual(document.text, inserted)
-        // A host that reports the insertion itself does so at once, and that callback is ours.
-        let (prompt, promptDocument) = self.core(passage + "Team, ")
-        promptDocument.editCallbackDelay = 1
-        prompt.insertDictation("send this\n", now: 10)
-        TestSupport.expectEqual(promptDocument.pump(prompt, at: 10.02), [.own])
-        TestSupport.expectEqual(prompt.beginUndo(now: 10.1), .finished)
-        TestSupport.expectEqual(promptDocument.text, passage + "Team, ")
+        for delay in [0.01, 0.2, 1.0] {
+            let (core, document) = core(passage + passage + passage + "Team, ")
+            core.insertDictation("send this\n", now: 10)
+            TestSupport.expect(core.canUndo(now: 10.005), "not offered in place")
+            let inserted = document.text
+            document.moveCaret(to: 3 * passage.utf16.count, reportedAsTextChange: true)
+            TestSupport.expectEqual(document.pump(core, at: 10 + delay), [.outside])
+            TestSupport.expect(!core.canUndo(now: 10 + delay), "offered after the host moved the caret at \(delay)")
+            TestSupport.expectEqual(core.beginUndo(now: 10 + delay), .stopped)
+            TestSupport.expectEqual(document.text, inserted)
+        }
+        // A host that reports the insertion itself loses Undo (fails closed), and nothing is deleted.
+        let (echo, echoDocument) = self.core(passage + "Team, ")
+        echoDocument.editCallbackDelay = 1
+        echo.insertDictation("send this\n", now: 10)
+        TestSupport.expectEqual(echoDocument.pump(echo, at: 10.02), [.ownEdit])
+        TestSupport.expectEqual(echo.beginUndo(now: 10.1), .stopped)
+        TestSupport.expectEqual(echoDocument.text, passage + "Team, send this\n")
     }
 
     private static func testSelectedTextRefusesUndo() {
@@ -376,36 +335,5 @@ enum EditingCoreTests {
         let second = other.began(at: 200, documentID: document.documentID)!
         TestSupport.expectEqual(other.cancel(), second.token)
         TestSupport.expect(other.fire(token: second.token, documentID: document.documentID) == nil, "fired after cancel")
-    }
-
-    private static func testCancelledDeleteRevokesWhatItQueued() {
-        // The fourth review's P1: a delete timer queued a deletion behind a settling trackpad gesture,
-        // then the touch was cancelled; the queued deletion still ran. Cancelling revokes it.
-        let (core, document) = core("Some text here.")
-        let trackpad = FakeAdjustments()
-        core.adjustments = trackpad
-        trackpad.isActive = true
-        var key = HeldDeleteKey()
-        let press = key.began(at: 100, documentID: document.documentID)!
-        TestSupport.expect(key.fire(token: press.token, documentID: document.documentID) != nil, "first deletion")
-        core.enqueue("<delete>", token: press.token)
-        core.enqueue("typed", token: nil)
-        let ended = key.ended(cancelled: true, documentID: document.documentID)!
-        TestSupport.expect(!ended.deleteOnce, "a cancellation deletes")
-        core.revoke(token: ended.token)
-        TestSupport.expectEqual(core.queue.map(\.edit), ["typed"])
-        trackpad.isActive = false
-        TestSupport.expectEqual(drain(core, document), ["typed"])
-    }
-
-    private static func testHideForgetsAtOnce() {
-        let (core, _) = core("Earlier note. ")
-        core.insertDictation("Invented dictation here.", now: 10)
-        core.enqueue("x")
-        core.hide()
-        TestSupport.expectEqual(core.documentID, nil)
-        TestSupport.expectEqual(core.undo.insertion, nil)
-        TestSupport.expect(core.queue.isEmpty, "queue kept")
-        TestSupport.expect(!core.canUndo(now: 10.1), "offered after hiding")
     }
 }

@@ -57,6 +57,12 @@ enum TrackpadSessionTests {
             ("emptiedFieldIsNotACrossing", testEmptiedFieldIsNotACrossing),
             ("singleEmojiFieldIsReachedInEitherUnit", testSingleEmojiFieldIsReachedInEitherUnit),
             ("webKitReportsEachAdjustmentTwice", testWebKitReportsEachAdjustmentTwice),
+            ("settlingForAKeyStopsAtTheCaret", testSettlingForAKeyStopsAtTheCaret),
+            ("unresolvedPreMoveReportIsAmbiguous", testUnresolvedPreMoveReportIsAmbiguous),
+            ("staleExpectationsAreRetired", testStaleExpectationsAreRetired),
+            ("cancellingReleasesTheLaidOutText", testCancellingReleasesTheLaidOutText),
+            ("hidingReleasesTheLaidOutTextOfAWatch", testHidingReleasesTheLaidOutTextOfAWatch),
+            ("nextGestureWaitsForReportsStillOwed", testNextGestureWaitsForReportsStillOwed),
         ]
     }
 
@@ -1038,5 +1044,198 @@ enum TrackpadSessionTests {
         single.drag(dx: -30, dy: 0)
         TestSupport.expectEqual(single.frame(before: "Alpha beta", after: " gamma.", timestamp: 1), -3)
         TestSupport.expect(!single.acknowledge(before: "Alpha beta", after: " gamma."), "an unmoved report taken as issued")
+    }
+}
+
+/// A layout that keeps the text it laid out, as TextKit's storage does.
+final class RetainingLayout: LineLayout {
+    private let inner = FixedWidthLayout(columns: 1_000)
+    private(set) var laidOut: String?
+
+    func lines(in text: String) -> [Range<Int>] {
+        laidOut = text
+        return inner.lines(in: text)
+    }
+
+    func x(atUTF16 offset: Int, line: Range<Int>, in text: String) -> Double {
+        laidOut = text
+        return inner.x(atUTF16: offset, line: line, in: text)
+    }
+
+    func forget() {
+        laidOut = nil
+    }
+}
+
+extension TrackpadSessionTests {
+    fileprivate static func testSettlingForAKeyStopsAtTheCaret() {
+        // ARCHITECTURE.md, "Typing correctness is paramount": a key resolves settling at once. With a move
+        // out, the caret is where it lands; nothing more is issued toward the target.
+        var moving = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
+                                     layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        moving.drag(dx: -30, dy: 0)
+        TestSupport.expectEqual(moving.frame(before: "Alpha beta gamma", after: "", timestamp: 1), -3)
+        moving.drag(dx: -30, dy: 0)
+        moving.settleNow(at: 1.01)
+        TestSupport.expect(moving.isReadyForTyping, "a move out keeps a key waiting")
+        TestSupport.expectEqual(moving.frame(before: "Alpha beta ga", after: "mma", timestamp: 1.02), nil)
+        TestSupport.expectEqual(moving.frame(before: "Alpha beta ga", after: "mma", timestamp: 1.03), nil)
+        // With a probe out, the key waits for its outcome; a split it leaves is repaired; then nothing more.
+        var host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}", unit: .utf16, callbackFrames: 2)
+        var probing = makeSession(host)
+        probing.drag(dx: -30, dy: 0)
+        var time = 1.0
+        runFrame(&probing, host: &host, at: time)
+        TestSupport.expect(probing.hasOutstandingProbe, "no probe out")
+        probing.settleNow(at: time)
+        TestSupport.expect(!probing.isReadyForTyping, "a probe out did not keep the key waiting")
+        for _ in 0 ..< 10 where !probing.isReadyForTyping {
+            time += 1.0 / 120
+            runFrame(&probing, host: &host, at: time)
+        }
+        TestSupport.expect(probing.isReadyForTyping, "never ready")
+        let caret = host.caret
+        for _ in 0 ..< 10 {
+            time += 1.0 / 120
+            runFrame(&probing, host: &host, at: time)
+        }
+        TestSupport.expectEqual(host.caret, caret)
+        TestSupport.expect(host.caretIsOnBoundary, "left inside the emoji")
+        TestSupport.expectEqual(host.caret, 2)
+    }
+
+    fileprivate static func testUnresolvedPreMoveReportIsAmbiguous() {
+        // The round-6 review's P1: a report showing the context a move was issued in was accepted as
+        // WebKit's first report, and an unrelated host change could be absorbed that way. If the move then
+        // never reports where it landed, the session cannot know where the caret is: it is ambiguous.
+        var session = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
+                                      layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        session.drag(dx: -30, dy: 0)
+        TestSupport.expectEqual(session.frame(before: "Alpha beta gamma", after: "", timestamp: 1), -3)
+        TestSupport.expect(session.acknowledge(before: "Alpha beta gamma", after: ""), "the report as issued")
+        TestSupport.expectEqual(session.frame(before: "Alpha beta gamma", after: "", timestamp: 1.2), nil)
+        TestSupport.expect(!session.isAmbiguous, "ambiguous before the time was up")
+        TestSupport.expectEqual(session.frame(before: "Alpha beta gamma", after: "", timestamp: 1.31), nil)
+        TestSupport.expect(session.isAmbiguous, "an unresolved pre-move report was trusted")
+        // The keyboard ends such a session without another adjustment.
+        let document = FakeDocument(FakeTextHost(text: "Alpha beta gamma"))
+        let controller = TrackpadController(host: document)
+        controller.parameters = .flat
+        var finished: Bool?
+        controller.onFinished = { finished = $0 }
+        controller.begin(layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        controller.move(dx: -30, dy: 0, timestamp: 1)
+        controller.tick(at: 1)
+        TestSupport.expectEqual(document.host.caret, 13)
+        document.host.moveCaret(to: 16)   // the host puts the caret back where it was
+        TestSupport.expect(controller.acknowledge(before: "Alpha beta gamma", after: nil), "the report as issued")
+        controller.tick(at: 1.2)
+        TestSupport.expect(controller.isActive, "ended early")
+        controller.tick(at: 1.31)
+        TestSupport.expectEqual(finished, false)
+        TestSupport.expectEqual(document.host.caret, 16)
+    }
+
+    fileprivate static func testStaleExpectationsAreRetired() {
+        // A move that landed (the proxy showed it) but never reported: once its time is up its
+        // expectations go, so a later change that looks like its report is an outside change.
+        var session = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
+                                      layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        session.drag(dx: -30, dy: 0)
+        TestSupport.expectEqual(session.frame(before: "Alpha beta gamma", after: "", timestamp: 1), -3)
+        TestSupport.expectEqual(session.frame(before: "Alpha beta ga", after: "mma", timestamp: 1.01), nil)
+        TestSupport.expectEqual(session.unconfirmedAdjustments, 1)
+        TestSupport.expectEqual(session.frame(before: "Alpha beta ga", after: "mma", timestamp: 1.4), nil)
+        TestSupport.expectEqual(session.unconfirmedAdjustments, 0)
+        TestSupport.expect(!session.isAmbiguous, "a landed move that never reported is ambiguous")
+        TestSupport.expect(!session.acknowledge(before: "Alpha beta gamma", after: ""), "a stale pre-move report accepted")
+        TestSupport.expect(!session.acknowledge(before: "Alpha beta ga", after: "mma"), "a stale report accepted")
+        // Within its time, the same reports are the move's.
+        var fresh = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
+                                    layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        fresh.drag(dx: -30, dy: 0)
+        _ = fresh.frame(before: "Alpha beta gamma", after: "", timestamp: 1)
+        _ = fresh.frame(before: "Alpha beta ga", after: "mma", timestamp: 1.01)
+        TestSupport.expect(fresh.acknowledge(before: "Alpha beta gamma", after: ""), "the pre-move report")
+        TestSupport.expect(fresh.acknowledge(before: "Alpha beta ga", after: "mma"), "the report as landed")
+    }
+
+    fileprivate static func testCancellingReleasesTheLaidOutText() {
+        // The round-6 review's P2: cancelling dropped the snapshot but kept the layout, whose TextKit
+        // storage still held a laid-out copy of it.
+        weak var released: RetainingLayout?
+        var session: TrackpadSession = {
+            let layout = RetainingLayout()
+            released = layout
+            return TrackpadSession(before: "Invented text", after: " here.", unit: .utf16, parameters: .flat,
+                                   layout: layout, linePitch: 20, layoutWidth: 10_000)
+        }()
+        TestSupport.expectEqual(released?.laidOut, "Invented text here.")
+        _ = session.cancel(at: 1)
+        TestSupport.expect(released == nil, "the layout outlived the cancellation")
+        // A layout someone else still holds is emptied at once.
+        let held = RetainingLayout()
+        var other = TrackpadSession(before: "Invented text", after: " here.", unit: .utf16, parameters: .flat,
+                                    layout: held, linePitch: 20, layoutWidth: 10_000)
+        TestSupport.expect(held.laidOut != nil, "nothing laid out")
+        _ = other.cancel(at: 1)
+        TestSupport.expectEqual(held.laidOut, nil)
+    }
+
+    fileprivate static func testHidingReleasesTheLaidOutTextOfAWatch() {
+        // Hiding with a jump past the edge still out keeps the session watching it, text-free: its layout
+        // goes at once too.
+        let document = FakeDocument(FakeTextHost(text: "Alpha beta gamma.\nShort line.", caret: 8, model: .lineBreakOnly,
+                                                 callbackFrames: 5))
+        let controller = TrackpadController(host: document)
+        controller.parameters = .flat
+        let layout = RetainingLayout()
+        controller.begin(layout: layout, linePitch: 20, layoutWidth: 10_000)
+        controller.move(dx: 0, dy: 20, timestamp: 1)
+        controller.tick(at: 1)
+        TestSupport.expect(layout.laidOut != nil, "nothing laid out")
+        controller.hide(at: 1.01)
+        TestSupport.expect(controller.isActive, "no watch kept")
+        TestSupport.expectEqual(layout.laidOut, nil)
+    }
+}
+
+extension TrackpadSessionTests {
+    fileprivate static func testNextGestureWaitsForReportsStillOwed() {
+        // Found by the typing torture test: a key ended a gesture at once while a report of its last move
+        // was still owed; the next gesture began on the proxy's provisional context and took that late
+        // report for its own probe's outcome. The next gesture moves nothing until it has arrived, and
+        // then starts from what it shows.
+        let document = FakeDocument(FakeTextHost(text: "Hi \u{1F44D}\u{1F3FD} ab", unit: .utf16, lagFrames: 0, callbackFrames: 4))
+        let controller = TrackpadController(host: document)
+        controller.parameters = .flat
+        controller.begin(layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        controller.move(dx: -10, dy: 0, timestamp: 1)
+        controller.tick(at: 1)
+        TestSupport.expectEqual(document.host.caret, 9)
+        TestSupport.expect(controller.settleNow(at: 1.001), "the move kept a key waiting")
+        // The next gesture, before that report.
+        controller.begin(layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        controller.move(dx: -60, dy: 0, timestamp: 1.01)
+        var time = 1.01
+        for _ in 0 ..< 3 {
+            time += 1.0 / 120
+            document.host.advanceFrame()
+            while let report = document.host.takeCallback() {
+                _ = controller.acknowledge(before: report.before, after: report.after)
+            }
+            controller.tick(at: time)
+        }
+        TestSupport.expectEqual(document.host.adjustmentCount, 1)
+        for _ in 0 ..< 60 {
+            time += 1.0 / 120
+            document.host.advanceFrame()
+            while let report = document.host.takeCallback() {
+                TestSupport.expect(controller.acknowledge(before: report.before, after: report.after), "a report not explained")
+            }
+            controller.tick(at: time)
+        }
+        TestSupport.expect(document.host.adjustmentCount > 1, "the next gesture never moved")
+        TestSupport.expect(document.host.caretIsOnBoundary, "left inside the emoji")
     }
 }

@@ -18,6 +18,18 @@ protocol LineLayout {
     func lines(in text: String) -> [Range<Int>]
     /// The caret's x position in points from the line's leading edge, at a UTF-16 offset in `line`.
     func x(atUTF16 offset: Int, line: Range<Int>, in text: String) -> Double
+    /// Drops any copy of the text kept for the last layout (a cache), at once.
+    func forget()
+}
+
+extension LineLayout {
+    func forget() {}
+}
+
+/// The layout of a session that no longer holds any text (cancelled, or hiding).
+struct EmptyLineLayout: LineLayout {
+    func lines(in text: String) -> [Range<Int>] { [0 ..< text.utf16.count] }
+    func x(atUTF16 offset: Int, line: Range<Int>, in text: String) -> Double { 0 }
 }
 
 /// The text the proxy exposed around the caret, and a virtual cursor that moves inside it by whole

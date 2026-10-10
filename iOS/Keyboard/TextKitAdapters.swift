@@ -3,7 +3,7 @@ import UIKit
 /// `LineLayout` with TextKit 1: the snapshot laid out in the body font at the width of the field
 /// profile in use (`FieldLayoutParameters`), with no line-fragment padding. The host's real font and
 /// width are unknown to a keyboard, so soft wraps are an estimate; hard line breaks are exact. Holds
-/// the snapshot only while a gesture runs.
+/// the snapshot only while a gesture runs, and drops it as soon as the session forgets its context.
 final class TextKitLineLayout: LineLayout {
     private let font: UIFont
     private let storage = NSTextStorage()
@@ -65,6 +65,12 @@ final class TextKitLineLayout: LineLayout {
         }
         let glyph = manager.glyphIndexForCharacter(at: offset)
         return Double(manager.location(forGlyphAt: glyph).x)
+    }
+
+    /// Drops the laid-out copy of the snapshot (the storage and the cache) at once.
+    func forget() {
+        laidOutText = nil
+        storage.setAttributedString(NSAttributedString())
     }
 
     private func layOut(_ text: String) {

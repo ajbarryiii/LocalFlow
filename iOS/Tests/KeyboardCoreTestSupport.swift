@@ -149,10 +149,25 @@ struct FakeTextHost {
 
     var hasSelection: Bool { selectionLength > 0 }
 
+    /// The text changed: reports still to come show it as it is, not a caret it no longer has.
+    private mutating func forgetShownCarets() {
+        shownAsIssued = nil
+        callbacks = callbacks.map { (frames: $0.frames, shows: nil) }
+    }
+
+    /// Adjustments or callbacks are still to come.
+    var hasCallbacksToCome: Bool { !queued.isEmpty || !callbacks.isEmpty }
+
+    /// Adjustments still lagging land first: the host applies the proxy's operations in order.
+    mutating func applyQueuedAdjustments() {
+        while !queued.isEmpty { apply(queued.removeFirst().offset) }
+    }
+
     /// Inserts at the caret, replacing any selection.
     mutating func insertText(_ inserted: String) {
+        applyQueuedAdjustments()
         provisional = nil
-        shownAsIssued = nil
+        forgetShownCarets()
         let units = Array(text.utf16)
         text = String(decoding: units[..<caret], as: UTF16.self) + inserted
             + String(decoding: units[(caret + selectionLength)...], as: UTF16.self)
@@ -163,8 +178,9 @@ struct FakeTextHost {
     /// Deletes the selection, or the grapheme before the caret, as UIKit does (a decomposed é goes
     /// whole; so does "\r\n").
     mutating func deleteBackward() {
+        applyQueuedAdjustments()
         provisional = nil
-        shownAsIssued = nil
+        forgetShownCarets()
         if selectionLength > 0 {
             let units = Array(text.utf16)
             text = String(decoding: units[..<caret], as: UTF16.self)
@@ -183,7 +199,7 @@ struct FakeTextHost {
     /// The host app moves the caret (a tap, or code).
     mutating func moveCaret(to offset: Int) {
         provisional = nil
-        shownAsIssued = nil
+        forgetShownCarets()
         selectionLength = 0
         caret = min(max(offset, 0), text.utf16.count)
     }
@@ -290,9 +306,9 @@ struct FakeTextHost {
     }
 }
 
-/// A field for `EditingCore`: a fake host with an identity. The host app can move the caret, edit,
-/// and send callbacks the way the proxy delivers them.
-final class FakeDocument: TextDocument {
+/// A field for `EditingCore`, `KeyboardEditor` and `TrackpadController`: a fake host with an identity.
+/// The host app can move the caret, edit, and send callbacks the way the proxy delivers them.
+final class FakeDocument: TextDocument, TrackpadHost {
     var host: FakeTextHost
     var documentID: UUID?
     /// The host reports our own `insertText` and `deleteBackward` with `textDidChange` this many run-loop
@@ -327,6 +343,10 @@ final class FakeDocument: TextDocument {
         if let editCallbackDelay { scheduled.append((editCallbackDelay, nil, true)) }
     }
 
+    func adjust(by offset: Int) {
+        host.adjust(by: offset)
+    }
+
     // MARK: The host app
 
     /// Moves the caret (a tap, or code), reported next turn by `selectionDidChange` or `textDidChange`.
@@ -348,22 +368,36 @@ final class FakeDocument: TextDocument {
 
     /// Focus moves at once, before any callback reports it (the proxy already serves the new field).
     func switchField(to other: FakeTextHost, id: UUID?) {
+        previousHosts.append(host)
         host = other
         documentID = id
     }
+
+    /// The fields focus left, oldest first.
+    private(set) var previousHosts: [FakeTextHost] = []
 
     /// Callbacks still scheduled.
     var pendingCallbacks: Int { scheduled.count }
 
     /// One run-loop turn, at `now`: due host events happen and their callbacks reach `core`, in order.
     @discardableResult
-    func pump<Edit>(_ core: EditingCore<Edit>, at now: TimeInterval) -> [EditingCore<Edit>.CallbackOutcome] {
+    func pump(_ core: EditingCore, at now: TimeInterval) -> [EditingCore.CallbackOutcome] {
+        pump { core.hostChanged(textChanged: $0, now: now) }
+    }
+
+    /// The same, delivered to the keyboard's editing side as the keyboard does.
+    @discardableResult
+    func pump(_ editor: KeyboardEditor, at now: TimeInterval) -> [EditingCore.CallbackOutcome] {
+        pump { editor.hostChanged(textChanged: $0, now: now) }
+    }
+
+    private func pump(_ deliver: (Bool) -> EditingCore.CallbackOutcome) -> [EditingCore.CallbackOutcome] {
         scheduled = scheduled.map { (turns: $0.turns - 1, action: $0.action, textChanged: $0.textChanged) }
-        var outcomes: [EditingCore<Edit>.CallbackOutcome] = []
+        var outcomes: [EditingCore.CallbackOutcome] = []
         while let index = scheduled.firstIndex(where: { $0.turns <= 0 }) {
             let event = scheduled.remove(at: index)
             event.action?()
-            outcomes.append(core.hostChanged(textChanged: event.textChanged, now: now))
+            outcomes.append(deliver(event.textChanged))
         }
         return outcomes
     }

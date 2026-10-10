@@ -1,8 +1,8 @@
 import UIKit
 
-/// The text proxy as `EditingCore` sees it.
+/// The text proxy as `EditingCore` and `TrackpadController` see it.
 @MainActor
-private final class ProxyDocument: TextDocument {
+private final class ProxyDocument: TextDocument, TrackpadHost {
     weak var controller: UIInputViewController?
 
     init(controller: UIInputViewController) {
@@ -24,32 +24,34 @@ private final class ProxyDocument: TextDocument {
     nonisolated func deleteBackward() {
         MainActor.assumeIsolated { proxy?.deleteBackward() }
     }
+
+    nonisolated func adjust(by offset: Int) {
+        MainActor.assumeIsolated { proxy?.adjustTextPosition(byCharacterOffset: offset) }
+    }
 }
 
-/// The editing side of the keyboard: typing, the held delete key, trackpad mode, dictated text and
-/// its undo. The rules live in KeyboardCore (`EditingCore`, `UndoTracker`, `TrackpadSession`, the
-/// typing rules); this class applies them to the text proxy and owns the timers.
+/// The editing side of the keyboard in UIKit: the key area's events, the text proxy, the held delete
+/// key's timers, the display link and the timers of undo and the typing tail. The rules live in
+/// KeyboardCore (`KeyboardEditor`, `EditingCore`, `UndoTracker`, `TrackpadController`, the typing
+/// rules), where they are tested.
 ///
-/// Ownership (ARCHITECTURE.md, "Undo ownership v2"): typing, each delete (the first and every
-/// repeat), entering trackpad mode, a dictated insertion, a focus change, hiding and any host
-/// callback that no pending operation of ours explains advance the edit generation, which ends an
-/// undo and a trackpad gesture for good. While a gesture runs or settles, edits wait, bound to their
-/// field; only a completed gesture flushes them. Context is read in memory only and never stored or
-/// logged; every copy is dropped on hiding and expires on its own clock otherwise.
+/// ARCHITECTURE.md, "Typing correctness is paramount": a key runs at once, after the trackpad settles
+/// on the spot, in the field it was pressed in; only while a probe is out does it wait, resolved at its
+/// press. Context is read in memory only and never stored or logged; every copy is dropped on hiding
+/// and expires on its own clock otherwise.
 @MainActor
 final class KeyboardInput: KeyAreaViewDelegate {
     private weak var controller: UIInputViewController?
     private weak var keyArea: KeyAreaView?
-    private let core: EditingCore<() -> Void>
-    private var typing = TypingState()
-    private var tail = ContextTail()
+    private let document: ProxyDocument
+    private let editor: KeyboardEditor
+    private let driver: TrackpadDriver
     private var deleteKey = HeldDeleteKey()
     private var deleteTimer: Timer?
-    private var drainTimer: Timer?
+    private var continuationTimer: Timer?
     private var undoTimer: Timer?
-    private var undoExpiry: Timer?
+    private var undoExpiry: (timer: Timer, insertedAt: TimeInterval)?
     private var tailExpiry: Timer?
-    let trackpad: TrackpadDriver
     /// Trackpad mode started (true) or ended (false), to dim the dictation bar and play a haptic.
     var onTrackpadChange: ((Bool) -> Void)?
     /// Whether Undo can be offered may have changed. Only state is read in response; never results.
@@ -65,121 +67,119 @@ final class KeyboardInput: KeyAreaViewDelegate {
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
         self.keyArea = keyArea
-        core = EditingCore(document: ProxyDocument(controller: controller))
-        trackpad = TrackpadDriver(controller: controller)
-        core.adjustments = trackpad
-        trackpad.currentGeneration = { [weak self] in self?.core.generation ?? 0 }
-        trackpad.onFinished = { [weak self] completed in self?.trackpadFinished(completed: completed) }
+        document = ProxyDocument(controller: controller)
+        let trackpad = TrackpadController(host: document)
+        editor = KeyboardEditor(document: document, trackpad: trackpad)
+        driver = TrackpadDriver(controller: controller, trackpad: trackpad)
+        editor.autocapitalization = { [weak self] in self?.autocapitalization ?? .sentences }
+        editor.onStateChanged = { [weak self] in self?.editorStateChanged() }
+        editor.onUndoChanged = { [weak self] in self?.undoChanged() }
+        editor.onTrackpadFinished = { [weak self] _ in self?.trackpadFinished() }
+        keyArea.currentField = { [weak controller] in controller?.textDocumentProxy.documentIdentifierIfAvailable }
     }
+
+    var trackpad: TrackpadController { editor.trackpad }
 
     private var proxy: UITextDocumentProxy? { controller?.textDocumentProxy }
 
-    private var currentBefore: String? { tail.current(proxyBefore: proxy?.documentContextBeforeInput) }
-
     private var now: TimeInterval { CACurrentMediaTime() }
 
-    /// The trackpad is busy: dictated text should wait in the shared files rather than in memory.
-    var isBusy: Bool { trackpad.isActive || core.isDraining }
+    /// The trackpad is busy or keys are waiting: dictated text should wait in the shared files.
+    var isBusy: Bool { editor.isBusy }
+
+    private var autocapitalization: AutocapitalizationMode {
+        switch proxy?.autocapitalizationType ?? .sentences {
+        case .none: return .none
+        case .words: return .words
+        case .allCharacters: return .allCharacters
+        default: return .sentences
+        }
+    }
 
     // MARK: Lifecycle
 
     /// The keyboard appeared: start fresh in whatever field it serves.
     func reset() {
-        // A cancelled jump still watched since the keyboard hid ends here: the new appearance starts with
-        // no gesture, and what is typed now must not wait behind the old one.
-        trackpad.abort()
-        core.reset()
-        forgetTail()
-        typing.resetTiming()
         let numeric: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
-        typing.switchLayer(to: numeric.contains(proxy?.keyboardType ?? .default) ? .numbers : .letters)
+        editor.reset(numeric: numeric.contains(proxy?.keyboardType ?? .default))
         stopUndoTimers()
-        updateAutomaticShift()
-        onUndoAvailabilityChanged?()
     }
 
-    /// The keyboard is hiding: end every gesture and, synchronously, drop every copy of the field's
-    /// context and identity (the trackpad snapshot, its unit, the undo text and anchors, the typing
-    /// tail and queued edits). A probe still out is rolled back first.
+    /// The keyboard is hiding: end every gesture and held key and, synchronously, drop every copy of
+    /// the field's context and identity (the trackpad snapshot and its layout, its unit, the undo text
+    /// and anchors, the typing tail). A probe still out is rolled back first; keys waiting on it run in
+    /// their field if it is still there.
     func stop() {
         cancelHeldActions()
-        trackpad.hide()
-        core.hide()
-        forgetTail()
+        editor.hide(now: now)
         stopUndoTimers()
-        onUndoAvailabilityChanged?()
+        tailExpiry?.invalidate()
+        tailExpiry = nil
+        continuationTimer?.invalidate()
+        continuationTimer = nil
     }
 
     /// A `textDidChange` (`textChanged`) or `selectionDidChange` callback.
     func hostChanged(textChanged: Bool) {
-        switch core.hostChanged(textChanged: textChanged, now: now) {
-        case .own:
-            break
-        case .outside:
-            // An outside change ends the undo and the gesture for good, and what was queued with it.
-            trackpad.abort()
-            stopUndoTimers()
-            onUndoAvailabilityChanged?()
-        case .newField:
-            // Another field: nothing from the old one applies here, held keys and a pending delete
-            // included.
-            cancelHeldActions()
-            trackpad.fieldChanged()
-            forgetTail()
-            typing.resetTiming()
-            stopUndoTimers()
-            onUndoAvailabilityChanged?()
-        }
-        // Typing helpers keep their model only while the proxy agrees with it.
-        let hadModel = tail.known != nil
-        tail.proxyChanged(before: proxy?.documentContextBeforeInput)
-        if hadModel, tail.known == nil {
-            typing.resetTiming()
-            scheduleTailExpiry()
-        }
-        updateAutomaticShift()
+        // Another field: held keys and a pending delete end without acting.
+        if editor.hostChanged(textChanged: textChanged, now: now) == .newField { cancelHeldActions() }
     }
 
     /// Ends every held key (characters, space, delete) without typing, and a pending delete without
-    /// deleting; revokes what the delete press queued.
+    /// deleting; revokes deletions the delete press has waiting.
     private func cancelHeldActions() {
-        if let token = deleteKey.cancel() { core.revoke(token: token) }
+        if let token = deleteKey.cancel() { editor.revoke(token: token) }
         endDeleteRepeat()
         keyArea?.cancelAllTouches()
     }
 
-    // MARK: Dictation and undo
+    // MARK: Editor state
 
-    /// Inserts dictated text and makes it undoable. Waits, bound to this field, while a trackpad
-    /// gesture settles.
-    func insertDictation(_ text: String) {
-        whenIdle { [weak self] in
-            guard let self, !text.isEmpty else { return }
-            self.forgetTail()
-            self.core.insertDictation(text, now: self.now)
-            self.scheduleUndoExpiry()
-            self.typing.resetTiming()
-            self.updateAutomaticShift()
-            self.onUndoAvailabilityChanged?()
-        }
+    private func editorStateChanged() {
+        keyArea?.apply(layer: editor.typing.layer, shift: editor.typing.shift)
+        scheduleTailExpiry()
+        if editor.needsContinuation { scheduleContinuation() }
     }
 
-    var canUndoLastDictation: Bool { core.canUndo(now: now) }
+    /// Keys stopped after a Return run on the next frame, once the host has had a chance to move to
+    /// another field.
+    private func scheduleContinuation() {
+        guard continuationTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.continuationTimer = nil
+                self.editor.continuePendingKeys(now: self.now)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        continuationTimer = timer
+    }
+
+    private func trackpadFinished() {
+        if let measured = trackpad.measuredTouchRate { onTouchRateMeasured?(measured.rate, measured.scale) }
+        onUndoAvailabilityChanged?()
+    }
+
+    // MARK: Dictation and undo
+
+    /// Inserts dictated text and makes it undoable, after the trackpad settles on the spot.
+    func insertDictation(_ text: String) {
+        editor.insertDictation(text, now: now)
+    }
+
+    var canUndoLastDictation: Bool { editor.canUndo(now: now) }
 
     /// Removes the last dictation progressively: only what the context proves, then re-checks.
     func undoLastDictation() {
-        guard !trackpad.isActive, undoTimer == nil else { return }
-        forgetTail()
-        handle(core.beginUndo(now: now))
+        guard undoTimer == nil else { return }
+        handle(editor.beginUndo(now: now))
     }
 
     private func handle(_ step: UndoTracker.Step) {
         guard step == .wait else {
             undoTimer?.invalidate()
             undoTimer = nil
-            typing.resetTiming()
-            updateAutomaticShift()
-            onUndoAvailabilityChanged?()
             return
         }
         guard undoTimer == nil else { return }
@@ -187,32 +187,42 @@ final class KeyboardInput: KeyAreaViewDelegate {
             MainActor.assumeIsolated {
                 // A repeating timer outlives its owner unless told otherwise.
                 guard let self else { return timer.invalidate() }
-                self.handle(self.core.continueUndo(now: self.now))
+                self.handle(self.editor.continueUndo(now: self.now))
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         undoTimer = timer
     }
 
-    private func scheduleUndoExpiry() {
-        undoExpiry?.invalidate()
-        let timer = Timer(timeInterval: UndoTracker.window, repeats: false) { [weak self] _ in
+    /// The undo was made, used or ended: its timers follow, and Undo's availability is published.
+    private func undoChanged() {
+        if let insertion = editor.core.undo.insertion {
+            if undoExpiry?.insertedAt != insertion.insertedAt { scheduleUndoExpiry(insertedAt: insertion.insertedAt) }
+        } else {
+            stopUndoTimers()
+        }
+        onUndoAvailabilityChanged?()
+    }
+
+    private func scheduleUndoExpiry(insertedAt: TimeInterval) {
+        undoExpiry?.timer.invalidate()
+        let timer = Timer(timeInterval: max(insertedAt + UndoTracker.window - now, 0), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.core.expireUndo(now: self.now + 0.001)
                 self.undoExpiry = nil
+                self.editor.core.expireUndo(now: self.now + 0.001)
                 self.onUndoAvailabilityChanged?()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        undoExpiry = timer
+        undoExpiry = (timer, insertedAt)
     }
 
     private func stopUndoTimers() {
         undoTimer?.invalidate()
         undoTimer = nil
-        if core.undo.insertion == nil {
-            undoExpiry?.invalidate()
+        if editor.core.undo.insertion == nil {
+            undoExpiry?.timer.invalidate()
             undoExpiry = nil
         }
     }
@@ -221,7 +231,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// The tail's own clock: set when a model is first held, never moved by more typing.
     private func scheduleTailExpiry() {
-        guard let expiresAt = tail.expiresAt else {
+        guard let expiresAt = editor.tailExpiresAt else {
             tailExpiry?.invalidate()
             tailExpiry = nil
             return
@@ -231,175 +241,40 @@ final class KeyboardInput: KeyAreaViewDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.tailExpiry = nil
-                self.tail.expire(now: self.now)
                 // A model held since then gets the rest of its own lifetime.
-                self.scheduleTailExpiry()
+                self.editor.expireTail(now: self.now)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         tailExpiry = timer
     }
 
-    private func forgetTail() {
-        tail.forget()
-        tailExpiry?.invalidate()
-        tailExpiry = nil
-    }
-
-    // MARK: Editing
-
-    /// Runs an edit now, or, bound to this field, its generation and (for a held key) its press, after
-    /// the trackpad gesture completes and the edits queued before it have run.
-    private func whenIdle(token: Int? = nil, _ edit: @escaping () -> Void) {
-        guard trackpad.isActive || core.isDraining else {
-            edit()
-            return
-        }
-        core.enqueue(edit, token: token)
-    }
-
-    private func trackpadFinished(completed: Bool) {
-        if let measured = trackpad.measuredTouchRate { onTouchRateMeasured?(measured.rate, measured.scale) }
-        if completed {
-            core.beginDrain()
-            drainNext()
-        } else {
-            core.discardQueue()
-        }
-        updateAutomaticShift()
-        onUndoAvailabilityChanged?()
-    }
-
-    /// Runs the queue one edit per frame, so the callbacks an edit causes (a Return that moves focus to
-    /// another field) arrive before the next one, which then runs only if still bound to this field.
-    private func drainNext() {
-        drainTimer?.invalidate()
-        drainTimer = nil
-        guard core.isDraining else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.drainTimer = nil
-                guard let edit = self.core.nextQueuedEdit() else { return }
-                edit()
-                self.core.queuedEditRan()
-                self.updateAutomaticShift()
-                self.drainNext()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        drainTimer = timer
-    }
-
-    /// An edit by the user: it ends any undo that relied on the document as it was.
-    private func userEdit() {
-        let hadUndo = core.undo.insertion != nil
-        core.userEdit()
-        if hadUndo {
-            stopUndoTimers()
-            onUndoAvailabilityChanged?()
-        }
-    }
-
-    private func insert(_ text: String) {
-        guard let proxy, !text.isEmpty else { return }
-        let before = proxy.documentContextBeforeInput
-        proxy.insertText(text)
-        tail.inserted(text, proxyBefore: before, at: now)
-        tail.acknowledge(proxyBefore: proxy.documentContextBeforeInput)
-        scheduleTailExpiry()
-    }
-
-    private func deleteCharacters(_ count: Int) {
-        guard let proxy, count > 0 else { return }
-        let before = proxy.documentContextBeforeInput
-        for _ in 0 ..< count { proxy.deleteBackward() }
-        tail.deleted(graphemes: count, proxyBefore: before, at: now)
-        tail.acknowledge(proxyBefore: proxy.documentContextBeforeInput)
-        scheduleTailExpiry()
-    }
-
-    private func deleteWord() {
-        // One grapheme when nothing before the caret is visible (often a hidden line break).
-        let count = WordBoundaries.previousWord(before: currentBefore ?? "").graphemes
-        deleteCharacters(max(count, 1))
-    }
-
-    private func updateAutomaticShift() {
-        let mode: AutocapitalizationMode
-        switch proxy?.autocapitalizationType ?? .sentences {
-        case .none: mode = .none
-        case .words: mode = .words
-        case .allCharacters: mode = .allCharacters
-        default: mode = .sentences
-        }
-        typing.updateAutomaticShift(AutoCapitalization.shouldCapitalize(before: currentBefore, mode: mode))
-        keyArea?.apply(layer: typing.layer, shift: typing.shift)
-    }
-
     // MARK: KeyAreaViewDelegate
 
-    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, timestamp: TimeInterval) {
-        switch action {
-        case .shift:
-            typing.tapShift(at: timestamp)
-            keyArea.apply(layer: typing.layer, shift: typing.shift)
-        case .layer(let layer):
-            typing.switchLayer(to: layer)
-            updateAutomaticShift()
-        case .nextKeyboard:
-            break
-        case .character, .space, .returnKey, .delete:
-            whenIdle { [weak self] in self?.type(action, at: timestamp) }
-        }
-    }
-
-    private func type(_ action: KeyAction, at timestamp: TimeInterval) {
-        userEdit()
-        switch action {
-        case .character(let character):
-            let text = typing.text(for: character)
-            insert(text)
-            typing.didTypeCharacter(text)
-        case .space:
-            switch typing.spaceEdit(before: currentBefore, at: timestamp) {
-            case .space:
-                insert(" ")
-            case .replaceSpaceWithPeriod:
-                deleteCharacters(1)
-                insert(". ")
-            }
-        case .returnKey:
-            insert("\n")
-            typing.didTypeReturn()
-        case .delete:
-            deleteCharacters(1)
-            typing.didDelete()
-        case .shift, .layer, .nextKeyboard:
-            return
-        }
-        updateAutomaticShift()
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, field: UUID?, timestamp: TimeInterval) {
+        editor.press(action, field: field, at: timestamp, now: now)
     }
 
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval) {
         endDeleteRepeat()
         // Measured on device: the first deletion comes 0.12 s after touch-down (or at release, if
         // sooner), and the repeats follow on the schedule from touch-down. The press is bound to this
-        // field; every deletion it schedules or queues carries its token.
+        // field; every deletion it makes carries its token.
         guard let press = deleteKey.began(at: timestamp, documentID: proxy?.documentIdentifierIfAvailable) else { return }
         schedule(press.token, at: press.firstAt, pressedAt: timestamp)
     }
 
     /// A release before the first deletion deletes once, in the field the press began in; a
     /// cancellation (the system's, the menu opening over the keys, hiding) deletes nothing and revokes
-    /// any deletion the press queued behind a trackpad gesture.
+    /// any deletion of the press still waiting on the trackpad.
     func keyAreaEndedDelete(_ keyArea: KeyAreaView, cancelled: Bool) {
         endDeleteRepeat()
+        let field = deleteKey.press?.documentID
         guard let ended = deleteKey.ended(cancelled: cancelled, documentID: proxy?.documentIdentifierIfAvailable) else { return }
         if cancelled {
-            core.revoke(token: ended.token)
+            editor.revoke(token: ended.token)
         } else if ended.deleteOnce {
-            delete(.character, token: ended.token)
+            editor.heldDelete(.character, token: ended.token, field: field, now: now)
         }
     }
 
@@ -416,27 +291,13 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// A scheduled deletion: only while its press is current and the field is the one it began in.
     private func fireDelete(_ token: Int, pressedAt: TimeInterval) {
+        let field = deleteKey.press?.documentID
         guard let fired = deleteKey.fire(token: token, documentID: proxy?.documentIdentifierIfAvailable) else {
             endDeleteRepeat()
             return
         }
-        delete(fired.unit, token: token)
+        editor.heldDelete(fired.unit, token: token, field: field, now: now)
         schedule(token, at: fired.nextAt, pressedAt: pressedAt)
-    }
-
-    /// One deletion of the held key. Every one is a new edit: an undo offered since the last one ends
-    /// here, before anything is deleted.
-    private func delete(_ unit: DeleteRepeat.Unit, token: Int) {
-        whenIdle(token: token) { [weak self] in
-            guard let self else { return }
-            self.userEdit()
-            switch unit {
-            case .character: self.deleteCharacters(1)
-            case .words(let count): for _ in 0 ..< count { self.deleteWord() }
-            }
-            self.typing.didDelete()
-            self.updateAutomaticShift()
-        }
     }
 
     private func endDeleteRepeat() {
@@ -448,14 +309,13 @@ final class KeyboardInput: KeyAreaViewDelegate {
         // A delete still held stops repeating (what it already did stands).
         _ = deleteKey.cancel()
         endDeleteRepeat()
-        // Moving the caret is an edit: the undo for a dictation ends, and the gesture owns what follows.
-        userEdit()
         let multipliers = trackpadMultipliers()
         trackpad.parameters = TrackpadParameters.standard.tuned(sensitivity: multipliers.sensitivity,
                                                                 acceleration: multipliers.acceleration)
-        trackpad.begin(keyboardWidth: keyArea.bounds.width, layout: fieldLayout())
-        forgetTail()
-        typing.resetTiming()
+        if let profile = driver.layout(keyboardWidth: keyArea.bounds.width, profile: fieldLayout()),
+           editor.beginTrackpad(layout: profile.layout, linePitch: profile.linePitch, layoutWidth: profile.width, now: now) {
+            driver.run()
+        }
         onTrackpadChange?(true)
     }
 

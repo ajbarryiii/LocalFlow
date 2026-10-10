@@ -10,6 +10,9 @@ import Foundation
 ///   characters, space and return alike. A committed space no longer becomes the trackpad.
 /// - Characters, space and return type on lift (or rollover); shift and layer keys on touch-down;
 ///   delete starts repeating on touch-down.
+/// - Each finger keeps the field the keyboard served when it touched down; what it types carries that
+///   field, so the keyboard can refuse it in another one (ARCHITECTURE.md, "Typing correctness is
+///   paramount").
 struct KeyTouchModel: Equatable, Sendable {
     typealias TouchID = Int
 
@@ -31,10 +34,13 @@ struct KeyTouchModel: Equatable, Sendable {
         var committed = false
         /// The space bar moved past the slop: this touch can no longer become the trackpad.
         var holdCancelled = false
+        /// The field the keyboard served at touch-down.
+        var field: UUID?
     }
 
     enum Effect: Equatable, Sendable {
-        case type(KeyAction)
+        /// `field`: the field the finger touched down in (nil for keys acting at once).
+        case type(KeyAction, field: UUID? = nil)
         case beginDelete
         /// `cancelled`: the system cancelled the touch (or the key area dropped it), which is not a
         /// release: a cancelled tap deletes nothing.
@@ -70,10 +76,11 @@ struct KeyTouchModel: Equatable, Sendable {
 
     // MARK: Events
 
-    mutating func began(_ id: TouchID, x: Double, y: Double) -> [Effect] {
+    /// `field`: the field the keyboard serves at this touch-down.
+    mutating func began(_ id: TouchID, x: Double, y: Double, field: UUID? = nil) -> [Effect] {
         guard trackpadTouch == nil, let action = nearestAction(x: x, y: y) else { return [] }
         var effects = commitPending()
-        var touch = Touch(id: id, role: .character, action: action, startX: x, startY: y, x: x, y: y)
+        var touch = Touch(id: id, role: .character, action: action, startX: x, startY: y, x: x, y: y, field: field)
         switch action {
         case .character:
             break
@@ -136,15 +143,15 @@ struct KeyTouchModel: Equatable, Sendable {
         switch touch.role {
         case .character, .slide:
             guard !touch.committed, let action = touch.action, action.isCharacter else { break }
-            effects.append(.type(action))
+            effects.append(.type(action, field: touch.field))
             // A number slid to from the layer key returns to letters, as on Apple's keyboard.
             if touch.role == .slide, layer != .letters { effects.append(.type(.layer(.letters))) }
         case .space:
             effects.append(.cancelHoldTimer(id))
             // Measured: a drag that never became the trackpad (a fast one, or one past the slop) types a space.
-            if !touch.committed { effects.append(.type(.space)) }
+            if !touch.committed { effects.append(.type(.space, field: touch.field)) }
         case .returnKey:
-            if !touch.committed, nearestAction(x: x, y: y) == .returnKey { effects.append(.type(.returnKey)) }
+            if !touch.committed, nearestAction(x: x, y: y) == .returnKey { effects.append(.type(.returnKey, field: touch.field)) }
         case .delete:
             effects.append(.endDelete(cancelled: false))
         case .shift, .layer:
@@ -223,13 +230,13 @@ struct KeyTouchModel: Equatable, Sendable {
             switch touch.role {
             case .character, .slide:
                 guard let action = touch.action, action.isCharacter else { continue }
-                effects.append(.type(action))
+                effects.append(.type(action, field: touch.field))
             case .space:
                 guard touch.action == .space else { continue }
-                effects += [.cancelHoldTimer(touch.id), .type(.space)]
+                effects += [.cancelHoldTimer(touch.id), .type(.space, field: touch.field)]
             case .returnKey:
                 guard touch.action == .returnKey else { continue }
-                effects.append(.type(.returnKey))
+                effects.append(.type(.returnKey, field: touch.field))
             case .delete, .shift, .layer:
                 continue
             }

@@ -16,7 +16,6 @@ enum UndoTrackerTests {
             ("stopsWhenContinuityBreaks", testStopsWhenContinuityBreaks),
             ("waitsForTheContextThenTimesOut", testWaitsForTheContextThenTimesOut),
             ("countsGraphemes", testCountsGraphemes),
-            ("acknowledgesOnlyStatesOfTheInsertion", testAcknowledgesOnlyStatesOfTheInsertion),
             ("withinThirtySeconds", testWithinThirtySeconds),
             ("bothEndsMustBeCharacterBoundaries", testBothEndsMustBeCharacterBoundaries),
         ]
@@ -198,31 +197,6 @@ enum UndoTrackerTests {
         TestSupport.expectEqual(runUndo(&undo, &field), .finished)
         TestSupport.expectEqual(field.deletions, text.count)
         TestSupport.expectEqual(field.text, "Earlier words here.")
-    }
-
-    private static func testAcknowledgesOnlyStatesOfTheInsertion() {
-        var undo = tracker()
-        let after = "Earlier words here." + inserted
-        // The insertion may cause one callback, which must show it.
-        TestSupport.expect(!undo.acknowledge(before: "Somewhere else", after: nil, now: 100.01), "another place")
-        TestSupport.expect(undo.acknowledge(before: after, after: nil, now: 100.02), "the insertion's own state")
-        TestSupport.expect(!undo.acknowledge(before: after, after: nil, now: 100.03), "consumed twice")
-        // Each deletion may cause one, showing what is left.
-        var field = Field(text: after, window: 20)
-        guard case .delete(let count) = undo.begin(documentID: document, generation: 7, before: field.before,
-                                                    after: nil, now: 101) else {
-            return TestSupport.expect(false, "no first step")
-        }
-        field.delete(count)
-        TestSupport.expect(undo.acknowledge(before: field.before, after: nil, now: 101.01), "a partly undone state")
-        TestSupport.expect(!undo.acknowledge(before: "Earlier words here.\nOther", after: nil, now: 101.02),
-                           "not a state of it")
-        // A callback owed is owed only briefly: measured hosts send none for our edits, and a later change
-        // that shows the same text (the caret moved to an identical passage) is not ours.
-        var late = tracker()
-        TestSupport.expect(!late.acknowledge(before: after, after: nil, now: 100 + UndoTracker.callbackTimeout + 0.01),
-                           "a late callback taken for the insertion's")
-        TestSupport.expect(!late.acknowledge(before: after, after: nil, now: 100.02), "a lapsed callback owed again")
     }
 
     private static func testBothEndsMustBeCharacterBoundaries() {
