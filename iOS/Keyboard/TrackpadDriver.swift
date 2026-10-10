@@ -39,12 +39,16 @@ final class TrackpadDriver: AdjustmentOwner {
         touchRate.touchRate.map { ($0, touchRate.eventStepScale) }
     }
 
-    func begin(fieldWidth: CGFloat) {
+    /// Starts a gesture with the field's layout profile: its wrap width for this keyboard width, the
+    /// body font at the current Dynamic Type size, and the layout's real line pitch.
+    func begin(keyboardWidth: CGFloat, layout fieldLayout: FieldLayout) {
         guard let controller else { return }
         let proxy = controller.textDocumentProxy
         guard let documentID = proxy.documentIdentifierIfAvailable else { return }
         let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: controller.traitCollection)
-        let width = max(fieldWidth - CGFloat(parameters.fieldInsets), 40)
+        let profile = FieldLayoutParameters.standard
+        let width = CGFloat(profile.wrapWidth(fieldLayout, keyboardWidth: Double(keyboardWidth)))
+        let layout = TextKitLineLayout(width: width, font: font, lineFragmentPadding: CGFloat(profile.lineFragmentPadding))
         self.documentID = documentID
         generation = currentGeneration()
         let unit = unitCache.flatMap { $0.documentID == documentID ? $0.unit : nil }
@@ -55,14 +59,19 @@ final class TrackpadDriver: AdjustmentOwner {
         session = TrackpadSession(
             before: proxy.documentContextBeforeInput, after: proxy.documentContextAfterInput,
             unit: unit, parameters: parameters,
-            layout: TextKitLineLayout(width: width, font: font),
-            lineHeight: Double(font.lineHeight), layoutWidth: Double(width))
+            layout: layout, linePitch: layout.linePitch, layoutWidth: Double(width))
         if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
             displayLink = link
         }
+    }
+
+    /// The offset unit learned in this field, if any; part of the field's fingerprint.
+    func learnedUnit(for documentID: UUID?) -> CursorOffsetUnit? {
+        guard let documentID, let unitCache, unitCache.documentID == documentID else { return nil }
+        return unitCache.unit
     }
 
     /// One delivered touch event's finger movement, at its touch timestamp.

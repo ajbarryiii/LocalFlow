@@ -100,7 +100,9 @@ struct TrackpadSession {
     /// The next step needs a probe, and none may run until the finger moves on.
     private(set) var isStalled = false
     private let layout: any LineLayout
-    private let lineHeight: Double
+    /// The host's line advance (lineHeight + leading): lines are this far apart, so the point snaps
+    /// to the next line half of it past a line's center.
+    private let linePitch: Double
     private let layoutWidth: Double
     private var lines: [Range<Int>]
     /// Lines before this one may start before the snapshot does (UIKit's context begins about a
@@ -132,11 +134,11 @@ struct TrackpadSession {
     private var lastIssuedAt: TimeInterval?
 
     init(before: String?, after: String?, unit: CursorOffsetUnit?, parameters: TrackpadParameters,
-         layout: any LineLayout, lineHeight: Double, layoutWidth: Double) {
+         layout: any LineLayout, linePitch: Double, layoutWidth: Double) {
         self.parameters = parameters
         self.unit = unit
         self.layout = layout
-        self.lineHeight = max(lineHeight, 1)
+        self.linePitch = max(linePitch, 1)
         self.layoutWidth = max(layoutWidth, parameters.leftInset + parameters.rightInset + 1)
         retriesLeft = parameters.automaticProbeRetries
         snapshotContext = Self.visible(before: before, after: after)
@@ -146,7 +148,7 @@ struct TrackpadSession {
         let line = navigator.line(of: navigator.cursor, in: lines)
         // The point starts exactly at the caret.
         point = FloatingCursor(parameters: parameters, x: navigator.x(of: navigator.cursor, lines: lines, layout: layout),
-                               y: (Double(line) + 0.5) * max(lineHeight, 1))
+                               y: (Double(line) + 0.5) * max(linePitch, 1))
         firstAnchoredLine = Self.firstAnchoredLine(navigator.text, lines: lines, startsLine: snapshotContext.startsLine)
         xIsReal = line >= firstAnchoredLine
         // Only a host that counts UTF-16 units leaves the caret inside a cluster.
@@ -201,7 +203,7 @@ struct TrackpadSession {
         if distance > 0, retriesLeft <= 0 {
             // New finger travel allows another probe.
             retryTravel += distance
-            if retryTravel >= parameters.probeTravelLines * lineHeight {
+            if retryTravel >= parameters.probeTravelLines * linePitch {
                 retryTravel = 0
                 retriesLeft = 1
                 isStalled = false
@@ -400,14 +402,14 @@ struct TrackpadSession {
 
     // MARK: The point
 
-    private func center(_ line: Int) -> Double { (Double(line) + 0.5) * lineHeight }
+    private func center(_ line: Int) -> Double { (Double(line) + 0.5) * linePitch }
 
     /// Clamps the point and sends the target to the boundary nearest it. Also after the lift: a new
     /// snapshot re-anchors the point, and the target is snapped again.
     private mutating func retarget() {
         guard !isCancelled, !lines.isEmpty else { return }
         let last = lines.count - 1
-        let reach = parameters.pendingLines * lineHeight
+        let reach = parameters.pendingLines * linePitch
         let top = isSoftEdge(.start) ? center(0) - parameters.topOvershoot : center(0) - reach
         let bottom = isSoftEdge(.end) ? center(last) + parameters.bottomOvershoot : center(last) + reach
         // New finger travel past a held edge allows one more probe there.
@@ -415,7 +417,7 @@ struct TrackpadSession {
         if isSoftEdge(.start), point.y < top { creditTravel(top - point.y, at: .start) }
         point.clamp(x: parameters.leftInset ... layoutWidth - parameters.rightInset, y: top ... bottom)
         // The line whose center is nearest the point.
-        let ideal = Int((point.y / lineHeight).rounded(.down))
+        let ideal = Int((point.y / linePitch).rounded(.down))
         blocked = ideal < 0 ? .start : (ideal > last ? .end : nil)
         let line = min(max(ideal, 0), last)
         navigator.setCursor(navigator.position(nearestX: point.x, onLine: line, lines: lines, layout: layout))
@@ -423,7 +425,7 @@ struct TrackpadSession {
 
     private mutating func creditTravel(_ distance: Double, at edge: Edge) {
         edgeTravel[edge, default: 0] += distance
-        guard edgeTravel[edge, default: 0] >= parameters.probeTravelLines * lineHeight else { return }
+        guard edgeTravel[edge, default: 0] >= parameters.probeTravelLines * linePitch else { return }
         edgeTravel[edge] = 0
         ambiguousProbes[edge, default: 0] -= 1
     }
@@ -434,7 +436,7 @@ struct TrackpadSession {
     private mutating func ambiguousStep(at edge: Edge) {
         ambiguousProbes[edge, default: 0] += 1
         let last = lines.count - 1
-        let margin = 0.45 * lineHeight
+        let margin = 0.45 * linePitch
         let top = edge == .start ? center(0) - min(parameters.topOvershoot, margin) : -Double.greatestFiniteMagnitude
         let bottom = edge == .end ? center(last) + min(parameters.bottomOvershoot, margin) : Double.greatestFiniteMagnitude
         point.clamp(x: -Double.greatestFiniteMagnitude ... Double.greatestFiniteMagnitude, y: top ... bottom)
@@ -704,6 +706,6 @@ struct TrackpadSession {
         let anchor = min(max(committed - advance, 0), navigator.lastPosition)
         let x = keepsColumn ? point.x : navigator.x(of: anchor, lines: lines, layout: layout) + columnOffset
         if !keepsColumn { xIsReal = line >= firstAnchoredLine }
-        point.place(x: x, y: center(line) + offset - Double(linesCrossed) * lineHeight)
+        point.place(x: x, y: center(line) + offset - Double(linesCrossed) * linePitch)
     }
 }

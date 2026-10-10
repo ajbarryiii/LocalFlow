@@ -289,7 +289,7 @@ enum TrackpadSessionTests {
         // nothing beyond is not a crossing (the proxy's provisional answer, or a host that clamps).
         func makeDown() -> TrackpadSession {
             var session = TrackpadSession(before: "Alpha be", after: "ta gamma.", unit: nil, parameters: .flat,
-                                          layout: FixedWidthLayout(columns: 1_000), lineHeight: 20, layoutWidth: 10_000)
+                                          layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
             session.drag(dx: 0, dy: 20)
             TestSupport.expectEqual(session.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1), 10)
             return session
@@ -647,7 +647,7 @@ enum TrackpadSessionTests {
     private static func probedSession() -> (session: TrackpadSession, before: String, offset: Int?) {
         let before = "Hi e\u{301}e\u{301}"
         var session = TrackpadSession(before: before, after: "", unit: nil, parameters: .flat,
-                                      layout: FixedWidthLayout(columns: 1_000), lineHeight: 20, layoutWidth: 10_000)
+                                      layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         session.drag(dx: -10, dy: 0)
         let offset = session.frame(before: before, after: "", timestamp: 1)
         return (session, before, offset)
@@ -695,7 +695,7 @@ enum TrackpadSessionTests {
         TestSupport.expectEqual(accent.unit, .utf16)
         TestSupport.expectEqual(accent.committed, 4)
         var thumbs = TrackpadSession(before: "a\u{1F44D}\u{1F3FD}", after: "", unit: nil, parameters: .flat,
-                                     layout: FixedWidthLayout(columns: 1_000), lineHeight: 20, layoutWidth: 10_000)
+                                     layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         thumbs.drag(dx: -10, dy: 0)
         TestSupport.expectEqual(thumbs.frame(before: "a\u{1F44D}\u{1F3FD}", after: "", timestamp: 1), -2)
         TestSupport.expect(thumbs.acknowledge(before: "a\u{1F44D}", after: "\u{1F3FD}"), "UTF-16 outcome")
@@ -859,7 +859,7 @@ enum TrackpadSessionTests {
         TestSupport.expect(session.acknowledge(before: "Hi ", after: "e\u{301}e\u{301}"), "grapheme outcome")
         // During a jump past the snapshot's edge: unchanged, or one character past the edge.
         var jump = TrackpadSession(before: "Alpha be", after: "ta gamma.", unit: nil, parameters: .flat,
-                                   layout: FixedWidthLayout(columns: 1_000), lineHeight: 20, layoutWidth: 10_000)
+                                   layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         jump.drag(dx: 0, dy: 20)
         TestSupport.expectEqual(jump.frame(before: "Alpha be", after: "ta gamma.", timestamp: 1), 10)
         TestSupport.expect(!jump.acknowledge(before: "Something else entirely.\n", after: "Short line."), "unrelated text")

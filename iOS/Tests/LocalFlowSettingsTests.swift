@@ -9,6 +9,7 @@ enum LocalFlowSettingsTests {
             ("cursorMultipliersDefaultToOne", testCursorMultipliersDefaultToOne),
             ("cursorMultipliersAcceptOnlyTheRange", testCursorMultipliersAcceptOnlyTheRange),
             ("cursorTouchRateIsRecordedAsNumbersOnly", testCursorTouchRateIsRecordedAsNumbersOnly),
+            ("fieldLayoutChoicesAreContentFreeAndBounded", testFieldLayoutChoicesAreContentFreeAndBounded),
         ]
     }
 
@@ -24,6 +25,28 @@ enum LocalFlowSettingsTests {
             // Independent of the other settings.
             TestSupport.expectEqual(reread.sessionMinutes, 5)
             TestSupport.expect(reread.hapticsEnabled, "haptics untouched")
+        }
+    }
+
+    private static func testFieldLayoutChoicesAreContentFreeAndBounded() {
+        withSettings { settings, defaults in
+            TestSupport.expectEqual(settings.fieldLayoutOverrides, [:])
+            let key = "0123456789abcdef"
+            settings.setFieldLayout("messages", forKey: key)
+            TestSupport.expectEqual(LocalFlowSettings(defaults: defaults).fieldLayoutOverrides, [key: "messages"])
+            // Only fingerprint keys and known layouts are stored.
+            settings.setFieldLayout("messages", forKey: "Some field text")
+            settings.setFieldLayout("sideways", forKey: "fedcba9876543210")
+            TestSupport.expectEqual(settings.fieldLayoutOverrides, [key: "messages"])
+            settings.setFieldLayout(nil, forKey: key)
+            TestSupport.expectEqual(settings.fieldLayoutOverrides, [:])
+            // Bounded, keeping the newest choice.
+            for index in 0 ..< LocalFlowSettings.fieldLayoutOverrideLimit + 5 {
+                settings.setFieldLayout("fullWidth", forKey: String(format: "%016x", index))
+            }
+            TestSupport.expectEqual(settings.fieldLayoutOverrides.count, LocalFlowSettings.fieldLayoutOverrideLimit)
+            TestSupport.expectEqual(settings.fieldLayoutOverrides[String(format: "%016x", LocalFlowSettings.fieldLayoutOverrideLimit + 4)],
+                                    "fullWidth")
         }
     }
 

@@ -18,7 +18,13 @@ struct LocalFlowSettings {
         static let cursorAcceleration = "cursorAcceleration"
         static let cursorTouchRate = "cursorTouchRate"
         static let cursorEventStepScale = "cursorEventStepScale"
+        static let fieldLayoutOverrides = "fieldLayoutOverrides"
     }
+
+    /// Remembered field layout choices, at most this many.
+    static let fieldLayoutOverrideLimit = 64
+    /// The layouts the keyboard knows (`FieldLayout` raw values).
+    static let fieldLayoutValues: Set<String> = ["messages", "fullWidth"]
 
     /// Accepted values of the keyboard's measured touch rate (events per second) and the step scale
     /// it derives (`TouchRateEstimator.scaleRange`).
@@ -89,6 +95,35 @@ struct LocalFlowSettings {
               Self.cursorEventStepScaleRange.contains(scale) else { return }
         defaults.set(rate, forKey: Key.cursorTouchRate)
         defaults.set(scale, forKey: Key.cursorEventStepScale)
+    }
+
+    /// The keyboard's field layout choices: a field fingerprint key (16 hex digits, a hash of
+    /// content-free input traits) to a layout name. Malformed entries are ignored.
+    var fieldLayoutOverrides: [String: String] {
+        guard let stored = defaults.dictionary(forKey: Key.fieldLayoutOverrides) else { return [:] }
+        var valid: [String: String] = [:]
+        for (key, value) in stored {
+            guard let layout = value as? String, Self.isFingerprintKey(key), Self.fieldLayoutValues.contains(layout)
+            else { continue }
+            valid[key] = layout
+        }
+        return valid
+    }
+
+    /// Remembers (or, with nil, forgets) the layout for a fingerprint key. Bounded: past the limit,
+    /// other entries are dropped.
+    func setFieldLayout(_ layout: String?, forKey key: String) {
+        guard Self.isFingerprintKey(key), layout.map(Self.fieldLayoutValues.contains) ?? true else { return }
+        var stored = fieldLayoutOverrides
+        stored[key] = layout
+        while stored.count > Self.fieldLayoutOverrideLimit, let other = stored.keys.first(where: { $0 != key }) {
+            stored[other] = nil
+        }
+        defaults.set(stored, forKey: Key.fieldLayoutOverrides)
+    }
+
+    private static func isFingerprintKey(_ key: String) -> Bool {
+        key.count == 16 && key.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
     // Every boolean setting defaults to on.

@@ -53,6 +53,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     var onTrackpadChange: ((Bool) -> Void)?
     /// Whether Undo can be offered may have changed. Only state is read in response; never results.
     var onUndoAvailabilityChanged: (() -> Void)?
+    /// The field's layout profile, read when a gesture starts.
+    var fieldLayout: () -> FieldLayout = { FieldLayoutParameters.standard.defaultLayout }
     /// The user's trackpad multipliers, read when a gesture starts.
     var trackpadMultipliers: () -> (sensitivity: Double, acceleration: Double) = { (1, 1) }
     /// A trackpad gesture ended with this measured touch rate and step scale (numbers only), for
@@ -409,7 +411,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         let multipliers = trackpadMultipliers()
         trackpad.parameters = TrackpadParameters.standard.tuned(sensitivity: multipliers.sensitivity,
                                                                 acceleration: multipliers.acceleration)
-        trackpad.begin(fieldWidth: keyArea.bounds.width)
+        trackpad.begin(keyboardWidth: keyArea.bounds.width, layout: fieldLayout())
         forgetTail()
         typing.resetTiming()
         onTrackpadChange?(true)

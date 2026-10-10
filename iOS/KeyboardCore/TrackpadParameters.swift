@@ -68,8 +68,6 @@ struct TrackpadParameters: Equatable, Sendable {
     var settleTimeout: TimeInterval = 0.5
     /// Steps from inside a cluster to its edge, in a row, before giving up.
     var maximumRepairs = 4
-    /// The field's text width is estimated as the keyboard's width minus this (typical margins).
-    var fieldInsets: Double = 40
 
     static let standard = TrackpadParameters()
 

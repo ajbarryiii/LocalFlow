@@ -1099,3 +1099,23 @@ The harness lives outside the repository
     lineHeight + leading (24.00 pt at the default size), not
     `font.lineHeight`. The 22.29 pt used before made every vertical step
     7.7 % short.
+- **Field fingerprints (simulator, iOS 26.4).**
+  - **Contents:** a fingerprint holds the public `UITextInputTraits` raw
+    values plus the trackpad's learned unit mode. Keyboard appearance is
+    excluded, because it flips with system appearance and focus.
+  - **Messages signature:** the compose field turns smart quotes and smart
+    dashes off (raw 1) while autocorrection and spell checking stay at their
+    defaults (0), with no content type. None of the fields sampled matches it:
+    - default UITextView and UITextField
+    - the Messages "To:" field
+    - Safari and WKWebView textareas
+    - the address bar, search fields, and the number pad
+  - **WebKit fields:** a field whose learned unit is grapheme (WebKit) is
+    never treated as Messages.
+  - **Default:** full width.
+  - **Manual override:** the keyboard menu shows the active layout and a
+    Switch. The choice is stored per fingerprint hash in App Group
+    UserDefaults (at most 64 entries, content-free). Lookup tries the key
+    with the learned unit first, then the key with traits alone.
+  - **Risk:** apps that also disable smart punctuation, such as code-oriented
+    inputs, may be detected as Messages. The override fixes that in one tap.

@@ -36,6 +36,7 @@ struct LocalFlowIOSTests {
             ("UndoTracker", UndoTrackerTests.tests),
             ("EditingCore", EditingCoreTests.tests),
             ("TouchRate", TouchRateTests.tests),
+            ("FieldProfile", FieldProfileTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
         ]
         var count = 0

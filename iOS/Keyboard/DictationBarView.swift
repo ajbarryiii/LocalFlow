@@ -5,6 +5,10 @@ import UIKit
 @MainActor
 final class KeyboardChrome: ObservableObject {
     @Published var isMenuOpen = false
+    /// The layout profile the trackpad uses in this field, and its content-free fingerprint (the
+    /// short key and the input traits) for the menu's readout.
+    @Published var layout = FieldLayoutParameters.standard.defaultLayout
+    @Published var fieldSummary = ""
 }
 
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
@@ -255,7 +259,10 @@ private struct LevelBars: View {
 /// dictation from working. A tap outside the card closes it.
 struct MenuPanelView: View {
     @ObservedObject var client: KeyboardDictationClient
+    @ObservedObject var chrome: KeyboardChrome
     var onClose: () -> Void
+    /// Switches this kind of field to the other layout, remembered for its fingerprint.
+    var onToggleLayout: () -> Void
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
     var body: some View {
@@ -282,9 +289,36 @@ struct MenuPanelView: View {
                         .font(.subheadline.weight(.medium))
                 }
                 .accessibilityIdentifier("lf.menu.open")
+                Button(action: onToggleLayout) {
+                    HStack(spacing: 8) {
+                        Label("Layout: \(chrome.layout.title)", systemImage: "text.alignleft")
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .fixedSize()
+                        Spacer(minLength: 8)
+                        Text("Switch")
+                            .fontWeight(.medium)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .font(.subheadline)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Layout: \(chrome.layout.title)")
+                .accessibilityHint("Switches this kind of field to \(chrome.layout.other.title)")
+                .accessibilityIdentifier("lf.layoutToggle")
                 Label(KeyboardMessages.trackpadTip, systemImage: "hand.point.up.left")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if !chrome.fieldSummary.isEmpty {
+                    // Debug readout: the field's fingerprint, content-free (a hash and input traits).
+                    Text("Field \(chrome.fieldSummary)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("lf.fieldFingerprint")
+                }
             }
             .padding(14)
             .frame(maxWidth: 300, alignment: .leading)

@@ -42,6 +42,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.onUndoAvailabilityChanged = { [weak self] in self?.client.publishUndoState() }
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
+        input.fieldLayout = { [weak self] in self?.refreshFieldLayout() ?? FieldLayoutParameters.standard.defaultLayout }
 
         let bar = UIHostingController(rootView: DictationBarView(
             client: client, chrome: chrome,
@@ -122,6 +123,53 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // which also tracks a live switch; pinning `.light` here would not.
         let style: UIUserInterfaceStyle = proxy.keyboardAppearance == .dark ? .dark : .unspecified
         if overrideUserInterfaceStyle != style { overrideUserInterfaceStyle = style }
+        refreshFieldLayout()
+    }
+
+    // MARK: Field layout
+
+    /// Layout choices made in this keyboard instance; they also apply when the App Group cannot be
+    /// written (no Full Access).
+    private var layoutChoices: [String: FieldLayout] = [:]
+
+    /// Remembered choices live in the App Group, which needs Full Access.
+    private var fieldSettings: LocalFlowSettings? {
+        guard hasFullAccess, let configuration = LocalFlowConfiguration.main else { return nil }
+        return LocalFlowSettings(configuration: configuration)
+    }
+
+    /// The field's content-free fingerprint: its input traits, and the unit the trackpad learned here.
+    private var fieldFingerprint: FieldFingerprint {
+        let proxy = textDocumentProxy
+        return FieldFingerprint(traits: FieldTraits(proxy: proxy),
+                                unit: input.trackpad.learnedUnit(for: proxy.documentIdentifierIfAvailable))
+    }
+
+    private var layoutOverrides: [String: FieldLayout] {
+        var overrides: [String: FieldLayout] = [:]
+        for (key, value) in fieldSettings?.fieldLayoutOverrides ?? [:] {
+            if let layout = FieldLayout(rawValue: value) { overrides[key] = layout }
+        }
+        return overrides.merging(layoutChoices) { _, chosenHere in chosenHere }
+    }
+
+    /// Picks the field's layout and updates the menu's readout.
+    @discardableResult
+    private func refreshFieldLayout() -> FieldLayout {
+        let fingerprint = fieldFingerprint
+        let layout = FieldLayoutChooser.layout(for: fingerprint, overrides: layoutOverrides)
+        if chrome.layout != layout { chrome.layout = layout }
+        if chrome.fieldSummary != fingerprint.summary { chrome.fieldSummary = fingerprint.summary }
+        return layout
+    }
+
+    /// The menu's one-tap switch: the other layout, remembered for this fingerprint.
+    private func toggleFieldLayout() {
+        let fingerprint = fieldFingerprint
+        let layout = refreshFieldLayout().other
+        layoutChoices[fingerprint.key] = layout
+        fieldSettings?.setFieldLayout(layout.rawValue, forKey: fingerprint.key)
+        refreshFieldLayout()
     }
 
     // MARK: Trackpad and menu
@@ -155,9 +203,11 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
         if visible, menuPanel == nil {
             keyArea.cancelAllTouches()
-            let panel = UIHostingController(rootView: MenuPanelView(client: client, onClose: { [weak self] in
-                self?.setMenu(visible: false)
-            }))
+            refreshFieldLayout()
+            let panel = UIHostingController(rootView: MenuPanelView(
+                client: client, chrome: chrome,
+                onClose: { [weak self] in self?.setMenu(visible: false) },
+                onToggleLayout: { [weak self] in self?.toggleFieldLayout() }))
             panel.view.backgroundColor = .clear
             panel.safeAreaRegions = []
             panel.view.translatesAutoresizingMaskIntoConstraints = false

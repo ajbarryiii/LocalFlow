@@ -338,7 +338,7 @@ func makeSession(_ host: FakeTextHost, unit: CursorOffsetUnit? = nil, columns: I
                  parameters: TrackpadParameters = .flat) -> TrackpadSession {
     let context = host.context
     return TrackpadSession(before: context.before, after: context.after, unit: unit, parameters: parameters,
-                           layout: FixedWidthLayout(columns: columns, advance: advance), lineHeight: 20,
+                           layout: FixedWidthLayout(columns: columns, advance: advance), linePitch: 20,
                            layoutWidth: layoutWidth)
 }
 
