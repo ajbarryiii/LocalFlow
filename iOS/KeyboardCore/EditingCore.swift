@@ -19,8 +19,19 @@ protocol AdjustmentOwner: AnyObject {
     var isActive: Bool { get }
     /// `textDidChange`: consumes the expectation it matches; false for an outside change.
     func acknowledge(before: String?, after: String?) -> Bool
+    /// `textDidChange`, asked before anything else: only a report of an adjustment as it was issued
+    /// (WebKit reports each adjustment so first), which may look like the report of our last edit.
+    func acknowledgeAsIssued(before: String?, after: String?) -> Bool
     /// `selectionDidChange`: whether it matches an adjustment still owed a callback; consumes nothing.
     func fits(before: String?, after: String?) -> Bool
+    /// No gesture is running: whether a callback is the late report of an adjustment a finished gesture
+    /// was still owed (it confirms nothing). Consumes one.
+    func absorbLateReport(before: String?, after: String?, now: TimeInterval) -> Bool
+}
+
+extension AdjustmentOwner {
+    func absorbLateReport(before: String?, after: String?, now: TimeInterval) -> Bool { false }
+    func acknowledgeAsIssued(before: String?, after: String?) -> Bool { false }
 }
 
 /// The editing side's bookkeeping, independent of UIKit (ARCHITECTURE.md, "Undo ownership v2" and
@@ -43,7 +54,8 @@ final class EditingCore {
     enum CallbackOutcome: Equatable {
         /// An outcome of a pending trackpad adjustment.
         case own
-        /// The report of one of our own inserts or deletes. The undo is gone; nothing else changes.
+        /// The report of one of our own inserts or deletes, or a finished gesture's late report. The undo
+        /// is gone; nothing else changes.
         case ownEdit
         /// Anything else: the generation advanced, and the undo is gone.
         case outside
@@ -105,6 +117,13 @@ final class EditingCore {
         }
         let before = document.contextBefore
         let after = document.contextAfter
+        // A gesture's report of its oldest adjustment as issued (WebKit) shows the context it was issued in,
+        // often the one our last key left: the gesture must hear it, or it reads that stale caret as current.
+        // A host that also reported our edits would report that key first; then its own report comes
+        // next and is taken below.
+        if textChanged, let adjustments, adjustments.isActive, adjustments.acknowledgeAsIssued(before: before, after: after) {
+            return .own
+        }
         // Reports arrive in order: those of our own edits come before those of a gesture begun after
         // them, and one of them can look like a gesture's outcome (a probe not yet landed).
         if consumeOwnEdit(Self.state(before: before, after: after), now: now) {
@@ -114,6 +133,11 @@ final class EditingCore {
         if let adjustments, adjustments.isActive,
            textChanged ? adjustments.acknowledge(before: before, after: after) : adjustments.fits(before: before, after: after) {
             return .own
+        }
+        // A finished gesture's report arriving late: ours, though it confirms nothing, so the undo is gone.
+        if let adjustments, !adjustments.isActive, adjustments.absorbLateReport(before: before, after: after, now: now) {
+            undo.invalidate()
+            return .ownEdit
         }
         // Nothing of ours: the undo is gone, and so is anything bound to the document as it was.
         undo.invalidate()

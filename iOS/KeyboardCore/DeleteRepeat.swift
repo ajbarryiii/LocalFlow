@@ -55,18 +55,32 @@ struct DeleteRepeat: Equatable, Sendable {
 
 /// The held delete key: its press, bound to the field it began in. Pure; the keyboard owns the timers
 /// and asks this what each one may do.
-/// - Every deletion it schedules belongs to its press (`token`). A deletion fires only while that press
-///   is current and the field is still the one it began in; otherwise the press ends, deleting nothing.
+/// - Every deletion it schedules belongs to its press (`token`) and carries the press's field. A press
+///   that began while the field had no identity (connecting) binds to the first identity seen after
+///   it. A deletion in another identified field ends the press, deleting nothing; while the field has
+///   no identity, the keyboard holds the deletion until one appears (ARCHITECTURE.md, "Typing
+///   correctness is paramount").
 /// - A release before the first deletion deletes once, in that field. A cancellation (the system's, the
 ///   menu covering the keys, hiding) deletes nothing, and the keyboard revokes what the press queued.
-/// - A focus change ends the press.
+/// - A focus change to another identified field ends the press.
 struct HeldDeleteKey: Equatable, Sendable {
     struct Press: Equatable, Sendable {
         var token: Int
-        var documentID: UUID
+        /// The field it began in; nil until one has been identified.
+        var documentID: UUID?
         var pressedAt: TimeInterval
         /// Deletions done so far: the first, then the repeats.
         var deletions = 0
+
+        /// Binds a press made without an identity to the first identity seen; false for another field.
+        mutating func bind(to field: UUID?) -> Bool {
+            guard let field else { return true }
+            guard let documentID else {
+                documentID = field
+                return true
+            }
+            return documentID == field
+        }
     }
 
     let schedule: DeleteRepeat
@@ -77,44 +91,51 @@ struct HeldDeleteKey: Equatable, Sendable {
         self.schedule = schedule
     }
 
-    /// Touch-down in a field: returns the press's token and when its first deletion is due (seconds
-    /// after touch-down). Without a field identity nothing is scheduled.
-    mutating func began(at time: TimeInterval, documentID: UUID?) -> (token: Int, firstAt: TimeInterval)? {
-        press = nil
-        guard let documentID else { return nil }
+    /// Touch-down, in the field identified as `documentID` (nil while it connects): returns the press's
+    /// token and when its first deletion is due (seconds after touch-down).
+    mutating func began(at time: TimeInterval, documentID: UUID?) -> (token: Int, firstAt: TimeInterval) {
         let token = nextToken
         nextToken += 1
         press = Press(token: token, documentID: documentID, pressedAt: time)
         return (token, schedule.firstDeletion)
     }
 
-    /// A scheduled deletion for `token` fires in the field `documentID`: what to delete now and when the
-    /// next one is due (seconds after touch-down). Nil if the press is gone or the field changed (which
-    /// ends the press).
-    mutating func fire(token: Int, documentID: UUID?) -> (unit: DeleteRepeat.Unit, nextAt: TimeInterval)? {
+    /// A scheduled deletion for `token` fires while the keyboard serves `documentID`: what to delete now,
+    /// the field it belongs to, and when the next one is due (seconds after touch-down). Nil if the press
+    /// is gone or another identified field is current (which ends the press).
+    mutating func fire(token: Int, documentID: UUID?) -> (unit: DeleteRepeat.Unit, field: UUID?, nextAt: TimeInterval)? {
         guard var current = press, current.token == token else { return nil }
-        guard let documentID, documentID == current.documentID else {
+        guard current.bind(to: documentID) else {
             press = nil
             return nil
         }
         let unit: DeleteRepeat.Unit = current.deletions == 0 ? .character : schedule.repeatAt(current.deletions).unit
         current.deletions += 1
         press = current
-        return (unit, schedule.repeatAt(current.deletions).time)
+        return (unit, current.documentID, schedule.repeatAt(current.deletions).time)
     }
 
-    /// The touch ended. Returns the press's token, and whether to delete once now: a release before the
-    /// first deletion, in the field it began in. A cancellation never deletes.
-    mutating func ended(cancelled: Bool, documentID: UUID?) -> (token: Int, deleteOnce: Bool)? {
-        guard let current = press else { return nil }
+    /// The touch ended while the keyboard serves `documentID`. Returns the press's token, its field, and
+    /// whether to delete once now: a release before the first deletion, unless another identified field
+    /// is current. A cancellation never deletes.
+    mutating func ended(cancelled: Bool, documentID: UUID?) -> (token: Int, field: UUID?, deleteOnce: Bool)? {
+        guard var current = press else { return nil }
         press = nil
-        let deleteOnce = !cancelled && current.deletions == 0 && documentID != nil && documentID == current.documentID
-        return (current.token, deleteOnce)
+        let sameField = current.bind(to: documentID)
+        return (current.token, current.documentID, !cancelled && current.deletions == 0 && sameField)
     }
 
-    /// The field changed or the keyboard is hiding: the press ends, deleting nothing. Returns its token.
+    /// The keyboard is hiding: the press ends, deleting nothing. Returns its token.
     mutating func cancel() -> Int? {
         defer { press = nil }
         return press?.token
+    }
+
+    /// Another field became current: a press bound to a different identified field ends, deleting
+    /// nothing (returns its token); one made in this field, or before any identity, goes on.
+    mutating func cancel(ifBoundElsewhereThan field: UUID?) -> Int? {
+        guard let current = press, let bound = current.documentID, let field, bound != field else { return nil }
+        press = nil
+        return current.token
     }
 }

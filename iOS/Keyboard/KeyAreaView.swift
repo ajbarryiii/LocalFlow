@@ -241,6 +241,13 @@ final class KeyAreaView: UIView {
         refreshPressed()
     }
 
+    /// Another field became current: fingers that touched down in a different identified field end
+    /// without typing; the rest go on.
+    func cancelTouches(boundElsewhereThan field: UUID?) {
+        perform(model.cancelTouches(boundElsewhereThan: field), timestamp: CACurrentMediaTime())
+        refreshPressed()
+    }
+
     private func perform(_ effects: [KeyTouchModel.Effect], timestamp: TimeInterval) {
         for effect in effects {
             switch effect {

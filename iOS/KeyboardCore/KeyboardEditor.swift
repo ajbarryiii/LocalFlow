@@ -7,17 +7,35 @@ import Foundation
 ///
 /// - **Press order.** Every key is resolved when it is pressed: its text (with the shift and layer in
 ///   effect then), what it deletes, and the shift state it leaves. It runs at once, after the trackpad
-///   settles on the spot (`TrackpadController.settleNow`). Only while the trackpad has a probe out,
-///   whose outcome may leave the caret inside a cluster (at most `syncTimeout`), do keys wait, already
-///   resolved; then they run in press order. A Return ends such a run: the keys after it go on the
-///   next frame (`continuePendingKeys`), since a Return can move the host to another field.
-/// - **Field binding.** A key runs only in the field it was pressed in.
-/// - **Nothing is dropped** because of the trackpad's bookkeeping: an aborted or ambiguous gesture
-///   still lets waiting keys run, at the caret as it is (a split cluster is repaired first).
+///   settles on the spot (`TrackpadController.settleNow`), unless it must wait: for the trackpad (a
+///   probe out, a split cluster to repair, a boundary to verify after an outside change), for a
+///   Return's pause, or for the field's identity. Waiting keys run in press order as soon as they
+///   may (`service`, every frame while any wait).
+/// - **One deadline.** No key waits longer than `maximumWait` from the earliest waiting key's press:
+///   then the trackpad ends with a safe boundary recovery (`TrackpadController.forceRelease`), and a
+///   key whose field still has no identity is dropped, never typed unidentified.
+/// - **Field binding.** A key runs only in the field it was pressed in, identified (non-nil). One
+///   pressed while the field had no identity binds to the first identity that appears.
+/// - **Return's pause.** After a Return (or dictated text that presses it) runs, the keys after it wait
+///   `returnBarrier`, or until the host reports another field, on every path, since a Return can move
+///   the host to another field over several frames; a key pressed in the old field never lands in the
+///   new one.
+/// - **Gestures** begun while keys wait start once they have run, with the finger's movement so far.
 /// - **Own edits** are recorded (`EditingCore.recordOwnEdit`), so their reports never count as outside
 ///   changes, while Undo fails closed.
+/// - **The text before the caret** is the proxy's, or the typing tail's while the proxy has not shown
+///   our edits or the gesture's landing yet (`ContextTail`). The proxy can show an own edit late and
+///   with no callback, so for `contextWatch` after each one the shift follows it every frame.
 /// Context is read in memory only; the waiting keys and the typing tail are dropped on hiding.
 final class KeyboardEditor {
+    /// How long a key may wait, from the earliest waiting key's press.
+    static let maximumWait: TimeInterval = 0.4
+    /// How long keys after a Return wait for the host to move to another field.
+    static let returnBarrier: TimeInterval = 0.1
+    /// How long after an own edit the shift keeps following the proxy, which may show the edit late and
+    /// with no callback.
+    static let contextWatch: TimeInterval = 0.5
+
     /// A key's effect, resolved when it was pressed.
     struct ResolvedKey: Equatable {
         enum Kind: Equatable { case typed, dictation }
@@ -25,29 +43,46 @@ final class KeyboardEditor {
         /// Graphemes deleted before the caret, then the text inserted.
         var deletes = 0
         var text = ""
-        /// The field it was pressed in.
+        /// The field it was pressed in; nil until one has been identified.
         var field: UUID?
         /// A held delete key's press, so cancelling the press revokes deletions not yet made.
         var token: Int?
+        var pressedAt: TimeInterval = 0
+    }
+
+    /// A gesture begun while keys waited: started once they have run.
+    private struct DeferredGesture {
+        var layout: any LineLayout
+        var linePitch: Double
+        var layoutWidth: Double
+        var moves: [(dx: Double, dy: Double, timestamp: TimeInterval)] = []
+        var ended: (at: TimeInterval, cancelled: Bool)?
     }
 
     let core: EditingCore
     let trackpad: TrackpadController
     private(set) var typing = TypingState()
     private(set) var tail = ContextTail()
-    /// Keys pressed while the trackpad resolves a probe, in press order, already resolved.
+    /// Keys that must wait, in press order, already resolved.
     private(set) var pendingKeys: [ResolvedKey] = []
-    /// The text before the caret when keys started waiting, and as it will be once they have run.
+    /// The text before the caret when keys started waiting (and whether text was selected then), and as
+    /// it will be once they have run.
     private var pendingBase: String?
+    private var pendingBaseSelected = false
     private var pendingBefore: String?
-    /// Waiting keys stopped after a Return; the rest run on the next frame.
-    private(set) var needsContinuation = false
+    /// Keys wait until then after a Return ran.
+    private(set) var barrierUntil: TimeInterval?
+    /// Until then (after an own edit), each frame re-reads the text before the caret for the shift.
+    private var contextWatchUntil: TimeInterval?
+    private var deferredGesture: DeferredGesture?
     /// The field's autocapitalization, read when the shift is updated.
     var autocapitalization: () -> AutocapitalizationMode = { .sentences }
     /// The layer, the shift or the typing tail may have changed.
     var onStateChanged: (() -> Void)?
     /// Whether Undo can be offered may have changed.
     var onUndoChanged: (() -> Void)?
+    /// A trackpad session started (a deferred gesture included): frames are needed.
+    var onTrackpadStarted: (() -> Void)?
     /// A trackpad session ended (true: completed), after the keys waiting on it ran.
     var onTrackpadFinished: ((Bool) -> Void)?
 
@@ -65,7 +100,14 @@ final class KeyboardEditor {
     var currentBefore: String? { tail.current(proxyBefore: document.contextBefore) }
 
     /// Dictated text should wait in the shared files rather than in memory.
-    var isBusy: Bool { trackpad.isActive || !pendingKeys.isEmpty }
+    var isBusy: Bool { trackpad.isActive || isWaiting }
+
+    /// Keys or a gesture wait.
+    var isWaiting: Bool { !pendingKeys.isEmpty || deferredGesture != nil }
+
+    /// `service` must be called every frame: keys or a gesture wait, or the proxy may still show an own
+    /// edit late.
+    var needsService: Bool { isWaiting || contextWatchUntil != nil }
 
     /// The clock the typing tail is forgotten by.
     var tailExpiresAt: TimeInterval? { tail.expiresAt }
@@ -75,9 +117,10 @@ final class KeyboardEditor {
     /// The keyboard appeared: start fresh in whatever field it serves.
     func reset(numeric: Bool) {
         // A cancelled jump still watched since the keyboard hid ends here: the new appearance starts with
-        // no gesture.
-        trackpad.abort()
+        // no gesture and no keys from before.
         dropPendingKeys()
+        deferredGesture = nil
+        trackpad.stop()
         core.reset()
         tail.forget()
         typing.resetTiming()
@@ -86,13 +129,17 @@ final class KeyboardEditor {
         onUndoChanged?()
     }
 
-    /// The keyboard is hiding: the trackpad stops (an outstanding probe rolled back), keys still waiting
-    /// run in their field if it is still there, and every copy of the field's context goes.
+    /// The keyboard is hiding: the trackpad stops (an outstanding probe rolled back), keys that may still
+    /// run in their field do, and every copy of the field's context goes. Keys still behind a Return's
+    /// pause, or without an identified field, are dropped: the field may be gone, and nothing typed
+    /// after this could be verified.
     func hide(now: TimeInterval) {
         lastNow = now
         trackpad.hide(at: now)
-        runPendingKeys(now: now, untilReturn: false)
+        if !pendingKeys.isEmpty, trackpad.isActive { trackpad.forceRelease(at: now) }
+        service(now: now)
         dropPendingKeys()
+        deferredGesture = nil
         core.hide()
         tail.forget()
         onStateChanged?()
@@ -115,15 +162,20 @@ final class KeyboardEditor {
         case .own, .ownEdit:
             break
         case .outside:
-            // An outside change ends the gesture; keys waiting on it still run, where the caret is.
+            // An outside change ends the gesture; keys waiting on it still run once the caret is on a
+            // whole-cluster boundary. The field changed under the keyboard: the space and shift timing
+            // starts over.
             trackpad.abort()
+            typing.resetTiming()
+            tail.forget()
         case .newField:
-            // Another field: nothing from the old one applies here. Keys pressed there never run here.
+            // Another field: nothing from the old one applies here. Keys pressed there never run here;
+            // keys pressed here (or before any identity) still do, now that the field is known.
             trackpad.fieldChanged()
-            runPendingKeys(now: now, untilReturn: false)
-            dropPendingKeys()
+            barrierUntil = nil
             tail.forget()
             typing.resetTiming()
+            service(now: now)
         }
         if outcome != .own { onUndoChanged?() }
         // Typing helpers keep their model only while the proxy agrees with it.
@@ -138,7 +190,7 @@ final class KeyboardEditor {
 
     /// A key acted: characters, space and return on release or rollover; shift and layer keys on
     /// touch-down; delete only from VoiceOver (the held delete key uses `heldDelete`). `field` is the
-    /// field the key was pressed in.
+    /// field identified when the key was pressed (nil if none was).
     func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
         switch action {
         case .shift:
@@ -179,27 +231,71 @@ final class KeyboardEditor {
     func revoke(token: Int) {
         guard pendingKeys.contains(where: { $0.token == token }) else { return }
         pendingKeys.removeAll { $0.token == token }
-        pendingBefore = pendingKeys.reduce(pendingBase) { Self.applying($1, to: $0) }
+        pendingBefore = Self.before(pendingBase, selected: pendingBaseSelected, after: pendingKeys)
         updateAutomaticShift()
     }
 
-    /// Inserts dictated text, undoable; settles the trackpad first, like a key.
+    /// Inserts dictated text, undoable, in the field identified now; settles the trackpad first, like a
+    /// key.
     func insertDictation(_ text: String, now: TimeInterval) {
         guard !text.isEmpty else { return }
         submit(field: document.documentID, token: nil, now: now) { _ in ResolvedKey(kind: .dictation, text: text) }
     }
 
-    /// Waiting keys stopped after a Return: the next frame runs the rest.
-    func continuePendingKeys(now: TimeInterval) {
+    /// Runs the keys that may run now, in press order, and enforces their deadline. Call every frame
+    /// while `isWaiting`, and on any change that may let them run.
+    func service(now: TimeInterval) {
         lastNow = now
-        guard needsContinuation, !trackpad.isActive else { return }
-        runPendingKeys(now: now, untilReturn: true)
+        defer { startDeferredGesture(now: now) }
+        if let until = contextWatchUntil, pendingKeys.isEmpty {
+            // The proxy may show an own edit only now, with no callback (measured: hosts never report
+            // our edits): the shift follows the text it shows. The memo keeps a shift the user set while
+            // the text calls for the same.
+            if now >= until { contextWatchUntil = nil }
+            let shift = typing.shift
+            if !trackpad.isActive { applyAutomaticShift() }
+            if typing.shift != shift { onStateChanged?() }
+        }
+        guard let head = pendingKeys.first else { return }
+        if trackpad.isActive {
+            // Waiting on the trackpad, at most until the deadline; then it ends with a safe recovery, and
+            // its end runs the keys.
+            if now >= head.pressedAt + Self.maximumWait { trackpad.forceRelease(at: now) }
+            return
+        }
+        while let key = pendingKeys.first {
+            let expired = now >= key.pressedAt + Self.maximumWait
+            if let barrier = barrierUntil, now < barrier, !expired { break }
+            barrierUntil = nil
+            guard let current = document.documentID else {
+                // Still no identity: the key waits for one until its deadline, and is never typed into an
+                // unidentified field.
+                guard expired else { break }
+                pendingKeys.removeFirst()
+                continue
+            }
+            pendingKeys.removeFirst()
+            // Pressed in another field: never typed here.
+            guard (key.field ?? current) == current else { continue }
+            execute(key, now: now)
+        }
+        if pendingKeys.isEmpty {
+            pendingBase = nil
+            pendingBefore = nil
+        }
         updateAutomaticShift()
     }
 
-    /// The trackpad session ended. Keys that waited on it run now, in press order.
+    /// The trackpad session ended. Keys that waited on it run now, in press order, as far as they may.
     private func trackpadFinished(completed: Bool) {
-        runPendingKeys(now: max(lastNow, trackpad.lastTimestamp), untilReturn: true)
+        // The caret is where the gesture left it, or on its way there: typing reads the text before it
+        // there until the proxy shows it.
+        if let landing = trackpad.finishedLanding {
+            tail.moved(before: landing, proxyBefore: document.contextBefore, at: max(lastNow, trackpad.lastTimestamp))
+        }
+        service(now: max(lastNow, trackpad.lastTimestamp))
+        // The caret settled somewhere new: the shift follows what the text there calls for, before any
+        // key is resolved.
         updateAutomaticShift()
         onTrackpadFinished?(completed)
     }
@@ -207,38 +303,82 @@ final class KeyboardEditor {
     // MARK: Trackpad mode
 
     /// A trackpad gesture starts with this layout. Moving the caret is an edit: a dictation's undo ends,
-    /// and the gesture owns what follows. False without a field identity.
+    /// and the gesture owns what follows. While keys wait, it starts once they have run (at most their
+    /// deadline). False without a field identity.
     @discardableResult
     func beginTrackpad(layout: any LineLayout, linePitch: Double, layoutWidth: Double, now: TimeInterval) -> Bool {
         lastNow = now
-        // Keys still waiting on an older session run first, so the new snapshot includes them.
-        if trackpad.isActive { trackpad.abort() }
-        runPendingKeys(now: now, untilReturn: false)
+        service(now: now)
+        guard pendingKeys.isEmpty else {
+            deferredGesture = DeferredGesture(layout: layout, linePitch: linePitch, layoutWidth: layoutWidth)
+            return true
+        }
+        return startGesture(layout: layout, linePitch: linePitch, layoutWidth: layoutWidth)
+    }
+
+    /// One touch event of the trackpad's finger.
+    func trackpadMoved(dx: Double, dy: Double, timestamp: TimeInterval) {
+        if deferredGesture != nil {
+            deferredGesture?.moves.append((dx, dy, timestamp))
+        } else {
+            trackpad.move(dx: dx, dy: dy, timestamp: timestamp)
+        }
+    }
+
+    /// The trackpad's finger lifted (or the system cancelled it).
+    func trackpadEnded(at timestamp: TimeInterval, cancelled: Bool) {
+        if deferredGesture != nil {
+            deferredGesture?.ended = (timestamp, cancelled)
+        } else if cancelled {
+            trackpad.cancel(at: timestamp)
+        } else {
+            trackpad.end(at: timestamp)
+        }
+    }
+
+    private func startGesture(layout: any LineLayout, linePitch: Double, layoutWidth: Double) -> Bool {
+        if trackpad.isActive { trackpad.stop() }
         userEdit()
         tail.forget()
         typing.resetTiming()
         onStateChanged?()
-        return trackpad.begin(layout: layout, linePitch: linePitch, layoutWidth: layoutWidth)
+        guard trackpad.begin(layout: layout, linePitch: linePitch, layoutWidth: layoutWidth) else { return false }
+        onTrackpadStarted?()
+        return true
+    }
+
+    private func startDeferredGesture(now: TimeInterval) {
+        guard let gesture = deferredGesture, pendingKeys.isEmpty, !trackpad.isActive else { return }
+        deferredGesture = nil
+        guard startGesture(layout: gesture.layout, linePitch: gesture.linePitch, layoutWidth: gesture.layoutWidth) else {
+            return
+        }
+        for move in gesture.moves { trackpad.move(dx: move.dx, dy: move.dy, timestamp: move.timestamp) }
+        if let ended = gesture.ended {
+            if ended.cancelled { trackpad.cancel(at: max(ended.at, now)) } else { trackpad.end(at: max(ended.at, now)) }
+        }
     }
 
     // MARK: Undo
 
     func canUndo(now: TimeInterval) -> Bool {
-        pendingKeys.isEmpty && core.canUndo(now: now)
+        !isWaiting && core.canUndo(now: now)
     }
 
     func beginUndo(now: TimeInterval) -> UndoTracker.Step {
         guard !isBusy else { return .stopped }
         tail.forget()
-        return finishUndoStep(core.beginUndo(now: now))
+        return finishUndoStep(core.beginUndo(now: now), now: now)
     }
 
     func continueUndo(now: TimeInterval) -> UndoTracker.Step {
-        finishUndoStep(core.continueUndo(now: now))
+        finishUndoStep(core.continueUndo(now: now), now: now)
     }
 
-    private func finishUndoStep(_ step: UndoTracker.Step) -> UndoTracker.Step {
+    private func finishUndoStep(_ step: UndoTracker.Step, now: TimeInterval) -> UndoTracker.Step {
         if step != .wait {
+            lastNow = now
+            contextWatchUntil = now + Self.contextWatch
             typing.resetTiming()
             updateAutomaticShift()
             onUndoChanged?()
@@ -253,23 +393,28 @@ final class KeyboardEditor {
 
     private func submit(field: UUID?, token: Int?, now: TimeInterval, resolve: (String?) -> ResolvedKey) {
         lastNow = now
-        // Bound to the field it was pressed in: never typed into another one.
-        guard field == document.documentID else { return }
-        if pendingKeys.isEmpty, trackpad.isActive, !trackpad.settleNow(at: now) {
-            // A probe is out: the keys wait for it, resolved now, in press order.
+        let current = document.documentID
+        // Pressed in another identified field: never typed into this one.
+        if let field, let current, field != current { return }
+        // The trackpad settles on the spot; a key waits on it only while it must.
+        if pendingKeys.isEmpty, deferredGesture == nil, trackpad.isActive { _ = trackpad.settleNow(at: now) }
+        let waits = !pendingKeys.isEmpty || deferredGesture != nil || trackpad.isActive || current == nil
+            || barrierUntil.map { now < $0 } == true
+        if waits, pendingKeys.isEmpty {
             pendingBase = currentBefore
+            pendingBaseSelected = document.hasSelection
             pendingBefore = pendingBase
-        } else if !pendingKeys.isEmpty, !trackpad.isActive, !needsContinuation {
-            runPendingKeys(now: now, untilReturn: false)
         }
-        var key = resolve(pendingKeys.isEmpty && !trackpad.isSettlingForTyping ? currentBefore : pendingBefore)
-        key.field = field
+        var key = resolve(waits ? pendingBefore : currentBefore)
+        key.field = field ?? current
         key.token = token
-        if pendingKeys.isEmpty, !trackpad.isSettlingForTyping {
-            execute(key, now: now)
-        } else {
+        key.pressedAt = now
+        if waits {
             pendingKeys.append(key)
-            pendingBefore = Self.applying(key, to: pendingBefore)
+            pendingBefore = Self.before(pendingBase, selected: pendingBaseSelected, after: pendingKeys)
+            service(now: now)
+        } else {
+            execute(key, now: now)
         }
         updateAutomaticShift()
     }
@@ -297,33 +442,25 @@ final class KeyboardEditor {
         }
     }
 
-    private static func applying(_ key: ResolvedKey, to before: String?) -> String? {
-        guard key.deletes > 0 || !key.text.isEmpty else { return before }
-        return String((before ?? "").dropLast(key.deletes)) + key.text
-    }
-
-    /// Runs the waiting keys in press order, each only in the field it was pressed in. With
-    /// `untilReturn`, stops after a Return that ran (the host may move to another field).
-    private func runPendingKeys(now: TimeInterval, untilReturn: Bool) {
-        needsContinuation = false
-        while !pendingKeys.isEmpty {
-            let key = pendingKeys.removeFirst()
-            guard key.field == document.documentID else { continue }
-            execute(key, now: now)
-            if untilReturn, key.text.contains("\n"), !pendingKeys.isEmpty {
-                needsContinuation = true
-                return
-            }
+    /// The text before the caret once `keys` have run from `base`. A selection goes with the first edit:
+    /// the first deletion removes only the selection, and inserted text replaces it.
+    private static func before(_ base: String?, selected: Bool, after keys: [ResolvedKey]) -> String? {
+        var before = base
+        var selected = selected
+        for key in keys where key.deletes > 0 || !key.text.isEmpty {
+            let deletes = selected ? max(key.deletes - 1, 0) : key.deletes
+            selected = false
+            before = String((before ?? "").dropLast(deletes)) + key.text
         }
-        pendingBase = nil
-        pendingBefore = nil
+        return before
     }
 
     private func dropPendingKeys() {
         pendingKeys = []
         pendingBase = nil
         pendingBefore = nil
-        needsContinuation = false
+        barrierUntil = nil
+        contextWatchUntil = nil
     }
 
     private func execute(_ key: ResolvedKey, now: TimeInterval) {
@@ -338,6 +475,9 @@ final class KeyboardEditor {
             if key.deletes > 0 { deleteGraphemes(key.deletes, now: now) }
             if !key.text.isEmpty { insert(key.text, now: now) }
         }
+        // A Return can move the host to another field: what follows waits for it to.
+        if key.text.contains("\n") { barrierUntil = now + Self.returnBarrier }
+        contextWatchUntil = now + Self.contextWatch
     }
 
     /// An edit by the user: it ends any undo that relied on the document as it was.
@@ -357,16 +497,23 @@ final class KeyboardEditor {
 
     private func deleteGraphemes(_ count: Int, now: TimeInterval) {
         let before = document.contextBefore
+        // With text selected, the first deletion removes only the selection: the text before stays.
+        let selected = document.hasSelection
+        let deleted = selected ? count - 1 : count
         for _ in 0 ..< count { document.deleteBackward() }
         core.recordOwnEdit(now: now)
-        tail.deleted(graphemes: count, proxyBefore: before, at: now)
+        tail.deleted(graphemes: deleted, proxyBefore: before, at: now)
         tail.acknowledge(proxyBefore: document.contextBefore)
     }
 
     /// Auto-capitalization from the text before the caret as it will be once waiting keys have run.
     private func updateAutomaticShift() {
+        applyAutomaticShift()
+        onStateChanged?()
+    }
+
+    private func applyAutomaticShift() {
         let before = pendingKeys.isEmpty ? currentBefore : pendingBefore
         typing.updateAutomaticShift(AutoCapitalization.shouldCapitalize(before: before, mode: autocapitalization()))
-        onStateChanged?()
     }
 }

@@ -34,6 +34,8 @@ struct TypingState: Equatable, Sendable {
     private(set) var shiftIsAutomatic = false
     private var lastShiftTapAt: TimeInterval?
     private var lastSpaceAt: TimeInterval?
+    /// What the text last called for (`updateAutomaticShift`); nil after an edit or a field change.
+    private var lastAutomaticDecision: Bool?
 
     init(parameters: TypingParameters = .standard) {
         self.parameters = parameters
@@ -74,11 +76,13 @@ struct TypingState: Equatable, Sendable {
         lastSpaceAt = nil
         // Shift, a letter, shift is two single taps, not a double tap.
         lastShiftTapAt = nil
+        lastAutomaticDecision = nil
     }
 
     /// What the space key does now: a plain space, or ". " in place of the space just typed.
     mutating func spaceEdit(before: String?, at time: TimeInterval) -> SpaceEdit {
         lastShiftTapAt = nil
+        lastAutomaticDecision = nil
         defer { if layer != .letters { layer = .letters } }
         if let last = lastSpaceAt, time >= last, time - last <= parameters.doubleSpaceInterval,
            DoubleSpacePeriod.applies(before: before) {
@@ -94,16 +98,23 @@ struct TypingState: Equatable, Sendable {
         layer = .letters
         lastSpaceAt = nil
         lastShiftTapAt = nil
+        lastAutomaticDecision = nil
     }
 
     mutating func didDelete() {
         lastSpaceAt = nil
         lastShiftTapAt = nil
+        lastAutomaticDecision = nil
     }
 
     /// Auto-capitalization only moves between off and an automatic one-shot shift; it never
-    /// overrides a shift the user set or caps lock.
+    /// overrides a shift the user set or caps lock. It acts only when what the text calls for changes,
+    /// or after the text or the field did (an edit, `resetTiming`): a shift the user just turned off
+    /// stays off while callbacks report the same text (ARCHITECTURE.md, "Typing correctness is
+    /// paramount": a late trackpad report never re-cases the next key).
     mutating func updateAutomaticShift(_ shouldCapitalize: Bool) {
+        guard shouldCapitalize != lastAutomaticDecision else { return }
+        lastAutomaticDecision = shouldCapitalize
         if shouldCapitalize, shift == .off {
             shift = .once
             shiftIsAutomatic = true
@@ -117,6 +128,7 @@ struct TypingState: Equatable, Sendable {
     mutating func resetTiming() {
         lastSpaceAt = nil
         lastShiftTapAt = nil
+        lastAutomaticDecision = nil
     }
 }
 
@@ -169,15 +181,24 @@ enum DoubleSpacePeriod {
 }
 
 /// The text before the caret as this keyboard last changed it. The proxy's context can lag the
-/// keyboard's own edits by a frame or more, so typing decisions read this model until the proxy
-/// agrees. Memory only, a bounded tail, forgotten on any outside change, once the proxy shows it, and
-/// at the latest `lifetime` after it was first held: more typing never extends that.
+/// keyboard's own edits by a frame or more, so typing decisions read this model while the proxy still
+/// shows the field as it was before one of them (exactly what it read before an edit, or the model as
+/// an earlier edit left it), or a shorter view of the model. Once the proxy shows the model, or reads
+/// anything else (it caught up, and the model was built on a reading that was itself behind), the
+/// proxy answers. Memory only, a bounded tail, forgotten on any outside change, once the proxy shows
+/// it, and at the latest `lifetime` after it was first held: more typing never extends that.
 struct ContextTail: Equatable, Sendable {
     static let limit = 256
     static let lifetime: TimeInterval = 10
+    /// Edits remembered for telling a lagging proxy from one that moved on.
+    static let history = 8
     private(set) var known: String?
     /// When the current model was first held.
     private(set) var knownSince: TimeInterval?
+    /// What the proxy read before each recent edit, and the model as each recent edit before the last
+    /// left it: a proxy reading one of these has not caught up yet.
+    private var readingsBefore: [String] = []
+    private var earlierModels: [String] = []
 
     /// When the model must be forgotten, if one is held.
     var expiresAt: TimeInterval? { knownSince.map { $0 + Self.lifetime } }
@@ -185,22 +206,41 @@ struct ContextTail: Equatable, Sendable {
     /// The best estimate of the text before the caret.
     func current(proxyBefore: String?) -> String? {
         guard let known else { return proxyBefore }
-        if let proxyBefore, proxyBefore.hasSuffix(known) { return proxyBefore }
-        return known
+        if Self.shows(proxyBefore, known) { return proxyBefore }
+        let proxy = proxyBefore ?? ""
+        // A shorter view of the same text (a window that starts at the last line break), or the field as
+        // it was before one of our edits: the model knows more.
+        let narrower = known.hasSuffix(proxy)
+        let behind = readingsBefore.contains(proxy) || earlierModels.contains { !$0.isEmpty && proxy.hasSuffix($0) }
+        return narrower || behind ? known : proxyBefore
     }
 
     mutating func inserted(_ text: String, proxyBefore: String?, at time: TimeInterval) {
         let base = current(proxyBefore: proxyBefore) ?? ""
-        hold(String((base + text).suffix(Self.limit)), at: time)
+        hold(String((base + text).suffix(Self.limit)), readingBefore: proxyBefore, at: time)
     }
 
     mutating func deleted(graphemes count: Int, proxyBefore: String?, at time: TimeInterval) {
-        guard let base = current(proxyBefore: proxyBefore), base.count > count else {
+        guard let base = current(proxyBefore: proxyBefore), base.count >= count else {
             // Deleted past what is known: what precedes is unknown until the proxy says.
             forget()
             return
         }
-        hold(String(base.dropLast(count)), at: time)
+        // Deleted exactly what is known: the caret is at the start of what the proxy showed, which starts
+        // a sentence or a line (measured in UIKit), unless that was the line break the proxy shows alone
+        // at a line's start, which joins the line to one it never showed.
+        if base.count == count, base.first?.isNewline == true {
+            forget()
+            return
+        }
+        hold(String(base.dropLast(count)), readingBefore: proxyBefore, at: time)
+    }
+
+    /// A caret move of ours (the trackpad) leaves `before` before the caret; the proxy may show it late.
+    mutating func moved(before: String, proxyBefore: String?, at time: TimeInterval) {
+        forget()
+        hold(String(before.suffix(Self.limit)), readingBefore: proxyBefore, at: time)
+        acknowledge(proxyBefore: proxyBefore)
     }
 
     /// Forgets the model once its lifetime is over.
@@ -209,28 +249,39 @@ struct ContextTail: Equatable, Sendable {
         forget()
     }
 
-    private mutating func hold(_ text: String, at time: TimeInterval) {
+    private mutating func hold(_ text: String, readingBefore: String?, at time: TimeInterval) {
         if known == nil { knownSince = time }
+        if let known { earlierModels = Array((earlierModels + [known]).suffix(Self.history)) }
+        readingsBefore = Array((readingsBefore + [readingBefore ?? ""]).suffix(Self.history))
         known = text
     }
 
-    /// Call when the document changed outside this keyboard's edits. Keeps the model only if the
-    /// proxy already shows it.
+    /// Call on a host callback of ours (a report of our edits or caret moves; an outside change forgets
+    /// the model). Keeps the model only if the proxy shows it, or a shorter view of it.
     mutating func proxyChanged(before: String?) {
         guard let known else { return }
-        if let before, before.hasSuffix(known) { return }
+        if Self.shows(before, known) { return }
+        if known.hasSuffix(before ?? ""), before?.isEmpty == false { return }
         forget()
+    }
+
+    /// The proxy shows the model, and maybe more before it. An empty model (the caret at the start of
+    /// what is known) is shown only by an empty proxy.
+    private static func shows(_ proxyBefore: String?, _ known: String) -> Bool {
+        known.isEmpty ? (proxyBefore ?? "").isEmpty : proxyBefore?.hasSuffix(known) == true
     }
 
     mutating func forget() {
         known = nil
         knownSince = nil
+        readingsBefore = []
+        earlierModels = []
     }
 
     /// Releases the model once the proxy shows it: the proxy is then the only copy, so the typed text
     /// is not held a moment longer than the edit that needed it.
     mutating func acknowledge(proxyBefore: String?) {
-        guard let known, let proxyBefore, proxyBefore.hasSuffix(known) else { return }
+        guard let known, Self.shows(proxyBefore, known) else { return }
         forget()
     }
 }

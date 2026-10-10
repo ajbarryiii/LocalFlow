@@ -107,6 +107,14 @@ struct FakeTextHost {
         self.provisionalContext = provisionalContext
     }
 
+    /// The host's configuration and what it still has to do, for the typing torture's trace.
+    var traceDescription: String {
+        "\(unit) \(model) lag \(lagFrames) callbacks \(callbackFrames.map(String.init) ?? "none") provisional "
+            + "\(provisionalContext) twice \(reportsAsIssuedFirst) shows \(shownAsIssued.map(String.init) ?? "-") "
+            + "provisional caret \(provisional.map { String($0.caret) } ?? "-") stale \(isContextStale) queued "
+            + "\(queued.map(\.offset)) reports due \(callbacks.map(\.frames))"
+    }
+
     mutating func adjust(by offset: Int) {
         adjustmentCount += 1
         if provisionalContext {
@@ -125,6 +133,9 @@ struct FakeTextHost {
         if !applyingDueOnly {
             queued = queued.map { (offset: $0.offset, frames: $0.frames - 1) }
             callbacks = callbacks.map { (frames: $0.frames - 1, shows: $0.shows) }
+            if let stale = staleContext {
+                staleContext = stale.frames > 1 ? (stale.before, stale.after, stale.frames - 1) : nil
+            }
         }
         while let first = queued.first, first.frames <= 0 {
             queued.removeFirst()
@@ -138,6 +149,7 @@ struct FakeTextHost {
         guard let index = callbacks.firstIndex(where: { $0.frames <= 0 }) else { return nil }
         let callback = callbacks.remove(at: index)
         provisional = nil
+        staleContext = nil
         shownAsIssued = callback.shows
         return context
     }
@@ -166,6 +178,7 @@ struct FakeTextHost {
     /// Inserts at the caret, replacing any selection.
     mutating func insertText(_ inserted: String) {
         applyQueuedAdjustments()
+        edited()
         provisional = nil
         forgetShownCarets()
         let units = Array(text.utf16)
@@ -179,6 +192,7 @@ struct FakeTextHost {
     /// whole; so does "\r\n").
     mutating func deleteBackward() {
         applyQueuedAdjustments()
+        edited()
         provisional = nil
         forgetShownCarets()
         if selectionLength > 0 {
@@ -261,8 +275,62 @@ struct FakeTextHost {
                     String(decoding: provisional.units[provisional.caret...], as: UTF16.self))
         }
         if let shownAsIssued { return window(at: shownAsIssued) }
-        // With a selection, the context before ends at its start and the one after begins at its end.
-        return (window(at: caret).before, window(at: caret + selectionLength).after)
+        if let staleContext { return (staleContext.before, staleContext.after) }
+        return liveContext
+    }
+
+    /// The context as the field is now. With a selection, the context before ends at its start and the
+    /// one after begins at its end.
+    var liveContext: (before: String, after: String) {
+        (window(at: caret).before, window(at: caret + selectionLength).after)
+    }
+
+    // MARK: Lagging contexts
+
+    /// The proxy shows the keyboard's own edits only this many frames later (until then, the field as it
+    /// was before the first edit not shown yet), or at the next callback, which refreshes it.
+    var editContextLagFrames = 0
+    private var staleContext: (before: String, after: String, frames: Int)?
+
+    /// The proxy still shows the field as it was before some of the keyboard's own edits.
+    var isContextStale: Bool { staleContext != nil }
+
+    /// A callback brought the proxy the field as it is.
+    mutating func refreshContext() {
+        staleContext = nil
+    }
+
+    private mutating func edited() {
+        guard editContextLagFrames > 0, staleContext == nil else { return }
+        let shown = context
+        staleContext = (shown.before, shown.after, editContextLagFrames)
+    }
+
+    // MARK: The host app's own edits
+
+    /// The host app inserts text at a UTF-16 offset (a boundary, outside any selection).
+    mutating func hostInsert(_ inserted: String, at offset: Int) {
+        let units = Array(text.utf16)
+        text = String(decoding: units[..<offset], as: UTF16.self) + inserted + String(decoding: units[offset...], as: UTF16.self)
+        if offset <= caret { caret += inserted.utf16.count }
+        provisional = nil
+        staleContext = nil
+        forgetShownCarets()
+    }
+
+    /// The host app deletes a range of UTF-16 offsets (on boundaries); a selection is dropped.
+    mutating func hostDelete(_ range: Range<Int>) {
+        let units = Array(text.utf16)
+        text = String(decoding: units[..<range.lowerBound], as: UTF16.self) + String(decoding: units[range.upperBound...], as: UTF16.self)
+        if caret >= range.upperBound {
+            caret -= range.count
+        } else if caret > range.lowerBound {
+            caret = range.lowerBound
+        }
+        selectionLength = 0
+        provisional = nil
+        staleContext = nil
+        forgetShownCarets()
     }
 
     private func window(at caret: Int) -> (before: String, after: String) {
@@ -314,8 +382,13 @@ final class FakeDocument: TextDocument, TrackpadHost {
     /// The host reports our own `insertText` and `deleteBackward` with `textDidChange` this many run-loop
     /// turns later; nil reports nothing, as UIKit was measured to do.
     var editCallbackDelay: Int?
-    /// A Return typed here moves focus to this other field one turn later, as a form's return key can.
+    /// A Return typed here moves focus to this other field, as a form's return key can: the host app
+    /// sends what is typed next there at once, and the proxy shows the new field (and reports it)
+    /// `returnFocusDelay` turns later.
     var returnMovesFocusTo: (host: FakeTextHost, id: UUID)?
+    var returnFocusDelay = 1
+    /// The host app moved focus here; the proxy has not caught up yet.
+    private var routedTo: FakeTextHost?
     /// Host events still to come: in how many turns, an action, and the callback that reports it.
     private var scheduled: [(turns: Int, action: (() -> Void)?, textChanged: Bool)] = []
 
@@ -330,15 +403,28 @@ final class FakeDocument: TextDocument, TrackpadHost {
     var hasSelection: Bool { host.hasSelection }
 
     func insertText(_ text: String) {
+        if routedTo != nil {
+            routedTo?.insertText(text)
+            return
+        }
         host.insertText(text)
         if let editCallbackDelay { scheduled.append((editCallbackDelay, nil, true)) }
         if text.contains("\n"), let other = returnMovesFocusTo {
             returnMovesFocusTo = nil
-            scheduled.append((1, { [weak self] in self?.switchField(to: other.host, id: other.id) }, true))
+            routedTo = other.host
+            scheduled.append((returnFocusDelay, { [weak self] in
+                guard let self, let routed = self.routedTo else { return }
+                self.routedTo = nil
+                self.switchField(to: routed, id: other.id)
+            }, true))
         }
     }
 
     func deleteBackward() {
+        if routedTo != nil {
+            routedTo?.deleteBackward()
+            return
+        }
         host.deleteBackward()
         if let editCallbackDelay { scheduled.append((editCallbackDelay, nil, true)) }
     }
@@ -391,15 +477,35 @@ final class FakeDocument: TextDocument, TrackpadHost {
         pump { editor.hostChanged(textChanged: $0, now: now) }
     }
 
-    private func pump(_ deliver: (Bool) -> EditingCore.CallbackOutcome) -> [EditingCore.CallbackOutcome] {
+    /// One run-loop turn: due host events happen, and each callback (which brings the proxy the field as
+    /// it is) goes to `deliver`.
+    func pump(_ deliver: (Bool) -> EditingCore.CallbackOutcome) -> [EditingCore.CallbackOutcome] {
         scheduled = scheduled.map { (turns: $0.turns - 1, action: $0.action, textChanged: $0.textChanged) }
         var outcomes: [EditingCore.CallbackOutcome] = []
         while let index = scheduled.firstIndex(where: { $0.turns <= 0 }) {
             let event = scheduled.remove(at: index)
             event.action?()
+            host.refreshContext()
             outcomes.append(deliver(event.textChanged))
         }
         return outcomes
+    }
+
+    /// The host app inserts text at a UTF-16 offset, reported `turns` turns later.
+    func hostInserts(_ text: String, at offset: Int, reportAfter turns: Int = 1) {
+        host.hostInsert(text, at: offset)
+        scheduled.append((turns, nil, true))
+    }
+
+    /// The host app deletes a range of UTF-16 offsets, reported `turns` turns later.
+    func hostDeletes(_ range: Range<Int>, reportAfter turns: Int = 1) {
+        host.hostDelete(range)
+        scheduled.append((turns, nil, true))
+    }
+
+    /// A callback `turns` turns from now, about the field as it is then.
+    func report(after turns: Int, textChanged: Bool = true) {
+        scheduled.append((turns, nil, textChanged))
     }
 }
 

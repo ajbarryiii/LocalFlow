@@ -54,7 +54,11 @@ import Foundation
 ///   time limit, moving a caret it left inside a hidden cluster back to the cluster's edge.
 /// - A key resolves settling at once (`settleNow`, ARCHITECTURE.md, "Typing correctness is
 ///   paramount"): the caret is accepted where it is or where the move in flight takes it; only a probe
-///   or jump still out, or a split cluster, is resolved first.
+///   or jump still out, or a split cluster, is resolved first. A probe or jump a key waits on is resolved
+///   by its report, not by `syncTimeout` (a provisional answer cannot show where it went); the keys'
+///   deadline bounds that wait.
+/// - The snapshot is never taken again from a context that does not show the caret where the session
+///   put it: an adjustment has not landed yet.
 /// The keyboard re-validates the field and the edit generation before every adjustment.
 struct TrackpadSession {
     struct Context: Equatable {
@@ -160,6 +164,9 @@ struct TrackpadSession {
     private var leftovers: [TimeInterval] = []
     /// Reports an earlier gesture in this field was still owed when this one began, by issue time.
     private var inherited: [TimeInterval] = []
+    /// Reports no longer expected here (overdue), by issue time: if they come after the session ended
+    /// they are still known as its own (`TrackpadController.absorbLateReport`).
+    private var retiredReports: [TimeInterval] = []
     /// One of them arrived: the snapshot is taken again from the context it shows.
     private var resnapshotFromReport = false
     /// Whether the host reports each adjustment twice, first as issued (WebKit), or once (UIKit); nil
@@ -171,6 +178,20 @@ struct TrackpadSession {
     private var nextExpectation = 1
     /// A key was pressed (`settleNow`): no new step toward the target, only a split cluster repaired.
     private(set) var isSettlingNow = false
+    /// When the first key was pressed.
+    private var settlingSince: TimeInterval?
+    /// Ended while keys waited (`cancelForTyping`): the field is watched until the caret is on a
+    /// whole-cluster boundary. Holds no text: a hash of the context the last repair was issued in.
+    private(set) var guardsTyping = false
+    private var guardDirection = 1
+    private var guardDeadline = TimeInterval.infinity
+    private var guardRepairs = 0
+    private var guardRepairedIn: String?
+    private var guardSawContext = false
+    private var guardSeesSplit = false
+    /// An adjustment reported only as issued after it had been taken as landed (or before it was): no
+    /// adjustment is issued until its landed report arrives, or the session is ambiguous.
+    private var suspendedFor: Int?
     /// A report could not be attributed after all (a pre-move report whose adjustment never reported
     /// where it landed): the keyboard ends the session without another adjustment.
     private(set) var isAmbiguous = false
@@ -209,10 +230,16 @@ struct TrackpadSession {
     }
 
     /// When the adjustments whose reports have not arrived yet were issued, oldest first: the next
-    /// gesture in this field expects them before its own.
+    /// gesture in this field expects those still due before its own, and later ones are still known as
+    /// this gesture's (`TrackpadController.absorbLateReport`).
+    /// A host that reports each adjustment twice (WebKit, or one not known yet) still owes both reports
+    /// of an adjustment not yet reported as issued.
     var owedReports: [TimeInterval] {
         guard !isCancelled else { return [] }
-        return inherited + leftovers + pending.map(\.issuedAt)
+        let twice = reportsTwice != false
+        let pendingReports = pending.flatMap { twice && !$0.reportedAsIssued ? [$0.issuedAt, $0.issuedAt] : [$0.issuedAt] }
+        let retired = reportsTwice == true ? retiredReports.flatMap { [$0, $0] } : retiredReports
+        return (retired + inherited + leftovers + pendingReports).sorted()
     }
 
     /// Nothing is in flight, and the caret is at the target or can get no closer for now.
@@ -241,7 +268,10 @@ struct TrackpadSession {
 
     /// After the finger lifts: settled and its callbacks seen (or overdue), or out of time to finish.
     /// Each adjustment issued after the lift gets its own time to land.
+    /// While keys wait (`settleNow`), only `settleTimeout` from the first key ends it this way: the keys'
+    /// own deadline (`TrackpadController.forceRelease`) comes first.
     func isFinished(at timestamp: TimeInterval) -> Bool {
+        if let settlingSince { return timestamp - settlingSince >= parameters.settleTimeout }
         guard let endedAt else { return false }
         let lastActivity = max(endedAt, lastIssuedAt ?? endedAt)
         if timestamp - lastActivity >= parameters.settleTimeout { return true }
@@ -287,19 +317,34 @@ struct TrackpadSession {
     mutating func settleNow(at timestamp: TimeInterval) {
         end(at: timestamp)
         isSettlingNow = true
+        if settlingSince == nil { settlingSince = timestamp }
         waypoint = nil
         blocked = nil
         isStalled = false
     }
 
     /// Keys may run: nothing is out whose outcome could leave the caret inside a cluster or past the
-    /// text (an earlier gesture's reports included), and no split cluster waits for its repair.
-    var isReadyForTyping: Bool {
-        if isCancelled { return edgeWatch == nil }
+    /// text (an earlier gesture's reports included), and no split cluster waits for its repair. A
+    /// session ended while keys waited (`cancelForTyping`) is ready once the field shows the caret on a
+    /// whole-cluster boundary and everything it issued has been heard from or is overdue.
+    func isReadyForTyping(at timestamp: TimeInterval) -> Bool {
+        if isCancelled {
+            guard guardsTyping else { return edgeWatch == nil }
+            if timestamp >= guardDeadline { return true }
+            let quiet = unconfirmedAdjustments == 0 || timestamp - (lastIssuedAt ?? -.infinity) >= parameters.syncTimeout
+            return guardSawContext && !guardSeesSplit && edgeWatch == nil && quiet
+        }
         // An earlier gesture's adjustments are not known to have landed, or not yet looked at.
         if !inherited.isEmpty || resnapshotFromReport { return false }
         if needsRepair { return false }
         return flight.map { Self.landsOnABoundary($0.kind) } ?? true
+    }
+
+    /// A probe is out whose outcome is unknown: rolling it back (the same count back, in either unit)
+    /// is the one adjustment certain to end on a boundary.
+    var probeRollback: Int? {
+        guard !isCancelled, case .unitProbe(_, let direction, let step)? = flight?.kind else { return nil }
+        return -direction * step
     }
 
     /// A move or a repair to a cluster's edge lands on a boundary. A repair out of the middle of a
@@ -316,17 +361,67 @@ struct TrackpadSession {
     /// The side a split cluster is repaired toward: the direction of the last move.
     var repairDirection: Int { travelDirection }
 
+    /// The text before the caret where the session leaves it (`committed`, where a move in flight lands),
+    /// from the snapshot: what typing reads while the proxy may still show an earlier caret. The proxy's
+    /// window starts at a sentence or a line (measured in UIKit), so the snapshot's start reads as one.
+    /// Nil once cancelled.
+    var landingBefore: String? {
+        guard !isCancelled, navigator.boundaries.indices.contains(committed) else { return nil }
+        let before = String(decoding: navigator.units[..<navigator.boundaries[committed]], as: UTF16.self)
+        return (snapshotContext.droppedLineBreak ? "\n" : "") + before
+    }
+
     /// A move or a repair is out that lands on a boundary.
     var isLandingOnABoundary: Bool {
         flight.map { Self.landsOnABoundary($0.kind) } ?? false
     }
 
-    /// The caret inside a cluster, as a context shows it: the code units back to the cluster's start and
-    /// on to its end (a split surrogate pair reads as two U+FFFD: one each way).
-    static func visibleSplit(before: String?, after: String?) -> (back: Int, forward: Int)? {
+    /// The adjustment that takes a caret the context shows inside a cluster to the cluster's edge,
+    /// toward `direction`: only a UTF-16 host stops there, so it is in code units. Between the halves of
+    /// a surrogate pair (two U+FFFD in the context) the pair's scalar is unknown; the cluster is
+    /// estimated with an emoji in its place (a regional indicator beside one), and only forward, since
+    /// what follows decides where a cluster ends while what precedes cannot tell whether the hidden
+    /// scalar extends it. Nil when the caret is on a boundary.
+    static func repairOffset(before: String?, after: String?, direction: Int) -> Int? {
         let context = visible(before: before, after: after)
-        if splitsSurrogatePair(context) { return (1, 1) }
-        return TextNavigator(before: context.before, after: context.after).snapshotSplit
+        if splitsSurrogatePair(context) {
+            var head = context.before.unicodeScalars
+            head.removeLast()
+            var tail = context.after.unicodeScalars
+            tail.removeFirst()
+            let regional = { (scalar: Unicode.Scalar?) in scalar.map { (0x1F1E6 ... 0x1F1FF).contains($0.value) } ?? false }
+            let placeholder: Unicode.Scalar = regional(head.last) || regional(tail.first) ? "\u{1F1FA}" : "\u{1F44D}"
+            let joined = String(head) + String(placeholder) + String(tail)
+            let caret = String(head).utf16.count + 1
+            var offset = 0
+            for character in joined {
+                offset += character.utf16.count
+                if offset > caret { return offset - caret }
+            }
+            return nil
+        }
+        guard let split = TextNavigator(before: context.before, after: context.after).snapshotSplit else { return nil }
+        return direction > 0 ? split.forward : -split.back
+    }
+
+    /// The gesture ended early (an outside change, an ambiguous report) while keys waited on it or the
+    /// caret may be inside a cluster (`mayLeaveCaretInsideCluster`): it stops here like a cancellation
+    /// (an outstanding probe is rolled back; a jump past the edge is watched), and then keeps watching
+    /// the field until the caret is on a whole-cluster boundary, repairing a split it shows, so no key
+    /// ever lands inside a cluster (`isReadyForTyping`), at most twice `syncTimeout`. Returns an offset
+    /// to issue now.
+    mutating func cancelForTyping(at timestamp: TimeInterval) -> Int? {
+        guardDirection = travelDirection
+        guardDeadline = timestamp + 2 * parameters.syncTimeout
+        let rollback = cancel(at: timestamp)
+        guardsTyping = true
+        return rollback
+    }
+
+    /// Something out (a probe, a jump past the edge, a repair out of a surrogate pair), a split waiting
+    /// for its repair, or an earlier gesture's unanswered adjustments may leave the caret inside a cluster.
+    var mayLeaveCaretInsideCluster: Bool {
+        needsRepair || !inherited.isEmpty || flight.map { !Self.landsOnABoundary($0.kind) } == true
     }
 
     /// The system cancelled the gesture, or the keyboard is hiding: stop where the host is, and drop
@@ -404,11 +499,34 @@ struct TrackpadSession {
         return nil
     }
 
+    /// After `cancelForTyping`: a caret the context shows inside a cluster goes to the cluster's edge,
+    /// once per context (the next repair waits until the host shows the last one's result), at most
+    /// `maximumRepairs` times. A jump past the edge still out is waited for until its time is up.
+    private mutating func guardTyping(_ context: Context, timestamp: TimeInterval) -> Int? {
+        guardSawContext = true
+        let offset = Self.repairOffset(before: context.droppedLineBreak ? "\n" + context.before : context.before,
+                                       after: context.after, direction: guardDirection)
+        guardSeesSplit = offset != nil
+        if let offset, guardRepairs < parameters.maximumRepairs {
+            let hash = Self.contextHash(context)
+            if hash != guardRepairedIn {
+                guardRepairs += 1
+                guardRepairedIn = hash
+                return launch(.move(from: nil), offset: offset, outcomes: [], context: Context(before: "", after: ""),
+                              at: timestamp)
+            }
+        }
+        if let watch = edgeWatch, !guardSeesSplit, timestamp >= watch.deadline { edgeWatch = nil }
+        return nil
+    }
+
     /// Call once per display frame with the proxy's current context. Returns the offset to pass to
     /// `adjustTextPosition`, if any.
     mutating func frame(before: String?, after: String?, timestamp: TimeInterval) -> Int? {
         let context = Self.visible(before: before, after: after)
-        guard !isCancelled else { return resolveEdgeWatch(context, timestamp: timestamp) }
+        guard !isCancelled else {
+            return guardsTyping ? guardTyping(context, timestamp: timestamp) : resolveEdgeWatch(context, timestamp: timestamp)
+        }
         retireOverdue(at: timestamp)
         guard !isAmbiguous else { return nil }
         if resnapshotFromReport, flight == nil {
@@ -469,11 +587,15 @@ struct TrackpadSession {
                 // The caret at the snapshot's edge, not past it, is the proxy's provisional answer (or a
                 // host that clamps instead of ignoring): no line was crossed.
                 let crossed = fresh && !showsCaretAtEdge(edge, context)
+                // While a key waits, time alone tells nothing: UIKit's provisional answer shows the caret at
+                // the edge whether or not the jump crossed into a cluster the snapshot never showed, so only
+                // the report does (the keys' deadline bounds the wait, `TrackpadController.forceRelease`).
+                let heard = isSettlingNow ? current.acknowledged : timedOut || (current.acknowledged && !fresh)
                 if crossed && (current.acknowledged || timedOut) {
                     // The caret crossed into text the snapshot did not show: one line toward the point.
                     flight = nil
                     adopt(context, linesCrossed: edge == .end ? 1 : -1)
-                } else if timedOut || (current.acknowledged && !fresh) {
+                } else if heard {
                     // Unchanged, or still the provisional edge: the host ignored the jump (measured at
                     // the document's edge) and the caret is where it was.
                     flight = nil
@@ -491,14 +613,24 @@ struct TrackpadSession {
     /// issued, though its outcome was a move elsewhere, leaves the caret unknown: ambiguous.
     private mutating func retireOverdue(at timestamp: TimeInterval) {
         let late = leftovers.prefix { timestamp - $0 > parameters.syncTimeout }.count
+        noteRetired(leftovers.prefix(late))
         leftovers.removeFirst(late)
         let lateInherited = inherited.prefix { timestamp - $0 > parameters.syncTimeout }.count
+        noteRetired(inherited.prefix(lateInherited))
         inherited.removeFirst(lateInherited)
         // The last of them will not come: the field as the proxy shows it now is all there is.
         if lateInherited > 0, inherited.isEmpty { resnapshotFromReport = true }
         unconfirmedAdjustments = max(0, unconfirmedAdjustments - late - lateInherited)
-        let overdue = pending.prefix { timestamp - $0.issuedAt > parameters.syncTimeout }.count
+        // A probe or a jump a key waits on stays expected until the keys' deadline: its report is the one
+        // thing that shows where it left the caret.
+        let awaited = isSettlingNow ? flight.flatMap { Self.landsOnABoundary($0.kind) ? nil : $0.expectation } : nil
+        let overdue = pending.prefix { timestamp - $0.issuedAt > parameters.syncTimeout && $0.id != awaited }.count
         if overdue > 0 { retire(overdue) }
+    }
+
+    private mutating func noteRetired<Times: Sequence>(_ times: Times) where Times.Element == TimeInterval {
+        retiredReports += times
+        if retiredReports.count > 16 { retiredReports.removeFirst(retiredReports.count - 16) }
     }
 
     /// Retires the `count` oldest expectations.
@@ -506,6 +638,8 @@ struct TrackpadSession {
         for entry in pending.prefix(count) where entry.reportedAsIssued && !Self.fits(entry.issuedIn, entry.outcomes) {
             isAmbiguous = true
         }
+        if let suspended = suspendedFor, pending.prefix(count).contains(where: { $0.id == suspended }) { suspendedFor = nil }
+        noteRetired(pending.prefix(count).map(\.issuedAt))
         pending.removeFirst(count)
         unconfirmedAdjustments = max(0, unconfirmedAdjustments - count)
     }
@@ -524,7 +658,22 @@ struct TrackpadSession {
     ///   report already confirmed (a host that reported several at once). These come first: reports
     ///   arrive in order.
     mutating func acknowledge(before: String?, after: String?) -> Bool {
+        attribute(Self.visible(before: before, after: after))
+    }
+
+    /// Only the as-issued report of the oldest adjustment owed one (see `acknowledge`), and only when no
+    /// earlier report is owed. The keyboard asks this first: such a report shows the context the
+    /// adjustment was issued in, which is often what the last key typed left, and must not be taken
+    /// for that key's report, or the session would read the stale caret it shows as current.
+    mutating func acknowledgeAsIssued(before: String?, after: String?) -> Bool {
         let context = Self.visible(before: before, after: after)
+        guard !isCancelled, unconfirmedAdjustments > 0, inherited.isEmpty, leftovers.isEmpty, reportsTwice != false,
+              !context.before.isEmpty || !context.after.isEmpty, let head = pending.first, !head.reportedAsIssued,
+              head.issuedIn == context else { return false }
+        return attribute(context)
+    }
+
+    private mutating func attribute(_ context: Context) -> Bool {
         if isCancelled {
             // A cancelled gesture holds no expected text any more; what it still owes callbacks for are
             // its rollback and repairs, which only ever move the caret back onto a boundary.
@@ -552,6 +701,8 @@ struct TrackpadSession {
         if reportsTwice != false, !context.before.isEmpty || !context.after.isEmpty, let head = pending.first,
            !head.reportedAsIssued, head.issuedIn == context {
             pending[0].reportedAsIssued = true
+            // Nothing moves until it reports where it landed: the host may have put the caret back.
+            suspendedFor = head.id
             return true
         }
         if let index = pending.firstIndex(where: { Self.fits(context, $0.outcomes) }) {
@@ -561,6 +712,7 @@ struct TrackpadSession {
                 reportsTwice = entry.reportedAsIssued
             }
             leftovers += pending.prefix(index).map(\.issuedAt)
+            if let suspended = suspendedFor, entry.id >= suspended { suspendedFor = nil }
             pending.removeFirst(index + 1)
             lastConsumed = entry.outcomes
             unconfirmedAdjustments -= 1
@@ -821,6 +973,9 @@ struct TrackpadSession {
 
     /// The next step toward the target: a repair, a move, a probe, or reaching past the snapshot.
     private mutating func advance(_ context: Context, timestamp: TimeInterval) -> Int? {
+        // An adjustment reported only as issued has not shown where it landed: nothing is issued from a
+        // position that may be stale.
+        if suspendedFor != nil { return nil }
         if needsRepair { return repair(context, timestamp: timestamp) }
         // A key is waiting: the caret stays where it is.
         if isSettlingNow { return nil }
@@ -907,9 +1062,14 @@ struct TrackpadSession {
         let knownAfter = navigator.units.count - knownBefore
         let hostBefore = context.before.utf16.count
         let hostAfter = context.after.utf16.count
+        // A context that does not show the caret where the session put it is not the field as it will be:
+        // an adjustment has not landed yet (with its report still to come, the proxy shows an earlier
+        // caret), so it is not taken as a new snapshot, and what it seems to show more of is not more.
+        let showsCommitted = navigator.agrees(before: context.before, after: context.after, at: committed)
         if let edge = blocked, !isSoftEdge(edge) {
             let hostShowsMore = edge == .end ? hostAfter > knownAfter : hostBefore > knownBefore
             if hostShowsMore {
+                guard showsCommitted else { return nil }
                 adopt(context)
                 return continueAfterAdopting(context, timestamp: timestamp)
             }
@@ -935,6 +1095,7 @@ struct TrackpadSession {
         }
         // The caret reached a line whose start the snapshot does not show, coming from one it does.
         // When the host now shows more before it, re-snapshot and keep the point's real column.
+        guard showsCommitted else { return nil }
         if xIsReal, navigator.line(of: committed, in: lines) < firstAnchoredLine, hostBefore > knownBefore {
             adopt(context, keepingColumn: true)
             return continueAfterAdopting(context, timestamp: timestamp)

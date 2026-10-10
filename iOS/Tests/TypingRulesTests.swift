@@ -14,6 +14,7 @@ enum TypingRulesTests {
             ("autoCapitalizationModes", testAutoCapitalizationModes),
             ("contextTailTracksOwnEdits", testContextTailTracksOwnEdits),
             ("contextTailYieldsToTheProxy", testContextTailYieldsToTheProxy),
+            ("contextTailYieldsToAProxyThatMovedOn", testContextTailYieldsToAProxyThatMovedOn),
             ("contextTailExpiresAndTypingCannotExtendIt", testContextTailExpiresAndTypingCannotExtendIt),
         ]
     }
@@ -198,6 +199,14 @@ enum TypingRulesTests {
         // Deleting more than is known leaves the proxy to answer.
         tail.deleted(graphemes: 10, proxyBefore: nil, at: 1)
         TestSupport.expectEqual(tail.known, nil)
+        // Deleting exactly what the proxy showed leaves the caret where its window starts: a sentence or a
+        // line, so the model is empty; unless what went was the line break shown alone at a line's start.
+        tail.deleted(graphemes: 2, proxyBefore: "Ok", at: 1)
+        TestSupport.expectEqual(tail.known, "")
+        TestSupport.expectEqual(tail.current(proxyBefore: "Ok"), "")
+        tail.forget()
+        tail.deleted(graphemes: 1, proxyBefore: "\n", at: 1)
+        TestSupport.expectEqual(tail.known, nil)
         // Bounded, and nothing kept beyond the tail.
         tail.inserted(String(repeating: "x", count: 1_000), proxyBefore: nil, at: 1)
         TestSupport.expectEqual(tail.known?.count, ContextTail.limit)
@@ -226,6 +235,21 @@ enum TypingRulesTests {
         // A new model starts a new lifetime.
         tail.inserted("c", proxyBefore: "Lag", at: 200)
         TestSupport.expectEqual(tail.expiresAt, 200 + ContextTail.lifetime)
+    }
+
+    private static func testContextTailYieldsToAProxyThatMovedOn() {
+        // A model built on a reading that was itself behind ("\n", before a deletion the proxy had not
+        // shown yet) is wrong: once the proxy reads anything else, the proxy answers.
+        var tail = ContextTail()
+        tail.inserted("8", proxyBefore: "\n", at: 1)
+        TestSupport.expectEqual(tail.current(proxyBefore: "\n"), "\n8")
+        TestSupport.expectEqual(tail.current(proxyBefore: "Hi. G8"), "Hi. G8")
+        // A shorter view of the model (a window from the last line break) keeps it, reports included.
+        tail.forget()
+        tail.inserted("\n", proxyBefore: "Line one.", at: 1)
+        TestSupport.expectEqual(tail.current(proxyBefore: "\n"), "Line one.\n")
+        tail.proxyChanged(before: "\n")
+        TestSupport.expectEqual(tail.known, "Line one.\n")
     }
 
     private static func testContextTailYieldsToTheProxy() {

@@ -322,7 +322,7 @@ enum EditingCoreTests {
         // the timer deleted in B. The press is bound to A; a focus change also ends it outright.
         let (core, document) = core("Field A text.")
         var key = HeldDeleteKey()
-        let press = key.began(at: 100, documentID: document.documentID)!
+        let press = key.began(at: 100, documentID: document.documentID)
         let fieldB = FakeTextHost(text: "Field B text.", model: .uikit)
         document.focus(fieldB, id: UUID())
         TestSupport.expectEqual(document.pump(core, at: 1), [.newField])
@@ -332,7 +332,7 @@ enum EditingCoreTests {
         TestSupport.expect(key.press == nil, "press kept after the field changed")
         // The keyboard's own response to the focus change, before the timer: the press ends.
         var other = HeldDeleteKey()
-        let second = other.began(at: 200, documentID: document.documentID)!
+        let second = other.began(at: 200, documentID: document.documentID)
         TestSupport.expectEqual(other.cancel(), second.token)
         TestSupport.expect(other.fire(token: second.token, documentID: document.documentID) == nil, "fired after cancel")
     }

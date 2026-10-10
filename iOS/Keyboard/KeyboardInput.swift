@@ -48,7 +48,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private let driver: TrackpadDriver
     private var deleteKey = HeldDeleteKey()
     private var deleteTimer: Timer?
-    private var continuationTimer: Timer?
+    private var serviceTimer: Timer?
     private var undoTimer: Timer?
     private var undoExpiry: (timer: Timer, insertedAt: TimeInterval)?
     private var tailExpiry: Timer?
@@ -75,6 +75,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.onStateChanged = { [weak self] in self?.editorStateChanged() }
         editor.onUndoChanged = { [weak self] in self?.undoChanged() }
         editor.onTrackpadFinished = { [weak self] _ in self?.trackpadFinished() }
+        editor.onTrackpadStarted = { [weak self] in self?.driver.run() }
         keyArea.currentField = { [weak controller] in controller?.textDocumentProxy.documentIdentifierIfAvailable }
     }
 
@@ -115,18 +116,25 @@ final class KeyboardInput: KeyAreaViewDelegate {
         stopUndoTimers()
         tailExpiry?.invalidate()
         tailExpiry = nil
-        continuationTimer?.invalidate()
-        continuationTimer = nil
+        serviceTimer?.invalidate()
+        serviceTimer = nil
     }
 
     /// A `textDidChange` (`textChanged`) or `selectionDidChange` callback.
     func hostChanged(textChanged: Bool) {
-        // Another field: held keys and a pending delete end without acting.
-        if editor.hostChanged(textChanged: textChanged, now: now) == .newField { cancelHeldActions() }
+        // Another field: held keys and a held delete pressed in a different identified field end without
+        // acting; those pressed in this one (before its first callback) or before any identity go on.
+        guard editor.hostChanged(textChanged: textChanged, now: now) == .newField else { return }
+        let field = proxy?.documentIdentifierIfAvailable
+        if let token = deleteKey.cancel(ifBoundElsewhereThan: field) {
+            editor.revoke(token: token)
+            endDeleteRepeat()
+        }
+        keyArea?.cancelTouches(boundElsewhereThan: field)
     }
 
     /// Ends every held key (characters, space, delete) without typing, and a pending delete without
-    /// deleting; revokes deletions the delete press has waiting.
+    /// deleting; revokes deletions the delete press has waiting. On hiding.
     private func cancelHeldActions() {
         if let token = deleteKey.cancel() { editor.revoke(token: token) }
         endDeleteRepeat()
@@ -138,22 +146,23 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private func editorStateChanged() {
         keyArea?.apply(layer: editor.typing.layer, shift: editor.typing.shift)
         scheduleTailExpiry()
-        if editor.needsContinuation { scheduleContinuation() }
+        if editor.needsService { scheduleService() }
     }
 
-    /// Keys stopped after a Return run on the next frame, once the host has had a chance to move to
-    /// another field.
-    private func scheduleContinuation() {
-        guard continuationTimer == nil else { return }
+    /// While keys (or a gesture) wait, the editor looks every frame whether they may run, and enforces
+    /// their deadline; after an own edit, it follows the proxy for the shift.
+    private func scheduleService() {
+        guard serviceTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.continuationTimer = nil
-                self.editor.continuePendingKeys(now: self.now)
+                self.serviceTimer = nil
+                self.editor.service(now: self.now)
+                if self.editor.needsService { self.scheduleService() }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        continuationTimer = timer
+        serviceTimer = timer
     }
 
     private func trackpadFinished() {
@@ -260,7 +269,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         // Measured on device: the first deletion comes 0.12 s after touch-down (or at release, if
         // sooner), and the repeats follow on the schedule from touch-down. The press is bound to this
         // field; every deletion it makes carries its token.
-        guard let press = deleteKey.began(at: timestamp, documentID: proxy?.documentIdentifierIfAvailable) else { return }
+        let press = deleteKey.began(at: timestamp, documentID: proxy?.documentIdentifierIfAvailable)
         schedule(press.token, at: press.firstAt, pressedAt: timestamp)
     }
 
@@ -269,12 +278,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// any deletion of the press still waiting on the trackpad.
     func keyAreaEndedDelete(_ keyArea: KeyAreaView, cancelled: Bool) {
         endDeleteRepeat()
-        let field = deleteKey.press?.documentID
         guard let ended = deleteKey.ended(cancelled: cancelled, documentID: proxy?.documentIdentifierIfAvailable) else { return }
         if cancelled {
             editor.revoke(token: ended.token)
         } else if ended.deleteOnce {
-            editor.heldDelete(.character, token: ended.token, field: field, now: now)
+            editor.heldDelete(.character, token: ended.token, field: ended.field, now: now)
         }
     }
 
@@ -291,12 +299,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// A scheduled deletion: only while its press is current and the field is the one it began in.
     private func fireDelete(_ token: Int, pressedAt: TimeInterval) {
-        let field = deleteKey.press?.documentID
         guard let fired = deleteKey.fire(token: token, documentID: proxy?.documentIdentifierIfAvailable) else {
             endDeleteRepeat()
             return
         }
-        editor.heldDelete(fired.unit, token: token, field: field, now: now)
+        editor.heldDelete(fired.unit, token: token, field: fired.field, now: now)
         schedule(token, at: fired.nextAt, pressedAt: pressedAt)
     }
 
@@ -312,23 +319,18 @@ final class KeyboardInput: KeyAreaViewDelegate {
         let multipliers = trackpadMultipliers()
         trackpad.parameters = TrackpadParameters.standard.tuned(sensitivity: multipliers.sensitivity,
                                                                 acceleration: multipliers.acceleration)
-        if let profile = driver.layout(keyboardWidth: keyArea.bounds.width, profile: fieldLayout()),
-           editor.beginTrackpad(layout: profile.layout, linePitch: profile.linePitch, layoutWidth: profile.width, now: now) {
-            driver.run()
+        if let profile = driver.layout(keyboardWidth: keyArea.bounds.width, profile: fieldLayout()) {
+            editor.beginTrackpad(layout: profile.layout, linePitch: profile.linePitch, layoutWidth: profile.width, now: now)
         }
         onTrackpadChange?(true)
     }
 
     func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double, timestamp: TimeInterval) {
-        trackpad.move(dx: dx, dy: dy, timestamp: timestamp)
+        editor.trackpadMoved(dx: dx, dy: dy, timestamp: timestamp)
     }
 
     func keyAreaEndedTrackpad(_ keyArea: KeyAreaView, timestamp: TimeInterval, cancelled: Bool) {
-        if cancelled {
-            trackpad.cancel(at: timestamp)
-        } else {
-            trackpad.end(at: timestamp)
-        }
+        editor.trackpadEnded(at: timestamp, cancelled: cancelled)
         onTrackpadChange?(false)
     }
 }

@@ -58,6 +58,8 @@ struct KeyTouchModel: Equatable, Sendable {
     /// Held fingers in press order.
     private(set) var touches: [Touch] = []
     private(set) var trackpadTouch: TouchID?
+    /// The field the trackpad's finger touched down in.
+    private(set) var trackpadField: UUID?
 
     var isTrackpadActive: Bool { trackpadTouch != nil }
 
@@ -204,6 +206,28 @@ struct KeyTouchModel: Equatable, Sendable {
         return effects
     }
 
+    /// Another field became current (`field`): fingers that touched down in a different identified field
+    /// end without typing; those that touched down in this one, or before any identity (they bind to
+    /// the field identified next), go on (ARCHITECTURE.md, "Typing correctness is paramount").
+    mutating func cancelTouches(boundElsewhereThan field: UUID?) -> [Effect] {
+        guard let field else { return [] }
+        var effects: [Effect] = []
+        if trackpadTouch != nil, let bound = trackpadField, bound != field {
+            trackpadTouch = nil
+            effects.append(.endTrackpad(cancelled: true))
+        }
+        var kept: [Touch] = []
+        for touch in touches {
+            if !touch.committed, let bound = touch.field, bound != field {
+                effects += release(touch)
+            } else {
+                kept.append(touch)
+            }
+        }
+        touches = kept
+        return effects
+    }
+
     /// Ends every touch, for example when the keyboard disappears.
     mutating func cancelAll() -> [Effect] {
         var effects: [Effect] = []
@@ -248,6 +272,7 @@ struct KeyTouchModel: Equatable, Sendable {
     private mutating func beginTrackpad(_ index: Int) -> [Effect] {
         let touch = touches.remove(at: index)
         trackpadTouch = touch.id
+        trackpadField = touch.field
         return [.cancelHoldTimer(touch.id), .beginTrackpad]
     }
 
