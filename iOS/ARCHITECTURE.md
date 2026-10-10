@@ -1142,3 +1142,19 @@ The harness lives outside the repository
   - **Measured widths:** the Messages layout is chosen automatically only in
     portrait at measured widths of 390, 393, 402, 420 and 440 pt (±1). A
     manual choice applies everywhere.
+- **Typing correctness is paramount (after the round-6 review).** A typed
+  key (character, shift, space, return, delete) is never dropped, reordered
+  or re-cased because of trackpad bookkeeping.
+  - **Pending settlement:** if trackpad settlement or verification is pending
+    when a key is pressed, the settlement resolves immediately. It accepts the
+    current caret, repairing a split cluster if one is known, and the key then
+    executes in press order. Queuing typed keys behind settlement is avoided.
+    Where some ordering is unavoidable, each key's resolved text and modifier
+    state are captured at press time.
+  - **Field binding:** every key is bound to the field identity at press
+    time and validated at release, so a key never lands in a different field.
+  - **Own edits:** callbacks from our own inserts and deletes are never
+    treated as outside changes that discard typing.
+  - **Undo fails closed:** any callback whose provenance is ambiguous
+    invalidates Undo. UIKit inserts and deletes owe no callback, so no
+    allowance is created for them.
