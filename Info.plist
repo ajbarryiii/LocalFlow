@@ -9,9 +9,11 @@
     <key>CFBundleIdentifier</key>
     <string>com.ajbarryiii.localflow</string>
     <key>CFBundleVersion</key>
-    <string>2.1.0</string>
+    <string>2.1.1</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.0</string>
+    <string>2.1.1</string>
+    <key>FreeFlowBuildTag</key>
+    <string>beta-df1692eab835</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>

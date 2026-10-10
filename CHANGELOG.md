@@ -9,6 +9,35 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.1] - 2026-10-09
+
+Third LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.0.
+
+### Added
+
+- Optional Hold to Prompt shortcut that prefixes dictation with an editable
+  tag (default `[dictated]`) for use with AI agents. Disabled by default;
+  voice macros are never tagged.
+- Speaking pace in Settings: average and latest words per minute, total
+  words, and dictation count, with a reset action. Statistics retain word
+  and time totals rather than transcript text.
+
+### Improved
+
+- Dictation becomes ready after the 15-second model function prepares;
+  the remaining functions optimize in the background while dictation stays
+  available.
+- A refreshed model bundle supports 30-second transcription chunks once
+  optimization completes. Until then, recordings use 15-second chunks.
+
+### Fixed
+
+- In-app updates verify the downloaded app's code signature, developer team,
+  and app identity before installation. Ad hoc and unsigned builds must use
+  a manual download.
+- Failed update downloads or installations now show an alert.
+
 ## [2.1.0] - 2026-10-06
 
 Second LocalFlow beta. Requires an Apple Silicon Mac running macOS 26 or later.

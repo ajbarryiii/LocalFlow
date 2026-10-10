@@ -5,7 +5,7 @@
 <h1 align="center">LocalFlow</h1>
 
 <p align="center">
-  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.0/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.1/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
   <sub>Apple Silicon · macOS 26 or later</sub><br>
   <sub>Developer ID signed · Apple-notarized beta</sub>
 </p>
@@ -19,7 +19,7 @@ Edit Mode, or screenshot/app context capture.
 
 Requires an **Apple Silicon Mac running macOS 26 or later**. Other devices
 are not supported by this model bundle yet. The app and model are about
-359 MB together; runtime memory use can exceed the model's disk size.
+388 MB together; runtime memory use can exceed the model's disk size.
 
 ## Dictation
 
@@ -34,7 +34,8 @@ are not supported by this model bundle yet. The app and model are about
 The model prepares in the background at startup and stays in memory for the
 session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
-Recordings longer than 15 seconds use independent chunks and can lose context
+Recordings use independent chunks of up to 30 seconds once optimization
+completes, or 15 seconds while it is still in progress, and can lose context
 at boundaries. There is no cloud fallback.
 
 Voice macros match complete phrases locally and paste predefined text. An
