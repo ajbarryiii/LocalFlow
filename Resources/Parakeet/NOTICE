@@ -2,7 +2,7 @@ LocalFlow speech model
 Derived from kea-t. Renaming does not change the
 trained weights, original model attribution, or CC-BY-4.0 license below.
 
-kea-t (formerly parakeet-tdt-0.6b-v2-ternary)
+kea-t
 
 Model weights and model card (export.safetensors, manifest.json,
 reconstruction.json, tokenizer/, README.md): CC-BY-4.0, see LICENSE.
