@@ -36,7 +36,7 @@ class ModelBrandingTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), digest)
             provenance = json.loads((directory / "frontend.json").read_text())["provenance"]
             self.assertEqual(provenance["export_sha256"], "synthetic")
-            self.assertEqual(provenance["base_model"], "parakeet-v2-ternary")
+            self.assertEqual(provenance["base_model"], "kea-t")
             branding.label_bundle(directory)
             self.assertEqual(json.loads((directory / "bundle.json").read_text()), manifest)
 

@@ -68,7 +68,7 @@ only on position. The upstream accuracy gates did not cover the 30-second
 function; its synthetic smoke validation is in `Benchmarks/ParakeetStartup.md`.
 
 The bundle model ID is `localflow`, with display name LocalFlow and
-`parakeet-v2-ternary` recorded as its base model. The build can relabel a
+`kea-t` recorded as its base model. The build can relabel a
 previous Parakeet bundle after verifying its existing hashes; only metadata
 and the corresponding hashes change. Encoder and decoder weights are unchanged.
 

@@ -27,10 +27,10 @@ def label_bundle(directory):
         path = directory / name
         metadata = json.loads(path.read_text())
         provenance = metadata.setdefault("provenance", {})
-        provenance.update(model="localflow", base_model="parakeet-v2-ternary")
+        provenance.update(model="localflow", base_model="kea-t")
         path.write_text(json.dumps(metadata, indent=2) + "\n")
         files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest.update(model="localflow", display_name="LocalFlow", base_model="parakeet-v2-ternary")
+    manifest.update(model="localflow", display_name="LocalFlow", base_model="kea-t")
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 

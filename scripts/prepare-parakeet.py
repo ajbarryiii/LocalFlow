@@ -68,13 +68,13 @@ def main():
     for stem in ("frontend", "decoder_joint"):
         path = output / f"{stem}.json"
         data = json.loads(path.read_text())
-        data["provenance"] = {"model": "localflow", "base_model": "parakeet-v2-ternary", "export_sha256": export_sha}
+        data["provenance"] = {"model": "localflow", "base_model": "kea-t", "export_sha256": export_sha}
         path.write_text(json.dumps(data, indent=2) + "\n")
     files = ["frontend.json", "frontend.f32bin", "decoder_joint.json",
              "decoder_joint.f32bin", "vocabulary.json"]
     files += [str(p.relative_to(output)) for p in sorted((output / "Encoder.mlmodelc").rglob("*")) if p.is_file()]
     bundle = {
-        "model": "localflow", "display_name": "LocalFlow", "base_model": "parakeet-v2-ternary", "training_step": 250000,
+        "model": "localflow", "display_name": "LocalFlow", "base_model": "kea-t", "training_step": 250000,
         "export_sha256": export_sha, "encoder": "C6s8", "layout": "plain",
         "compute_units": "cpuAndNeuralEngine", "decoder": "native-fp32",
         "buckets_seconds": list(BUCKETS), "sample_rate": 16000,
