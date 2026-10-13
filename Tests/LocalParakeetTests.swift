@@ -79,7 +79,8 @@ enum LocalParakeetTests {
             chunker.finish { result.append($0) }
             chunker.finish { _ in fatalError("A finished chunker must not emit again") }
             for chunk in result {
-                TestSupport.expectEqual(chunk.samples, Array(samples[chunk.range]), "A chunk must hold the audio at its range")
+                // A chunk must hold the audio at its range.
+                TestSupport.expectEqual(chunk.samples, Array(samples[chunk.range]))
             }
             return result
         }
