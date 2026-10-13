@@ -159,8 +159,11 @@ final class CaptureLifecycle: @unchecked Sendable {
 /// completion) does nothing once that attempt was discarded. Main thread only.
 struct RecordingAttempts {
     private(set) var current: UInt64 = 0
+    /// Recordings begun, whatever started them; a discard does not change it.
+    private(set) var begun: UInt64 = 0
 
     mutating func begin() -> UInt64 {
+        begun &+= 1
         current &+= 1
         return current
     }
@@ -175,10 +178,13 @@ struct RecordingAttempts {
 /// delay), since starting would have run it.
 struct TooShortHoldDiscard: Equatable {
     let stopCorrectionSuggestions: Bool
+    /// Always: a suggestion presented meanwhile must not stay on screen.
+    let withdrawSuggestion: Bool
     let invalidateAttempt: Bool
     let cancelCapture: Bool
 
     static func steps(isRecording: Bool) -> TooShortHoldDiscard {
-        TooShortHoldDiscard(stopCorrectionSuggestions: true, invalidateAttempt: true, cancelCapture: isRecording)
+        TooShortHoldDiscard(stopCorrectionSuggestions: true, withdrawSuggestion: true, invalidateAttempt: true,
+                            cancelCapture: isRecording)
     }
 }

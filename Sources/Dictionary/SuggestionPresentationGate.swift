@@ -54,3 +54,13 @@ struct SuggestionPresentationGate {
         return suggestion
     }
 }
+
+/// When a verified suggestion may be shown: suggestions on, the dictionary
+/// editable, and no dictation under way. A shortcut start that is pending (a
+/// start delay) or a shortcut session already counts as under way.
+enum CorrectionSuggestionTiming {
+    static func mayPresent(enabled: Bool, dictionaryEditable: Bool, recording: Bool, transcribing: Bool,
+                           startPending: Bool, shortcutSessionActive: Bool) -> Bool {
+        enabled && dictionaryEditable && !recording && !transcribing && !startPending && !shortcutSessionActive
+    }
+}

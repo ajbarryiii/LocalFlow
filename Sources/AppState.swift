@@ -249,6 +249,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
     private var doubleTapPrompt = DoubleTapPromptDetector()
     private var recordingAttempts = RecordingAttempts()
+    /// Hold to Talk releases that have arrived but are not yet handled.
+    private var holdReleasesInFlight = 0
 
     @Published var isPressEnterVoiceCommandEnabled: Bool {
         didSet {
@@ -1059,7 +1061,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // cancellations are not mistaken for the state at the event.
             let time = ProcessInfo.processInfo.systemUptime
             guard let self else { return }
-            let appIdle = Thread.isMainThread && self.isIdleForShortcut
+            // Idle by event order: a hold whose release already arrived counts as ended.
+            let appIdle = Thread.isMainThread && DoubleTapPromptDetector.appIdleAtArrival(
+                transcribing: self.isTranscribing, sessionMode: self.shortcutSessionController.activeMode,
+                recordingOrStarting: self.isRecording || self.pendingShortcutStartMode != nil,
+                holdReleasesInFlight: self.holdReleasesInFlight)
+            if event == .holdDeactivated { self.holdReleasesInFlight += 1 }
             let stamp = self.doubleTapPrompt.stamp(at: time, appIdle: appIdle, releaseOrigin: releaseOrigin)
             DispatchQueue.main.async { [weak self] in
                 self?.handleShortcutEvent(event, stamp: stamp)
@@ -1118,13 +1125,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Not recording, transcribing or about to start: a Hold to Talk tap from here
-    /// may arm a double-tap.
-    private var isIdleForShortcut: Bool {
-        !isRecording && !isTranscribing && pendingShortcutStartMode == nil && shortcutSessionController.activeMode == nil
-    }
-
     private func handleShortcutEvent(_ event: ShortcutEvent, stamp: DoubleTapPromptDetector.Stamp) {
+        if event == .holdDeactivated { holdReleasesInFlight = max(0, holdReleasesInFlight - 1) }
         if event == .copyAgainTriggered {
             doubleTapPrompt.interrupt()
             copyLastTranscriptToPasteboard()
@@ -1134,13 +1136,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // The controller decides start and stop as always; double-tap prompt mode
         // only reads Hold to Talk starts and stops (see DoubleTapPromptDetector.route).
         let decision = doubleTapPrompt.route(event, stamp: stamp, controller: shortcutSessionController,
-                                             isTranscribing: isTranscribing)
+                                             isTranscribing: isTranscribing, recordingsBegun: recordingAttempts.begun)
         guard let action = decision.action else { return }
 
         switch action {
         case .start(let mode):
             os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
-            // A dictation press pre-empts a visible dictionary suggestion at once.
+            // An accepted dictation press ends correction work (so no verification
+            // result can present during a start delay) and pre-empts a visible
+            // dictionary suggestion at once.
+            stopCorrectionSuggestions()
             overlayManager.withdrawDictionarySuggestion()
             scheduleShortcutStart(mode: mode)
         case .stop:
@@ -1194,6 +1199,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func toggleRecording() {
         os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
+        // A manual start or stop is independent dictation activity: no pending double-tap survives it.
+        doubleTapPrompt.interrupt()
         cancelPendingShortcutStart()
         if isRecording {
             stopAndTranscribe()
@@ -1220,6 +1227,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Starting would have ended any correction watch; a tap released before
         // the start delay never started, so end it here.
         if steps.stopCorrectionSuggestions { stopCorrectionSuggestions() }
+        // A suggestion presented meanwhile must not stay on screen.
+        if steps.withdrawSuggestion { overlayManager.withdrawDictionarySuggestion() }
         guard steps.cancelCapture else { return }
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
@@ -2117,9 +2126,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         LocalParakeetService.shared.discardCorrectionSession()
     }
 
+    /// No suggestion while any dictation is under way, including a pending
+    /// shortcut start (start delay) or an active shortcut session.
+    private var mayPresentCorrectionSuggestion: Bool {
+        CorrectionSuggestionTiming.mayPresent(
+            enabled: isCorrectionSuggestionsEnabled, dictionaryEditable: canEditDictionary, recording: isRecording,
+            transcribing: isTranscribing, startPending: pendingShortcutStartMode != nil,
+            shortcutSessionActive: shortcutSessionController.activeMode != nil)
+    }
+
     private func handleCorrectionFinalized(_ final: CorrectionFinal) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
-        guard isCorrectionSuggestionsEnabled, canEditDictionary, !isRecording, !isTranscribing, AXIsProcessTrusted(),
+        guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
               customDictionary.entries.count < DictionaryValidation.capacity else {
             stopCorrectionSuggestions()
             return
@@ -2131,8 +2149,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 typed: final.typed, edited: final.edited, dictationID: final.dictationID, ignore: ignore)
             guard let self, !Task.isCancelled else { return }
             self.correctionSuggestionTask = nil
-            guard let suggestion, self.isCorrectionSuggestionsEnabled, !self.dictionaryLoadFailed,
-                  !self.isRecording, !self.isTranscribing else { return }
+            guard let suggestion, self.mayPresentCorrectionSuggestion else { return }
             let key = DictionaryKey(suggestion.word)
             guard !self.customDictionary.contains(key), !self.customDictionary.isIgnored(key) else { return }
             self.overlayManager.showDictionarySuggestion(suggestion)

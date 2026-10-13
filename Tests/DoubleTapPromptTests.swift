@@ -28,6 +28,9 @@ enum DoubleTapPromptTests {
         testIdleResetClearsPendingTap()
         testQueuedDeliveryBeforeReplacementIsAdmitted()
         testFailedSetupLeavesNextStartAlone()
+        testReleaseAndPressArriveBeforeHandling()
+        testManualRecordingVoidsTap()
+        testSuggestionDuringDelayedStart()
     }
 
     private static func enabled() -> DoubleTapPromptDetector {
@@ -222,24 +225,61 @@ enum DoubleTapPromptTests {
             detector.isEnabled = true
         }
 
-        func feed(_ input: ShortcutInputEvent, at time: TimeInterval) {
+        /// The app's recording attempts (a started hold begins one) and the
+        /// Hold to Talk releases that have arrived but are not yet handled.
+        var attempts = RecordingAttempts()
+        var releasesInFlight = 0
+
+        typealias Arrival = (delivery: ShortcutDelivery, stamp: DoubleTapPromptDetector.Stamp?)
+
+        /// The event tap callback: match, then stamp each event on arrival, as
+        /// AppState.startHotkeyMonitoring does. Nothing is handled yet.
+        func arrive(_ input: ShortcutInputEvent, at time: TimeInterval) -> [Arrival] {
             let result = ShortcutMatcher.reduce(state: state, event: input, configuration: configuration)
             state = result.state
-            let idle = controller.activeMode == nil
-            // Stamped on arrival, as the app does; an invalidation is queued in order.
-            let arrived = result.deliveries(for: input).map { delivery -> (ShortcutDelivery, DoubleTapPromptDetector.Stamp?) in
-                guard case .event(_, let origin) = delivery else { return (delivery, nil) }
+            return result.deliveries(for: input).map { delivery -> Arrival in
+                guard case .event(let event, let origin) = delivery else { return (delivery, nil) }
+                let idle = DoubleTapPromptDetector.appIdleAtArrival(
+                    transcribing: false, sessionMode: controller.activeMode,
+                    recordingOrStarting: controller.activeMode != nil, holdReleasesInFlight: releasesInFlight)
+                if event == .holdDeactivated { releasesInFlight += 1 }
                 return (delivery, detector.stamp(at: time, appIdle: idle, releaseOrigin: origin))
             }
-            for (delivery, stamp) in arrived {
+        }
+
+        /// The queued handler, in order, as AppState.handleShortcutEvent.
+        func handle(_ arrivals: [Arrival]) {
+            for (delivery, stamp) in arrivals {
                 guard case .event(let event, _) = delivery, let stamp else {
                     detector.interrupt()
                     continue
                 }
-                let decision = detector.route(event, stamp: stamp, controller: controller, isTranscribing: false)
-                if case .start? = decision.action { prompts.append(decision.markedPrompt) }
-                if case .stop? = decision.action { discards.append(decision.discardTooShort) }
+                if event == .holdDeactivated { releasesInFlight = max(0, releasesInFlight - 1) }
+                let decision = detector.route(event, stamp: stamp, controller: controller, isTranscribing: false,
+                                              recordingsBegun: attempts.begun)
+                if case .start? = decision.action {
+                    prompts.append(decision.markedPrompt)
+                    _ = attempts.begin()
+                }
+                if case .stop? = decision.action {
+                    discards.append(decision.discardTooShort)
+                    if decision.discardTooShort { attempts.invalidate() }
+                }
             }
+        }
+
+        func feed(_ input: ShortcutInputEvent, at time: TimeInterval) {
+            handle(arrive(input, at: time))
+        }
+
+        /// Start Dictating from the menu: begins a recording (which may then fail).
+        func manualStart() {
+            controller.beginManual(mode: .toggle)
+            _ = attempts.begin()
+        }
+
+        func manualRecordingFailed() {
+            controller.reset()
         }
     }
 
@@ -480,7 +520,8 @@ enum DoubleTapPromptTests {
         TestSupport.expect(delayed.stopCorrectionSuggestions && delayed.invalidateAttempt && !delayed.cancelCapture,
                            "Corrections end even without a recording")
         TestSupport.expectEqual(TooShortHoldDiscard.steps(isRecording: true),
-                                TooShortHoldDiscard(stopCorrectionSuggestions: true, invalidateAttempt: true, cancelCapture: true))
+                                TooShortHoldDiscard(stopCorrectionSuggestions: true, withdrawSuggestion: true, invalidateAttempt: true,
+                                                    cancelCapture: true))
 
         // With a live correction watch and retained audio from the previous dictation.
         let reader = FakeTextFieldReader("Note: ")
@@ -612,6 +653,88 @@ enum DoubleTapPromptTests {
         TestSupport.expectEqual(sessionQueue.sync { fileURL }, "B.wav")
         TestSupport.expect(captureB.map(lifecycle.isCurrent) == true, "B is the current capture")
         TestSupport.expect(captureB.map(lifecycle.mayDeliver) == true, "and delivers")
+    }
+
+    /// Review 4 #1: the release and the second press both arrive before the
+    /// release is handled. The press is idle by event order, so prompt mode starts.
+    private static func testReleaseAndPressArriveBeforeHandling() {
+        let pipeline = Pipeline(.defaultHold)
+        pipeline.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+        let release = pipeline.arrive(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+        let press = pipeline.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        pipeline.handle(release)
+        pipeline.handle(press)
+        TestSupport.expectEqual(pipeline.discards, [true])
+        TestSupport.expectEqual(pipeline.prompts, [false, true])
+
+        // Still busy by event order: a toggle session, or transcription at arrival.
+        TestSupport.expect(!DoubleTapPromptDetector.appIdleAtArrival(transcribing: false, sessionMode: .toggle,
+                                                                     recordingOrStarting: true, holdReleasesInFlight: 1),
+                           "A toggle session stays busy")
+        TestSupport.expect(!DoubleTapPromptDetector.appIdleAtArrival(transcribing: true, sessionMode: nil,
+                                                                     recordingOrStarting: false, holdReleasesInFlight: 0),
+                           "Transcription is read at arrival")
+        TestSupport.expect(!DoubleTapPromptDetector.appIdleAtArrival(transcribing: false, sessionMode: .hold,
+                                                                     recordingOrStarting: true, holdReleasesInFlight: 0),
+                           "A hold still down is busy")
+    }
+
+    /// Review 4 #2: a tap arms; Start Dictating from the menu begins a recording
+    /// that fails at once; a Hold to Talk press within 0.4 s is a normal hold.
+    private static func testManualRecordingVoidsTap() {
+        let pipeline = Pipeline(.defaultHold)
+        pipeline.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+        pipeline.feed(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+        pipeline.manualStart()
+        pipeline.manualRecordingFailed()
+        pipeline.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        TestSupport.expectEqual(pipeline.prompts, [false, false])
+
+        // Without the manual recording, the same timing is a double-tap.
+        let control = Pipeline(.defaultHold)
+        control.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+        control.feed(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+        control.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        TestSupport.expectEqual(control.prompts, [false, true])
+    }
+
+    /// Review 4 #3: with a start delay, a press while verification is pending;
+    /// the verification result arrives during the delay; a quick release.
+    /// No suggestion may be shown, and none may remain.
+    private static func testSuggestionDuringDelayedStart() {
+        let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
+        var gate = SuggestionPresentationGate()
+        var verificationRunning = true
+        var startPending = false
+        func mayPresent() -> Bool {
+            CorrectionSuggestionTiming.mayPresent(enabled: true, dictionaryEditable: true, recording: false,
+                                                  transcribing: false, startPending: startPending,
+                                                  shortcutSessionActive: startPending)
+        }
+        // The press is accepted: correction work stops, suggestions are withdrawn,
+        // the start waits for its delay.
+        verificationRunning = false
+        gate.withdraw()
+        startPending = true
+        // A verification result that was already in flight arrives during the delay.
+        let requested = gate.withdrawals
+        if mayPresent() { _ = gate.present(word, requestedAt: requested) }
+        TestSupport.expect(gate.suggestion == nil && !verificationRunning, "Nothing is presented while a start is pending")
+        // Even if one were on screen, the quick release's discard withdraws it.
+        _ = gate.present(word)
+        let steps = TooShortHoldDiscard.steps(isRecording: false)
+        startPending = false
+        if steps.withdrawSuggestion { gate.withdraw() }
+        TestSupport.expect(gate.suggestion == nil && gate.activeID == nil, "The discard leaves no suggestion")
+        TestSupport.expect(steps.withdrawSuggestion && steps.stopCorrectionSuggestions, "Discard always withdraws")
+
+        TestSupport.expect(mayPresent(), "With nothing under way, a suggestion may show")
+        for (recording, transcribing, pending, session) in [(true, false, false, false), (false, true, false, false),
+                                                             (false, false, true, false), (false, false, false, true)] {
+            TestSupport.expect(!CorrectionSuggestionTiming.mayPresent(
+                enabled: true, dictionaryEditable: true, recording: recording, transcribing: transcribing,
+                startPending: pending, shortcutSessionActive: session), "Busy: no suggestion")
+        }
     }
 
     private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {
