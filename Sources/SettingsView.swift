@@ -308,6 +308,8 @@ struct SettingsView: View {
                     GeneralSettingsView()
                 case .macros:
                     VoiceMacrosSettingsView()
+                case .dictionary:
+                    DictionarySettingsView()
                 case .runLog:
                     RunLogView()
                 case .debug:
@@ -601,5 +603,227 @@ struct VoiceMacroEditorView: View {
                 payload = m.payload
             }
         }
+    }
+}
+
+// MARK: - Dictionary
+
+private struct DictionaryEditorTarget: Identifiable {
+    let id = UUID()
+    let original: DictionaryEntry?
+}
+
+struct DictionarySettingsView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var editor: DictionaryEditorTarget?
+    @State private var confirmingReset = false
+
+    static let correctionDisclosure = "When on, for up to a minute after LocalFlow pastes a dictation, it reads the pasted text and up to 40 characters around it in that field, to notice your corrections. Text stays on this Mac, is never saved, and is discarded afterwards. Password fields are never read."
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                if appState.dictionaryLoadFailed {
+                    SettingsCard("Dictionary", icon: "exclamationmark.triangle") {
+                        recoverySection
+                    }
+                } else {
+                    SettingsCard("Dictionary", icon: "character.book.closed") {
+                        entriesSection
+                    }
+                    SettingsCard("Suggestions from Corrections", icon: "text.badge.checkmark") {
+                        suggestionsSection
+                    }
+                    SettingsCard("Ignored Suggestions", icon: "nosign") {
+                        ignoredSection
+                    }
+                }
+            }
+            .padding(24)
+        }
+        .sheet(item: $editor) { target in
+            DictionaryEntryEditorView(original: target.original)
+        }
+    }
+
+    private var recoverySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Saved dictionary couldn't be read")
+                .font(.headline)
+            Text("Boosting is off until it is reset. The saved data is kept unchanged until you choose Reset.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Reset Dictionary…", role: .destructive) { confirmingReset = true }
+                .confirmationDialog("Reset the saved dictionary?", isPresented: $confirmingReset) {
+                    Button("Reset", role: .destructive) { appState.resetSavedDictionary() }
+                } message: {
+                    Text("This removes the saved words and ignored suggestions.")
+                }
+        }
+    }
+
+    private var entriesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Words and phrases LocalFlow should recognize. Boosting happens entirely on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Word") { editor = DictionaryEditorTarget(original: nil) }
+                    .disabled(!appState.canEditDictionary || appState.dictionaryEntries.count >= DictionaryValidation.capacity)
+            }
+            if !appState.dictionaryEditor.canEdit {
+                Text(DictionaryEditor.unavailableMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if appState.dictionaryEntries.isEmpty {
+                Text("No words yet. Add names, jargon or product terms that are often misheard.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else {
+                VStack(spacing: 1) {
+                    ForEach(Array(appState.dictionaryEntries.enumerated()), id: \.offset) { _, entry in
+                        HStack {
+                            Text(entry.text)
+                                .font(.body)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(DictionaryValidation.label(entry.strength))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Edit") { editor = DictionaryEditorTarget(original: entry) }
+                                .buttonStyle(.borderless)
+                                .disabled(!appState.canEditDictionary)
+                                .font(.caption)
+                            Button("Delete") { appState.removeDictionaryEntry(entry.key) }
+                                .buttonStyle(.borderless)
+                                .disabled(!appState.canEditDictionary)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+                    }
+                }
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.06), lineWidth: 1))
+            }
+        }
+    }
+
+    private var suggestionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Suggest words when I correct a dictation", isOn: $appState.isCorrectionSuggestionsEnabled)
+            Text(Self.correctionDisclosure)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("A word is suggested only if it fits the recorded audio at that place. Uses the Accessibility permission LocalFlow already has.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var ignoredSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if appState.dictionaryIgnore.isEmpty {
+                Text("Words you choose \"Don't suggest\" for appear here.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(Array(appState.dictionaryIgnore.enumerated()), id: \.offset) { _, key in
+                    HStack {
+                        Text(key.text)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Remove") { appState.unignoreDictionarySuggestion(key) }
+                            .buttonStyle(.borderless)
+                            .disabled(!appState.canEditDictionary)
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct DictionaryEntryEditorView: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    let original: DictionaryEntry?
+
+    @State private var text = ""
+    @State private var strength = DictionaryValidation.defaultStrength
+    @State private var saveError: String?
+
+    private var isBlank: Bool { text.unicodeScalars.allSatisfy(DictionaryText.isWhitespace) }
+
+    private var strengthOptions: [Float] {
+        DictionaryValidation.presets.contains(strength) ? DictionaryValidation.presets
+            : (DictionaryValidation.presets + [strength]).sorted()
+    }
+
+    /// Inline validation (DESIGN §1.1), shown once something is typed.
+    private var validationError: String? {
+        guard !isBlank else { return nil }
+        if case .failure(let error) = DictionaryValidation.validate(text: text, strength: strength,
+                                                                    encoder: AppState.dictionaryEncoder) {
+            return error.message
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(original == nil ? "Add Word" : "Edit Word")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Word or phrase (up to \(DictionaryValidation.maxWords) words)")
+                    .font(.caption.weight(.semibold))
+                TextField("e.g. Kubernetes", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                if let message = saveError ?? validationError {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            Picker("Strength", selection: $strength) {
+                ForEach(strengthOptions, id: \.self) { value in
+                    Text(DictionaryValidation.label(value)).tag(value)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("Raise the strength if the word is still misheard; lower it if it appears where it shouldn't.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Save") {
+                    saveError = appState.saveDictionaryEntry(text: text, strength: strength, replacing: original?.key)
+                    if saveError == nil { dismiss() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isBlank || validationError != nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+        .onAppear {
+            if let original {
+                text = original.text
+                strength = original.strength
+            }
+        }
+        .onChange(of: text) { _ in saveError = nil }
     }
 }

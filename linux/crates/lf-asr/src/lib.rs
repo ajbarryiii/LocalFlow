@@ -2,6 +2,7 @@
 //! 16 kHz mono f32 samples in, text out.
 
 pub mod config;
+pub mod dictionary;
 pub mod encoder;
 pub mod frontend;
 pub mod model;
@@ -10,6 +11,7 @@ pub mod tokenizer;
 use std::time::Instant;
 
 use lf_cpu::ThreadPool;
+pub use lf_cpu::bias::BiasGraph;
 use lf_model::{Error, Result};
 
 pub use encoder::{Precision, Timings};
@@ -74,12 +76,71 @@ impl Transcriber {
         self.positions.bytes()
     }
 
-    /// Transcribes 16 kHz mono samples in [-1, 1].
-    pub fn transcribe(&mut self, samples: &[f32]) -> Result<Transcript> {
+    /// The model's vocabulary, for encoding dictionary entries.
+    pub fn tokenizer(&self) -> &tokenizer::Tokenizer {
+        &self.model.tokenizer
+    }
+
+    /// Transcribes 16 kHz mono samples in [-1, 1], boosting `bias` (an
+    /// immutable dictionary snapshot; `None` or an empty graph decodes
+    /// exactly as without boosting): [`Self::encode_projected`], then
+    /// [`Self::decode_projected`].
+    pub fn transcribe(&mut self, samples: &[f32], bias: Option<&BiasGraph>) -> Result<Transcript> {
+        let mut timings = Timings::default();
+        let projection = self.encode_timed(samples, &mut timings)?;
+        let mut t = self.decode_projected(&projection, bias)?;
+        timings.decoder += t.timings.decoder;
+        t.timings = timings;
+        Ok(t)
+    }
+
+    /// Frontend, encoder and the encoder-side joint projection, so one
+    /// utterance can be decoded several ways.
+    pub fn encode_projected(&mut self, samples: &[f32]) -> Result<Projection> {
+        self.encode_timed(samples, &mut Timings::default())
+    }
+
+    /// Greedy decoding of a [`Projection`] with an optional bias. Only
+    /// `timings.decoder` (the decoding alone) is set.
+    pub fn decode_projected(
+        &self,
+        projection: &Projection,
+        bias: Option<&BiasGraph>,
+    ) -> Result<Transcript> {
+        let decoder = &self.model.decoder;
+        let frames = projection.frames;
+        if projection.data.len() != frames * decoder.joint_padded() {
+            return Err(Error("projection has the wrong length".into()));
+        }
+        if let Some(g) = bias
+            && g.tokens() != config::VOCAB
+        {
+            return Err(Error(format!(
+                "bias graph has {} tokens, expected {}",
+                g.tokens(),
+                config::VOCAB
+            )));
+        }
+        let start = Instant::now();
+        let emitted = decoder.decode(&self.pool, &projection.data, frames, None, bias);
+        let timings = Timings {
+            decoder: start.elapsed(),
+            ..Default::default()
+        };
+        let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
+        let text = self.model.tokenizer.decode(&tokens)?;
+        Ok(Transcript {
+            text,
+            tokens,
+            frames,
+            timings,
+        })
+    }
+
+    fn encode_timed(&mut self, samples: &[f32], timings: &mut Timings) -> Result<Projection> {
         if samples.len() > MAX_SECONDS * config::SAMPLE_RATE {
             return Err(Error(format!("audio longer than {MAX_SECONDS} s")));
         }
-        let mut timings = Timings::default();
         let start = Instant::now();
         let mel_frames =
             frontend::features(&self.model.frontend, &self.pool, samples, &mut self.front)?;
@@ -93,7 +154,7 @@ impl Transcriber {
             mel_frames,
             &mut self.enc,
             &mut self.positions,
-            &mut timings,
+            timings,
         )?;
 
         let start = Instant::now();
@@ -101,21 +162,39 @@ impl Transcriber {
         if enc.iter().any(|v| !v.is_finite()) {
             return Err(Error("encoder produced non-finite output".into()));
         }
-        let projected = self.model.decoder.project_encoder(&self.pool, enc, frames);
-        let emitted = self
-            .model
-            .decoder
-            .decode(&self.pool, &projected, frames, None);
-        timings.decoder = start.elapsed();
+        let data = self.model.decoder.project_encoder(&self.pool, enc, frames);
+        timings.decoder += start.elapsed();
+        Ok(Projection { data, frames })
+    }
+}
 
-        let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
-        let text = self.model.tokenizer.decode(&tokens)?;
-        Ok(Transcript {
-            text,
-            tokens,
-            frames,
-            timings,
-        })
+/// The encoder-side joint projection of one utterance (`frames` rows of the
+/// decoder's padded joint width). Derived from audio, so it is overwritten
+/// with zeros when dropped.
+pub struct Projection {
+    pub data: Vec<f32>,
+    pub frames: usize,
+}
+
+impl Projection {
+    /// Bytes held.
+    pub fn bytes(&self) -> usize {
+        self.data.len() * std::mem::size_of::<f32>()
+    }
+}
+
+impl Drop for Projection {
+    fn drop(&mut self) {
+        for v in self.data.iter_mut() {
+            // SAFETY: `v` is a valid, aligned, exclusive reference.
+            unsafe { std::ptr::write_volatile(v, 0.0) };
+        }
+    }
+}
+
+impl std::fmt::Debug for Projection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Projection({} frames)", self.frames)
     }
 }
 

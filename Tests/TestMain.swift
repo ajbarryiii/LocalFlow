@@ -9,10 +9,12 @@ struct LocalFlowTests {
         LocalDictationTests.run()
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
+        DoubleTapPromptTests.run()
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
         UpdateManagerTests.run()
         DictationStatsTests.run()
+        DictionaryTests.run()
         print("LocalFlowTests passed")
     }
 }

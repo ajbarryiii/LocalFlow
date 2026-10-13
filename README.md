@@ -31,6 +31,10 @@ are not supported by this model bundle yet. The app and model are about
 4. Dictate into any text field. LocalFlow transcribes locally and pastes at
    the cursor, optionally restoring the previous clipboard.
 
+An optional setting, off by default, lets you double-tap Hold to Talk (tap,
+then press and hold again within 0.4 seconds) to dictate in prompt mode;
+while it is on, holds shorter than 0.3 seconds are discarded.
+
 The model prepares in the background at startup and stays in memory for the
 session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
@@ -41,6 +45,16 @@ at boundaries. There is no cloud fallback.
 Voice macros match complete phrases locally and paste predefined text. An
 optional trailing “press enter” command submits after pasting. Neither feature
 uses an LLM. Dictated instructions otherwise remain literal text.
+
+The Dictionary (Settings → Dictionary) helps the recognizer with names and
+technical terms. Entries bias decoding toward their words, each entry has its
+own strength, and entries containing capitals are written exactly as entered.
+An opt-in setting, off by default, notices when you correct a word right after
+a dictation. For up to a minute it reads only the pasted text and a little of
+the text around it, never from password fields. When re-decoding the same
+audio with the corrected word reproduces your correction, LocalFlow offers to
+add the word. That text stays in memory and is discarded afterwards. See
+[docs/word-boosting.md](docs/word-boosting.md) for how this was chosen.
 
 The latest 20 recordings and transcripts are retained locally for playback
 and local retry. Clear or delete them from Run Log. Existing history and

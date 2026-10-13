@@ -18,6 +18,7 @@ use lf_model::rng::SplitMix64;
 use lf_model::{Result, SafeTensors};
 
 use crate::barrier::SpinBarrier;
+use crate::bias::{BiasGraph, BiasState};
 use crate::{SendPtr, ThreadPool, split_range};
 
 /// Maximum emissions on one frame before forcing an advance (NeMo default).
@@ -305,7 +306,8 @@ impl PackedDecoder {
             + self.w_out.bytes()
     }
 
-    fn joint_padded(&self) -> usize {
+    /// Row stride of [`Self::project_encoder`]'s output.
+    pub fn joint_padded(&self) -> usize {
         self.joint.div_ceil(SB) * SB
     }
 
@@ -352,13 +354,18 @@ impl PackedDecoder {
     ///
     /// With a `schedule`, decisions are taken from it instead of the argmax (the
     /// argmax is still computed), so benchmarks can fix the number of tokens and
-    /// joint evaluations. Returns `(token, frame)` emissions.
+    /// joint evaluations. With a non-empty `bias`, each decision adds the
+    /// current bias state's bonuses to the token logits and takes the argmax
+    /// in f64 (first maximum wins); a non-blank emission moves the state.
+    /// Without one (or with an empty graph) decoding is exactly as before
+    /// word boosting existed. Returns `(token, frame)` emissions.
     pub fn decode(
         &self,
         pool: &ThreadPool,
         enc_proj: &[f32],
         frames: usize,
         schedule: Option<&[ScheduledStep]>,
+        bias: Option<&BiasGraph>,
     ) -> Vec<(usize, usize)> {
         assert!(crate::cpu_supported(), "AVX-512 required");
         let n = pool.threads();
@@ -375,12 +382,18 @@ impl PackedDecoder {
                 );
             }
         }
+        // An empty graph adds nothing; skipping it keeps today's exact path.
+        let bias = bias.filter(|g| !g.is_empty());
+        if let Some(g) = bias {
+            assert_eq!(g.tokens(), self.vocab - 1, "bias vocabulary size");
+        }
         let state = DecodeState::new(n, h, jp);
         let barrier = SpinBarrier::new(n);
         let result = Mutex::new(Vec::new());
         pool.run(&|idx| {
-            let emitted =
-                unsafe { self.decode_thread(idx, n, &state, &barrier, enc_proj, frames, schedule) };
+            let emitted = unsafe {
+                self.decode_thread(idx, n, &state, &barrier, enc_proj, frames, schedule, bias)
+            };
             if idx == 0 {
                 *result.lock().unwrap() = emitted;
             }
@@ -398,6 +411,7 @@ impl PackedDecoder {
         enc_proj: &[f32],
         frames: usize,
         schedule: Option<&[ScheduledStep]>,
+        bias: Option<&BiasGraph>,
     ) -> Vec<(usize, usize)> {
         let h = self.hidden;
         let jp = self.joint_padded();
@@ -409,6 +423,15 @@ impl PackedDecoder {
         let mut z = vec![0.0f32; jp];
         let mut parity = 0usize;
         let mut emitted = Vec::new();
+        // Biased decoding only: the state, and this thread's non-blank token
+        // rows with their bonuses.
+        let mut bias_state: BiasState = BiasGraph::ROOT;
+        let bias_rows = if bias.is_some() {
+            (out_sbs.start * SB).min(blank)..(out_sbs.end * SB).min(blank)
+        } else {
+            0..0
+        };
+        let mut bonus = vec![0.0f32; bias_rows.len()];
 
         let step = |token: usize, parity: usize| unsafe {
             let (h0_in, h0_out) = (st.h0[parity].get(), st.h0[1 - parity].get());
@@ -470,6 +493,11 @@ impl PackedDecoder {
             } else if frame >= frames {
                 break;
             }
+            // Every thread takes the same decisions, so each follows the bias
+            // state itself and fills the bonuses of its own token rows.
+            if let Some(g) = bias {
+                g.bonuses(bias_state, bias_rows.start, &mut bonus);
+            }
             // Joint: z = relu(enc_proj[frame] + g); logits for this thread's rows.
             unsafe {
                 x86::relu_add(
@@ -492,6 +520,29 @@ impl PackedDecoder {
                         SB,
                         self.b_out.as_ptr().add(sb * SB),
                     );
+                    if bias.is_some() {
+                        // Biased scores in f64, like the reference, so adding a
+                        // bonus never rounds two logits into a tie.
+                        for (lane, &v) in logits.iter().enumerate() {
+                            let row = sb * SB + lane;
+                            if row < self.vocab {
+                                let b = if row < blank {
+                                    bonus[row - bias_rows.start]
+                                } else {
+                                    0.0
+                                };
+                                let s = f64::from(v) + f64::from(b);
+                                if s > best.tok_score {
+                                    best.tok_score = s;
+                                    best.tok = row as u32;
+                                }
+                            } else if row < out_rows && v > best.dur_val {
+                                best.dur_val = v;
+                                best.dur = (row - self.vocab) as u32;
+                            }
+                        }
+                        continue;
+                    }
                     for (lane, &v) in logits.iter().enumerate() {
                         let row = sb * SB + lane;
                         if row < self.vocab {
@@ -512,7 +563,12 @@ impl PackedDecoder {
             let mut best = Partial::NONE;
             for i in 0..n {
                 let p = unsafe { *st.partial.get().add(i) };
-                if p.tok_val > best.tok_val {
+                if bias.is_some() {
+                    if p.tok_score > best.tok_score {
+                        best.tok_score = p.tok_score;
+                        best.tok = p.tok;
+                    }
+                } else if p.tok_val > best.tok_val {
                     best.tok_val = p.tok_val;
                     best.tok = p.tok;
                 }
@@ -540,6 +596,9 @@ impl PackedDecoder {
                 symbols = if last_frame == frame { symbols + 1 } else { 1 };
                 last_frame = frame;
                 emitted.push((token, frame));
+                if let Some(g) = bias {
+                    bias_state = g.step(bias_state, token).0;
+                }
                 step(token, parity);
                 parity ^= 1;
                 if advance == 0 && symbols >= MAX_SYMBOLS_PER_FRAME {
@@ -587,6 +646,8 @@ pub fn synthetic_schedule(
 #[derive(Clone, Copy)]
 struct Partial {
     tok_val: f32,
+    /// Best biased token score, in place of `tok_val` when decoding with a bias.
+    tok_score: f64,
     tok: u32,
     dur_val: f32,
     dur: u32,
@@ -595,6 +656,7 @@ struct Partial {
 impl Partial {
     const NONE: Partial = Partial {
         tok_val: f32::NEG_INFINITY,
+        tok_score: f64::NEG_INFINITY,
         tok: 0,
         dur_val: f32::NEG_INFINITY,
         dur: 0,
@@ -852,9 +914,11 @@ mod x86 {
 }
 
 /// Scalar f64 reference: encoder projection, prediction network, joint and the
-/// same greedy rules. Returns emissions and the final logits of each decision.
+/// same greedy rules and bias bonuses (added in f64). Returns emissions and
+/// the final logits of each decision, bonuses included.
 pub mod reference {
     use super::{DecoderParams, MAX_SYMBOLS_PER_FRAME};
+    use crate::bias::BiasGraph;
 
     fn sigmoid(x: f64) -> f64 {
         1.0 / (1.0 + (-x).exp())
@@ -912,12 +976,49 @@ pub mod reference {
         pub logits: Vec<f64>,
     }
 
+    /// Adds each non-blank token's bonus at `state` to its score.
+    fn add_bonuses(scores: &mut [f64], g: &BiasGraph, state: crate::bias::BiasState) {
+        for (t, v) in scores.iter_mut().enumerate() {
+            *v += f64::from(g.step(state, t).1);
+        }
+    }
+
+    /// The first maximum of `scores` over `r`.
+    fn argmax(scores: &[f64], r: std::ops::Range<usize>) -> usize {
+        r.clone().fold(
+            r.start,
+            |best, i| if scores[i] > scores[best] { i } else { best },
+        )
+    }
+
+    /// The token decision rule (DESIGN §1.2) for one row of token logits,
+    /// blank last: the first maximum of `f64(logit) + f64(bonus)`, where
+    /// blank gets no bonus. `state` is the bias state before the decision.
+    pub fn token_decision(
+        logits: &[f32],
+        bias: Option<&BiasGraph>,
+        state: crate::bias::BiasState,
+    ) -> usize {
+        let mut scores: Vec<f64> = logits.iter().map(|&v| f64::from(v)).collect();
+        if let Some(g) = bias {
+            let blank = scores.len() - 1;
+            add_bonuses(&mut scores[..blank], g, state);
+        }
+        argmax(&scores, 0..scores.len())
+    }
+
     pub fn decode(
         p: &DecoderParams,
         enc: &[f32],
         frames: usize,
+        bias: Option<&BiasGraph>,
     ) -> (Vec<(usize, usize)>, Vec<Decision>) {
         let blank = p.blank();
+        let bias = bias.filter(|g| !g.is_empty());
+        if let Some(g) = bias {
+            assert_eq!(g.tokens(), blank, "bias vocabulary size");
+        }
+        let mut bias_state = BiasGraph::ROOT;
         let mut s = Lstm {
             h: [vec![0.0; p.hidden], vec![0.0; p.hidden]],
             c: [vec![0.0; p.hidden], vec![0.0; p.hidden]],
@@ -932,15 +1033,12 @@ pub mod reference {
                 .collect();
             let f = matvec(&p.w_enc, p.joint, p.enc_dim, &x, &p.b_enc);
             let z: Vec<f64> = f.iter().zip(&g).map(|(a, b)| (a + b).max(0.0)).collect();
-            let logits = matvec(&p.w_out, p.out_rows(), p.joint, &z, &p.b_out);
-            let argmax = |r: std::ops::Range<usize>| {
-                r.clone().fold(
-                    r.start,
-                    |best, i| if logits[i] > logits[best] { i } else { best },
-                )
-            };
-            let token = argmax(0..p.vocab);
-            let duration = p.durations[argmax(p.vocab..p.out_rows()) - p.vocab];
+            let mut logits = matvec(&p.w_out, p.out_rows(), p.joint, &z, &p.b_out);
+            if let Some(g) = bias {
+                add_bonuses(&mut logits[..blank], g, bias_state);
+            }
+            let token = argmax(&logits, 0..p.vocab);
+            let duration = p.durations[argmax(&logits, p.vocab..p.out_rows()) - p.vocab];
             decisions.push(Decision {
                 frame,
                 token,
@@ -957,6 +1055,9 @@ pub mod reference {
                 last_frame = frame;
                 emitted.push((token, frame));
                 g = lstm_step(p, &mut s, token);
+                if let Some(b) = bias {
+                    bias_state = b.step(bias_state, token).0;
+                }
                 if advance == 0 && symbols >= MAX_SYMBOLS_PER_FRAME {
                     advance = 1;
                 }
@@ -985,7 +1086,7 @@ mod tests {
         let p = DecoderParams::random(33, 32, 40, 48, 11);
         let frames = 40;
         let enc = encoder_frames(frames, p.enc_dim, 12);
-        let (expected, decisions) = reference::decode(&p, &enc, frames);
+        let (expected, decisions) = reference::decode(&p, &enc, frames, None);
         assert!(expected.len() > 3, "synthetic model should emit tokens");
         for storage in [Storage::F32, Storage::F16] {
             let d = PackedDecoder::new(&p, storage);
@@ -1005,7 +1106,7 @@ mod tests {
                         assert!((proj[t * jp + j] as f64 - x).abs() < 1e-5);
                     }
                 }
-                let got = d.decode(&pool, &proj, frames, None);
+                let got = d.decode(&pool, &proj, frames, None, None);
                 assert_eq!(got, expected, "{storage:?}, {threads} threads");
             }
         }
@@ -1024,6 +1125,227 @@ mod tests {
         );
     }
 
+    /// Packed emissions for every storage and a few thread counts, which must agree.
+    fn packed_decode(
+        p: &DecoderParams,
+        enc: &[f32],
+        frames: usize,
+        bias: Option<&BiasGraph>,
+    ) -> Vec<(usize, usize)> {
+        let mut out: Option<Vec<(usize, usize)>> = None;
+        for storage in [Storage::F32, Storage::F16] {
+            let d = PackedDecoder::new(p, storage);
+            for threads in [1, 2, 3] {
+                let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+                let proj = d.project_encoder(&pool, enc, frames);
+                let got = d.decode(&pool, &proj, frames, None, bias);
+                match &out {
+                    Some(o) => assert_eq!(&got, o, "{storage:?}, {threads} threads"),
+                    None => out = Some(got),
+                }
+            }
+        }
+        out.unwrap()
+    }
+
+    fn graph(phrases: &[(&[usize], f32)], tokens: usize) -> BiasGraph {
+        let phrases: Vec<(Vec<usize>, f32)> =
+            phrases.iter().map(|(p, s)| (p.to_vec(), *s)).collect();
+        BiasGraph::new(&phrases, tokens).unwrap()
+    }
+
+    /// Emissions of both decoders before word boosting existed (captured
+    /// from `main`), so a regression shared by the packed and reference
+    /// decoders cannot pass; an empty graph must give them bit for bit. The
+    /// second list is `(token, frame, repeats)`.
+    #[test]
+    fn frozen_synthetic_emissions() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        let first: &[(usize, usize)] = &[
+            (19, 0),
+            (1, 3),
+            (19, 6),
+            (1, 9),
+            (1, 12),
+            (19, 15),
+            (18, 18),
+            (19, 21),
+            (1, 27),
+            (1, 30),
+            (19, 33),
+            (19, 36),
+            (1, 39),
+        ];
+        #[rustfmt::skip]
+        let runs: &[(usize, usize, usize)] = &[
+            (57, 0, 10), (57, 1, 10), (57, 2, 10), (43, 3, 10), (43, 4, 10), (0, 5, 1),
+            (57, 7, 10), (57, 8, 10), (67, 9, 10), (43, 10, 10), (67, 11, 10), (57, 12, 10),
+            (67, 13, 10), (67, 14, 10), (67, 15, 10), (0, 16, 10), (67, 17, 10), (43, 18, 10),
+            (47, 19, 10), (57, 20, 10), (43, 21, 10), (67, 22, 1), (57, 24, 10), (57, 25, 10),
+            (43, 26, 1), (57, 28, 10), (9, 29, 10), (57, 30, 10), (9, 31, 10), (67, 32, 1),
+            (43, 34, 1), (43, 36, 1), (57, 38, 10), (43, 39, 10), (67, 40, 10), (28, 41, 10),
+            (67, 42, 10), (57, 43, 10), (43, 44, 10), (43, 45, 10), (67, 46, 10), (57, 47, 10),
+        ];
+        let second: Vec<(usize, usize)> = runs
+            .iter()
+            .flat_map(|&(t, f, n)| std::iter::repeat_n((t, f), n))
+            .collect();
+        for (vocab, seed, frames, expected) in [(33, 11, 40, first), (71, 21, 48, &second[..])] {
+            let p = DecoderParams::random(vocab, 32, 40, 48, seed);
+            let enc = encoder_frames(frames, p.enc_dim, seed + 1);
+            assert_eq!(reference::decode(&p, &enc, frames, None).0, expected);
+            assert_eq!(packed_decode(&p, &enc, frames, None), expected);
+            let empty = BiasGraph::new(&[], vocab - 1).unwrap();
+            assert_eq!(
+                reference::decode(&p, &enc, frames, Some(&empty)).0,
+                expected
+            );
+            assert_eq!(packed_decode(&p, &enc, frames, Some(&empty)), expected);
+        }
+    }
+
+    /// Synthetic weights whose joint ignores the prediction network: token and
+    /// duration logits are `b_out`, plus encoder dimension 0 of the frame
+    /// (when positive) on the blank row.
+    fn controlled(vocab: usize, b_out: impl Fn(usize) -> f32) -> DecoderParams {
+        let mut p = DecoderParams::random(vocab, 32, 40, 48, 9);
+        p.w_pred.fill(0.0);
+        p.b_pred.fill(0.0);
+        p.w_enc.fill(0.0);
+        p.w_enc[0] = 1.0;
+        p.b_enc.fill(0.0);
+        p.w_out.fill(0.0);
+        p.w_out[(vocab - 1) * p.joint] = 1.0;
+        p.b_out = (0..p.out_rows()).map(b_out).collect();
+        p
+    }
+
+    /// Frames whose encoder dimension 0 is `blank[t]`; the rest are zero.
+    fn blank_frames(p: &DecoderParams, blank: &[f32]) -> Vec<f32> {
+        let mut enc = vec![0.0f32; blank.len() * p.enc_dim];
+        for (t, &b) in blank.iter().enumerate() {
+            enc[t * p.enc_dim] = b;
+        }
+        enc
+    }
+
+    #[test]
+    fn biased_ties_resolve_in_f64() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        // Tokens 0 and 64 (in different superblocks, so different threads with
+        // 2 or more) have raw logits 0 and 2^-16 and the same bonus of about
+        // 1414. In f32 both sums round alike and the first would win;
+        // exactly, 64 wins.
+        let p = controlled(71, |r| if r == 64 { 2f32.powi(-16) } else { 0.0 });
+        let frames = 3;
+        let enc = blank_frames(&p, &[0.0; 3]);
+        let g = graph(&[(&[0], 1000.0), (&[64], 1000.0)], 70);
+        let (b0, b64) = (g.step(BiasGraph::ROOT, 0).1, g.step(BiasGraph::ROOT, 64).1);
+        assert_eq!(b0, b64);
+        assert_eq!(b0 + 2f32.powi(-16), b0, "the tie must exist in f32");
+        let (expected, _) = reference::decode(&p, &enc, frames, Some(&g));
+        assert!(expected.iter().all(|e| e.0 == 64), "{expected:?}");
+        assert_eq!(packed_decode(&p, &enc, frames, Some(&g)), expected);
+    }
+
+    #[test]
+    fn blank_keeps_the_bias_state() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        // Token 3 has raw logit -0.5, token 5 has 0, every other token -10 and
+        // duration 1 wins. The blank logit is 0 on frames 0 and 4 and 5 elsewhere.
+        let (a, b) = (3, 5);
+        let p = controlled(33, |r| match r {
+            3 => -0.5,
+            34 => 1.0,
+            5 | 32.. => 0.0,
+            _ => -10.0,
+        });
+        let frames = 8;
+        let enc = blank_frames(&p, &[0.0, 5.0, 5.0, 5.0, 0.0, 5.0, 5.0, 5.0]);
+        // Unbiased, token 5 wins frames 0 and 4.
+        assert_eq!(
+            reference::decode(&p, &enc, frames, None).0,
+            [(b, 0), (b, 4)]
+        );
+        // With "3 5" boosted, 3 wins at the root (0.914 against 0). After
+        // three blanks, 5 must still continue the phrase (4.35, below the
+        // blank's 5 on frames 1-3); back at the root, 3 would win again.
+        let g = graph(&[(&[a, b], 1.0)], 32);
+        let (expected, _) = reference::decode(&p, &enc, frames, Some(&g));
+        assert_eq!(expected, [(a, 0), (b, 4)]);
+        assert_eq!(packed_decode(&p, &enc, frames, Some(&g)), expected);
+    }
+
+    #[test]
+    fn forced_advance_holds_under_bias() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        // Duration 0 always wins and the bias makes token 7 beat blank on every
+        // decision, so each frame emits MAX_SYMBOLS_PER_FRAME sevens and advances.
+        let p = controlled(33, |r| if r == 33 { 1.0 } else { 0.0 });
+        let frames = 3;
+        let enc = blank_frames(&p, &[0.0; 3]);
+        let expected: Vec<(usize, usize)> = (0..frames)
+            .flat_map(|f| std::iter::repeat_n((7, f), MAX_SYMBOLS_PER_FRAME))
+            .collect();
+        let g = graph(&[(&[7], 100.0)], 32);
+        assert_eq!(reference::decode(&p, &enc, frames, Some(&g)).0, expected);
+        assert_eq!(packed_decode(&p, &enc, frames, Some(&g)), expected);
+    }
+
+    #[test]
+    fn packed_matches_reference_with_bias() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        // 70 tokens put the token rows across two superblocks, so the bonuses
+        // must be split between threads.
+        for (vocab, seed) in [(33, 11), (71, 21)] {
+            let p = DecoderParams::random(vocab, 32, 40, 48, seed);
+            let frames = 48;
+            let enc = encoder_frames(frames, p.enc_dim, seed + 1);
+            let (plain, _) = reference::decode(&p, &enc, frames, None);
+            let toks: Vec<usize> = plain.iter().map(|e| e.0).collect();
+            assert!(toks.len() > 6, "synthetic model should emit tokens");
+            // Phrases that partly match what the model says, overlap and diverge.
+            let phrases = [
+                toks[1..4].to_vec(),
+                vec![toks[1], toks[2], (toks[3] + 1) % (vocab - 1)],
+                toks[4..6].to_vec(),
+                vec![vocab - 2, 0, vocab / 2],
+                vec![5],
+            ];
+            for strengths in [[1.0f32; 5], [0.25, 4.0, 1.41, 2.83, 0.5], [2.0; 5]] {
+                let weighted: Vec<(Vec<usize>, f32)> =
+                    phrases.iter().cloned().zip(strengths).collect();
+                let g = BiasGraph::new(&weighted, vocab - 1).unwrap();
+                let (expected, decisions) = reference::decode(&p, &enc, frames, Some(&g));
+                assert_ne!(expected, plain, "bias should change the output");
+                assert_eq!(
+                    packed_decode(&p, &enc, frames, Some(&g)),
+                    expected,
+                    "vocab {vocab}, strengths {strengths:?}"
+                );
+                let min_gap = decisions
+                    .iter()
+                    .map(|dec| {
+                        let mut v: Vec<f64> = dec.logits[..p.vocab].to_vec();
+                        v.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                        v[0] - v[1]
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!(min_gap > 1e-4, "token logits too close: {min_gap}");
+            }
+        }
+    }
+
     #[test]
     fn schedule_controls_emissions() {
         if !crate::cpu_supported() {
@@ -1035,7 +1357,7 @@ mod tests {
         let frames = 30;
         let proj = d.project_encoder(&pool, &encoder_frames(frames, p.enc_dim, 4), frames);
         let sched = synthetic_schedule(frames, 20, p.vocab, 5);
-        let got = d.decode(&pool, &proj, frames, Some(&sched));
+        let got = d.decode(&pool, &proj, frames, Some(&sched), None);
         let expected: Vec<(usize, usize)> = sched
             .iter()
             .filter_map(|s| s.token.map(|t| (t, s.frame)))

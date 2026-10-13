@@ -88,6 +88,13 @@ struct DictationShortcutEditor: View {
                     }
                 )
                 PromptTagField()
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Double-tap Hold to Talk for prompt mode", isOn: $appState.isDoubleTapPromptEnabled)
+                    Text("Tap Hold to Talk, then press and hold it again within 0.4 s to dictate with the prompt tag.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Text("Custom shortcuts can use regular keys, modifier-only shortcuts, or modifier combinations.")

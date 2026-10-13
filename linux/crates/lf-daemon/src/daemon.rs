@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use lf_io_api::{AudioCapture, MediaPlayers, TextOutput};
 
 use crate::controller::{Controller, Limits};
+use crate::dictionary::{self, Store};
 use crate::history::{self, History};
 use crate::media::MediaJoin;
 use crate::protocol::{Reply, Request};
@@ -37,6 +38,8 @@ pub struct Parts {
     pub settings: worker::Settings,
     pub limits: Limits,
     pub history: history::Setting,
+    /// The custom dictionary (always on; empty until words are added).
+    pub dictionary: dictionary::Setting,
     /// Media players to pause while recording (`pause_media`); `None`
     /// leaves them alone.
     pub media: Option<Box<dyn MediaPlayers>>,
@@ -115,6 +118,7 @@ pub fn start_with(
         history::remove_stale_temporaries(&parts.history.dir);
         None
     };
+    let store = Store::open(&parts.dictionary).map_err(|e| format!("dictionary: {e}"))?;
     let (events_tx, events_rx) = mpsc::channel::<Event>();
     let (jobs_tx, jobs_rx) = mpsc::channel();
 
@@ -137,7 +141,8 @@ pub fn start_with(
     capture.watch_input(Box::new(move || {
         let _ = input_events.send(Event::Input);
     }));
-    let mut controller = Controller::new(capture, Box::new(jobs_tx), parts.limits, history);
+    let mut controller =
+        Controller::new(capture, Box::new(jobs_tx), parts.limits, history).with_dictionary(store);
     let mut media = None;
     if let Some(players) = parts.media {
         match crate::media::spawn(players, lf_media::Timing::default()) {
@@ -268,6 +273,9 @@ fn run(
             Event::Request(req, reply) => {
                 let r = controller.handle_request(req, Instant::now());
                 let _ = reply.send(r);
+                if let Some(e) = controller.take_fatal() {
+                    break Err(e);
+                }
             }
             Event::Watch(new) => watchers.add(new, snapshot(&controller), Instant::now()),
             // Published at the top of the loop.
@@ -282,4 +290,67 @@ fn run(
     };
     controller.shutdown();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictionary::{Setting, Store};
+    use crate::protocol::{Args, Command, ErrorCode};
+    use crate::testing::{FakeCapture, TempDir, synthetic_tokenizer};
+
+    /// A dictionary save that cannot be undone gets `error storage`, then
+    /// the control loop stops with an error (the daemon exits non-zero).
+    #[test]
+    fn an_unrecoverable_dictionary_save_stops_the_daemon() {
+        let dir = TempDir::new("daemon-fatal");
+        let mut store = Store::open(&Setting {
+            dir: dir.path().join("data"),
+            tokenizer: Arc::new(synthetic_tokenizer()),
+        })
+        .unwrap();
+        store.inject_faults(1, true);
+        let (jobs, _job_rx) = mpsc::channel();
+        let controller = Controller::new(
+            Box::new(FakeCapture::default()),
+            Box::new(jobs),
+            Limits {
+                min_recording: Duration::from_millis(300),
+                max_recording: Duration::from_secs(10),
+                double_tap: Duration::ZERO,
+            },
+            None,
+        )
+        .with_dictionary(store);
+        let (events, rx) = mpsc::channel();
+        let (done_tx, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(run(controller, rx, Admission::new(MAX_WATCHERS)));
+        });
+        let (tx, reply) = mpsc::channel();
+        let args = Args {
+            word: Some("Synthetic".into()),
+            ..Args::default()
+        };
+        events
+            .send(Event::Request(
+                Request::with_args(Command::DictAdd, args),
+                tx,
+            ))
+            .unwrap();
+        assert_eq!(
+            reply.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Reply::Error(ErrorCode::Storage)
+        );
+        // The loop stops by itself (`events` is still open).
+        let err = done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the control loop must stop")
+            .unwrap_err();
+        drop(events);
+        assert!(
+            err.contains("dictionary") && !err.contains("Synthetic"),
+            "{err}"
+        );
+    }
 }

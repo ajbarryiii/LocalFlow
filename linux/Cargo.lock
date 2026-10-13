@@ -595,6 +595,7 @@ dependencies = [
 name = "lf-dictation"
 version = "0.1.0"
 dependencies = [
+ "lf-asr",
  "serde_json",
  "unicode-normalization",
  "unicode-properties",

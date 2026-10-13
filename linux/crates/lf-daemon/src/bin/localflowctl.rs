@@ -5,15 +5,23 @@
 //! Waybar JSON, shows "offline" while the daemon is unreachable, and keeps
 //! reconnecting, so the bar never needs a restart.
 //!
+//! `localflowctl correct` teaches the custom dictionary from a correction of
+//! the last dictation, in rofi (see `lf_daemon::rofi`); it never changes the
+//! text already typed. `localflowctl dict …` manages the dictionary. Text
+//! from the daemon is never printed, and reaches rofi only through a pipe
+//! or an inherited descriptor, never its command line.
+//!
 //! Exit codes:
-//! - 0: the daemon accepted the command (stdout: the reply fields), or the
-//!   reader of `watch` output went away;
+//! - 0: the daemon accepted the command (stdout: the reply fields, without
+//!   any text), or the reader of `watch` output went away;
 //! - 1: the daemon answered with an error (stderr: the error code);
 //! - 2: usage error;
 //! - 3: the daemon is not reachable (not running, or no runtime directory),
 //!   or a `watch` connection was lost;
 //! - 4: timed out;
-//! - 5: protocol error (bad reply, or the socket belongs to another user).
+//! - 5: protocol error (bad reply, or the socket belongs to another user);
+//! - 6: the dictionary file cannot be read (`dict list`, `dict ignored`);
+//! - 7: rofi failed (`correct`).
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -23,15 +31,21 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use lf_daemon::paths;
 use lf_daemon::protocol::{
-    ClientReply, Command, MAX_LINE, Request, monotonic_ns, parse_reply, request_line,
+    self, ClientReply, Command, MAX_LINE, MAX_TEXT_LINE, Request, decode_pct, monotonic_ns,
+    parse_dec, parse_reply, printable_fields, reply_field, request_line,
 };
+use lf_daemon::rofi::{self, Answer, Rofi};
 use lf_daemon::server::peer_uid;
 use lf_daemon::waybar::Indicator;
+use lf_daemon::{dictionary, paths};
 
 const USAGE: &str = "usage: localflowctl [--timeout-ms N] <command>
        localflowctl [--timeout-ms N] watch [--waybar]
+       localflowctl [--timeout-ms N] correct
+       localflowctl [--timeout-ms N] dict add <word…> [--strength F]
+       localflowctl [--timeout-ms N] dict remove|unignore <word…>
+       localflowctl dict list|ignored
 
 commands:
   press     start hold-to-talk (key down)
@@ -41,7 +55,13 @@ commands:
   again     type the last dictation again
   status    print the daemon state
   watch     print the state on every change; --waybar prints JSON for a
-            Waybar custom module and reconnects while the daemon is down";
+            Waybar custom module and reconnects while the daemon is down
+  correct   edit the last dictation in rofi (within two minutes of typing
+            it) to teach the dictionary; the text already typed is not
+            changed. A word the audio confirms is offered for adding.
+  dict      add (strength 0.25 to 8, default 1), remove, list the custom
+            dictionary; ignored lists words never suggested, unignore
+            allows one again";
 
 /// Above the microphone start timeout (3 s) plus the reply, so a missing
 /// device is reported as an error rather than a client timeout.
@@ -49,6 +69,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How often `watch --waybar` tries to reach a daemon that is not running.
 const WAYBAR_RETRY: Duration = Duration::from_secs(2);
+
+/// How often, and how long, `correct` polls for the check's result.
+const RESULT_POLL: Duration = Duration::from_millis(200);
+const RESULT_WAIT: Duration = Duration::from_secs(5);
 
 enum Failure {
     Daemon(String),
@@ -58,6 +82,10 @@ enum Failure {
     Protocol(String),
     /// Stdout's reader went away (`watch`); exits quietly with 0.
     Closed,
+    /// The dictionary file could not be read.
+    Dictionary(String),
+    /// rofi failed.
+    Helper(String),
 }
 
 impl Failure {
@@ -69,12 +97,30 @@ impl Failure {
             Failure::Unreachable(_) => 3,
             Failure::Timeout => 4,
             Failure::Protocol(_) => 5,
+            Failure::Dictionary(_) => 6,
+            Failure::Helper(_) => 7,
         }
     }
 }
 
+enum DictAction {
+    Add { word: String, strength: Option<u32> },
+    Remove(String),
+    List,
+    Ignored,
+    Unignore(String),
+}
+
+enum Action {
+    /// A key command or `status`.
+    Send(Command),
+    Watch,
+    Correct,
+    Dict(DictAction),
+}
+
 struct Args {
-    command: Command,
+    action: Action,
     timeout: Duration,
     waybar: bool,
 }
@@ -82,18 +128,20 @@ struct Args {
 fn main() -> ExitCode {
     // First, so the stamp orders this key event against the next one.
     let started = monotonic_ns();
-    let result = parse_args().and_then(|args| match args.command {
-        Command::Watch if args.waybar => {
+    let result = parse_args().and_then(|args| match &args.action {
+        Action::Watch if args.waybar => {
             watch_waybar(&args);
             Ok(None)
         }
-        Command::Watch => watch(&args).map(|()| None),
-        _ => run(started, &args).map(Some),
+        Action::Watch => watch(&args).map(|()| None),
+        Action::Send(command) => run(started, *command, &args).map(|f| Some(printable_fields(&f))),
+        Action::Correct => correct(&args).map(|m| Some(m.into())),
+        Action::Dict(d) => dict(d, &args).map(|m| m.map(String::from)),
     });
     match result {
-        Ok(fields) => {
-            if let Some(fields) = fields {
-                println!("{fields}");
+        Ok(out) => {
+            if let Some(out) = out {
+                println!("{out}");
             }
             ExitCode::SUCCESS
         }
@@ -104,6 +152,8 @@ fn main() -> ExitCode {
                 Failure::Unreachable(m) => eprintln!("localflowctl: {m}"),
                 Failure::Timeout => eprintln!("localflowctl: timed out"),
                 Failure::Protocol(m) => eprintln!("localflowctl: protocol error: {m}"),
+                Failure::Dictionary(m) => eprintln!("localflowctl: dictionary: {m}"),
+                Failure::Helper(m) => eprintln!("localflowctl: {m}"),
                 Failure::Closed => {}
             }
             ExitCode::from(f.code())
@@ -111,10 +161,19 @@ fn main() -> ExitCode {
     }
 }
 
+fn usage(m: &str) -> Failure {
+    Failure::Usage(if m.is_empty() {
+        USAGE.into()
+    } else {
+        format!("{m}\n{USAGE}")
+    })
+}
+
 fn parse_args() -> Result<Args, Failure> {
     let mut timeout = DEFAULT_TIMEOUT;
-    let mut command = None;
     let mut waybar = false;
+    let mut strength = None;
+    let mut words: Vec<String> = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -127,34 +186,71 @@ fn parse_args() -> Result<Args, Failure> {
                     .next()
                     .and_then(|v| v.parse().ok())
                     .filter(|&ms| (1..=600_000).contains(&ms))
-                    .ok_or_else(|| {
-                        Failure::Usage(format!("--timeout-ms needs 1..600000\n{USAGE}"))
-                    })?;
+                    .ok_or_else(|| usage("--timeout-ms needs 1..600000"))?;
                 timeout = Duration::from_millis(ms);
             }
             "--waybar" => waybar = true,
-            _ if command.is_none() => {
-                command =
-                    Some(Command::parse(&arg).ok_or_else(|| {
-                        Failure::Usage(format!("unknown command {arg:?}\n{USAGE}"))
-                    })?);
+            "--strength" => {
+                strength = Some(
+                    it.next()
+                        .as_deref()
+                        .and_then(parse_dec)
+                        .ok_or_else(|| usage("--strength needs a number from 0.25 to 8"))?,
+                );
             }
-            _ => return Err(Failure::Usage(USAGE.into())),
+            _ => words.push(arg),
         }
     }
-    let command = command.ok_or_else(|| Failure::Usage(USAGE.into()))?;
-    if waybar && command != Command::Watch {
-        return Err(Failure::Usage(format!("--waybar needs watch\n{USAGE}")));
+    let mut words = words.into_iter();
+    let first = words.next().ok_or_else(|| usage(""))?;
+    let rest: Vec<String> = words.collect();
+    let word = |rest: &[String]| -> Result<String, Failure> {
+        let w = rest.join(" ");
+        if w.trim().is_empty() {
+            return Err(usage("a word is needed"));
+        }
+        Ok(w)
+    };
+    let action = match first.as_str() {
+        "correct" if rest.is_empty() => Action::Correct,
+        "dict" => {
+            let (sub, rest) = rest
+                .split_first()
+                .ok_or_else(|| usage("dict needs a subcommand"))?;
+            match sub.as_str() {
+                "add" => Action::Dict(DictAction::Add {
+                    word: word(rest)?,
+                    strength: strength.take(),
+                }),
+                "remove" => Action::Dict(DictAction::Remove(word(rest)?)),
+                "unignore" => Action::Dict(DictAction::Unignore(word(rest)?)),
+                "list" if rest.is_empty() => Action::Dict(DictAction::List),
+                "ignored" if rest.is_empty() => Action::Dict(DictAction::Ignored),
+                _ => return Err(usage("unknown dict subcommand")),
+            }
+        }
+        cmd => match Command::parse(cmd).filter(|c| !c.is_text()) {
+            Some(Command::Watch) if rest.is_empty() => Action::Watch,
+            Some(c) if rest.is_empty() => Action::Send(c),
+            Some(_) => return Err(usage("")),
+            None => return Err(usage(&format!("unknown command {cmd:?}"))),
+        },
+    };
+    if waybar && !matches!(action, Action::Watch) {
+        return Err(usage("--waybar needs watch"));
+    }
+    if strength.is_some() {
+        return Err(usage("--strength needs dict add"));
     }
     Ok(Args {
-        command,
+        action,
         timeout,
         waybar,
     })
 }
 
 /// Connects, checks the daemon's uid, and sends `req`.
-fn open(req: Request, deadline: Instant) -> Result<UnixStream, Failure> {
+fn open(req: &Request, deadline: Instant) -> Result<UnixStream, Failure> {
     let path = paths::socket_path_for_client().map_err(Failure::Unreachable)?;
     let mut stream = connect(&path, deadline)?;
     match peer_uid(&stream) {
@@ -175,18 +271,16 @@ fn open(req: Request, deadline: Instant) -> Result<UnixStream, Failure> {
     Ok(stream)
 }
 
-fn run(started: u64, args: &Args) -> Result<String, Failure> {
-    let deadline = Instant::now() + args.timeout;
-    let mut stream = open(
-        Request {
-            command: args.command,
-            at: Some(started),
-        },
-        deadline,
-    )?;
-
+/// Sends `req` and returns the reply's `ok` fields.
+fn exchange(req: &Request, deadline: Instant) -> Result<String, Failure> {
+    let mut stream = open(req, deadline)?;
+    let max = if req.command.is_text() {
+        MAX_TEXT_LINE
+    } else {
+        MAX_LINE
+    };
     let mut buf = Vec::with_capacity(MAX_LINE);
-    let mut chunk = [0u8; MAX_LINE];
+    let mut chunk = [0u8; 4096];
     loop {
         stream
             .set_read_timeout(Some(remaining(deadline)?))
@@ -200,11 +294,11 @@ fn run(started: u64, args: &Args) -> Result<String, Failure> {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if buf.contains(&b'\n') || buf.len() > MAX_LINE {
+        if buf.contains(&b'\n') || buf.len() > max {
             break;
         }
     }
-    let Some(end) = buf.iter().position(|&b| b == b'\n') else {
+    let Some(end) = buf.iter().position(|&b| b == b'\n').filter(|&e| e < max) else {
         return Err(Failure::Protocol(if buf.is_empty() {
             "no reply".into()
         } else {
@@ -218,6 +312,173 @@ fn run(started: u64, args: &Args) -> Result<String, Failure> {
     }
 }
 
+fn run(started: u64, command: Command, args: &Args) -> Result<String, Failure> {
+    let req = Request {
+        command,
+        at: Some(started),
+        args: protocol::Args::default(),
+    };
+    exchange(&req, Instant::now() + args.timeout)
+}
+
+/// One text command with its own deadline.
+fn text_command(command: Command, a: protocol::Args, args: &Args) -> Result<String, Failure> {
+    exchange(
+        &Request::with_args(command, a),
+        Instant::now() + args.timeout,
+    )
+}
+
+fn field<'a>(fields: &'a str, key: &str) -> Result<&'a str, Failure> {
+    reply_field(fields, key).ok_or_else(|| Failure::Protocol(format!("reply without {key}")))
+}
+
+fn text_field(fields: &str, key: &str) -> Result<String, Failure> {
+    decode_pct(field(fields, key)?).ok_or_else(|| Failure::Protocol(format!("bad {key}")))
+}
+
+fn number(fields: &str, key: &str) -> Result<u64, Failure> {
+    field(fields, key)?
+        .parse()
+        .map_err(|_| Failure::Protocol(format!("bad {key}")))
+}
+
+fn helper(e: rofi::Failure) -> Failure {
+    Failure::Helper(e.to_string())
+}
+
+/// `correct`: edit the last dictation in rofi, submit it, and offer a
+/// confirmed word for the dictionary. Returns a message without text.
+fn correct(args: &Args) -> Result<&'static str, Failure> {
+    let begin = text_command(Command::CorrectBegin, Default::default(), args)?;
+    let id = number(&begin, "id")?;
+    let typed = text_field(&begin, "text")?;
+    let rofi = Rofi::system();
+    let edited = match rofi.edit(&typed).map_err(helper)? {
+        Answer::Chose(t) => t,
+        Answer::Dismissed => return Ok("correction cancelled"),
+    };
+    if edited == typed {
+        return Ok("no change");
+    }
+    drop(typed);
+    let submitted = text_command(
+        Command::CorrectSubmit,
+        protocol::Args {
+            id: Some(id),
+            text: Some(edited),
+            ..Default::default()
+        },
+        args,
+    )?;
+    let job = number(&submitted, "job")?;
+    // The whole wait, every exchange and sleep included, ends at `until`.
+    const TOO_LONG: &str = "no suggestion (the check took too long)";
+    let until = Instant::now() + RESULT_WAIT;
+    let result = loop {
+        let deadline = until.min(Instant::now() + args.timeout);
+        let r = match exchange(
+            &Request::with_args(
+                Command::CorrectResult,
+                protocol::Args {
+                    job: Some(job),
+                    ..Default::default()
+                },
+            ),
+            deadline,
+        ) {
+            Ok(r) => r,
+            Err(Failure::Timeout) if Instant::now() >= until => return Ok(TOO_LONG),
+            Err(f) => return Err(f),
+        };
+        match field(&r, "result")? {
+            "pending" => {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(TOO_LONG);
+                }
+                std::thread::sleep(RESULT_POLL.min(left));
+            }
+            "none" => return Ok("no suggestion"),
+            "suggest" => break r,
+            _ => return Err(Failure::Protocol("bad result".into())),
+        }
+    };
+    let word = text_field(&result, "word")?;
+    let strength = parse_dec(field(&result, "strength")?)
+        .ok_or_else(|| Failure::Protocol("bad strength".into()))?;
+    match rofi.suggest(&word).map_err(helper)? {
+        Answer::Chose(rofi::ADD) => {
+            text_command(
+                Command::DictAdd,
+                protocol::Args {
+                    word: Some(word),
+                    strength: Some(strength),
+                    ..Default::default()
+                },
+                args,
+            )?;
+            Ok("added to the dictionary")
+        }
+        Answer::Chose(rofi::DONT_SUGGEST) => {
+            text_command(
+                Command::DictIgnore,
+                protocol::Args {
+                    word: Some(word),
+                    ..Default::default()
+                },
+                args,
+            )?;
+            Ok("will not be suggested again")
+        }
+        _ => Ok("not added"),
+    }
+}
+
+/// `dict …`. `list` and `ignored` print the user's own dictionary (they
+/// read the file directly); the others print a message without text.
+fn dict(action: &DictAction, args: &Args) -> Result<Option<&'static str>, Failure> {
+    let word_args = |word: &str| protocol::Args {
+        word: Some(word.to_owned()),
+        ..Default::default()
+    };
+    match action {
+        DictAction::Add { word, strength } => {
+            let mut a = word_args(word);
+            a.strength = *strength;
+            text_command(Command::DictAdd, a, args)?;
+            Ok(Some("added"))
+        }
+        DictAction::Remove(word) => {
+            text_command(Command::DictRemove, word_args(word), args)?;
+            Ok(Some("removed"))
+        }
+        DictAction::Unignore(word) => {
+            text_command(Command::DictUnignore, word_args(word), args)?;
+            Ok(Some("may be suggested again"))
+        }
+        DictAction::List | DictAction::Ignored => {
+            let path = paths::data_dir()
+                .map_err(Failure::Dictionary)?
+                .join(dictionary::FILE_NAME);
+            // Encodability needs the model's vocabulary, which only the
+            // daemon loads; everything else is checked as the daemon does.
+            let d = dictionary::read(&path, None).map_err(Failure::Dictionary)?;
+            let mut out = std::io::stdout().lock();
+            if matches!(action, DictAction::List) {
+                for e in &d.entries {
+                    let milli = (e.strength * 1000.0).round() as u32;
+                    let _ = writeln!(out, "{}\t{}", e.text, protocol::format_dec(milli));
+                }
+            } else {
+                for k in &d.ignore {
+                    let _ = writeln!(out, "{k}");
+                }
+            }
+            Ok(None)
+        }
+    }
+}
 /// A `watch` connection: the first line arrives within the deadline, later
 /// ones whenever the daemon sends them. Every wait also watches stdout, so
 /// the client exits as soon as its reader goes away, even while nothing
@@ -232,7 +493,7 @@ struct Watch {
 impl Watch {
     fn open(args: &Args) -> Result<Watch, Failure> {
         let deadline = Instant::now() + args.timeout;
-        let stream = open(Request::new(Command::Watch), deadline)?;
+        let stream = open(&Request::new(Command::Watch), deadline)?;
         Ok(Watch {
             stream,
             buf: Vec::with_capacity(2 * MAX_LINE),

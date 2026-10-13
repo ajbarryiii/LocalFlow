@@ -101,19 +101,33 @@ fn taps(w: &[f32]) -> Vec<f32> {
     out
 }
 
+const TOKENIZER_FILE: &str = "tokenizer/tokenizer.vocab";
+
+fn tokenizer(manifest: &lf_model::Manifest, vocab: &[u8]) -> Result<Tokenizer> {
+    Tokenizer::from_vocab_file(
+        vocab,
+        manifest
+            .config
+            .pointer("/joint/vocabulary")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice),
+    )
+}
+
+/// Only the tokenizer of the export in `dir` (verified like [`Model::load`]
+/// does, without reading the weights), for validating dictionary entries
+/// before the model has loaded.
+pub fn load_tokenizer(dir: &std::path::Path) -> Result<Tokenizer> {
+    let (manifest, vocab) = Export::read_one(dir, TOKENIZER_FILE)?;
+    crate::config::validate(&manifest.config)?;
+    tokenizer(&manifest, &vocab)
+}
+
 impl Model {
     pub fn load(export: &Export, decoder_storage: Storage) -> Result<Self> {
         crate::config::validate(&export.manifest.config)?;
         let st = &export.tensors;
-        let tokenizer = Tokenizer::from_vocab_file(
-            &export.read_verified("tokenizer/tokenizer.vocab")?,
-            export
-                .manifest
-                .config
-                .pointer("/joint/vocabulary")
-                .and_then(|v| v.as_array())
-                .map(Vec::as_slice),
-        )?;
+        let tokenizer = tokenizer(&export.manifest, &export.read_verified(TOKENIZER_FILE)?)?;
         let frontend = load_frontend(st)?;
         let sub = load_subsampling(st)?;
         let layers = (0..LAYERS)

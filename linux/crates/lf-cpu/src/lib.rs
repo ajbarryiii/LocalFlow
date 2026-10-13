@@ -5,6 +5,7 @@
 
 pub mod attention;
 pub mod barrier;
+pub mod bias;
 pub mod conv2d;
 pub mod decoder;
 pub mod dense;

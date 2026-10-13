@@ -119,8 +119,9 @@ localflowctl watch --waybar   # the same as Waybar JSON (see below)
 ```
 
 Exit codes: 0 ok, 1 daemon error, 2 usage, 3 daemon not running (or, for
-`watch`, the connection was lost), 4 timeout, 5 protocol error. `watch`
-exits 0 when its reader goes away.
+`watch`, the connection was lost), 4 timeout, 5 protocol error, 6 the
+dictionary file cannot be read (`dict list`/`ignored`), 7 rofi failed
+(`correct`). `watch` exits 0 when its reader goes away.
 
 `watch` lines also carry microphone presence (`mic=present|absent|unknown`,
 from the PipeWire node list) and, about 15 times a second while recording,
@@ -161,6 +162,92 @@ them with `format-icons` keyed by `alt` if you like.
 #custom-localflow.prompt { color: #89b4fa; }
 ```
 
+### Custom dictionary
+
+Words and phrases in the dictionary are boosted while decoding, so names
+and jargon the model tends to miss come out right, and entries with
+capitals keep their exact spelling ("nixos" is typed as "NixOS").
+
+```bash
+localflowctl dict add Kubernetes             # strength 1 (the default)
+localflowctl dict add New York --strength 2  # 0.25 to 8; higher boosts harder
+localflowctl dict remove new york            # case does not matter
+localflowctl dict list                       # one "text<TAB>strength" per line
+localflowctl dict ignored                    # words never suggested
+localflowctl dict unignore kubernetes
+```
+
+An entry has 1 to 8 words, at most 100 characters and at least one
+letter, and the model must be able to spell it (otherwise `error
+invalid-entry`). At most 1000 entries and 1000 ignored words. Adding a word
+that differs only in case replaces the old entry. Strengths in the UI
+presets are 0.5, 1, 1.41, 2, 2.83, 4, 5.66 and 8. Entries that share
+their first tokens share a boost, at the larger strength.
+
+The dictionary is `$XDG_DATA_HOME/localflow/dictionary.json` (directory
+0700, file exactly 0600 and owned by you; anything else, including a
+symlink or an invalid file, stops the daemon with an error that quotes no
+content). The daemon owns it and replaces it atomically on every change;
+a failed write changes nothing (`error storage`). Edit it with
+`localflowctl dict` rather than by hand.
+
+#### Teaching it from a correction
+
+```bash
+localflowctl correct
+```
+
+Bind it to a key (see `packaging/hyprland.conf`). Within two minutes of a
+dictation being typed, it opens rofi with that dictation's text; edit it
+to what you meant and press Return (Escape does nothing). **It never
+changes the text already typed into the other app**: fix that there as
+usual. If the edit replaces a few words with a word or phrase that, when
+the same recording is decoded again with that word boosted, comes out
+exactly where you corrected it, a second rofi asks whether to add it: "Add
+…", "Not now" or "Don't suggest …" (which puts it on the ignored list). A
+change of capitals only ("nixos" to "NixOS") is offered without
+re-decoding, unless only the first letter changed (a sentence start). This
+checks that the word fits the audio, not that it was said; treat it as a
+suggestion. One suggestion per correction; the check takes at most about
+three seconds and stops when you start a new dictation.
+
+Privacy: the dictation's text and its decoded audio features stay in the
+daemon's memory for those two minutes (dropped earlier by a new
+dictation, a cancel or any dictionary change); macros and dictations that
+press Return are never kept. rofi receives the text through an inherited
+file descriptor, never its command line; it runs with your rofi
+configuration and plugins replaced and with history disabled, and its
+error output is discarded. Nothing goes to the notification daemon.
+
+#### Protocol
+
+Control replies used to carry no text at all. The correction and
+dictionary commands below now carry text both ways, percent-encoded, over
+the same private socket (0600, same-user peers only). `watch` lines and
+logs still never carry any text, and `localflowctl` never prints it except
+for `dict list`/`ignored` (your own dictionary).
+
+```text
+correct-begin                          ok <status> id=<n> text=<pct>   | error no-recent, too-long
+correct-submit id=<n> text=<pct>       ok <status> job=<n>             | error stale, too-long, bad-request
+correct-result job=<n>                 ok <status> result=pending|none
+                                       ok <status> result=suggest word=<pct> strength=<dec> kind=replace|casing
+                                                                       | error stale, unknown-job
+dict-add word=<pct> [strength=<dec>]   ok <status>  | error invalid-entry, full, storage
+dict-remove word=<pct>                 ok <status>  | error not-found, storage
+dict-ignore word=<pct>                 ok <status>  | error full, storage
+dict-unignore word=<pct>               ok <status>  | error not-found, storage
+```
+
+`<pct>` is UTF-8 with only `A-Z a-z 0-9 . _ ~ -` literal and every other
+byte as `%XX` (uppercase hex), decoded once; control characters and
+invalid UTF-8 are refused. `<dec>` is `[0-9]{1,2}(.[0-9]{1,3})?` between
+0.25 and 8. Each field appears once; unknown, repeated or missing fields
+are `error bad-request`. These lines may be up to 16 KiB and a decoded
+value up to 4096 bytes; every other request stays within 256 bytes.
+`correct-submit` answers at once; poll `correct-result` (localflowctl
+does, every 200 ms for up to 5 s).
+
 Hyprland binds and a systemd user unit are in `packaging/`. Neither is
 installed automatically.
 
@@ -175,7 +262,12 @@ shell) with fake MPRIS players; it never uses your session bus. Set
 `LF_SKIP_DBUS_TESTS=1` to skip it where `dbus-daemon` is missing.
 
 The dictation rules are pinned by `testdata/dictation-vectors.json`, shared
-with the Swift app. The real-model daemon test is ignored by default; it
+with the Swift app. Word boosting (BPE encoding, entry validation, the
+bias graph and decision rule, casing restoration, correction candidates
+and their audio check) is pinned by `testdata/dictionary-vectors.json`,
+also shared with the Swift app. The rofi tests use fake rofi scripts; one
+also checks that the installed rofi reads the generated configuration back
+(it is skipped when rofi is not on `PATH`). The real-model daemon test is ignored by default; it
 needs the model export and public LibriSpeech data:
 
 ```bash
@@ -247,3 +339,19 @@ First run the backend smoke tests in the "Desktop I/O" section of
     playing, the double tap does not make it stutter; a single quick tap
     resumes it about `double_tap_ms` later. Find the gap that feels right
     and adjust `double_tap_ms` if 400 ms is too short or too long.
+19. Custom dictionary: `localflowctl dict add <a name the model misses>`,
+    then dictate it: it comes out right; `dict add NixOS` and dictate
+    "nixos": typed as `NixOS`. `ls -l ~/.local/share/localflow/dictionary.json`
+    shows `-rw-------`.
+20. `localflowctl correct` (or its bind) right after a dictation that got a
+    word wrong: rofi opens with the dictation's text in the input box (not
+    your rofi theme). Fix the word and press Return: within a few seconds a
+    second rofi offers "Add “…” to your dictionary". Choose Add; `dict list`
+    shows it. The text in the other app is unchanged. While rofi is open,
+    `ps -o args -C rofi` shows no dictated text, and afterwards
+    `~/.cache/rofi*` holds no entry history with it. Escape in either rofi
+    does nothing. "Don't suggest" puts the word in `dict ignored`.
+21. After more than two minutes, or after a new dictation, `correct` says
+    `daemon error: no-recent`. The journal shows only counts
+    ("correction submitted (1 candidates)", "correction checked: …"), never
+    the words.

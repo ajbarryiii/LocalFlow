@@ -101,13 +101,47 @@ pub fn boottime() -> Duration {
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
+use lf_asr::dictionary::DEFAULT_STRENGTH;
+use lf_dictation::correction::correction_candidates;
 use lf_io_api::{AudioCapture, SAMPLE_RATE};
 
+use crate::dictionary::{ChangeError, Snapshot, Store};
 use crate::history::{Entry, History};
 use crate::media::{MediaSink, NoMedia};
-use crate::protocol::{Command, ErrorCode, Note, Reply, Request, State, Status};
+use crate::protocol::{
+    Args, Command, CorrectionResult, ErrorCode, Extra, Note, Reply, Request, State, Status,
+};
 use crate::session::{Action, Event, Mode, SessionController};
-use crate::worker::{Audio, CancelToken, Job, JobKind, Outcome, WorkerEvent};
+use crate::worker::{
+    Audio, CancelToken, Job, JobKind, Outcome, Retained, Suggestion, Verify, WorkerEvent,
+};
+
+/// How long after a dictation is typed it can still be corrected
+/// (`correct-begin` / `correct-submit`); then its session is discarded.
+pub const CORRECTION_WINDOW: Duration = Duration::from_secs(120);
+
+/// The last typed dictation, kept for `localflowctl correct` (DESIGN
+/// §2.4). In memory only; it never reaches logs, `watch`, history or
+/// `Debug` output.
+struct CorrectionSession {
+    id: u64,
+    created: Instant,
+    retained: Arc<Retained>,
+}
+
+/// The current correction check (`correct-submit` / `correct-result`).
+struct Check {
+    job: u64,
+    cancel: Arc<CancelToken>,
+    state: CheckState,
+}
+
+enum CheckState {
+    Pending,
+    Done(Option<Suggestion>),
+    /// Its session was discarded.
+    Stale,
+}
 
 /// Where the controller sends recognition jobs.
 pub trait JobSink: Send {
@@ -189,6 +223,15 @@ pub struct Controller {
     /// Receive time for double-tap timing; `CLOCK_BOOTTIME`, so suspend
     /// counts (tests inject their own).
     boot: Box<dyn Fn() -> Duration + Send>,
+    /// The custom dictionary; without one, dictionary commands are
+    /// unavailable and dictation boosts nothing.
+    dictionary: Option<Store>,
+    empty_dictionary: Arc<Snapshot>,
+    correction: Option<CorrectionSession>,
+    next_session: u64,
+    check: Option<Check>,
+    /// Set when the daemon cannot go on (see [`Controller::take_fatal`]).
+    fatal: Option<String>,
 }
 
 /// A hold too short to dictate; a quick second press makes a prompt.
@@ -260,6 +303,199 @@ impl Controller {
             start_prompt: false,
             clock: clock_anchor(100, sample_clocks),
             boot: Box::new(boottime),
+            dictionary: None,
+            empty_dictionary: Arc::default(),
+            correction: None,
+            next_session: 1,
+            check: None,
+            fatal: None,
+        }
+    }
+
+    /// Why the daemon must stop, once a request has made it impossible to
+    /// go on (a dictionary save that could not be undone). The control loop
+    /// sends the request's reply, then stops with this error, so the daemon
+    /// exits non-zero and reloads the dictionary when restarted. The text
+    /// carries no content.
+    pub fn take_fatal(&mut self) -> Option<String> {
+        self.fatal.take()
+    }
+
+    /// Uses `store` for dictation and the dictionary commands.
+    pub fn with_dictionary(mut self, store: Store) -> Controller {
+        self.dictionary = Some(store);
+        self
+    }
+
+    fn dictionary_snapshot(&self) -> Arc<Snapshot> {
+        self.dictionary
+            .as_ref()
+            .map_or_else(|| Arc::clone(&self.empty_dictionary), Store::snapshot)
+    }
+
+    /// Drops the correction session and stops (or makes stale) its check:
+    /// on a new recording, any cancel, a dictionary change and expiry.
+    fn discard_correction(&mut self) {
+        if self.correction.take().is_some() {
+            crate::debug!("correction session discarded");
+        }
+        if let Some(c) = &mut self.check
+            && !matches!(c.state, CheckState::Stale)
+        {
+            // The verification job holds no output lock, so this never waits.
+            c.cancel.cancel();
+            c.state = CheckState::Stale;
+        }
+    }
+
+    fn expire_correction(&mut self, now: Instant) {
+        if self
+            .correction
+            .as_ref()
+            .is_some_and(|s| now.saturating_duration_since(s.created) >= CORRECTION_WINDOW)
+        {
+            crate::debug!("correction window ended");
+            self.discard_correction();
+        }
+    }
+
+    /// The text commands (see `crate::protocol`). They never touch a
+    /// recording or a pending double tap.
+    fn text_command(&mut self, command: Command, args: Args, now: Instant) -> Reply {
+        self.expire_correction(now);
+        let result = match command {
+            Command::CorrectBegin => match &self.correction {
+                Some(s) => Ok(Some(Extra::Correction {
+                    id: s.id,
+                    text: s.retained.output.clone(),
+                })),
+                None => Err(ErrorCode::NoRecent),
+            },
+            Command::CorrectSubmit => self.submit_correction(args).map(Some),
+            Command::CorrectResult => self.correction_result(args).map(Some),
+            Command::DictAdd
+            | Command::DictRemove
+            | Command::DictIgnore
+            | Command::DictUnignore => self.change_dictionary(command, args).map(|()| None),
+            _ => Err(ErrorCode::UnknownCommand),
+        };
+        match result {
+            Ok(Some(extra)) => Reply::With(self.status(), extra),
+            Ok(None) => self.ok(None),
+            Err(code) => Reply::Error(code),
+        }
+    }
+
+    /// Computes the correction's candidates (DESIGN §1.5) and queues their
+    /// check; the reply never waits for it.
+    fn submit_correction(&mut self, args: Args) -> Result<Extra, ErrorCode> {
+        let (Some(id), Some(text)) = (args.id, args.text) else {
+            return Err(ErrorCode::BadRequest);
+        };
+        let retained = match &self.correction {
+            Some(s) if s.id == id => Arc::clone(&s.retained),
+            _ => return Err(ErrorCode::Stale),
+        };
+        if text.len() > crate::worker::MAX_SESSION_BYTES {
+            return Err(ErrorCode::TooLong);
+        }
+        let Some(store) = &self.dictionary else {
+            return Err(ErrorCode::Unavailable);
+        };
+        let snap = store.snapshot();
+        // All of them: the worker drops the ones it cannot attempt before
+        // taking at most three (DESIGN P8).
+        let candidates = correction_candidates(
+            &retained.output,
+            &text,
+            &snap.dictionary.entries,
+            &snap.dictionary.ignore,
+            store.tokenizer(),
+        );
+        drop(text);
+        if let Some(c) = &self.check
+            && matches!(c.state, CheckState::Pending)
+        {
+            c.cancel.cancel();
+        }
+        let job = self.next_id;
+        self.next_id += 1;
+        let cancel = Arc::new(CancelToken::default());
+        crate::info!("correction submitted ({} candidates)", candidates.len());
+        let state = if candidates.is_empty() {
+            CheckState::Done(None)
+        } else {
+            self.jobs.submit(Job {
+                id: job,
+                cancel: Arc::clone(&cancel),
+                kind: JobKind::Verify(Verify {
+                    session: retained,
+                    candidates,
+                }),
+            });
+            CheckState::Pending
+        };
+        self.check = Some(Check { job, cancel, state });
+        Ok(Extra::Job(job))
+    }
+
+    fn correction_result(&self, args: Args) -> Result<Extra, ErrorCode> {
+        let job = args.job.ok_or(ErrorCode::BadRequest)?;
+        let Some(c) = self.check.as_ref().filter(|c| c.job == job) else {
+            return Err(ErrorCode::UnknownJob);
+        };
+        Ok(Extra::Result(match &c.state {
+            CheckState::Pending => CorrectionResult::Pending,
+            CheckState::Done(None) => CorrectionResult::None,
+            CheckState::Done(Some(s)) => CorrectionResult::Suggest {
+                word: s.word.clone(),
+                strength: s.strength,
+                casing: s.casing,
+            },
+            CheckState::Stale => return Err(ErrorCode::Stale),
+        }))
+    }
+
+    fn change_dictionary(&mut self, command: Command, args: Args) -> Result<(), ErrorCode> {
+        let Some(store) = &mut self.dictionary else {
+            return Err(ErrorCode::Unavailable);
+        };
+        let word = args.word.ok_or(ErrorCode::BadRequest)?;
+        let before = store.snapshot().revision;
+        let changed = match command {
+            Command::DictAdd => store.add(
+                &word,
+                args.strength
+                    .map_or(DEFAULT_STRENGTH, |milli| milli as f32 / 1000.0),
+            ),
+            Command::DictRemove => store.remove(&word),
+            Command::DictIgnore => store.ignore(&word),
+            _ => store.unignore(&word),
+        };
+        // Any published change (also one recovered from disk after a failed
+        // save) makes the session's frozen dictionary out of date.
+        if store.snapshot().revision != before {
+            self.discard_correction();
+        }
+        match changed {
+            Ok(()) => {
+                crate::info!("dictionary changed ({})", command.name());
+                Ok(())
+            }
+            Err(ChangeError::InvalidEntry(e)) => {
+                crate::info!("dictionary entry refused: {}", e.name());
+                Err(ErrorCode::InvalidEntry)
+            }
+            Err(ChangeError::Full) => Err(ErrorCode::Full),
+            Err(ChangeError::NotFound) => Err(ErrorCode::NotFound),
+            Err(ChangeError::BadWord) => Err(ErrorCode::BadRequest),
+            Err(ChangeError::Storage) => Err(ErrorCode::Storage),
+            Err(ChangeError::Unrecoverable) => {
+                self.fatal = Some(
+                    "the dictionary could not be saved or restored; restart to reload it".into(),
+                );
+                Err(ErrorCode::Storage)
+            }
         }
     }
 
@@ -407,6 +643,9 @@ impl Controller {
     }
 
     pub fn handle_request(&mut self, req: Request, now: Instant) -> Reply {
+        if req.command.is_text() {
+            return self.text_command(req.command, req.args, now);
+        }
         // Stamps from the future are dropped here, once: nothing below can
         // store one.
         let at = self.ordering_stamp(req.at, now);
@@ -420,6 +659,14 @@ impl Controller {
             // The socket hands `watch` connections to the control loop's
             // watcher list; one that reaches here only reads the status.
             Command::Status | Command::Watch => Ok(None),
+            // Handled above.
+            Command::CorrectBegin
+            | Command::CorrectSubmit
+            | Command::CorrectResult
+            | Command::DictAdd
+            | Command::DictRemove
+            | Command::DictIgnore
+            | Command::DictUnignore => Ok(None),
             Command::Press => {
                 let overtaken = match (self.orphan_release_at, at) {
                     (Some(release), Some(press)) => press <= release,
@@ -547,6 +794,9 @@ impl Controller {
             self.session.reset();
             return Err(ErrorCode::Capture);
         }
+        // A new dictation ends the last one's correction session and stops
+        // any check of it between two decodes.
+        self.discard_correction();
         // Only a message to the media thread: players pause while the
         // device starts (a Bluetooth headset switches profile meanwhile).
         self.pause_media();
@@ -626,10 +876,15 @@ impl Controller {
         let id = self.next_id;
         self.next_id += 1;
         let cancel = Arc::new(CancelToken::default());
+        let dictionary = self.dictionary_snapshot();
         self.jobs.submit(Job {
             id,
             cancel: Arc::clone(&cancel),
-            kind: JobKind::Transcribe { audio, prompt },
+            kind: JobKind::Transcribe {
+                audio,
+                prompt,
+                dictionary,
+            },
         });
         self.phase = Phase::Busy {
             id,
@@ -644,6 +899,7 @@ impl Controller {
     }
 
     fn cancel(&mut self) -> Option<Note> {
+        self.discard_correction();
         self.session.reset();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => Some(Note::Ignored),
@@ -716,6 +972,23 @@ impl Controller {
                 self.finish(outcome, prompt);
                 Ok(())
             }
+            WorkerEvent::Verified(job, found) => {
+                if let Some(c) = &mut self.check
+                    && c.job == job
+                    && matches!(c.state, CheckState::Pending)
+                {
+                    crate::info!(
+                        "correction checked: {}",
+                        if found.is_some() {
+                            "a suggestion"
+                        } else {
+                            "nothing to suggest"
+                        }
+                    );
+                    c.state = CheckState::Done(found);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -726,7 +999,29 @@ impl Controller {
                 text,
                 pressed_enter,
                 retype,
+                retained,
             } => {
+                // A dictionary change after this job was submitted leaves its
+                // snapshot out of date: such a dictation is not kept, as a
+                // change ends any session (DESIGN §2.4).
+                let current = self.dictionary_snapshot().revision;
+                let retained = retained.filter(|r| {
+                    let fresh = r.dictionary.revision == current;
+                    if !fresh {
+                        crate::debug!("dictionary changed during the dictation; not kept");
+                    }
+                    fresh
+                });
+                if let Some(r) = retained {
+                    // Replaces the previous dictation's session.
+                    self.discard_correction();
+                    self.correction = Some(CorrectionSession {
+                        id: self.next_session,
+                        created: Instant::now(),
+                        retained: Arc::from(r),
+                    });
+                    self.next_session += 1;
+                }
                 crate::info!(
                     "{}{}{}",
                     if retype {
@@ -771,10 +1066,14 @@ impl Controller {
             Phase::Recording { since, .. } => Some(since + self.limits.max_recording),
             _ => None,
         };
-        match (max, self.media_resume_at) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let correction = self
+            .correction
+            .as_ref()
+            .map(|s| s.created + CORRECTION_WINDOW);
+        [max, self.media_resume_at, correction]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Stops a recording that reached the maximum length, and resumes media
@@ -792,6 +1091,8 @@ impl Controller {
         if self.media_resume_at.is_some_and(|t| now >= t) {
             self.resume_media();
         }
+        // Enforced by this timer, not only when the session is next used.
+        self.expire_correction(now);
         // An expired tap goes (a press would find it expired anyway).
         if let Some(t) = self.tap
             && (self.boot)().saturating_sub(t.received) > self.limits.double_tap
@@ -894,6 +1195,7 @@ mod tests {
         fn note(&mut self, cmd: Command) -> Option<Note> {
             match self.cmd(cmd) {
                 Reply::Ok(_, note) => note,
+                Reply::With(..) => panic!("{cmd:?}: unexpected fields"),
                 Reply::Error(e) => panic!("{cmd:?}: error {e:?}"),
             }
         }
@@ -904,6 +1206,7 @@ mod tests {
                 text: text.into(),
                 pressed_enter: false,
                 retype: false,
+                retained: None,
             }
         }
     }
@@ -919,7 +1222,7 @@ mod tests {
         let jobs = r.jobs.take();
         assert_eq!(jobs.len(), 1);
         assert!(
-            matches!(&jobs[0].kind, JobKind::Transcribe { audio: s, prompt: false } if s.len() == SECOND)
+            matches!(&jobs[0].kind, JobKind::Transcribe { audio: s, prompt: false, .. } if s.len() == SECOND)
         );
         r.c.handle_worker(WorkerEvent::Typing(jobs[0].id)).unwrap();
         assert_eq!(r.state(), State::Typing);
@@ -1078,10 +1381,12 @@ mod tests {
             Request {
                 command,
                 at: Some(at),
+                args: Default::default(),
             },
             r.t,
         ) {
             Reply::Ok(_, note) => note,
+            Reply::With(..) => panic!("{command:?}: unexpected fields"),
             Reply::Error(e) => panic!("{command:?}: {e:?}"),
         }
     }
@@ -1149,7 +1454,7 @@ mod tests {
         assert_eq!(r.c.session.active_mode(), None);
         let job = r.jobs.take().pop().unwrap();
         assert!(
-            matches!(&job.kind, JobKind::Transcribe { audio: s, prompt: false } if s.len() == SECOND * 10)
+            matches!(&job.kind, JobKind::Transcribe { audio: s, prompt: false, .. } if s.len() == SECOND * 10)
         );
         // The toggle that would have stopped it now does nothing.
         assert_eq!(r.note(Command::Toggle), Some(Note::Ignored));
@@ -1202,6 +1507,7 @@ mod tests {
                 text: "synthetic again".into(),
                 pressed_enter: false,
                 retype: true,
+                retained: None,
             },
         ))
         .unwrap();
@@ -1385,7 +1691,14 @@ mod tests {
             recv_ms + r.suspended_ms,
             std::sync::atomic::Ordering::SeqCst,
         );
-        r.c.handle_request(Request { command, at }, r.t)
+        r.c.handle_request(
+            Request {
+                command,
+                at,
+                args: Default::default(),
+            },
+            r.t,
+        )
     }
 
     fn short(r: &Rig) {
@@ -1415,6 +1728,7 @@ mod tests {
     fn note_of(reply: Reply) -> Option<Note> {
         match reply {
             Reply::Ok(_, note) => note,
+            Reply::With(..) => panic!("unexpected fields"),
             Reply::Error(e) => panic!("error {e:?}"),
         }
     }
@@ -1425,7 +1739,7 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         match &jobs[0].kind {
             JobKind::Transcribe { prompt, .. } => *prompt,
-            JobKind::Retype(_) => panic!("not a transcription"),
+            _ => panic!("not a transcription"),
         }
     }
 
@@ -2093,6 +2407,7 @@ mod tests {
                 text: String::new(),
                 pressed_enter: true,
                 retype: false,
+                retained: None,
             },
             r.typed("second synthetic"),
         ] {
@@ -2108,5 +2423,386 @@ mod tests {
             .map(|e| e.text.clone())
             .collect();
         assert_eq!(texts, ["first synthetic", "second synthetic"]);
+    }
+
+    /// The correction session and the dictionary commands (DESIGN §2.4-§2.5).
+    mod correction {
+        use super::*;
+        use crate::dictionary::Setting;
+        use crate::protocol::{CorrectionResult, Extra};
+        use crate::testing::synthetic_tokenizer;
+        use crate::worker::{Retained, Suggestion};
+        use lf_asr::Projection;
+
+        const TYPED: &str = "we deployed it on cooper netties yesterday";
+        const EDITED: &str = "we deployed it on Kubernetes yesterday";
+
+        /// A rig with a dictionary in `dir`.
+        fn dict_rig(dir: &TempDir) -> Rig {
+            let mut r = rig();
+            let store = Store::open(&Setting {
+                dir: dir.path().join("data"),
+                tokenizer: Arc::new(synthetic_tokenizer()),
+            })
+            .unwrap();
+            r.c.dictionary = Some(store);
+            r
+        }
+
+        fn send(r: &mut Rig, command: Command, f: impl FnOnce(&mut Args)) -> Reply {
+            r.t += Duration::from_millis(10);
+            let mut args = Args::default();
+            f(&mut args);
+            r.c.handle_request(Request::with_args(command, args), r.t)
+        }
+
+        /// What the worker keeps of a job transcribed with `dictionary`.
+        fn retained(output: &str, dictionary: Arc<Snapshot>) -> Box<Retained> {
+            Box::new(Retained {
+                raw: output.into(),
+                output: output.into(),
+                projection: Projection {
+                    data: vec![],
+                    frames: 0,
+                },
+                dictionary,
+            })
+        }
+
+        /// Starts and stops a dictation: its queued job.
+        fn record(r: &mut Rig) -> Job {
+            r.note(Command::Toggle);
+            r.note(Command::Toggle);
+            r.jobs.take().pop().unwrap()
+        }
+
+        /// Finishes `job` as typed `output`; the worker keeps it if `keep`.
+        fn finish(r: &mut Rig, job: Job, output: &str, keep: bool) {
+            let JobKind::Transcribe { dictionary, .. } = job.kind else {
+                panic!("not a transcription");
+            };
+            r.c.handle_worker(WorkerEvent::Done(
+                job.id,
+                Outcome::Typed {
+                    raw: output.into(),
+                    text: output.into(),
+                    pressed_enter: false,
+                    retype: false,
+                    retained: keep.then(|| retained(output, dictionary)),
+                },
+            ))
+            .unwrap();
+            assert_eq!(r.state(), State::Idle);
+        }
+
+        /// Dictates `output` to completion; the worker keeps it if `keep`.
+        fn dictate(r: &mut Rig, output: &str, keep: bool) {
+            let job = record(r);
+            finish(r, job, output, keep);
+        }
+
+        #[test]
+        fn a_dictation_transcribed_with_an_old_dictionary_is_not_kept() {
+            let dir = TempDir::new("corr-late");
+            let mut r = dict_rig(&dir);
+            // An earlier session, ended by the change below.
+            dictate(&mut r, "earlier synthetic", true);
+            let job = record(&mut r);
+            // The dictionary changes while the job runs.
+            dict(&mut r, Command::DictAdd, "Synthetic").unwrap();
+            finish(&mut r, job, TYPED, true);
+            assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent));
+            // The next dictation, with the current dictionary, is kept.
+            dictate(&mut r, TYPED, true);
+            assert_eq!(begin(&mut r).unwrap().1, TYPED);
+            // A failed save changes nothing, so a session survives it.
+            let data = dir.path().join("data");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let job = record(&mut r);
+            assert_eq!(
+                dict(&mut r, Command::DictAdd, "Other"),
+                Err(ErrorCode::Storage)
+            );
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+            finish(&mut r, job, "kept synthetic", true);
+            assert_eq!(begin(&mut r).unwrap().1, "kept synthetic");
+        }
+
+        /// `correct-begin`: the session id and text.
+        fn begin(r: &mut Rig) -> Result<(u64, String), ErrorCode> {
+            match send(r, Command::CorrectBegin, |_| {}) {
+                Reply::With(_, Extra::Correction { id, text }) => Ok((id, text)),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn submit(r: &mut Rig, id: u64, text: &str) -> Result<u64, ErrorCode> {
+            match send(r, Command::CorrectSubmit, |a| {
+                a.id = Some(id);
+                a.text = Some(text.into());
+            }) {
+                Reply::With(_, Extra::Job(job)) => Ok(job),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn result(r: &mut Rig, job: u64) -> Result<CorrectionResult, ErrorCode> {
+            match send(r, Command::CorrectResult, |a| a.job = Some(job)) {
+                Reply::With(_, Extra::Result(res)) => Ok(res),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn dict(r: &mut Rig, command: Command, word: &str) -> Result<(), ErrorCode> {
+            match send(r, command, |a| a.word = Some(word.into())) {
+                Reply::Ok(_, None) => Ok(()),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// The queued verification job, if any.
+        fn verify_job(r: &Rig) -> Option<Job> {
+            let mut jobs = r.jobs.take();
+            assert!(jobs.len() <= 1);
+            jobs.pop().filter(|j| matches!(j.kind, JobKind::Verify(_)))
+        }
+
+        #[test]
+        fn a_typed_dictation_can_be_corrected_and_checked() {
+            let dir = TempDir::new("corr-flow");
+            let mut r = dict_rig(&dir);
+            assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent));
+            dictate(&mut r, TYPED, true);
+            let (id, text) = begin(&mut r).unwrap();
+            assert_eq!(text, TYPED);
+            // The reply carries the usual status.
+            assert!(matches!(
+                send(&mut r, Command::CorrectBegin, |_| {}),
+                Reply::With(s, _) if s.state == State::Idle && s.model_ready
+            ));
+
+            assert_eq!(submit(&mut r, id + 1, EDITED), Err(ErrorCode::Stale));
+            let job = submit(&mut r, id, EDITED).unwrap();
+            let queued = verify_job(&r).expect("a verification job");
+            assert_eq!(queued.id, job);
+            let JobKind::Verify(v) = &queued.kind else {
+                unreachable!()
+            };
+            assert_eq!(v.candidates.len(), 1);
+            assert_eq!(v.candidates[0].surface, "Kubernetes");
+            assert_eq!(v.session.output, TYPED);
+            // The reply came at once; the check is pending.
+            assert!(result(&mut r, job).unwrap() == CorrectionResult::Pending);
+            assert_eq!(result(&mut r, job + 7), Err(ErrorCode::UnknownJob));
+            // A result for another job is ignored.
+            r.c.handle_worker(WorkerEvent::Verified(job + 7, None))
+                .unwrap();
+            assert!(result(&mut r, job).unwrap() == CorrectionResult::Pending);
+            r.c.handle_worker(WorkerEvent::Verified(
+                job,
+                Some(Suggestion {
+                    word: "Kubernetes".into(),
+                    strength: 1410,
+                    casing: false,
+                }),
+            ))
+            .unwrap();
+            assert!(
+                result(&mut r, job).unwrap()
+                    == CorrectionResult::Suggest {
+                        word: "Kubernetes".into(),
+                        strength: 1410,
+                        casing: false
+                    }
+            );
+            // Adding the word changes the dictionary: the session ends.
+            assert_eq!(
+                send(&mut r, Command::DictAdd, |a| {
+                    a.word = Some("Kubernetes".into());
+                    a.strength = Some(1410);
+                }),
+                r.c.ok(None)
+            );
+            assert_eq!(result(&mut r, job), Err(ErrorCode::Stale));
+            assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent));
+            let snap = r.c.dictionary_snapshot();
+            assert_eq!(snap.dictionary.entries.len(), 1);
+            assert_eq!(snap.dictionary.entries[0].strength, 1.41);
+        }
+
+        #[test]
+        fn nothing_to_check_is_none_at_once() {
+            let dir = TempDir::new("corr-none");
+            let mut r = dict_rig(&dir);
+            dictate(&mut r, TYPED, true);
+            let (id, _) = begin(&mut r).unwrap();
+            for edit in [TYPED, "", "something else entirely different here"] {
+                let job = submit(&mut r, id, edit).unwrap();
+                assert!(verify_job(&r).is_none());
+                assert!(result(&mut r, job).unwrap() == CorrectionResult::None);
+            }
+            // A dictation that was not kept (a macro, Return) is not offered,
+            // and its start ended the previous session.
+            dictate(&mut r, "synthetic macro payload", false);
+            assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent));
+        }
+
+        #[test]
+        fn a_new_submission_cancels_the_previous_check() {
+            let dir = TempDir::new("corr-resubmit");
+            let mut r = dict_rig(&dir);
+            dictate(&mut r, TYPED, true);
+            let (id, _) = begin(&mut r).unwrap();
+            submit(&mut r, id, EDITED).unwrap();
+            let first = verify_job(&r).unwrap();
+            let second = submit(&mut r, id, EDITED).unwrap();
+            assert!(first.cancel.is_cancelled());
+            assert_eq!(result(&mut r, first.id), Err(ErrorCode::UnknownJob));
+            assert!(result(&mut r, second).unwrap() == CorrectionResult::Pending);
+        }
+
+        #[test]
+        fn the_session_ends_on_expiry_recording_cancel_and_dictionary_changes() {
+            let dir = TempDir::new("corr-end");
+            type End = fn(&mut Rig);
+            let ends: [(&str, End); 6] = [
+                ("expiry", |r| {
+                    let due = r.c.next_deadline().unwrap();
+                    assert!(due <= Instant::now() + CORRECTION_WINDOW);
+                    r.c.tick(due);
+                }),
+                ("recording", |r| assert_eq!(r.note(Command::Press), None)),
+                ("cancel", |r| {
+                    assert_eq!(r.note(Command::Cancel), Some(Note::Ignored))
+                }),
+                ("add", |r| dict(r, Command::DictAdd, "Synthetic").unwrap()),
+                ("ignore", |r| dict(r, Command::DictIgnore, "Other").unwrap()),
+                ("new dictation", |r| dictate(r, "second synthetic", true)),
+            ];
+            for (what, end) in ends {
+                let mut r = dict_rig(&dir);
+                dictate(&mut r, TYPED, true);
+                let (id, _) = begin(&mut r).unwrap();
+                let job = submit(&mut r, id, EDITED).unwrap();
+                let check = verify_job(&r).unwrap();
+                end(&mut r);
+                assert!(check.cancel.is_cancelled(), "{what}");
+                assert_eq!(result(&mut r, job), Err(ErrorCode::Stale), "{what}");
+                assert_eq!(submit(&mut r, id, EDITED), Err(ErrorCode::Stale), "{what}");
+                // A late answer from the cancelled check changes nothing.
+                r.c.handle_worker(WorkerEvent::Verified(job, None)).unwrap();
+                assert_eq!(result(&mut r, job), Err(ErrorCode::Stale), "{what}");
+                if what == "new dictation" {
+                    assert_eq!(begin(&mut r).unwrap().1, "second synthetic");
+                } else {
+                    assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent), "{what}");
+                }
+            }
+        }
+
+        #[test]
+        fn expiry_is_enforced_by_the_timer() {
+            let dir = TempDir::new("corr-timer");
+            let mut r = dict_rig(&dir);
+            assert_eq!(r.c.next_deadline(), None);
+            let before = Instant::now();
+            dictate(&mut r, TYPED, true);
+            let due = r.c.next_deadline().expect("expiry is scheduled");
+            assert!(due >= before + CORRECTION_WINDOW && due <= Instant::now() + CORRECTION_WINDOW);
+            r.c.tick(due - Duration::from_millis(1));
+            assert!(r.c.correction.is_some());
+            r.c.tick(due);
+            // Dropped by the timer itself, with no request needed.
+            assert!(r.c.correction.is_none());
+            assert_eq!(r.c.next_deadline(), None);
+        }
+
+        #[test]
+        fn transcriptions_get_the_current_dictionary() {
+            let dir = TempDir::new("corr-snap");
+            let mut r = dict_rig(&dir);
+            let snap = |r: &mut Rig| {
+                r.note(Command::Toggle);
+                r.note(Command::Toggle);
+                let job = r.jobs.take().pop().unwrap();
+                r.c.handle_worker(WorkerEvent::Done(job.id, Outcome::Nothing))
+                    .unwrap();
+                match job.kind {
+                    JobKind::Transcribe { dictionary, .. } => dictionary,
+                    _ => panic!("not a transcription"),
+                }
+            };
+            let empty = snap(&mut r);
+            assert!(empty.dictionary.entries.is_empty());
+            dict(&mut r, Command::DictAdd, "NixOS").unwrap();
+            let one = snap(&mut r);
+            assert_eq!(one.dictionary.entries.len(), 1);
+            assert!(one.revision != empty.revision);
+            // Unchanged dictionary, same snapshot.
+            assert!(Arc::ptr_eq(&one, &snap(&mut r)));
+        }
+
+        #[test]
+        fn dictionary_command_errors() {
+            let dir = TempDir::new("corr-dict");
+            let mut r = dict_rig(&dir);
+            assert_eq!(
+                dict(&mut r, Command::DictAdd, "1234"),
+                Err(ErrorCode::InvalidEntry)
+            );
+            assert_eq!(
+                dict(&mut r, Command::DictAdd, "caf\u{e9}"),
+                Err(ErrorCode::InvalidEntry)
+            );
+            assert_eq!(
+                dict(&mut r, Command::DictRemove, "absent"),
+                Err(ErrorCode::NotFound)
+            );
+            assert_eq!(
+                dict(&mut r, Command::DictUnignore, "absent"),
+                Err(ErrorCode::NotFound)
+            );
+            dict(&mut r, Command::DictAdd, "Synthetic").unwrap();
+            // A failed write: nothing changes and the session survives.
+            dictate(&mut r, TYPED, true);
+            let data = dir.path().join("data");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+            assert_eq!(
+                dict(&mut r, Command::DictAdd, "Other"),
+                Err(ErrorCode::Storage)
+            );
+            assert_eq!(
+                dict(&mut r, Command::DictRemove, "Synthetic"),
+                Err(ErrorCode::Storage)
+            );
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(r.c.dictionary_snapshot().dictionary.entries.len(), 1);
+            assert!(begin(&mut r).is_ok());
+            // Without a dictionary the commands are unavailable.
+            let mut plain = rig();
+            assert_eq!(
+                dict(&mut plain, Command::DictAdd, "x"),
+                Err(ErrorCode::Unavailable)
+            );
+        }
+
+        #[test]
+        fn text_commands_leave_a_pending_double_tap_alone() {
+            let dir = TempDir::new("corr-tap");
+            let mut r = dict_rig(&dir);
+            r.c.tap = Some(Tap {
+                received: Duration::ZERO,
+                released: 1,
+            });
+            let _ = begin(&mut r);
+            let _ = dict(&mut r, Command::DictRemove, "absent");
+            assert!(r.c.tap.is_some());
+        }
     }
 }

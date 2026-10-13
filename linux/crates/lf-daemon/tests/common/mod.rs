@@ -102,6 +102,7 @@ impl Rig {
                     double_tap,
                 },
                 history,
+                dictionary: dictionary(data_dir(&dir)),
                 media,
             },
             &runtime_dir(&dir),
@@ -242,5 +243,13 @@ pub fn settings() -> Settings {
         macros: Vec::new(),
         type_chunk_chars: lf_daemon::worker::TYPE_CHUNK_CHARS,
         prompt_tag: "[dictated]".into(),
+    }
+}
+
+/// The custom dictionary in `dir`, with the synthetic vocabulary.
+pub fn dictionary(dir: PathBuf) -> lf_daemon::dictionary::Setting {
+    lf_daemon::dictionary::Setting {
+        dir,
+        tokenizer: std::sync::Arc::new(lf_daemon::testing::synthetic_tokenizer()),
     }
 }

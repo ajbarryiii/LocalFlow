@@ -24,6 +24,11 @@ final class LocalParakeetService: @unchecked Sendable {
     private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
     private let onBucketUsed: (@Sendable (Int) -> Void)?
+    // Retained correction audio; queue only. Memory only, never written.
+    private let corrections = CorrectionSessionStore<RetainedCorrection>()
+    private var expiry: DispatchWorkItem?
+    private let verificationLock = NSLock()
+    private var verification: ParakeetCancellation?
 
     // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
     // its serial queue. Benchmarks can compare startup policies explicitly.
@@ -112,8 +117,118 @@ final class LocalParakeetService: @unchecked Sendable {
         }
     }
 
-    private func transcribe(directory: URL,
-                            _ operation: @escaping @Sendable (LocalParakeetRuntime, () throws -> Void) throws -> String) async throws -> String {
+    /// Dictation with an immutable dictionary snapshot: boosting, then casing
+    /// restoration on the raw text. With `retainForCorrection`, the audio
+    /// projections are kept in memory for later verification (DESIGN §3.4) and
+    /// the result carries their `dictationID`. Any previous session is dropped.
+    func transcribe(fileURL: URL, dictionary: DictionarySnapshot, retainForCorrection: Bool) async throws -> TranscriptionResult {
+        guard Self.isAvailable, let directory = Self.bundleDirectory else {
+            throw LocalParakeetError.invalid("The bundled LocalFlow model requires Apple Silicon and macOS 26 or newer. Use a build that includes the model.")
+        }
+        cancelVerification()
+        return try await transcribe(directory: directory) { runtime, check in
+            self.corrections.discard()
+            let bias = runtime.graph(for: dictionary)
+            let decoded = try runtime.transcribe(fileURL: fileURL, bias: bias, retain: retainForCorrection, check: check)
+            let text = CasingRestorer.apply(decoded.text, entries: dictionary.entries)
+            guard retainForCorrection, let retained = decoded.retained else {
+                return TranscriptionResult(text: text, dictationID: nil)
+            }
+            let session = RetainedCorrection(runtime: runtime, projections: retained.projections, dictionary: dictionary, base: text)
+            let id = self.corrections.retain(session, bytes: retained.bytes, now: ProcessInfo.processInfo.systemUptime)
+            if let id { self.scheduleExpiry(id: id) }
+            return TranscriptionResult(text: text, dictationID: id)
+        }
+    }
+
+    /// Registers a correction check now, cancelling any older one. Call it
+    /// synchronously when the check is decided, so checks keep that order
+    /// however late their work starts.
+    func beginCorrectionCheck() -> CorrectionCheck {
+        CorrectionCheck(cancellation: beginVerification())
+    }
+
+    /// Runs candidates and verification (DESIGN §1.5-1.6) against the retained
+    /// session on the model queue. A stale or expired `dictationID`, a new
+    /// recording, a newer check, a dictionary change or cancelling the calling
+    /// task yields nil. The audio stays retained for later checks of the same
+    /// dictation until `isLast` (the watch has ended) or `releaseCorrectionSession`.
+    func suggestCorrection(typed: String, edited: String, dictationID: UInt64, ignore: Set<DictionaryKey>,
+                           isLast: Bool, check: CorrectionCheck) async -> DictionarySuggestion? {
+        let cancellation = check.cancellation
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    let now = { ProcessInfo.processInfo.systemUptime }
+                    guard !cancellation.isCancelled, let session = self.corrections.session(id: dictationID, now: now()) else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    let encoder = session.runtime.encoder
+                    let suggestion = DictionarySuggestionFinder.find(
+                        typed: typed, edited: edited, base: session.base, dictionary: session.dictionary.entries, ignore: ignore,
+                        encoder: encoder, exhausted: session.exhausted, now: now,
+                        isCancelled: { cancellation.isCancelled || self.corrections.currentID != dictationID },
+                        decode: { extra in
+                            let entries = session.dictionary.entries.filter { $0.key != extra.key } + [extra]
+                            guard let graph = BiasGraph.build(entries: entries, encoder: encoder),
+                                  let text = try? session.runtime.decode(session.projections, bias: graph, check: cancellation.check) else {
+                                return nil
+                            }
+                            return CasingRestorer.apply(text, entries: entries)
+                        })
+                    let cancelled = cancellation.isCancelled
+                    // After the last check nothing else can use this dictation's audio.
+                    if isLast && !cancelled { self.corrections.expire(id: dictationID) }
+                    continuation.resume(returning: cancelled ? nil : suggestion)
+                }
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+
+    /// New recording, cancel, setting off or dictionary change: stop any
+    /// verification between decodes and drop the retained audio.
+    func discardCorrectionSession() {
+        cancelVerification()
+        queue.async {
+            self.corrections.discard()
+            self.expiry?.cancel()
+            self.expiry = nil
+        }
+    }
+
+    /// One verification at a time; a newer one cancels the older.
+    private func beginVerification() -> ParakeetCancellation {
+        let cancellation = ParakeetCancellation()
+        verificationLock.lock()
+        verification?.cancel()
+        verification = cancellation
+        verificationLock.unlock()
+        return cancellation
+    }
+
+    /// Releases one dictation's retained audio, never a newer one's.
+    func releaseCorrectionSession(dictationID: UInt64) {
+        queue.async { self.corrections.expire(id: dictationID) }
+    }
+
+    private func cancelVerification() {
+        verificationLock.lock()
+        verification?.cancel()
+        verification = nil
+        verificationLock.unlock()
+    }
+
+    // Call only on queue.
+    private func scheduleExpiry(id: UInt64) {
+        expiry?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.corrections.expire(id: id) }
+        expiry = item
+        queue.asyncAfter(deadline: .now() + CorrectionSessionStore<RetainedCorrection>.defaultLifetime, execute: item)
+    }
+
+    private func transcribe<T>(directory: URL,
+                               _ operation: @escaping @Sendable (LocalParakeetRuntime, () throws -> Void) throws -> T) async throws -> T {
         let cancellation = ParakeetCancellation()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -121,9 +236,9 @@ final class LocalParakeetService: @unchecked Sendable {
                 queue.async {
                     do {
                         try cancellation.check()
-                        let text = try operation(self.runtime(for: directory), cancellation.check)
+                        let result = try operation(self.runtime(for: directory), cancellation.check)
                         try cancellation.check()
-                        continuation.resume(returning: text)
+                        continuation.resume(returning: result)
                     } catch {
                         // Core ML exceptions may carry input details;
                         // expose only our content-free errors or cancellation.
@@ -144,10 +259,49 @@ private final class ParakeetCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func check() throws {
-        lock.lock(); let value = cancelled; lock.unlock()
-        if value { throw CancellationError() }
+        if isCancelled { throw CancellationError() }
     }
+}
+
+/// An immutable dictionary: decoding never reads mutable dictionary state.
+/// `revision` identifies the snapshot for graph caching.
+struct DictionarySnapshot: Sendable {
+    let revision: UInt64
+    let entries: [DictionaryEntry]
+
+    static let empty = DictionarySnapshot(revision: 0, entries: [])
+}
+
+struct TranscriptionResult: Sendable {
+    /// Raw transcript after casing restoration, before LocalDictationCore.
+    let text: String
+    /// Set only when the audio was retained for correction suggestions.
+    let dictationID: UInt64?
+}
+
+/// Encoder output kept for re-decoding, owned (not a view on Core ML memory).
+private final class RetainedProjection {
+    let buffer: FloatBuffer
+    let frames: Int
+    init(buffer: FloatBuffer, frames: Int) { self.buffer = buffer; self.frames = frames }
+}
+
+/// Every chunk of one dictation in order; nil marks a silent chunk, which
+/// joins as an empty piece exactly as in the original transcription.
+private struct RetainedAudio {
+    var projections: [RetainedProjection?] = []
+    var bytes = 0
+}
+
+private struct RetainedCorrection {
+    let runtime: LocalParakeetRuntime
+    let projections: [RetainedProjection?]
+    let dictionary: DictionarySnapshot
+    let base: String
+    /// Shared by every check of this dictation; model queue only.
+    let exhausted = ExhaustedCandidates()
 }
 
 private final class LocalParakeetRuntime {
@@ -155,6 +309,9 @@ private final class LocalParakeetRuntime {
     let frontend: VDSPFrontEnd
     let math: NativeMath
     let vocabulary: [String]
+    /// Scalar-keyed BPE over the same vocabulary, for dictionary phrases.
+    let encoder: BPEEncoder
+    private var cachedGraph: (revision: UInt64, graph: BiasGraph?)?
     private let models = ParakeetModelCache<MLModel>()
     private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
@@ -189,6 +346,7 @@ private final class LocalParakeetRuntime {
             throw LocalParakeetError.invalid("Invalid local vocabulary.")
         }
         vocabulary = (0..<1024).map { vocab[String($0)]! }
+        encoder = BPEEncoder(pieces: vocabulary)
         if !startupStrategy.backgroundBuckets.isEmpty {
             backgroundPreparation = ParakeetBackgroundPreparation(
                 ownerQueue: ownerQueue, workerQueue: preparationQueue, buckets: startupStrategy.backgroundBuckets,
@@ -219,19 +377,48 @@ private final class LocalParakeetRuntime {
     }
 
     func transcribe(fileURL: URL, check: () throws -> Void) throws -> String {
+        try transcribe(fileURL: fileURL, bias: nil, retain: false, check: check).text
+    }
+
+    func transcribe(fileURL: URL, bias: BiasGraph?, retain: Bool,
+                    check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
         var chunker = makeChunker(), pieces: [String] = []
+        var retained: RetainedAudio? = retain ? RetainedAudio() : nil
         try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
-            try chunker.append(samples) { pieces.append(try transcribeChunk($0, check: check)) }
+            try chunker.append(samples) { pieces.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check)) }
         }
-        try chunker.finish { pieces.append(try transcribeChunk($0, check: check)) }
-        return pieces.filter { !$0.isEmpty }.joined(separator: " ")
+        try chunker.finish { pieces.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check)) }
+        return (Self.join(pieces), retained)
     }
 
     func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
         var chunker = makeChunker(), pieces: [String] = []
-        try chunker.append(samples) { pieces.append(try transcribeChunk($0, check: check)) }
-        try chunker.finish { pieces.append(try transcribeChunk($0, check: check)) }
-        return pieces.filter { !$0.isEmpty }.joined(separator: " ")
+        var retained: RetainedAudio?
+        try chunker.append(samples) { pieces.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check)) }
+        try chunker.finish { pieces.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check)) }
+        return Self.join(pieces)
+    }
+
+    /// Re-decodes retained chunks exactly as transcribed, with a new bias.
+    func decode(_ projections: [RetainedProjection?], bias: BiasGraph?, check: () throws -> Void) throws -> String {
+        Self.join(try projections.map { projection in
+            guard let projection else { return "" }
+            return try decode(projection, bias: bias, check: check)
+        })
+    }
+
+    private static func join(_ pieces: [String]) -> String {
+        pieces.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// Built here, on the model queue, and cached by snapshot revision. An
+    /// empty dictionary has no graph, so decoding takes the unbiased path.
+    func graph(for snapshot: DictionarySnapshot) -> BiasGraph? {
+        guard !snapshot.entries.isEmpty else { return nil }
+        if let cachedGraph, cachedGraph.revision == snapshot.revision { return cachedGraph.graph }
+        let graph = BiasGraph.build(entries: snapshot.entries, encoder: encoder)
+        cachedGraph = (snapshot.revision, graph)
+        return graph
     }
 
     // Installs also run on this queue, so readiness is fixed for the recording.
@@ -239,10 +426,26 @@ private final class LocalParakeetRuntime {
         ParakeetChunker(size: models.chunkSamples(strategy: startupStrategy))
     }
 
-    private func transcribeChunk(_ input: [Float], check: () throws -> Void) throws -> String {
+    private func transcribeChunk(_ input: [Float], bias: BiasGraph?, retained: inout RetainedAudio?,
+                                 check: () throws -> Void) throws -> String {
+        guard let projection = try project(input, check: check) else {
+            retained?.projections.append(nil)
+            return ""
+        }
+        if retained != nil {
+            retained!.projections.append(projection)
+            retained!.bytes += projection.frames * 640 * MemoryLayout<Float>.size
+            // Over the limit nothing is kept, but transcription continues.
+            if retained!.bytes > CorrectionSessionStore<RetainedProjection>.defaultMaxBytes { retained = nil }
+        }
+        return try decode(projection, bias: bias, check: check)
+    }
+
+    /// Encoder and joint projection of one chunk; nil for digital silence.
+    private func project(_ input: [Float], check: () throws -> Void) throws -> RetainedProjection? {
         try check()
         guard input.allSatisfy(\.isFinite) else { throw LocalParakeetError.invalid("Audio contains invalid samples.") }
-        if input.allSatisfy({ $0 == 0 }) { return "" }
+        if input.allSatisfy({ $0 == 0 }) { return nil }
         // NeMo's unbiased per-feature normalization needs at least two frames.
         let pcm = input.count < 480 ? input + [Float](repeating: 0, count: 480 - input.count) : input
         let bucket = try models.transcriptionBucket(samples: pcm.count, strategy: startupStrategy)
@@ -269,9 +472,29 @@ private final class LocalParakeetRuntime {
         let frames = try EncoderFrames(encoder, validLength: valid[0].intValue)
         let projection = FloatBuffer(count: frames.count * 640)
         math.project(frames, length: frames.count, into: projection.pointer)
+        return RetainedProjection(buffer: projection, frames: frames.count)
+    }
+
+    private func decode(_ retained: RetainedProjection, bias: BiasGraph?, check: () throws -> Void) throws -> String {
+        let projection = retained.buffer
         var h = [Float](repeating: 0, count: 1280), c = h
+        if let bias {
+            var g = [Float](repeating: 0, count: 640), z = g
+            let logits = FloatBuffer(count: 1030)
+            let tokens = try LocalParakeetCore.decode(length: retained.frames, bias: bias, predict: { token in
+                math.predict(token, h: &h, c: &c, g: &g)
+            }, joint: { frame in
+                let decision = math.joint(f: projection.pointer + frame * 640, g: &g, z: &z, logits: logits.pointer)
+                guard UnsafeBufferPointer(start: logits.pointer, count: 1030).allSatisfy(\.isFinite) else {
+                    throw LocalParakeetError.invalid("Local decoder produced invalid values.")
+                }
+                return (UnsafePointer(logits.pointer), decision.1)
+            }, check: check)
+            return try LocalParakeetCore.detokenize(tokens, vocabulary: vocabulary)
+        }
+        // No dictionary: exactly the original decoding path.
         var g = [Float](repeating: 0, count: 640), z = g, logits = [Float](repeating: 0, count: 1030)
-        let tokens = try LocalParakeetCore.decode(length: frames.count, predict: { token in
+        let tokens = try LocalParakeetCore.decode(length: retained.frames, predict: { token in
             math.predict(token, h: &h, c: &c, g: &g)
         }, joint: { frame in
             let decision = math.joint(f: projection.pointer + frame * 640, g: &g, z: &z, logits: &logits)
@@ -300,4 +523,12 @@ private enum ParakeetEncoder {
         length[0] = NSNumber(value: size)
         _ = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["mel": mel, "mel_length": length]))
     }
+}
+
+/// A registered correction check. Registering a newer one, a new recording,
+/// a dictionary change or turning suggestions off cancels it.
+struct CorrectionCheck: Sendable {
+    fileprivate let cancellation: ParakeetCancellation
+
+    var isCancelled: Bool { cancellation.isCancelled }
 }

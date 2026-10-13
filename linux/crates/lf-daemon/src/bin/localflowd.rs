@@ -9,8 +9,8 @@ use std::time::Duration;
 use lf_daemon::config::{self, Config};
 use lf_daemon::controller::Limits;
 use lf_daemon::daemon::{self, Parts};
-use lf_daemon::history;
 use lf_daemon::{backends, error, info, log, paths, recognizer, signals, warn, worker};
+use lf_daemon::{dictionary, history};
 
 const USAGE: &str = "usage: localflowd [--config PATH] [--check-config] [--fake-io]
 
@@ -120,6 +120,10 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let runtime_dir = paths::runtime_dir()?;
+    // Only the vocabulary, for dictionary entries; the model loads later on
+    // the recognition thread.
+    let tokenizer = lf_asr::model::load_tokenizer(&config.export_path)
+        .map_err(|e| format!("model export {}: {e}", config.export_path.display()))?;
 
     let (capture, output) = if args.fake_io {
         info!("fake I/O: recording silence and discarding text");
@@ -141,6 +145,10 @@ fn run() -> Result<(), String> {
             min_recording: Duration::from_secs_f64(config.min_recording_seconds),
             max_recording: Duration::from_secs_f64(config.max_recording_seconds),
             double_tap: Duration::from_millis(config.double_tap_ms),
+        },
+        dictionary: dictionary::Setting {
+            dir: data_dir.clone(),
+            tokenizer: Arc::new(tokenizer),
         },
         history: history::Setting {
             dir: data_dir,

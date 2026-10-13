@@ -589,7 +589,7 @@ fn run() -> Result<bool, String> {
     for item in items.iter().take(args.warmup) {
         // Warm-up items are measured again below, where failures are counted.
         if let Ok(samples) = item.samples() {
-            let _ = tr.transcribe(&samples);
+            let _ = tr.transcribe(&samples, None);
         }
     }
     let after_warmup = memory_mib();
@@ -616,7 +616,7 @@ fn run() -> Result<bool, String> {
         let result = item.samples().and_then(|samples| {
             let secs = samples.len() as f64 / SAMPLE_RATE as f64;
             let start = Instant::now();
-            let t = tr.transcribe(&samples).map_err(|e| e.to_string())?;
+            let t = tr.transcribe(&samples, None).map_err(|e| e.to_string())?;
             Ok((t, secs, ms(start.elapsed())))
         });
         let (t, secs, wall) = match result {
@@ -1314,9 +1314,9 @@ fn precision_run(
     enc: Vec<f32>,
     frames: usize,
 ) -> Result<PrecisionRun, String> {
-    let (emitted, decisions) = reference::decode(params, &enc, frames);
+    let (emitted, decisions) = reference::decode(params, &enc, frames, None);
     let projected = model.decoder.project_encoder(pool, &enc, frames);
-    let fast = model.decoder.decode(pool, &projected, frames, None);
+    let fast = model.decoder.decode(pool, &projected, frames, None, None);
     let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
     let text = model.tokenizer.decode(&tokens).map_err(|e| e.to_string())?;
     let blank = params.blank();

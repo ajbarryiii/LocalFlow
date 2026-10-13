@@ -21,6 +21,17 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
 	Sources/SetupFlowCore.swift \
+	Sources/Dictionary/BiasGraph.swift \
+	Sources/Dictionary/BPEEncoder.swift \
+	Sources/Dictionary/CasingRestorer.swift \
+	Sources/Dictionary/CorrectionCandidates.swift \
+	Sources/Dictionary/CorrectionSessionStore.swift \
+	Sources/Dictionary/CorrectionWatcher.swift \
+	Sources/Dictionary/DictionaryEditor.swift \
+	Sources/Dictionary/DictionaryEntry.swift \
+	Sources/Dictionary/DictionaryText.swift \
+	Sources/Dictionary/SuggestionPresentationGate.swift \
+	Sources/Dictionary/VerifyDecision.swift \
 	Sources/Parakeet/LocalParakeetCore.swift \
 	Sources/Parakeet/LocalParakeetService.swift \
 	Sources/Parakeet/ParakeetAudioReader.swift \
@@ -29,7 +40,9 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Parakeet/ParakeetFrontEnd.swift \
 	Sources/UpdateManager.swift \
 	Sources/UpdateSignatureVerifier.swift \
+	Sources/RecordingLifecycle.swift \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
+	Sources/ShortcutCore/DoubleTapPromptDetector.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
 	Sources/ShortcutCore/ShortcutModels.swift
 TEST_SOURCES = $(shell find Tests -name '*.swift' -type f | LC_ALL=C sort)

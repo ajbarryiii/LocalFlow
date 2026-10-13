@@ -110,6 +110,7 @@ fn panicking_daemon_stops(dir: &TempDir) -> Result<(), String> {
                 dir: dir.path().join("data"),
                 enabled: false,
             },
+            dictionary: common::dictionary(dir.path().join("data")),
             media: None,
         },
         &rd,
