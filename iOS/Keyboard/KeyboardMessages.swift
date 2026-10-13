@@ -39,7 +39,7 @@ enum KeyboardMessages {
         case .audioSessionFailed: return "The microphone could not start"
         case .startupTimeout: return "The microphone took too long to start"
         case .interrupted: return "Dictation was interrupted"
-        case .deviceLocked: return "The session ended when iPhone locked"
+        case .deviceLocked: return "Dictation stopped when iPhone locked"
         case .keyboardDismissed: return "Stopped because the keyboard closed"
         case .sessionInactive: return openLocalFlow
         case .modelUnavailable: return "The speech model is missing"

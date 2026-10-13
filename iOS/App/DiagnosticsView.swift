@@ -48,10 +48,6 @@ struct DiagnosticsView: View {
             } footer: {
                 Text("Timings and memory only, never audio or text. Kept in memory and gone when LocalFlow quits.")
             }
-
-            #if LOCALFLOW_POWER_LOG
-            PowerLogSection()
-            #endif
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Diagnostics")

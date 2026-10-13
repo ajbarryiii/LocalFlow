@@ -7,7 +7,7 @@ struct HostEnvironment {
     /// record intent may be admitted without a session.
     var isForeground: @MainActor () -> Bool
     /// `UIApplication.isProtectedDataAvailable`. Read only on the willEnterForeground and didBecomeActive
-    /// events, to lift the always-on lock latch if the unlock notification was missed while suspended;
+    /// events, to lift the lock latch if the unlock notification was missed while suspended;
     /// never while polling, because during the will-become-unavailable window it still reads true.
     var isProtectedDataAvailable: @MainActor () -> Bool
     /// Begins a UIKit background task. `onExpiration` runs on main when time runs out; the returned
@@ -47,20 +47,13 @@ final class HostSessionCore {
     private(set) var idleSince: Date?
     private(set) var lastForegroundAt: Date?
     private(set) var hasBeenForeground = false
-    /// The always-on microphone test mode (ARCHITECTURE.md; power test builds only, where gated code sets
-    /// it with `setAlwaysOn`). While on: no idle expiry, and a lock cancels an in-progress dictation but
-    /// keeps the session, the audio session and the engine. Off by default.
-    private(set) var alwaysOn = false
-    /// Always-on only (ARCHITECTURE.md, "Locked means no dictation"): latched by `deviceWillLock` while the
-    /// mode is on. While set, no intent is admitted and no session, capture or dictation starts, even though
-    /// iOS posts the lock notification before files become unreadable. Cleared by `deviceDidUnlock`, by the
-    /// `appWillEnterForeground` / `appDidBecomeActive` events with protected data available (a suspended app
-    /// can miss the unlock notification), and by turning the mode off; never by polling or a derived state.
-    /// With the mode off it is never set, so behavior is exactly as before the mode existed.
+    /// The lock latch (ARCHITECTURE.md, "Device lock"), set by `deviceWillLock`. While set, no intent is
+    /// admitted and no session, capture or dictation starts, even though iOS posts the lock notification
+    /// before files become unreadable; a session already running goes on until idle expiry. Cleared by
+    /// `deviceDidUnlock` and by the `appWillEnterForeground` / `appDidBecomeActive` events with protected
+    /// data available (a suspended app can miss the unlock notification); never by polling or a derived
+    /// state.
     private(set) var isLocked = false
-
-    /// Every latch check: always-on and locked.
-    private var lockedAlwaysOn: Bool { alwaysOn && isLocked }
 
     private var sessionGeneration: UInt64 = 0
     /// A session start waiting for the foreground (the permission prompt was answered elsewhere).
@@ -114,11 +107,8 @@ final class HostSessionCore {
     var isDictationInProgress: Bool { slot.isInProgress }
     var level: Float { slot.phase == .recording ? buffer.level : 0 }
     var sessionExpiresAt: Date? {
-        HostSessionPolicy.sessionExpiresAt(session: session, idleSince: expiryIdleSince, duration: settings.sessionDuration)
+        HostSessionPolicy.sessionExpiresAt(session: session, idleSince: idleSince, duration: settings.sessionDuration)
     }
-
-    /// Idle expiry's reference point; there is none while always-on.
-    private var expiryIdleSince: Date? { alwaysOn ? nil : idleSince }
 
     // MARK: Inputs
 
@@ -166,7 +156,7 @@ final class HostSessionCore {
         }
         if pendingStart != nil, !slot.isInProgress { endSession(.startFailed(.audioSessionFailed), now) }
         if session == .active, !slot.isInProgress,
-           HostSessionPolicy.isIdleExpired(idleSince: expiryIdleSince, duration: settings.sessionDuration, now: now) {
+           HostSessionPolicy.isIdleExpired(idleSince: idleSince, duration: settings.sessionDuration, now: now) {
             endSession(.idleExpired, now)
         }
         releaseModelIfPending()
@@ -218,22 +208,8 @@ final class HostSessionCore {
         if isLocked, environment.isProtectedDataAvailable() { isLocked = false }
     }
 
-    /// Turns the always-on test mode on or off, at once. Turning it off starts idle expiry from now (or from
-    /// the end of a dictation in progress), and the next lock ends the session. It never starts a session.
-    /// Before `launch` it only records the choice: run recovery must read the previous run's status first.
-    func setAlwaysOn(_ on: Bool) {
-        guard on != alwaysOn else { return }
-        alwaysOn = on
-        if !on { isLocked = false }
-        guard isLaunched else { return }
-        let now = environment.now()
-        if !on, session == .active, !slot.isInProgress { idleSince = now }
-        needsPublish = true
-        flush(now)
-    }
-
     func userStartSession() {
-        guard isLaunched, session == .inactive, !lockedAlwaysOn else { return }
+        guard isLaunched, session == .inactive, !isLocked else { return }
         let now = environment.now()
         guard noteForeground(now) else { return }
         startSession(now)
@@ -264,21 +240,18 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// `protectedDataWillBecomeUnavailable`: cancels everything in flight, including a transcription
-    /// that outlived its session, and ends the session unless the always-on test mode is on.
+    /// `protectedDataWillBecomeUnavailable`: latches the lock and cancels everything in flight, including
+    /// a transcription that outlived its session. The session itself goes on until idle expiry.
     func deviceWillLock() {
-        if alwaysOn {
-            isLocked = true
-            guard isLaunched else { return }   // locked at launch: latched; run recovery publishes first
-        }
+        isLocked = true
+        guard isLaunched else { return }   // locked at launch: latched; run recovery publishes first
         let now = environment.now()
+        // Intents and results are class A and unreadable while locked, so the dictation is cancelled, but
+        // capture goes on with buffers dropped, as between dictations.
         if let phase = slot.phase, slot.isInProgress,
            let outcome = HostSessionPolicy.sessionEndOutcome(.deviceLocked, phase: phase) {
             endInProgress(outcome, now)
         }
-        // Always-on keeps the session: intents and results are class A and unreadable while locked, so the
-        // dictation is cancelled above exactly as before, but capture goes on with buffers dropped.
-        if !alwaysOn { endSession(.deviceLocked, now) }
         flush(now)
     }
 
@@ -362,7 +335,7 @@ final class HostSessionCore {
         case .none:
             break
         case .start(let requestID):
-            if lockedAlwaysOn {
+            if isLocked {
                 // Read while locked: refused for good, so it is never admitted after the unlock either.
                 knownRequestIDs.insert(requestID)
                 if slot.reject(requestID, error: .deviceLocked, now: now) { needsPublish = true }
@@ -641,8 +614,8 @@ final class HostSessionCore {
     private func continueSessionStart(_ generation: UInt64, _ now: Date) {
         guard generation == sessionGeneration, session == .starting else { return }
         // A session never starts in the background (capture and the permission prompt need the front), nor
-        // while locked in always-on.
-        guard environment.isForeground(), !lockedAlwaysOn else {
+        // while locked.
+        guard environment.isForeground(), !isLocked else {
             pendingStart = generation
             return
         }
@@ -660,7 +633,7 @@ final class HostSessionCore {
                 let now = self.environment.now()
                 if !granted {
                     self.endSession(.startFailed(.microphonePermissionDenied), now)
-                } else if self.environment.isForeground(), !self.lockedAlwaysOn {
+                } else if self.environment.isForeground(), !self.isLocked {
                     self.activateCapture(now)
                 } else {
                     self.pendingStart = generation
@@ -728,7 +701,7 @@ final class HostSessionCore {
         needsPublish = false
         let status = HostSessionPolicy.status(
             hostRunID: hostRunID, sessionID: sessionID, session: session, captureRunning: capture.isRunning,
-            lastBufferAt: capture.lastBufferAt, idleSince: expiryIdleSince, sessionDuration: settings.sessionDuration,
+            lastBufferAt: capture.lastBufferAt, idleSince: idleSince, sessionDuration: settings.sessionDuration,
             model: transcriber.modelState, dictation: slot.current, level: buffer.level, error: sessionError, now: now)
         lastStatusAt = now
         // A failed write is retried by the next heartbeat; the reader treats a stale one as a dead host.
