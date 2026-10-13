@@ -160,10 +160,10 @@ extension LocalParakeetCore {
     /// logits, and the bias state follows non-blank emissions.
     static func decode(length: Int, bias: BiasGraph, predict: (Int) throws -> Void,
                        joint: (Int) throws -> (logits: UnsafePointer<Float>, duration: Int),
-                       check: () throws -> Void) throws -> [Int] {
+                       check: () throws -> Void) throws -> [ParakeetToken] {
         let blank = 1024
         precondition(bias.tokens == blank, "Bias graph must cover the model vocabulary")
-        var tokens: [Int] = [], frame = 0, lastFrame = -1, symbols = 0, state = BiasGraph.root
+        var tokens: [ParakeetToken] = [], frame = 0, lastFrame = -1, symbols = 0, state = BiasGraph.root
         try predict(blank)
         while frame < length {
             try check()
@@ -176,7 +176,7 @@ extension LocalParakeetCore {
             if token != blank {
                 symbols = lastFrame == frame ? symbols + 1 : 1
                 lastFrame = frame
-                tokens.append(token)
+                tokens.append(ParakeetToken(id: token, frame: frame))
                 state = bias.step(state, token).state
                 try predict(token)
                 if advance == 0 && symbols >= 10 { advance = 1 }

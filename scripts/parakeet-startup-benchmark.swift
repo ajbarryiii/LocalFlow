@@ -72,7 +72,7 @@ struct ParakeetStartupBenchmark {
                     let expected = expectedText(duration)
                     let match = text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
                     let buckets = trace.take()
-                    let expectedBuckets = duration == 18 ? [30] : duration == 33 ? [30, 4] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
+                    let expectedBuckets = duration == 18 ? [30] : duration == 33 ? [30, 8] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
                     guard match, buckets == expectedBuckets else { throw LocalParakeetError.invalid("Synthetic handoff mismatch") }
                     optimized.append(["audio_seconds": duration, "transcription_seconds": elapsed,
                                       "expected_match": match, "buckets_used": buckets])
@@ -134,8 +134,8 @@ struct ParakeetStartupBenchmark {
             let samples = padded.floatChannelData![0]
             samples.initialize(repeating: 0, count: count)
             samples.update(from: input.floatChannelData![0], count: Int(input.frameLength))
-            // Repeats cross the 15s split, end near the 30s window edge and
-            // fall in a remainder chunk after 30s.
+            // Repeats follow the 15s split, cross the 28–30s overlap of 30s
+            // windows and fall in the remainder window after 30s.
             for start in repeatOffsets[duration] ?? [] {
                 let offset = Int(start * file.processingFormat.sampleRate)
                 guard offset + Int(input.frameLength) <= count else {

@@ -134,7 +134,7 @@ final class LocalParakeetService: @unchecked Sendable {
             guard retainForCorrection, let retained = decoded.retained else {
                 return TranscriptionResult(text: text, dictationID: nil)
             }
-            let session = RetainedCorrection(runtime: runtime, projections: retained.projections, dictionary: dictionary, base: text)
+            let session = RetainedCorrection(runtime: runtime, chunks: retained.chunks, dictionary: dictionary, base: text)
             let id = self.corrections.retain(session, bytes: retained.bytes, now: ProcessInfo.processInfo.systemUptime)
             if let id { self.scheduleExpiry(id: id) }
             return TranscriptionResult(text: text, dictationID: id)
@@ -162,7 +162,7 @@ final class LocalParakeetService: @unchecked Sendable {
                     decode: { extra in
                         let entries = session.dictionary.entries.filter { $0.key != extra.key } + [extra]
                         guard let graph = BiasGraph.build(entries: entries, encoder: encoder),
-                              let text = try? session.runtime.decode(session.projections, bias: graph, check: cancellation.check) else {
+                              let text = try? session.runtime.decode(session.chunks, bias: graph, check: cancellation.check) else {
                             return nil
                         }
                         return CasingRestorer.apply(text, entries: entries)
@@ -276,16 +276,23 @@ private final class RetainedProjection {
     init(buffer: FloatBuffer, frames: Int) { self.buffer = buffer; self.frames = frames }
 }
 
-/// Every chunk of one dictation in order; nil marks a silent chunk, which
-/// joins as an empty piece exactly as in the original transcription.
+/// One chunk's place in the recording, so re-decoding stitches overlaps
+/// exactly as the original transcription did. A nil projection marks a silent
+/// chunk, which stitches as no words.
+private struct RetainedChunk {
+    let range: Range<Int>
+    let projection: RetainedProjection?
+}
+
+/// Every chunk of one dictation in order.
 private struct RetainedAudio {
-    var projections: [RetainedProjection?] = []
+    var chunks: [RetainedChunk] = []
     var bytes = 0
 }
 
 private struct RetainedCorrection {
     let runtime: LocalParakeetRuntime
-    let projections: [RetainedProjection?]
+    let chunks: [RetainedChunk]
     let dictionary: DictionarySnapshot
     let base: String
 }
@@ -368,33 +375,39 @@ private final class LocalParakeetRuntime {
 
     func transcribe(fileURL: URL, bias: BiasGraph?, retain: Bool,
                     check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        var chunker = makeChunker(), pieces: [String] = []
+        var chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
         var retained: RetainedAudio? = retain ? RetainedAudio() : nil
         try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
-            try chunker.append(samples) { pieces.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check)) }
+            try chunker.append(samples) {
+                transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
+            }
         }
-        try chunker.finish { pieces.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check)) }
-        return (Self.join(pieces), retained)
+        try chunker.finish {
+            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
+        }
+        return (transcript.text, retained)
     }
 
     func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
-        var chunker = makeChunker(), pieces: [String] = []
+        var chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
         var retained: RetainedAudio?
-        try chunker.append(samples) { pieces.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check)) }
-        try chunker.finish { pieces.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check)) }
-        return Self.join(pieces)
+        try chunker.append(samples) {
+            transcript.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check), covering: $0.range)
+        }
+        try chunker.finish {
+            transcript.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check), covering: $0.range)
+        }
+        return transcript.text
     }
 
     /// Re-decodes retained chunks exactly as transcribed, with a new bias.
-    func decode(_ projections: [RetainedProjection?], bias: BiasGraph?, check: () throws -> Void) throws -> String {
-        Self.join(try projections.map { projection in
-            guard let projection else { return "" }
-            return try decode(projection, bias: bias, check: check)
-        })
-    }
-
-    private static func join(_ pieces: [String]) -> String {
-        pieces.filter { !$0.isEmpty }.joined(separator: " ")
+    func decode(_ chunks: [RetainedChunk], bias: BiasGraph?, check: () throws -> Void) throws -> String {
+        var transcript = ParakeetTranscriptAssembler()
+        for chunk in chunks {
+            let words = try chunk.projection.map { try decode($0, offset: chunk.range.lowerBound, bias: bias, check: check) } ?? []
+            transcript.append(words, covering: chunk.range)
+        }
+        return transcript.text
     }
 
     /// Built here, on the model queue, and cached by snapshot revision. An
@@ -409,22 +422,22 @@ private final class LocalParakeetRuntime {
 
     // Installs also run on this queue, so readiness is fixed for the recording.
     private func makeChunker() -> ParakeetChunker {
-        ParakeetChunker(size: models.chunkSamples(strategy: startupStrategy))
+        ParakeetChunker(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples)
     }
 
-    private func transcribeChunk(_ input: [Float], bias: BiasGraph?, retained: inout RetainedAudio?,
-                                 check: () throws -> Void) throws -> String {
-        guard let projection = try project(input, check: check) else {
-            retained?.projections.append(nil)
-            return ""
+    private func transcribeChunk(_ chunk: ParakeetChunk, bias: BiasGraph?, retained: inout RetainedAudio?,
+                                 check: () throws -> Void) throws -> [ParakeetWord] {
+        guard let projection = try project(chunk.samples, check: check) else {
+            retained?.chunks.append(RetainedChunk(range: chunk.range, projection: nil))
+            return []
         }
         if retained != nil {
-            retained!.projections.append(projection)
+            retained!.chunks.append(RetainedChunk(range: chunk.range, projection: projection))
             retained!.bytes += projection.frames * 640 * MemoryLayout<Float>.size
             // Over the limit nothing is kept, but transcription continues.
             if retained!.bytes > CorrectionSessionStore<RetainedProjection>.defaultMaxBytes { retained = nil }
         }
-        return try decode(projection, bias: bias, check: check)
+        return try decode(projection, offset: chunk.start, bias: bias, check: check)
     }
 
     /// Encoder and joint projection of one chunk; nil for digital silence.
@@ -461,7 +474,9 @@ private final class LocalParakeetRuntime {
         return RetainedProjection(buffer: projection, frames: frames.count)
     }
 
-    private func decode(_ retained: RetainedProjection, bias: BiasGraph?, check: () throws -> Void) throws -> String {
+    /// Words of one chunk, timed from `offset`, the chunk's first recording sample.
+    private func decode(_ retained: RetainedProjection, offset: Int, bias: BiasGraph?,
+                        check: () throws -> Void) throws -> [ParakeetWord] {
         let projection = retained.buffer
         var h = [Float](repeating: 0, count: 1280), c = h
         if let bias {
@@ -476,7 +491,7 @@ private final class LocalParakeetRuntime {
                 }
                 return (UnsafePointer(logits.pointer), decision.1)
             }, check: check)
-            return try LocalParakeetCore.detokenize(tokens, vocabulary: vocabulary)
+            return try LocalParakeetCore.words(tokens, vocabulary: vocabulary, offset: offset)
         }
         // No dictionary: exactly the original decoding path.
         var g = [Float](repeating: 0, count: 640), z = g, logits = [Float](repeating: 0, count: 1030)
@@ -487,7 +502,7 @@ private final class LocalParakeetRuntime {
             guard logits.allSatisfy(\.isFinite) else { throw LocalParakeetError.invalid("Local decoder produced invalid values.") }
             return decision
         }, check: check)
-        return try LocalParakeetCore.detokenize(tokens, vocabulary: vocabulary)
+        return try LocalParakeetCore.words(tokens, vocabulary: vocabulary, offset: offset)
     }
 }
 
