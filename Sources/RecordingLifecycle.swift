@@ -173,18 +173,36 @@ struct RecordingAttempts {
     func isCurrent(_ attempt: UInt64) -> Bool { attempt == current }
 }
 
-/// The steps for discarding a too-short Hold to Talk tap. Correction cleanup
-/// runs even when the tap ended before capture started (a shortcut start
-/// delay), since starting would have run it.
-struct TooShortHoldDiscard: Equatable {
-    let stopCorrectionSuggestions: Bool
-    /// Always: a suggestion presented meanwhile must not stay on screen.
-    let withdrawSuggestion: Bool
-    let invalidateAttempt: Bool
-    let cancelCapture: Bool
+/// What the app does at a dictation's cleanup points. AppState conforms, and
+/// runs the step lists below exactly as written, so tests with a recording
+/// fake see the real sequence.
+protocol DictationCleanupActions: AnyObject {
+    /// End the correction watch, any running verification and retained audio.
+    func stopCorrectionSuggestions()
+    /// Withdraw a visible dictionary suggestion and void any requested one.
+    func withdrawDictionarySuggestion()
+    /// Make work already queued for the current recording attempt a no-op.
+    func invalidateRecordingAttempt()
+    /// Stop and throw away the capture in progress (no transcription).
+    func cancelDiscardedCapture()
+}
 
-    static func steps(isRecording: Bool) -> TooShortHoldDiscard {
-        TooShortHoldDiscard(stopCorrectionSuggestions: true, withdrawSuggestion: true, invalidateAttempt: true,
-                            cancelCapture: isRecording)
+enum DictationCleanupSteps {
+    /// A dictation shortcut press was accepted (its start may still be
+    /// delayed): correction work ends, so no verification result can present
+    /// during the delay, and a visible suggestion is withdrawn at once.
+    static func acceptedPress(_ actions: DictationCleanupActions) {
+        actions.stopCorrectionSuggestions()
+        actions.withdrawDictionarySuggestion()
+    }
+
+    /// A too-short Hold to Talk tap is discarded. Queued work for it is voided
+    /// first; correction cleanup and the withdrawal run even when the tap ended
+    /// before capture started (a start delay); the capture, if any, goes last.
+    static func discardTooShortHold(isRecording: Bool, _ actions: DictationCleanupActions) {
+        actions.invalidateRecordingAttempt()
+        actions.stopCorrectionSuggestions()
+        actions.withdrawDictionarySuggestion()
+        if isRecording { actions.cancelDiscardedCapture() }
     }
 }

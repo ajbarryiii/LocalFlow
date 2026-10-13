@@ -77,7 +77,7 @@ struct DoubleTapPromptDetector {
         guard isEnabled, let ended else { return false }
         let tooShort = stamp.time < ended.start + Self.minimumHold
         if stamp.releaseOrigin == .reset {
-            interrupt()
+            interruptInput()
         } else if tooShort, ended.canArm, stamp.releaseOrigin == .keyReleased, stamp.epoch == epoch {
             armedRelease = stamp.time
             armedRecordings = recordingsBegun
@@ -85,10 +85,20 @@ struct DoubleTapPromptDetector {
         return tooShort
     }
 
-    /// Another shortcut, the app becoming busy, or a cancellation: no pending
-    /// tap, the current hold can no longer arm one, and earlier stamps are stale.
+    /// An app-level cancellation (Escape, a cancelled transcription, a manual
+    /// start, monitoring stopped), applied when it happens: no pending tap, the
+    /// current hold can no longer arm one, and events that arrived before it but
+    /// are still queued are stale.
     mutating func interrupt() {
         epoch &+= 1
+        interruptInput()
+    }
+
+    /// An input-order interruption (another shortcut, Paste Again, a backend
+    /// reset), applied when it is handled, in event order: no pending tap and
+    /// the current hold can no longer arm one. Events that arrived after it are
+    /// handled after it, so they stay fresh.
+    mutating func interruptInput() {
         armedRelease = nil
         hold?.canArm = false
     }
@@ -145,7 +155,7 @@ extension DoubleTapPromptDetector {
         case (.holdDeactivated, .stop?):
             return DictationShortcutDecision(action: action, markedPrompt: false, discardTooShort: holdReleased(stamp, recordingsBegun: recordingsBegun))
         default:
-            interrupt()
+            interruptInput()
             return DictationShortcutDecision(action: action, markedPrompt: false, discardTooShort: false)
         }
     }

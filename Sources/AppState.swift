@@ -116,7 +116,7 @@ private struct PendingClipboardRestore {
     let writtenTranscript: String
 }
 
-final class AppState: ObservableObject, @unchecked Sendable {
+final class AppState: ObservableObject, DictationCleanupActions, @unchecked Sendable {
     private enum ActiveAudioInterruption {
         case muted(previouslyMuted: Bool)
     }
@@ -1076,7 +1076,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // when no shortcut was active (so no shortcut event carries it). Queued
         // like the events, so it lands between the ones around it.
         hotkeyManager.onInputInvalidated = { [weak self] in
-            DispatchQueue.main.async { self?.doubleTapPrompt.interrupt() }
+            DispatchQueue.main.async { self?.doubleTapPrompt.interruptInput() }
         }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
             self?.handleEscapeKeyPress() ?? false
@@ -1128,7 +1128,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func handleShortcutEvent(_ event: ShortcutEvent, stamp: DoubleTapPromptDetector.Stamp) {
         if event == .holdDeactivated { holdReleasesInFlight = max(0, holdReleasesInFlight - 1) }
         if event == .copyAgainTriggered {
-            doubleTapPrompt.interrupt()
+            doubleTapPrompt.interruptInput()
             copyLastTranscriptToPasteboard()
             return
         }
@@ -1142,11 +1142,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         switch action {
         case .start(let mode):
             os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
-            // An accepted dictation press ends correction work (so no verification
-            // result can present during a start delay) and pre-empts a visible
-            // dictionary suggestion at once.
-            stopCorrectionSuggestions()
-            overlayManager.withdrawDictionarySuggestion()
+            // Correction work ends and a visible suggestion is withdrawn (see the step list).
+            DictationCleanupSteps.acceptedPress(self)
             scheduleShortcutStart(mode: mode)
         case .stop:
             cancelPendingShortcutStart()
@@ -1218,18 +1215,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// A Hold to Talk recording under the double-tap minimum (0.3 s): stop and
     /// throw it away. No model run, paste, history entry or error toast.
     private func discardTooShortHold() {
-        let steps = TooShortHoldDiscard.steps(isRecording: isRecording)
+        let wasRecording = isRecording
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
-        // Work already queued for this recording (readiness, the background
-        // start) must not bring it back.
-        if steps.invalidateAttempt { recordingAttempts.invalidate() }
-        // Starting would have ended any correction watch; a tap released before
-        // the start delay never started, so end it here.
-        if steps.stopCorrectionSuggestions { stopCorrectionSuggestions() }
-        // A suggestion presented meanwhile must not stay on screen.
-        if steps.withdrawSuggestion { overlayManager.withdrawDictionarySuggestion() }
-        guard steps.cancelCapture else { return }
+        DictationCleanupSteps.discardTooShortHold(isRecording: wasRecording, self)
+    }
+
+    func withdrawDictionarySuggestion() {
+        overlayManager.withdrawDictionarySuggestion()
+    }
+
+    /// Work already queued for this recording (readiness, the background start)
+    /// must not bring it back.
+    func invalidateRecordingAttempt() {
+        recordingAttempts.invalidate()
+    }
+
+    func cancelDiscardedCapture() {
+        guard isRecording else { return }
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()

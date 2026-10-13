@@ -31,6 +31,7 @@ enum DoubleTapPromptTests {
         testReleaseAndPressArriveBeforeHandling()
         testManualRecordingVoidsTap()
         testSuggestionDuringDelayedStart()
+        testQueuedInputInterruptionsStayInOrder()
     }
 
     private static func enabled() -> DoubleTapPromptDetector {
@@ -220,8 +221,8 @@ enum DoubleTapPromptTests {
         var prompts: [Bool] = []
         var discards: [Bool] = []
 
-        init(_ hold: ShortcutBinding) {
-            configuration = ShortcutConfiguration(hold: hold, toggle: .disabled)
+        init(_ hold: ShortcutBinding, copyAgain: ShortcutBinding = .disabled) {
+            configuration = ShortcutConfiguration(hold: hold, toggle: .disabled, copyAgain: copyAgain)
             detector.isEnabled = true
         }
 
@@ -251,7 +252,7 @@ enum DoubleTapPromptTests {
         func handle(_ arrivals: [Arrival]) {
             for (delivery, stamp) in arrivals {
                 guard case .event(let event, _) = delivery, let stamp else {
-                    detector.interrupt()
+                    detector.interruptInput()  // as AppState handles onInputInvalidated, in order
                     continue
                 }
                 if event == .holdDeactivated { releasesInFlight = max(0, releasesInFlight - 1) }
@@ -516,12 +517,12 @@ enum DoubleTapPromptTests {
     /// recording, but its discard still ends any correction watch and releases
     /// retained audio, as starting would have.
     private static func testDelayedTapStillEndsCorrections() {
-        let delayed = TooShortHoldDiscard.steps(isRecording: false)
-        TestSupport.expect(delayed.stopCorrectionSuggestions && delayed.invalidateAttempt && !delayed.cancelCapture,
-                           "Corrections end even without a recording")
-        TestSupport.expectEqual(TooShortHoldDiscard.steps(isRecording: true),
-                                TooShortHoldDiscard(stopCorrectionSuggestions: true, withdrawSuggestion: true, invalidateAttempt: true,
-                                                    cancelCapture: true))
+        let delayed = RecordingCleanup()
+        DictationCleanupSteps.discardTooShortHold(isRecording: false, delayed)
+        TestSupport.expectEqual(delayed.log, ["invalidate", "stopCorrections", "withdraw"])
+        let recording = RecordingCleanup()
+        DictationCleanupSteps.discardTooShortHold(isRecording: true, recording)
+        TestSupport.expectEqual(recording.log, ["invalidate", "stopCorrections", "withdraw", "cancelCapture"])
 
         // With a live correction watch and retained audio from the previous dictation.
         let reader = FakeTextFieldReader("Note: ")
@@ -535,11 +536,13 @@ enum DoubleTapPromptTests {
         let store = CorrectionSessionStore<String>()
         let retained = store.retain("synthetic audio", bytes: 1, now: 0)!
 
-        // What stopCorrectionSuggestions does: cancel the watch, discard the session.
-        if delayed.stopCorrectionSuggestions {
+        // stopCorrectionSuggestions cancels the watch and discards the session.
+        let actions = RecordingCleanup()
+        actions.onStopCorrections = {
             watcher.cancel()
             store.discard()
         }
+        DictationCleanupSteps.discardTooShortHold(isRecording: false, actions)
         let reads = reader.rangeReads.count
         spin(timeout: 1.3)
         TestSupport.expectEqual(reader.rangeReads.count, reads)
@@ -704,29 +707,33 @@ enum DoubleTapPromptTests {
     private static func testSuggestionDuringDelayedStart() {
         let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
         var gate = SuggestionPresentationGate()
-        var verificationRunning = true
+        var verificationCancelled = false
         var startPending = false
+        let actions = RecordingCleanup()
+        actions.onStopCorrections = { verificationCancelled = true }
+        actions.onWithdraw = { gate.withdraw() }
         func mayPresent() -> Bool {
             CorrectionSuggestionTiming.mayPresent(enabled: true, dictionaryEditable: true, recording: false,
                                                   transcribing: false, startPending: startPending,
                                                   shortcutSessionActive: startPending)
         }
-        // The press is accepted: correction work stops, suggestions are withdrawn,
-        // the start waits for its delay.
-        verificationRunning = false
-        gate.withdraw()
-        startPending = true
-        // A verification result that was already in flight arrives during the delay.
-        let requested = gate.withdrawals
-        if mayPresent() { _ = gate.present(word, requestedAt: requested) }
-        TestSupport.expect(gate.suggestion == nil && !verificationRunning, "Nothing is presented while a start is pending")
-        // Even if one were on screen, the quick release's discard withdraws it.
+        // A suggestion from an earlier correction is on screen; another verification runs.
         _ = gate.present(word)
-        let steps = TooShortHoldDiscard.steps(isRecording: false)
+        // The press is accepted (AppState runs this list); its start waits for the delay.
+        DictationCleanupSteps.acceptedPress(actions)
+        startPending = true
+        TestSupport.expect(verificationCancelled, "The accepted press cancels correction work")
+        TestSupport.expect(gate.suggestion == nil, "and withdraws the visible suggestion")
+        // A result already in flight completes during the delay (AppState's Task).
+        let requested = gate.withdrawals
+        if !verificationCancelled && mayPresent() { _ = gate.present(word, requestedAt: requested) }
+        TestSupport.expect(gate.suggestion == nil, "Nothing is presented while a start is pending")
+        // Even with one on screen, the quick release's discard withdraws it.
+        _ = gate.present(word)
         startPending = false
-        if steps.withdrawSuggestion { gate.withdraw() }
+        DictationCleanupSteps.discardTooShortHold(isRecording: false, actions)
         TestSupport.expect(gate.suggestion == nil && gate.activeID == nil, "The discard leaves no suggestion")
-        TestSupport.expect(steps.withdrawSuggestion && steps.stopCorrectionSuggestions, "Discard always withdraws")
+        TestSupport.expectEqual(actions.log, ["stopCorrections", "withdraw", "invalidate", "stopCorrections", "withdraw"])
 
         TestSupport.expect(mayPresent(), "With nothing under way, a suggestion may show")
         for (recording, transcribing, pending, session) in [(true, false, false, false), (false, true, false, false),
@@ -737,10 +744,71 @@ enum DoubleTapPromptTests {
         }
     }
 
+    /// Review 5 #1: interruptions from input (a reset, another shortcut) apply in
+    /// event order, so a tap that arrived after one, but is handled later, counts.
+    private static func testQueuedInputInterruptionsStayInOrder() {
+        let reset = Pipeline(.defaultHold)
+        let queued = reset.arrive(.backendReset, at: 1.0)
+            + reset.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.1)
+            + reset.arrive(.modifierChanged(keyCode: 63, isDown: false), at: 1.2)
+            + reset.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.4)
+        reset.handle(queued)
+        TestSupport.expectEqual(reset.prompts, [false, true])
+
+        let pasteAgain = ShortcutBinding(keyCode: 96, keyDisplay: "F5", modifiers: [], kind: .key, preset: nil)
+        let shortcut = Pipeline(.defaultHold, copyAgain: pasteAgain)
+        let queuedShortcut = shortcut.arrive(.keyChanged(keyCode: 96, isDown: true, isRepeat: false), at: 1.0)
+            + shortcut.arrive(.keyChanged(keyCode: 96, isDown: false, isRepeat: false), at: 1.05)
+            + shortcut.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.1)
+            + shortcut.arrive(.modifierChanged(keyCode: 63, isDown: false), at: 1.2)
+            + shortcut.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.4)
+        shortcut.handle(queuedShortcut)
+        TestSupport.expectEqual(shortcut.prompts, [false, true])
+
+        // Between the tap and the press, the same interruptions still clear it.
+        let between = Pipeline(.defaultHold)
+        let tap = between.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+            + between.arrive(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+            + between.arrive(.backendReset, at: 1.2)
+            + between.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        between.handle(tap)
+        TestSupport.expectEqual(between.prompts, [false, false])
+
+        // An app-level cancellation (Escape) while they wait still voids them.
+        let escaped = Pipeline(.defaultHold)
+        let waiting = escaped.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+            + escaped.arrive(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+            + escaped.arrive(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        escaped.detector.interrupt()
+        escaped.handle(waiting)
+        TestSupport.expectEqual(escaped.prompts, [false, false])
+    }
+
     private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {
         let end = Date().addingTimeInterval(timeout)
         while !done() && Date() < end {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
     }
+}
+
+/// Records what a cleanup step list did, in order, with optional effects.
+private final class RecordingCleanup: DictationCleanupActions {
+    var log: [String] = []
+    var onStopCorrections: () -> Void = {}
+    var onWithdraw: () -> Void = {}
+
+    func stopCorrectionSuggestions() {
+        log.append("stopCorrections")
+        onStopCorrections()
+    }
+
+    func withdrawDictionarySuggestion() {
+        log.append("withdraw")
+        onWithdraw()
+    }
+
+    func invalidateRecordingAttempt() { log.append("invalidate") }
+
+    func cancelDiscardedCapture() { log.append("cancelCapture") }
 }
