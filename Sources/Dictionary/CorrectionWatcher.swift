@@ -37,7 +37,14 @@ protocol TextFieldReader: AnyObject {
 
 enum CorrectionDiscardReason: Error, Equatable {
     case notTrusted, focusChanged, secureField, readFailed, pasteNotAtCaret, tooLong
-    case startMoved, endNotFound, endAmbiguous, spanChangedTooMuch, timeout, cancelled
+    case startMoved, endNotFound, endAmbiguous, spanChangedTooMuch, spanRemoved, timeout, cancelled
+
+    /// Stops that forbid using text already read: the watch was cancelled,
+    /// permission was withdrawn, or the field turned secure. Every other stop
+    /// only means the field can no longer be followed.
+    var forbidsCapturedText: Bool {
+        self == .cancelled || self == .notTrusted || self == .secureField
+    }
 }
 
 enum CorrectionAnchor: Equatable {
@@ -59,12 +66,12 @@ struct CorrectionSpanRecord {
     var pasted: [UInt16] = []
 }
 
-struct CorrectionFinal: Equatable {
+struct CorrectionEdit: Equatable {
     let typed: String
     let edited: String
     let dictationID: UInt64
 
-    static func == (lhs: CorrectionFinal, rhs: CorrectionFinal) -> Bool {
+    static func == (lhs: CorrectionEdit, rhs: CorrectionEdit) -> Bool {
         DictionaryText.same(lhs.typed, rhs.typed) && DictionaryText.same(lhs.edited, rhs.edited)
             && lhs.dictationID == rhs.dictationID
     }
@@ -72,7 +79,10 @@ struct CorrectionFinal: Equatable {
 
 enum CorrectionPollOutcome: Equatable {
     case watching
-    case finalize(CorrectionFinal)
+    /// An edit unchanged for the quiet period: check it and keep watching.
+    case settled(CorrectionEdit)
+    /// The watch ended with an edit that was not checked yet.
+    case finalize(CorrectionEdit)
     case discard(CorrectionDiscardReason)
 }
 
@@ -84,8 +94,10 @@ final class CorrectionWatchSession {
     static let maxPastedUnits = 4097  // 4096 bytes of output plus the trailing space
     static let beginWindowLimit = 4200
     static let pollWindowLimit = 4600
-    static let quietPeriod: TimeInterval = 4
+    static let quietPeriod: TimeInterval = 1.5
     static let maxDuration: TimeInterval = 60
+    /// Edits reported per paste; the last one ends the watch.
+    static let maxChecks = 3
 
     private let reader: TextFieldReader
     private let target: TextFieldTarget
@@ -102,6 +114,9 @@ final class CorrectionWatchSession {
     private var pollTime: TimeInterval
     /// The edited text from the last read inside the window.
     private var lastEdited: String
+    /// The span last reported for checking, initially the paste itself.
+    private var reported: [UInt16]
+    private var reports = 0
     private var outcome: CorrectionPollOutcome?
     private(set) var record: CorrectionSpanRecord
 
@@ -121,6 +136,7 @@ final class CorrectionWatchSession {
         startTime = now
         lastChange = now
         lastSpan = record.pasted
+        reported = record.pasted
     }
 
     /// Reads just after the paste: the pasted text must end exactly at an empty
@@ -177,17 +193,16 @@ final class CorrectionWatchSession {
         } catch CorrectionDiscardReason.timeout {
             return finish(expire())
         } catch {
-            return finish(.discard(error as? CorrectionDiscardReason ?? .readFailed))
+            return finish(end(error as? CorrectionDiscardReason ?? .readFailed))
         }
+        // The whole paste is gone, as when a chat field clears on send.
+        if span.isEmpty { return finish(end(.spanRemoved)) }
         if span != lastSpan {
             lastSpan = span
             lastEdited = edited
             lastChange = now
         }
-        let changed = span != record.pasted
-        if changed && now - lastChange >= Self.quietPeriod {
-            return finish(.finalize(CorrectionFinal(typed: typed, edited: edited, dictationID: dictationID)))
-        }
+        if hasUncheckedEdit && now - lastChange >= Self.quietPeriod { return report() }
         if isExpired() { return finish(expire()) }
         return .watching
     }
@@ -196,20 +211,31 @@ final class CorrectionWatchSession {
         (clock?() ?? pollTime) - startTime >= Self.maxDuration
     }
 
-    /// At the deadline: the same safety checks as before any read (metadata
-    /// only; text is never requested past the deadline). A field that lost
-    /// focus, turned secure or lost permission is discarded, never finalized.
-    private func expire() -> CorrectionPollOutcome {
-        if cancelled || isCancelled() { return .discard(.cancelled) }
-        if let reason = Self.safetyCheck(reader: reader, target: target) { return .discard(reason) }
-        return expiryOutcome()
+    /// The last edit read differs from the paste and from the last report.
+    private var hasUncheckedEdit: Bool { lastSpan != record.pasted && lastSpan != reported }
+
+    private var lastEdit: CorrectionEdit { CorrectionEdit(typed: typed, edited: lastEdited, dictationID: dictationID) }
+
+    /// Reports the current edit for checking. The last allowed report ends the watch.
+    private func report() -> CorrectionPollOutcome {
+        reported = lastSpan
+        reports += 1
+        return reports >= Self.maxChecks ? finish(.finalize(lastEdit)) : .settled(lastEdit)
     }
 
-    /// At the deadline: finalize from text captured inside the window, or discard.
-    private func expiryOutcome() -> CorrectionPollOutcome {
-        lastSpan != record.pasted
-            ? .finalize(CorrectionFinal(typed: typed, edited: lastEdited, dictationID: dictationID))
-            : .discard(.timeout)
+    /// The watch can go no further. Unless the stop forbids it, an edit read
+    /// earlier and not checked yet is finalized from memory; nothing new is read.
+    private func end(_ reason: CorrectionDiscardReason) -> CorrectionPollOutcome {
+        !reason.forbidsCapturedText && hasUncheckedEdit ? .finalize(lastEdit) : .discard(reason)
+    }
+
+    /// At the deadline: the same safety checks as before any read (metadata
+    /// only; text is never requested past the deadline). A field that turned
+    /// secure or lost permission is discarded; one that lost focus still
+    /// finalizes text captured inside the window.
+    private func expire() -> CorrectionPollOutcome {
+        if cancelled || isCancelled() { return .discard(.cancelled) }
+        return end(Self.safetyCheck(reader: reader, target: target) ?? .timeout)
     }
 
     /// Deterministic span tracking: the before context still sits right before
@@ -279,6 +305,7 @@ final class CorrectionWatchSession {
         self.outcome = outcome
         record = CorrectionSpanRecord()
         lastSpan = []
+        reported = []
         typed = ""
         lastEdited = ""
         return outcome
@@ -346,12 +373,13 @@ struct CorrectionCapture {
 }
 
 /// Runs one session at a time on a dedicated serial queue: one read in
-/// flight, a 1 s poll for at most 60 s, no observers. `onFinalize` runs on
-/// the main thread, only for the current generation.
+/// flight, a 0.5 s poll for at most 60 s, no observers. `onEdit` runs on the
+/// main thread, only for the current generation; `isLast` is true when the
+/// watch has ended.
 final class CorrectionWatcher: @unchecked Sendable {
     static let captureDeadline: TimeInterval = 0.3
     static let settleDelay: TimeInterval = 0.15
-    static let pollInterval: TimeInterval = 1
+    static let pollInterval: TimeInterval = 0.5
 
     private let reader: TextFieldReader
     private let queue = DispatchQueue(label: "localflow.correction-watcher", qos: .utility)
@@ -361,7 +389,7 @@ final class CorrectionWatcher: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
 
     /// Main thread only.
-    var onFinalize: ((CorrectionFinal) -> Void)?
+    var onEdit: ((_ edit: CorrectionEdit, _ isLast: Bool) -> Void)?
 
     init(reader: TextFieldReader) {
         self.reader = reader
@@ -444,15 +472,22 @@ final class CorrectionWatcher: @unchecked Sendable {
             timer = nil
             return
         }
-        let outcome = session.poll(now: ProcessInfo.processInfo.systemUptime)
-        guard outcome != .watching else { return }
-        self.session = nil
-        timer?.cancel()
-        timer = nil
-        if case .finalize(let final) = outcome {
+        let delivery: (edit: CorrectionEdit, isLast: Bool)?
+        switch session.poll(now: ProcessInfo.processInfo.systemUptime) {
+        case .watching: return
+        case .settled(let edit): delivery = (edit, false)
+        case .finalize(let edit): delivery = (edit, true)
+        case .discard: delivery = nil
+        }
+        if delivery?.isLast != false {
+            self.session = nil
+            timer?.cancel()
+            timer = nil
+        }
+        if let delivery {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation.isCurrent(token) else { return }
-                self.onFinalize?(final)
+                self.onEdit?(delivery.edit, delivery.isLast)
             }
         }
     }

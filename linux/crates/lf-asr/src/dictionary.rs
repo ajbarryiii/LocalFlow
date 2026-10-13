@@ -20,10 +20,10 @@ pub const MAX_WORDS: usize = 8;
 /// Most scalars in an entry.
 pub const MAX_SCALARS: usize = 100;
 pub const MIN_STRENGTH: f32 = 0.25;
-pub const MAX_STRENGTH: f32 = 4.0;
+pub const MAX_STRENGTH: f32 = 8.0;
 pub const DEFAULT_STRENGTH: f32 = 1.0;
 /// Strengths offered in user interfaces.
-pub const STRENGTH_PRESETS: [f32; 6] = [0.5, 1.0, 1.41, 2.0, 2.83, 4.0];
+pub const STRENGTH_PRESETS: [f32; 8] = [0.5, 1.0, 1.41, 2.0, 2.83, 4.0, 5.66, 8.0];
 
 /// A validated dictionary entry: the stored text and its strength.
 #[derive(Clone, PartialEq)]
@@ -89,7 +89,7 @@ impl std::fmt::Display for EntryError {
             EntryError::TooLong => "the entry is longer than 100 characters",
             EntryError::NoLetter => "the entry has no letter",
             EntryError::Unencodable => "the entry has characters the model cannot spell",
-            EntryError::BadStrength => "the strength must be between 0.25 and 4",
+            EntryError::BadStrength => "the strength must be between 0.25 and 8",
         })
     }
 }

@@ -58,7 +58,7 @@
 //!   byte as `%XX` (uppercase hex). Decoded exactly once; malformed escapes,
 //!   invalid UTF-8 and C0/C1 control characters are rejected. Only `text`
 //!   may be empty.
-//! - `<dec>`: `[0-9]{1,2}(.[0-9]{1,3})?`, a strength within [0.25, 4].
+//! - `<dec>`: `[0-9]{1,2}(.[0-9]{1,3})?`, a strength within [0.25, 8].
 //! - `<u64>`: 1 to 20 decimal digits.
 //! - Limits, checked independently: a text frame is at most
 //!   [`MAX_TEXT_LINE`] bytes encoded, and a decoded value at most
@@ -593,7 +593,7 @@ pub fn format_dec(milli: u32) -> String {
 }
 
 /// Strengths a `<dec>` may give, in thousandths.
-pub const STRENGTH_RANGE: std::ops::RangeInclusive<u32> = 250..=4000;
+pub const STRENGTH_RANGE: std::ops::RangeInclusive<u32> = 250..=8000;
 
 /// Parses `<dec>` (`[0-9]{1,2}(.[0-9]{1,3})?`) into thousandths within
 /// [`STRENGTH_RANGE`].
@@ -1054,17 +1054,19 @@ mod tests {
             ("0.25", 250),
             ("4", 4000),
             ("4.000", 4000),
+            ("5.66", 5660),
+            ("8", 8000),
             ("2.83", 2830),
             ("01.5", 1500),
         ] {
             assert_eq!(parse_dec(s), Some(milli), "{s}");
         }
         for bad in [
-            "", ".5", "1.", "1.4142", "100", "0.24", "4.001", "-1", "1e0", "1,5", " 1", "nan",
+            "", ".5", "1.", "1.4142", "100", "0.24", "8.001", "-1", "1e0", "1,5", " 1", "nan",
         ] {
             assert_eq!(parse_dec(bad), None, "{bad}");
         }
-        for milli in [250, 500, 1000, 1410, 2000, 2830, 4000, 1234] {
+        for milli in [250, 500, 1000, 1410, 2000, 2830, 4000, 5660, 8000, 1234] {
             assert_eq!(parse_dec(&format_dec(milli)), Some(milli));
         }
         assert_eq!(format_dec(1000), "1");
@@ -1207,7 +1209,7 @@ mod tests {
             ("localflow/1 dict-add", ErrorCode::BadRequest),
             ("localflow/1 dict-add word=", ErrorCode::BadRequest),
             (
-                "localflow/1 dict-add word=a strength=5",
+                "localflow/1 dict-add word=a strength=9",
                 ErrorCode::BadRequest,
             ),
             (

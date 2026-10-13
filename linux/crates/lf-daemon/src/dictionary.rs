@@ -576,7 +576,7 @@ mod tests {
             Err(ChangeError::InvalidEntry(EntryError::Unencodable))
         );
         assert_eq!(
-            store.add("word", 4.5),
+            store.add("word", 8.5),
             Err(ChangeError::InvalidEntry(EntryError::BadStrength))
         );
         let word = |i: usize| {

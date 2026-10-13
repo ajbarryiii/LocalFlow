@@ -530,8 +530,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, action in
             self?.handleDictionarySuggestionAction(suggestion, action)
         }
-        correctionWatcher.onFinalize = { [weak self] final in
-            self?.handleCorrectionFinalized(final)
+        correctionWatcher.onEdit = { [weak self] edit, isLast in
+            self?.handleCorrectionEdit(edit, isLast: isLast)
         }
 
         // Clear any stale recording flag left over from an unclean exit.
@@ -2138,7 +2138,10 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             shortcutSessionActive: shortcutSessionController.activeMode != nil)
     }
 
-    private func handleCorrectionFinalized(_ final: CorrectionFinal) {
+    /// Checks each settled edit; a newer edit supersedes a running check. The
+    /// watch continues after a check that offers nothing, and stops once one
+    /// does (one suggestion per dictation).
+    private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
         guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
               customDictionary.entries.count < DictionaryValidation.capacity else {
@@ -2149,10 +2152,13 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         correctionSuggestionTask?.cancel()
         correctionSuggestionTask = Task { @MainActor [weak self] in
             let suggestion = await LocalParakeetService.shared.suggestCorrection(
-                typed: final.typed, edited: final.edited, dictationID: final.dictationID, ignore: ignore)
+                typed: edit.typed, edited: edit.edited, dictationID: edit.dictationID, ignore: ignore, isLast: isLast)
             guard let self, !Task.isCancelled else { return }
             self.correctionSuggestionTask = nil
-            guard let suggestion, self.mayPresentCorrectionSuggestion else { return }
+            guard let suggestion else { return }
+            self.correctionWatcher.cancel()
+            LocalParakeetService.shared.releaseCorrectionSession(dictationID: edit.dictationID)
+            guard self.mayPresentCorrectionSuggestion else { return }
             let key = DictionaryKey(suggestion.word)
             guard !self.customDictionary.contains(key), !self.customDictionary.isIgnored(key) else { return }
             self.overlayManager.showDictionarySuggestion(suggestion)

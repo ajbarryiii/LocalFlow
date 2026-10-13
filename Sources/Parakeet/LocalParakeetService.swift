@@ -143,9 +143,11 @@ final class LocalParakeetService: @unchecked Sendable {
 
     /// Runs candidates and verification (DESIGN §1.5-1.6) against the retained
     /// session on the model queue. A stale or expired `dictationID`, a new
-    /// recording, or a dictionary change yields nil.
+    /// recording, a newer check or a dictionary change yields nil. The audio
+    /// stays retained for later checks of the same dictation until `isLast`
+    /// (the watch has ended) or `releaseCorrectionSession`.
     func suggestCorrection(typed: String, edited: String, dictationID: UInt64,
-                           ignore: Set<DictionaryKey>) async -> DictionarySuggestion? {
+                           ignore: Set<DictionaryKey>, isLast: Bool) async -> DictionarySuggestion? {
         let cancellation = beginVerification()
         return await withCheckedContinuation { continuation in
             queue.async {
@@ -157,7 +159,7 @@ final class LocalParakeetService: @unchecked Sendable {
                 let encoder = session.runtime.encoder
                 let suggestion = DictionarySuggestionFinder.find(
                     typed: typed, edited: edited, base: session.base, dictionary: session.dictionary.entries, ignore: ignore,
-                    encoder: encoder, now: now,
+                    encoder: encoder, exhausted: session.exhausted, now: now,
                     isCancelled: { cancellation.isCancelled || self.corrections.currentID != dictationID },
                     decode: { extra in
                         let entries = session.dictionary.entries.filter { $0.key != extra.key } + [extra]
@@ -167,9 +169,10 @@ final class LocalParakeetService: @unchecked Sendable {
                         }
                         return CasingRestorer.apply(text, entries: entries)
                     })
-                // One suggestion per correction: release this dictation's audio now.
-                self.corrections.expire(id: dictationID)
-                continuation.resume(returning: cancellation.isCancelled ? nil : suggestion)
+                let cancelled = cancellation.isCancelled
+                // After the last check nothing else can use this dictation's audio.
+                if isLast && !cancelled { self.corrections.expire(id: dictationID) }
+                continuation.resume(returning: cancelled ? nil : suggestion)
             }
         }
     }
@@ -288,6 +291,8 @@ private struct RetainedCorrection {
     let projections: [RetainedProjection?]
     let dictionary: DictionarySnapshot
     let base: String
+    /// Shared by every check of this dictation; model queue only.
+    let exhausted = ExhaustedCandidates()
 }
 
 private final class LocalParakeetRuntime {

@@ -29,7 +29,7 @@ enum DictionaryEntryError: String, Error, Equatable {
         case .tooLong: return "Use at most \(DictionaryValidation.maxScalars) characters."
         case .noLetter: return "Include at least one letter."
         case .unencodable: return "This text contains characters the speech model can't produce."
-        case .invalidStrength: return "Choose a strength between ×0.25 and ×4."
+        case .invalidStrength: return "Choose a strength between ×0.25 and ×8."
         }
     }
 }
@@ -44,11 +44,11 @@ enum DictionaryValidation {
     static let maxWords = 8
     static let maxScalars = 100
     static let minStrength: Float = 0.25
-    static let maxStrength: Float = 4
+    static let maxStrength: Float = 8
     static let defaultStrength: Float = 1
     static let capacity = 1000
     static let ignoreCapacity = 1000
-    static let presets: [Float] = [0.5, 1, 1.41, 2, 2.83, 4]
+    static let presets: [Float] = [0.5, 1, 1.41, 2, 2.83, 4, 5.66, 8]
 
     /// Trim whitespace and collapse internal runs to one ASCII space.
     static func normalize(_ text: String) -> String {

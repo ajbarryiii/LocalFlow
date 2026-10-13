@@ -25,9 +25,9 @@ pub const MAX_SESSION_BYTES: usize = 4096;
 /// Most candidates a correction tries (DESIGN §1.6).
 pub const MAX_VERIFY_CANDIDATES: usize = 3;
 /// Strengths tried for a candidate, in order.
-pub const VERIFY_STRENGTHS: [f32; 5] = [1.0, 1.41, 2.0, 2.83, 4.0];
+pub const VERIFY_STRENGTHS: [f32; 7] = [1.0, 1.41, 2.0, 2.83, 4.0, 5.66, 8.0];
 /// Verification stops once this much time has passed.
-pub const VERIFY_BUDGET: Duration = Duration::from_secs(2);
+pub const VERIFY_BUDGET: Duration = Duration::from_secs(3);
 
 /// What a typed dictation leaves for a later correction: in memory only,
 /// never logged (its `Debug` shows no text).
@@ -785,7 +785,14 @@ mod tests {
         #[test]
         fn strengths_are_tried_in_order_until_one_recovers_the_word() {
             let v = job(TYPED, EDITED);
-            for (milli, decodes) in [(1000, 1), (1410, 2), (2830, 4), (4000, 5)] {
+            for (milli, decodes) in [
+                (1000, 1),
+                (1410, 2),
+                (2830, 4),
+                (4000, 5),
+                (5660, 6),
+                (8000, 7),
+            ] {
                 let mut rec = recognizer(&[(milli, RECOVERED)]);
                 let s = verify(&v, &CancelToken::default(), &mut rec).unwrap();
                 assert_eq!(
@@ -794,10 +801,10 @@ mod tests {
                 );
                 assert_eq!(rec.state().redecodes, decodes);
             }
-            // Never recovered: five decodes, nothing suggested.
+            // Never recovered: seven decodes, nothing suggested.
             let mut rec = recognizer(&[]);
             assert_eq!(verify(&v, &CancelToken::default(), &mut rec), None);
-            assert_eq!(rec.state().redecodes, 5);
+            assert_eq!(rec.state().redecodes, 7);
         }
 
         #[test]
@@ -813,14 +820,14 @@ mod tests {
         }
 
         #[test]
-        fn at_most_three_candidates_with_five_decodes_each() {
+        fn at_most_three_candidates_with_seven_decodes_each() {
             let before = "aa bb cc dd ee ff gg hh ii jj kk ll";
             let after = "aa Xb cc Xd ee Xf gg Xh ii jj kk ll";
             let v = job(before, after);
             assert_eq!(v.candidates.len(), 4);
             let mut rec = recognizer(&[]);
             assert_eq!(verify(&v, &CancelToken::default(), &mut rec), None);
-            assert_eq!(rec.state().redecodes, 15);
+            assert_eq!(rec.state().redecodes, 21);
         }
 
         #[test]
@@ -838,7 +845,7 @@ mod tests {
             let mut rec = recognizer(&[(1000, "aa zz cc dd ee ff gg xh ii jj kk ll")]);
             let got = verify(&v, &CancelToken::default(), &mut rec).unwrap();
             assert_eq!(got.word, "Xh");
-            assert_eq!(rec.state().redecodes, 5 + 5 + 1);
+            assert_eq!(rec.state().redecodes, 7 + 7 + 1);
         }
 
         #[test]
@@ -873,10 +880,10 @@ mod tests {
             rec.state().redecode_delay = Duration::from_millis(300);
             let start = Instant::now();
             assert_eq!(verify(&v, &CancelToken::default(), &mut rec), None);
-            // Decodes start every 0.3 s: five for the first candidate, then
-            // the second until 2 s have passed (fifteen without a budget).
+            // Decodes start every 0.3 s: seven for the first candidate, then
+            // the second until 3 s have passed (21 without a budget).
             let n = rec.state().redecodes;
-            assert!((6..=7).contains(&n), "{n}");
+            assert!((9..=10).contains(&n), "{n}");
             assert!(start.elapsed() < VERIFY_BUDGET + Duration::from_millis(500));
         }
 
@@ -889,27 +896,27 @@ mod tests {
         #[test]
         fn a_result_past_the_budget_is_dropped() {
             let v = job(TYPED, EDITED);
-            // Recovered by the fourth decode (2.83), which starts in budget.
-            // At 0.6 s per decode it ends at 2.4 s: too late, dropped.
-            let mut rec = recognizer(&[(2830, RECOVERED)]);
-            let mut clock = decode_clock(&rec, Duration::from_millis(600));
+            // Recovered by the fifth decode (4.0), which starts in budget.
+            // At 0.7 s per decode it ends at 3.5 s: too late, dropped.
+            let mut rec = recognizer(&[(4000, RECOVERED)]);
+            let mut clock = decode_clock(&rec, Duration::from_millis(700));
             let got = verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock);
             assert_eq!(got, None);
-            assert_eq!(rec.state().redecodes, 4);
-            // At 0.4 s per decode it ends at 1.6 s and counts.
-            let mut rec = recognizer(&[(2830, RECOVERED)]);
-            let mut clock = decode_clock(&rec, Duration::from_millis(400));
+            assert_eq!(rec.state().redecodes, 5);
+            // At 0.5 s per decode it ends at 2.5 s and counts.
+            let mut rec = recognizer(&[(4000, RECOVERED)]);
+            let mut clock = decode_clock(&rec, Duration::from_millis(500));
             let got = verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock);
-            assert_eq!(got.map(|s| s.strength), Some(2830));
+            assert_eq!(got.map(|s| s.strength), Some(4000));
             // No decode starts once the budget is spent: 0.5 s each, the
-            // fifth would start at 2.0 s.
+            // seventh would start at 3.0 s.
             let mut rec = recognizer(&[]);
             let mut clock = decode_clock(&rec, Duration::from_millis(500));
             assert_eq!(
                 verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock),
                 None
             );
-            assert_eq!(rec.state().redecodes, 4);
+            assert_eq!(rec.state().redecodes, 6);
         }
 
         #[test]
@@ -933,8 +940,8 @@ mod tests {
         fn casing_respects_the_budget_and_cancel() {
             let v = job("i like nixos", "i like NixOS");
             let t0 = Instant::now();
-            // The clock reads 0 at the start and 2.1 s at the casing check.
-            let mut times = [t0, t0 + Duration::from_millis(2100)].into_iter();
+            // The clock reads 0 at the start and 3.1 s at the casing check.
+            let mut times = [t0, t0 + Duration::from_millis(3100)].into_iter();
             let mut clock = move || times.next().unwrap_or(t0 + VERIFY_BUDGET * 2);
             let mut rec = recognizer(&[]);
             assert_eq!(
