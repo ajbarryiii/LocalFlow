@@ -9,6 +9,40 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.2] - 2026-10-13
+
+Fourth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.1.
+
+### Added
+
+- Custom dictionary (Settings → Dictionary). Add names and technical terms
+  that are often misheard; each entry biases recognition toward its words
+  with its own strength, and entries containing capitals are written exactly
+  as entered.
+- Optional correction suggestions, off by default. After a dictation, when
+  you correct a misheard word in the pasted text, LocalFlow re-decodes the
+  same audio with that word boosted and offers to add it to the dictionary
+  only if that reproduces your correction. It reads only the pasted text and
+  a little around it, for up to a minute, never password fields, and keeps
+  that text in memory only.
+- Optional double-tap prompt mode, off by default: tap Hold to Talk, then
+  press and hold it again within 0.4 seconds to dictate with the prompt tag.
+
+### Improved
+
+- Recordings longer than one chunk (15 seconds, or 30 seconds once
+  optimization completes) are transcribed in chunks that overlap by 2 seconds
+  and are joined at a word both chunks agree on. This removes the invented
+  periods, capitals and cut-off words that used to appear where chunks met.
+- Model files are verified with bounded reads instead of loading the whole
+  encoder into memory.
+
+### Fixed
+
+- Temporary recordings from cancelled or failed dictations are deleted
+  instead of being left behind.
+
 ## [2.1.1] - 2026-10-09
 
 Third LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
