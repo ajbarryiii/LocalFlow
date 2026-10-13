@@ -327,7 +327,7 @@ enum DictionaryTests {
             row[1024] += frame % 3 == 0 ? 0 : 12  // mostly blanks, as real audio
             table.append(row)
         }
-        func run(bias: BiasGraph?) -> [Int] {
+        func run(bias: BiasGraph?) -> [ParakeetToken] {
             var calls = 0
             let buffer = FloatBuffer(count: 1030)
             func argmax(_ row: ArraySlice<Float>) -> Int {
@@ -366,7 +366,7 @@ enum DictionaryTests {
             return (UnsafePointer(buffer.pointer), 1)
         }, check: {})
         // Frame 3: 0 + 1.414 * (1 + 3 ln 2) = 4.35 beats the blank's 4.
-        TestSupport.expectEqual(tokens, [1, 2])
+        TestSupport.expectEqual(tokens, [ParakeetToken(id: 1, frame: 0), ParakeetToken(id: 2, frame: 2)])
         TestSupport.expectEqual(predicted, [1024, 1, 2])
         TestSupport.expect((try? LocalParakeetCore.decode(length: 1, bias: graph, predict: { _ in }, joint: { _ in
             (UnsafePointer(buffer.pointer), 5)

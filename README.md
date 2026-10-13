@@ -38,9 +38,10 @@ while it is on, holds shorter than 0.3 seconds are discarded.
 The model prepares in the background at startup and stays in memory for the
 session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
-Recordings use independent chunks of up to 30 seconds once optimization
-completes, or 15 seconds while it is still in progress, and can lose context
-at boundaries. There is no cloud fallback.
+Recordings use chunks of up to 30 seconds once optimization completes, or 15
+seconds while it is still in progress. Consecutive chunks overlap by 2 seconds
+and are joined on a word both heard, so chunk edges do not add sentence breaks.
+There is no cloud fallback.
 
 Voice macros match complete phrases locally and paste predefined text. An
 optional trailing “press enter” command submits after pasting. Neither feature
