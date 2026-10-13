@@ -146,6 +146,13 @@ enum LocalParakeetTests {
             (s(13)..<s(16), [w("Said", 13.2), w("the", 13.9), w("the", 14.1), w("end", 14.6), w("today.", 15.2)]),
         ]), "said the the end today.")
 
+        // When one chunk misses a repetition, the remaining copy pairs with
+        // the copy heard at the same time, not the first one in order.
+        TestSupport.expectEqual(stitched([
+            (0..<s(15), [w("very", 13.76), w("very", 14.0), w("good.", 14.88)]),
+            (s(13)..<s(16), [w("Very", 14.04), w("good.", 14.92)]),
+        ]), "very very good.")
+
         // Without agreement the seam falls at the middle of the overlap.
         TestSupport.expectEqual(stitched([
             (0..<s(15), [w("alpha", 12.0), w("bravo", 13.5), w("charlie.", 14.5)]),

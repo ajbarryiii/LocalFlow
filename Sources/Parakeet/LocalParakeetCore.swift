@@ -184,24 +184,31 @@ struct ParakeetTranscriptAssembler {
         let l = left.indices.filter { left[$0].start >= overlap.lowerBound - tolerance }
         let r = right.indices.filter { right[$0].start < overlap.upperBound + tolerance }
         let leftKeys = l.map { key(left[$0].text) }, rightKeys = r.map { key(right[$0].text) }
+        func distance(_ x: Int, _ y: Int) -> Int { abs(left[l[x]].start - right[r[y]].start) }
         func matches(_ x: Int, _ y: Int) -> Bool {
-            !leftKeys[x].isEmpty && leftKeys[x] == rightKeys[y]
-                && abs(left[l[x]].start - right[r[y]].start) <= tolerance
+            !leftKeys[x].isEmpty && leftKeys[x] == rightKeys[y] && distance(x, y) <= tolerance
         }
-        // Longest common subsequence, so repeated words pair in order.
-        var lengths = Array(repeating: Array(repeating: 0, count: r.count + 1), count: l.count + 1)
+        // Longest common subsequence, so repeated words pair in order. Among
+        // equally long alignments, the one whose pairs are closest in time wins.
+        typealias Alignment = (count: Int, cost: Int)
+        func better(_ a: Alignment, _ b: Alignment) -> Bool { a.count != b.count ? a.count > b.count : a.cost < b.cost }
+        var best: [[Alignment]] = Array(repeating: Array(repeating: (count: 0, cost: 0), count: r.count + 1), count: l.count + 1)
+        func paired(_ x: Int, _ y: Int) -> Alignment {
+            (best[x + 1][y + 1].count + 1, best[x + 1][y + 1].cost + distance(x, y))
+        }
         for x in l.indices.reversed() {
             for y in r.indices.reversed() {
-                lengths[x][y] = matches(x, y) ? lengths[x + 1][y + 1] + 1 : max(lengths[x + 1][y], lengths[x][y + 1])
+                let skip = better(best[x][y + 1], best[x + 1][y]) ? best[x][y + 1] : best[x + 1][y]
+                best[x][y] = matches(x, y) && better(paired(x, y), skip) ? paired(x, y) : skip
             }
         }
         var pairs: [(Int, Int)] = [], x = 0, y = 0
         while x < l.count, y < r.count {
-            if matches(x, y), lengths[x][y] == lengths[x + 1][y + 1] + 1 {
+            if matches(x, y), paired(x, y) == best[x][y] {
                 pairs.append((l[x], r[y]))
                 x += 1
                 y += 1
-            } else if lengths[x + 1][y] >= lengths[x][y + 1] {
+            } else if best[x + 1][y] == best[x][y] {
                 x += 1
             } else {
                 y += 1
