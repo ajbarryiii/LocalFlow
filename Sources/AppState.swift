@@ -248,6 +248,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
     private var doubleTapPrompt = DoubleTapPromptDetector()
+    private var recordingAttempts = RecordingAttempts()
 
     @Published var isPressEnterVoiceCommandEnabled: Bool {
         didSet {
@@ -302,7 +303,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             UserDefaults.standard.set(isCorrectionSuggestionsEnabled, forKey: Self.correctionSuggestionsStorageKey)
             if !isCorrectionSuggestionsEnabled {
                 stopCorrectionSuggestions()
-                overlayManager.dismissDictionarySuggestion()
+                overlayManager.withdrawDictionarySuggestion()
             }
         }
     }
@@ -1051,11 +1052,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func startHotkeyMonitoring() {
         shouldMonitorHotkeys = true
-        hotkeyManager.onShortcutEvent = { [weak self] event in
-            // Monotonic time at the event, before the hop to the main queue.
+        hotkeyManager.onShortcutEventDetail = { [weak self] event, releaseOrigin in
+            // Stamp the event as it arrives (the event tap runs on the main run
+            // loop), before the hop to the main queue: monotonic time, whether the
+            // app was idle, and the interruption count, so later state changes or
+            // cancellations are not mistaken for the state at the event.
             let time = ProcessInfo.processInfo.systemUptime
-            DispatchQueue.main.async {
-                self?.handleShortcutEvent(event, at: time)
+            guard let self else { return }
+            let appIdle = Thread.isMainThread && self.isIdleForShortcut
+            let stamp = self.doubleTapPrompt.stamp(at: time, appIdle: appIdle, releaseOrigin: releaseOrigin)
+            DispatchQueue.main.async { [weak self] in
+                self?.handleShortcutEvent(event, stamp: stamp)
             }
         }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
@@ -1068,6 +1075,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         shouldMonitorHotkeys = false
         hotkeyMonitoringErrorMessage = nil
         hotkeyManager.onShortcutEvent = nil
+        hotkeyManager.onShortcutEventDetail = nil
         hotkeyManager.onEscapeKeyPressed = nil
         hotkeyManager.stop()
     }
@@ -1102,40 +1110,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func handleShortcutEvent(_ event: ShortcutEvent, at time: TimeInterval) {
+    /// Not recording, transcribing or about to start: a Hold to Talk tap from here
+    /// may arm a double-tap.
+    private var isIdleForShortcut: Bool {
+        !isRecording && !isTranscribing && pendingShortcutStartMode == nil && shortcutSessionController.activeMode == nil
+    }
+
+    private func handleShortcutEvent(_ event: ShortcutEvent, stamp: DoubleTapPromptDetector.Stamp) {
         if event == .copyAgainTriggered {
             doubleTapPrompt.interrupt()
             copyLastTranscriptToPasteboard()
             return
         }
 
-        let fromIdle = !isRecording && !isTranscribing && pendingShortcutStartMode == nil
-            && shortcutSessionController.activeMode == nil
-        let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing)
-
-        // Double-tap prompt mode reads only the Hold to Talk starts and stops the
-        // controller already decided on; every other event clears a pending tap.
-        var holdTooShort = false
-        switch (event, action) {
-        case (.holdActivated, .start(.hold)?):
-            if doubleTapPrompt.holdStarted(at: time, fromIdle: fromIdle) {
-                shortcutSessionController.markPromptSession()
-            }
-        case (.holdDeactivated, .stop?):
-            holdTooShort = doubleTapPrompt.holdReleased(at: time)
-        default:
-            doubleTapPrompt.interrupt()
-        }
-
-        guard let action else { return }
+        // The controller decides start and stop as always; double-tap prompt mode
+        // only reads Hold to Talk starts and stops (see DoubleTapPromptDetector.route).
+        let decision = doubleTapPrompt.route(event, stamp: stamp, controller: shortcutSessionController,
+                                             isTranscribing: isTranscribing)
+        guard let action = decision.action else { return }
 
         switch action {
         case .start(let mode):
             os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
+            // A dictation press pre-empts a visible dictionary suggestion at once.
+            overlayManager.withdrawDictionarySuggestion()
             scheduleShortcutStart(mode: mode)
         case .stop:
             cancelPendingShortcutStart()
-            if holdTooShort {
+            if decision.discardTooShort {
                 discardTooShortHold()
                 return
             }
@@ -1201,9 +1203,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// A Hold to Talk recording under the double-tap minimum (0.3 s): stop and
     /// throw it away. No model run, paste, history entry or error toast.
     private func discardTooShortHold() {
+        let steps = TooShortHoldDiscard.steps(isRecording: isRecording)
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
-        guard isRecording else { return }
+        // Work already queued for this recording (readiness, the background
+        // start) must not bring it back.
+        if steps.invalidateAttempt { recordingAttempts.invalidate() }
+        // Starting would have ended any correction watch; a tap released before
+        // the start delay never started, so end it here.
+        if steps.stopCorrectionSuggestions { stopCorrectionSuggestions() }
+        guard steps.cancelCapture else { return }
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()
@@ -1311,6 +1320,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         guard !isRecording && !isTranscribing else { return }
         // A new dictation ends any correction watch and verification without a suggestion.
         stopCorrectionSuggestions()
+        overlayManager.withdrawDictionarySuggestion()
         cancelPendingShortcutStart()
         guard prepareRecordingStart(triggerMode: triggerMode), ensureMicrophoneAccess() else { return }
         applyAudioInterruptionIfNeeded()
@@ -1441,6 +1451,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
+        let attempt = recordingAttempts.begin()
         beginCriticalDictationActivity()
         clearPendingOverlayDismissToken()
         errorMessage = nil
@@ -1455,7 +1466,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         recordingInitializationTimer = initTimer
         initTimer.schedule(deadline: .now() + 0.2)
         initTimer.setEventHandler { [weak self] in
-            guard let self, !overlayShown else { return }
+            guard let self, !overlayShown, self.recordingAttempts.isCurrent(attempt) else { return }
             overlayShown = true
             os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
             self.clearPendingOverlayDismissToken()
@@ -1469,7 +1480,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let deviceUID = selectedMicrophoneID
         audioRecorder.onRecordingReady = { [weak self] in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.recordingAttempts.isCurrent(attempt) else { return }
                 self.cancelRecordingInitializationTimer()
                 os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
                 self.statusText = "Recording..."
@@ -1489,7 +1500,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         audioRecorder.onRecordingFailure = { [weak self] error in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.recordingAttempts.isCurrent(attempt) else { return }
                 self.cancelRecordingInitializationTimer()
                 self.handleRecordingFailure(error)
             }
@@ -1503,7 +1514,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 try self.audioRecorder.startRecording(deviceUID: deviceUID)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 DispatchQueue.main.async {
-                    guard self.isRecording, self.activeRecordingTriggerMode != nil else { return }
+                    guard self.recordingAttempts.isCurrent(attempt), self.isRecording,
+                          self.activeRecordingTriggerMode != nil else { return }
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
                         .receive(on: DispatchQueue.main)
                         .sink { [weak self] level in
@@ -1512,6 +1524,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 }
             } catch {
                 DispatchQueue.main.async {
+                    guard self.recordingAttempts.isCurrent(attempt) else { return }
                     self.cancelRecordingInitializationTimer()
                     guard self.isRecording || self.activeRecordingTriggerMode != nil else { return }
                     self.handleRecordingFailure(error)
@@ -2186,6 +2199,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func dictionaryDidChange() {
         dictionaryRevision += 1
         stopCorrectionSuggestions()
+        // A suggestion made against the old dictionary must not stay clickable.
+        overlayManager.withdrawDictionarySuggestion()
     }
 
     private static func loadCustomDictionary() -> (dictionary: CustomDictionary, failed: Bool) {

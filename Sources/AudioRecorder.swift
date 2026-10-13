@@ -49,9 +49,13 @@ enum AudioRecorderError: LocalizedError {
     case failedToCreateCaptureInput(String)
     case failedToStartCaptureSession(String)
     case failedToBeginFileRecording(String)
+    /// A cancel arrived before this start reached the capture queue.
+    case captureCancelled
 
     var errorDescription: String? {
         switch self {
+        case .captureCancelled:
+            return "Recording was cancelled."
         case .invalidInputFormat(let details):
             return "Invalid input format: \(details)"
         case .missingInputDevice:
@@ -75,11 +79,11 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
     private var audioDataOutput: AVCaptureAudioDataOutput?
     private var sessionObservers: [NSObjectProtocol] = []
     private var tempFileURL: URL?
-    private var recordingStartTime: CFAbsoluteTime = 0
     private let _bufferCount = OSAllocatedUnfairLock(initialState: 0)
     private let fileWriteErrorLock = OSAllocatedUnfairLock(initialState: ())
     private var watchdogTimer: DispatchSourceTimer?
     private let sessionQueue = DispatchQueue(label: "com.ajbarryiii.localflow.capture.session")
+    private let startGate = CaptureStartGate()
     private let sampleBufferQueue = DispatchQueue(label: "com.ajbarryiii.localflow.capture.samples")
     private var activeAudioFile: AVAudioFile?
     private var activeAudioFormat: AVAudioFormat?
@@ -104,8 +108,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             interleaved: true
         )!
     }()
-    private var readyFired = false
-    private var failureReported = false
+    /// Start time, readiness, failure and the current output, for the capture in progress.
+    private let attemptState = OSAllocatedUnfairLock(initialState: CaptureAttemptState())
     private static let watchdogTimeout: TimeInterval = 2.0
     private static let sampleRateLogLimit = 40
 
@@ -214,6 +218,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         isSessionInterrupted = false
 
         audioDataOutput?.setSampleBufferDelegate(nil, queue: nil)
+        attemptState.withLock { $0.detach() }
         if let session = captureSession, session.isRunning {
             session.stopRunning()
         }
@@ -225,18 +230,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
     private func reportRecordingFailure(_ error: Error, completion: ((URL?) -> Void)? = nil) {
         sessionQueue.async {
-            guard !self.failureReported else { return }
-            self.failureReported = true
+            guard self.attemptState.withLock({ $0.claimFailure() }) else { return }
             self.cancelWatchdog()
             self._recording.withLock { $0 = false }
 
             let completion = completion
-            let discardURL = self.finishAudioFileLocked(discard: true)
+            let disposition = self.finishAudioFileLocked(discard: true)
             self.teardownSessionLocked()
             self.liveLevelNormalizerLock.withLock { $0.reset() }
-            if let discardURL {
-                try? FileManager.default.removeItem(at: discardURL)
-            }
+            disposition.removeDiscarded()
 
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -278,16 +280,16 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         watchdogTimer = nil
     }
 
-    private func finishAudioFileLocked(discard: Bool) -> URL? {
-        var finalizedURL: URL?
-        var shouldKeepFile = false
+    /// Drains the writer, then decides the file: the caller keeps `keep` and must
+    /// call `removeDiscarded()`, so a discarded or empty recording is deleted.
+    private func finishAudioFileLocked(discard: Bool) -> AudioFileDisposition {
+        var disposition = AudioFileDisposition(keep: nil, delete: nil)
 
         // Drain all queued sample-buffer callbacks before releasing the writer.
         sampleBufferQueue.sync {
-            finalizedURL = self.tempFileURL
-            shouldKeepFile = !discard && self.recordedFrameCount > 0 && self.fileWriteErrorLock.withLock { _ in
-                self.fileWriteError == nil
-            }
+            disposition = AudioFileDisposition.decide(
+                url: self.tempFileURL, discard: discard, recordedFrames: Int64(self.recordedFrameCount),
+                writeFailed: self.fileWriteErrorLock.withLock { _ in self.fileWriteError != nil })
             self.activeAudioFile = nil
             self.activeAudioFormat = nil
         }
@@ -297,12 +299,12 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             self.fileWriteErrorLock.withLock { _ in
                 self.fileWriteError = nil
             }
-            if !shouldKeepFile {
+            if disposition.keep == nil {
                 self.tempFileURL = nil
             }
         }
 
-        return shouldKeepFile ? finalizedURL : nil
+        return disposition
     }
 
     private func handleSessionInterrupted(_ notification: Notification) {
@@ -566,6 +568,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             AVLinearPCMIsNonInterleaved: !recordingTargetFormat.isInterleaved,
         ]
         dataOutput.setSampleBufferDelegate(self, queue: sampleBufferQueue)
+        attemptState.withLock { $0.attach(ObjectIdentifier(dataOutput)) }
 
         let input: AVCaptureDeviceInput
         do {
@@ -622,23 +625,29 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
     func startRecording(deviceUID: String? = nil) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
-        recordingStartTime = t0
-        _bufferCount.withLock { $0 = 0 }
-        readyFired = false
-        failureReported = false
-        liveLevelNormalizerLock.withLock { $0.reset() }
 
         os_log(.info, log: recordingLog, "startRecording() entered")
+        let startRequest = startGate.requestStart()
 
         let tempDir = FileManager.default.temporaryDirectory
         let outputURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
 
         do {
             try sessionQueue.sync {
+                // A cancel since this start was requested wins: no session.
+                guard self.startGate.mayStart(startRequest) else { throw AudioRecorderError.captureCancelled }
+                // Reset per-capture state only once admitted, on the owning queue, so a
+                // cancelled or earlier capture can never touch this one's.
+                self.attemptState.withLock { $0.begin(at: t0) }
+                self._bufferCount.withLock { $0 = 0 }
+                self.liveLevelNormalizerLock.withLock { $0.reset() }
                 try self.makeSession(deviceUID: deviceUID, outputURL: outputURL)
                 self._recording.withLock { $0 = true }
                 self.startBufferWatchdog()
             }
+        } catch AudioRecorderError.captureCancelled {
+            // The file state may already belong to a later start; leave it.
+            throw AudioRecorderError.captureCancelled
         } catch {
             if DispatchQueue.getSpecific(key: Self.sessionQueueKey) != nil {
                 tempFileURL = nil
@@ -659,13 +668,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
     func stopRecording(completion: @escaping (URL?) -> Void) {
         let count = _bufferCount.withLock { $0 }
-        let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
+        let elapsed = (CFAbsoluteTimeGetCurrent() - attemptState.withLock { $0.startTime }) * 1000
         os_log(.info, log: recordingLog, "stopRecording() called: %.3fms after start, %d buffers received", elapsed, count)
 
         sessionQueue.async {
             self.cancelWatchdog()
             self.teardownSessionLocked()
-            let outputURL = self.finishAudioFileLocked(discard: false)
+            let disposition = self.finishAudioFileLocked(discard: false)
+            disposition.removeDiscarded()
+            let outputURL = disposition.keep
             self._recording.withLock { $0 = false }
             self.liveLevelNormalizerLock.withLock { $0.reset() }
             DispatchQueue.main.async {
@@ -677,15 +688,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
     }
 
     func cancelRecording() {
+        // At once, from the caller: a start still on its way to the queue is void.
+        startGate.cancel()
         sessionQueue.async {
             self.cancelWatchdog()
             self.teardownSessionLocked()
-            let discardURL = self.finishAudioFileLocked(discard: true)
+            let disposition = self.finishAudioFileLocked(discard: true)
             self._recording.withLock { $0 = false }
             self.liveLevelNormalizerLock.withLock { $0.reset() }
-            if let discardURL {
-                try? FileManager.default.removeItem(at: discardURL)
-            }
+            disposition.removeDiscarded()
             DispatchQueue.main.async {
                 self.isRecording = false
                 self.audioLevel = 0.0
@@ -792,7 +803,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        guard _recording.withLock({ $0 }) else { return }
+        guard _recording.withLock({ $0 }), attemptState.withLock({ $0.accepts(ObjectIdentifier(output)) }) else { return }
 
         do {
             try appendSampleBufferToFile(sampleBuffer)
@@ -813,13 +824,12 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
         let rms = updateAudioLevel(from: sampleBuffer)
         if count <= Self.sampleRateLogLimit {
-            let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
+            let elapsed = (CFAbsoluteTimeGetCurrent() - attemptState.withLock { $0.startTime }) * 1000
             os_log(.info, log: recordingLog, "buffer #%d at %.3fms, rms=%.6f", count, elapsed, rms)
         }
 
-        if !readyFired && rms > 0 {
-            readyFired = true
-            let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
+        if attemptState.withLock({ $0.claimReady(rms: rms) }) {
+            let elapsed = (CFAbsoluteTimeGetCurrent() - attemptState.withLock { $0.startTime }) * 1000
             os_log(.info, log: recordingLog, "FIRST non-silent buffer at %.3fms — recording ready", elapsed)
             DispatchQueue.main.async {
                 self.onRecordingReady?()

@@ -43,14 +43,53 @@ struct ShortcutInputState: Equatable {
     }
 }
 
+/// How a Hold to Talk deactivation came about. Informational only: matching and
+/// the emitted events do not depend on it.
+enum ShortcutReleaseOrigin: Equatable {
+    /// The binding's own key (or modifier key) went up.
+    case keyReleased
+    /// The exact match ended some other way: an extra modifier, one of the
+    /// binding's modifiers released first, or a modifier resync.
+    case matchLost
+    /// The event tap was reset.
+    case reset
+}
+
 struct ShortcutMatchResult: Equatable {
     let state: ShortcutInputState
     let emittedEvents: [ShortcutEvent]
     let consumeDecision: ShortcutConsumeDecision
+    /// Set when `emittedEvents` contains `.holdDeactivated`.
+    var holdReleaseOrigin: ShortcutReleaseOrigin? = nil
 }
 
 enum ShortcutMatcher {
     static func reduce(
+        state: ShortcutInputState,
+        event: ShortcutInputEvent,
+        configuration: ShortcutConfiguration
+    ) -> ShortcutMatchResult {
+        var result = reduceInput(state: state, event: event, configuration: configuration)
+        if result.emittedEvents.contains(.holdDeactivated) {
+            result.holdReleaseOrigin = holdReleaseOrigin(for: event, hold: configuration.hold)
+        }
+        return result
+    }
+
+    private static func holdReleaseOrigin(for event: ShortcutInputEvent, hold: ShortcutBinding) -> ShortcutReleaseOrigin {
+        switch event {
+        case .backendReset:
+            return .reset
+        case .keyChanged(let keyCode, let isDown, _) where hold.kind == .key:
+            return !isDown && keyCode == hold.keyCode ? .keyReleased : .matchLost
+        case .modifierChanged(let keyCode, let isDown) where hold.kind == .modifierKey:
+            return !isDown && keyCode == hold.keyCode ? .keyReleased : .matchLost
+        default:
+            return .matchLost
+        }
+    }
+
+    private static func reduceInput(
         state: ShortcutInputState,
         event: ShortcutInputEvent,
         configuration: ShortcutConfiguration

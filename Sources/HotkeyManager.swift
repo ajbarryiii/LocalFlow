@@ -9,6 +9,8 @@ final class HotkeyManager {
     private var inputState = ShortcutInputState()
 
     var onShortcutEvent: ((ShortcutEvent) -> Void)?
+    /// The same events, with how a Hold to Talk deactivation came about.
+    var onShortcutEventDetail: ((ShortcutEvent, ShortcutReleaseOrigin?) -> Void)?
     var onEscapeKeyPressed: (() -> Bool)?
 
     var currentPressedModifiers: ShortcutModifiers {
@@ -58,6 +60,7 @@ final class HotkeyManager {
         inputState = result.state
         for event in result.emittedEvents {
             onShortcutEvent?(event)
+            onShortcutEventDetail?(event, event == .holdDeactivated ? result.holdReleaseOrigin : nil)
         }
         return result.consumeDecision
     }

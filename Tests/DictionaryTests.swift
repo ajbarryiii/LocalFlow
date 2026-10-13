@@ -32,6 +32,8 @@ enum DictionaryTests {
         testFullDictionaryOffersNothing()
         testExpiryRechecksSafety()
         testEditsNeedVocabulary()
+        testSuggestionWithdrawal()
+        testIgnoreListFull()
         DictionaryVectorTests.run()
     }
 
@@ -1271,6 +1273,45 @@ enum DictionaryTests {
         }
         TestSupport.expect(added.contains(DictionaryKey("nixos")), "Added")
         TestSupport.expect(editor.removing(DictionaryKey("absent"), in: added) == nil, "Nothing to remove")
+    }
+
+    /// A recording press or a dictionary edit withdraws a visible suggestion
+    /// and voids one already requested, while one requested afterwards shows.
+    private static func testSuggestionWithdrawal() {
+        let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
+        var gate = SuggestionPresentationGate()
+        // Visible, then a recording press.
+        let visible = gate.present(word, requestedAt: gate.withdrawals)
+        TestSupport.expect(visible != nil && gate.suggestion == word, "Shown")
+        gate.withdraw()
+        TestSupport.expect(gate.suggestion == nil && gate.activeID == nil, "Withdrawn and cleared")
+        TestSupport.expect(gate.resolve(visible!) == nil, "Its buttons and timer do nothing")
+        // Requested, then a dictionary edit before it reaches the screen.
+        let requested = gate.withdrawals
+        gate.withdraw()
+        TestSupport.expect(gate.present(word, requestedAt: requested) == nil && gate.suggestion == nil,
+                           "A presentation requested before the withdrawal never shows")
+        // Requested after the withdrawal: shows normally.
+        let later = gate.withdrawals
+        TestSupport.expect(gate.present(word, requestedAt: later) != nil && gate.suggestion == word, "A later one shows")
+    }
+
+    /// "Don't suggest" with a full ignore list reports the ignore list, not the dictionary.
+    private static func testIgnoreListFull() {
+        var full = CustomDictionary()
+        for index in 0..<DictionaryValidation.ignoreCapacity { _ = full.addIgnore(DictionaryKey("w\(index)")) }
+        let editor = DictionaryEditor(encoder: testEncoder)
+        let result = editor.ignoring(DictionaryKey("eldar"), in: full)
+        TestSupport.expect(result == .failure(.ignoreFull), "Ignore list full")
+        TestSupport.expectEqual(DictionaryEditError.ignoreFull.message, "The ignored-words list is full (1000 words).")
+        TestSupport.expectEqual(DictionaryEditError.full.message, "The dictionary is full (1000 entries).")
+        // Entries keep their own message and capacity.
+        var entries = CustomDictionary()
+        for index in 0..<DictionaryValidation.capacity { _ = entries.upsert(entry("word\(index)x")) }
+        TestSupport.expect(editor.saving(text: "NixOS", strength: 1, replacing: nil, in: entries) == .failure(.full),
+                           "Dictionary full")
+        TestSupport.expect(editor.ignoring(DictionaryKey("eldar"), in: entries).isSuccess,
+                           "A full dictionary does not block ignoring")
     }
 
     /// #2: a full dictionary could not take the word, so nothing is offered or decoded.

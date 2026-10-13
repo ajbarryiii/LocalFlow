@@ -1,17 +1,32 @@
 import Foundation
 
 /// Double-tap Hold to Talk for prompt mode (off by default). It only reads
-/// the sequence of already-matched Hold to Talk events and their monotonic
-/// timestamps; shortcut matching is untouched. Main thread only.
+/// the sequence of already-matched Hold to Talk events, each with a stamp
+/// taken when the event arrived; shortcut matching is untouched. Main thread
+/// only.
 ///
 /// While enabled: a Hold to Talk recording shorter than `minimumHold` is
-/// discarded. If it started from idle, was ended by its own release, was not
-/// itself a prompt hold and no other shortcut intervened, it arms a pending
-/// tap. A Hold to Talk press within `window` of that release (inclusive)
-/// starts in prompt mode. Anything else clears the pending tap.
+/// discarded. It arms a pending tap only if it started while the app was idle,
+/// ended by a genuine release of the shortcut's own key, was not itself a
+/// prompt hold, and nothing interrupted it. A Hold to Talk press within
+/// `window` of that release (inclusive) starts in prompt mode. Anything else
+/// clears the pending tap.
 struct DoubleTapPromptDetector {
     static let minimumHold: TimeInterval = 0.3
     static let window: TimeInterval = 0.4
+
+    /// Taken when the event arrives, before it is queued for handling, so a
+    /// state change or cancellation in between is seen.
+    struct Stamp: Equatable {
+        /// Monotonic seconds (event timestamp or system uptime at the event).
+        let time: TimeInterval
+        /// Not recording, transcribing or starting when the event arrived.
+        let appWasIdle: Bool
+        /// The interruption count when the event arrived.
+        let epoch: UInt64
+        /// For a Hold to Talk deactivation: how it came about.
+        let releaseOrigin: ShortcutReleaseOrigin?
+    }
 
     var isEnabled = false {
         didSet { if !isEnabled { reset() } }
@@ -25,36 +40,49 @@ struct DoubleTapPromptDetector {
 
     private var hold: Hold?
     private var armedRelease: TimeInterval?
+    /// Counts interruptions, so a stamp taken before one is recognised as stale.
+    private(set) var epoch: UInt64 = 0
 
-    /// A Hold to Talk recording started at `time`. Returns true when it is the
-    /// second tap of a double-tap and must start in prompt mode.
-    mutating func holdStarted(at time: TimeInterval, fromIdle: Bool) -> Bool {
+    func stamp(at time: TimeInterval, appIdle: Bool, releaseOrigin: ShortcutReleaseOrigin? = nil) -> Stamp {
+        Stamp(time: time, appWasIdle: appIdle, epoch: epoch, releaseOrigin: releaseOrigin)
+    }
+
+    /// A Hold to Talk recording started. Returns true when it is the second
+    /// tap of a double-tap and must start in prompt mode.
+    mutating func holdStarted(_ stamp: Stamp) -> Bool {
         let armed = armedRelease
         armedRelease = nil
         guard isEnabled else {
             hold = nil
             return false
         }
-        let prompt = fromIdle && armed.map { time >= $0 && time - $0 <= Self.window } == true
-        hold = Hold(start: time, prompt: prompt, canArm: fromIdle && !prompt)
+        let eligible = stamp.appWasIdle && stamp.epoch == epoch
+        // Absolute deadline, so the inclusive boundary holds at any origin.
+        let prompt = eligible && armed.map { stamp.time >= $0 && stamp.time <= $0 + Self.window } == true
+        hold = Hold(start: stamp.time, prompt: prompt, canArm: eligible && !prompt)
         return prompt
     }
 
-    /// The Hold to Talk recording was ended by its own release at `time`.
-    /// Returns true when it is too short and must be discarded untranscribed.
-    mutating func holdReleased(at time: TimeInterval) -> Bool {
+    /// The Hold to Talk recording stopped on a deactivation. Returns true when
+    /// it is too short and must be discarded untranscribed.
+    mutating func holdReleased(_ stamp: Stamp) -> Bool {
         let ended = hold
         hold = nil
         armedRelease = nil
         guard isEnabled, let ended else { return false }
-        let tooShort = time - ended.start < Self.minimumHold
-        if tooShort && ended.canArm { armedRelease = time }
+        let tooShort = stamp.time < ended.start + Self.minimumHold
+        if stamp.releaseOrigin == .reset {
+            interrupt()
+        } else if tooShort, ended.canArm, stamp.releaseOrigin == .keyReleased, stamp.epoch == epoch {
+            armedRelease = stamp.time
+        }
         return tooShort
     }
 
     /// Another shortcut, the app becoming busy, or a cancellation: no pending
-    /// tap, and the current hold can no longer arm one.
+    /// tap, the current hold can no longer arm one, and earlier stamps are stale.
     mutating func interrupt() {
+        epoch &+= 1
         armedRelease = nil
         hold?.canArm = false
     }
@@ -62,5 +90,44 @@ struct DoubleTapPromptDetector {
     mutating func reset() {
         armedRelease = nil
         hold = nil
+    }
+
+    // Conveniences for an event that arrives and is handled at once.
+    mutating func holdStarted(at time: TimeInterval, fromIdle: Bool) -> Bool {
+        holdStarted(stamp(at: time, appIdle: fromIdle))
+    }
+
+    mutating func holdReleased(at time: TimeInterval) -> Bool {
+        holdReleased(stamp(at: time, appIdle: true, releaseOrigin: .keyReleased))
+    }
+}
+
+/// What the app does with one matched shortcut event (Paste Again excluded).
+struct DictationShortcutDecision: Equatable {
+    let action: DictationShortcutAction?
+    /// The started hold is a double-tapped prompt dictation.
+    let markedPrompt: Bool
+    /// The stopped hold is under the minimum and must be discarded.
+    let discardTooShort: Bool
+}
+
+extension DoubleTapPromptDetector {
+    /// The session controller decides start and stop exactly as before; the
+    /// detector only reads Hold to Talk starts and stops, and every other
+    /// event interrupts it.
+    mutating func route(_ event: ShortcutEvent, stamp: Stamp, controller: DictationShortcutSessionController,
+                        isTranscribing: Bool) -> DictationShortcutDecision {
+        let action = controller.handle(event: event, isTranscribing: isTranscribing)
+        switch (event, action) {
+        case (.holdActivated, .start(.hold)?):
+            let prompt = holdStarted(stamp)
+            if prompt { controller.markPromptSession() }
+            return DictationShortcutDecision(action: action, markedPrompt: prompt, discardTooShort: false)
+        case (.holdDeactivated, .stop?):
+            return DictationShortcutDecision(action: action, markedPrompt: false, discardTooShort: holdReleased(stamp))
+        default:
+            interrupt()
+            return DictationShortcutDecision(action: action, markedPrompt: false, discardTooShort: false)
+        }
     }
 }
