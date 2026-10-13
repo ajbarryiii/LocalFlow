@@ -418,7 +418,7 @@ fn localflowctl_dict_subcommands() {
     for usage in [
         &["dict"][..],
         &["dict", "add"],
-        &["dict", "add", "x", "--strength", "5"],
+        &["dict", "add", "x", "--strength", "9"],
         &["dict", "add", "x", "--strength", "1.4142"],
         &["dict", "list", "x"],
         &["dict", "frobnicate"],

@@ -9,6 +9,7 @@ struct LocalFlowTests {
         LocalDictationTests.run()
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
+        DoubleTapPromptTests.run()
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
         UpdateManagerTests.run()

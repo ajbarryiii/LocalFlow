@@ -81,6 +81,13 @@ final class DictationShortcutSessionController {
         }
     }
 
+    /// A double-tapped Hold to Talk session dictates with the prompt tag. It
+    /// still stops on the Hold to Talk release, unlike a Hold to Prompt session.
+    func markPromptSession() {
+        guard activeMode != nil else { return }
+        isPromptSession = true
+    }
+
     func beginManual(mode: RecordingTriggerMode) {
         begin(mode, prompt: false)
     }

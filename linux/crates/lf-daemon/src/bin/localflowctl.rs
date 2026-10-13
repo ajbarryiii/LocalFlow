@@ -59,7 +59,7 @@ commands:
   correct   edit the last dictation in rofi (within two minutes of typing
             it) to teach the dictionary; the text already typed is not
             changed. A word the audio confirms is offered for adding.
-  dict      add (strength 0.25 to 4, default 1), remove, list the custom
+  dict      add (strength 0.25 to 8, default 1), remove, list the custom
             dictionary; ignored lists words never suggested, unignore
             allows one again";
 
@@ -195,7 +195,7 @@ fn parse_args() -> Result<Args, Failure> {
                     it.next()
                         .as_deref()
                         .and_then(parse_dec)
-                        .ok_or_else(|| usage("--strength needs a number from 0.25 to 4"))?,
+                        .ok_or_else(|| usage("--strength needs a number from 0.25 to 8"))?,
                 );
             }
             _ => words.push(arg),

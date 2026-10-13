@@ -32,6 +32,14 @@ enum DictionaryTests {
         testFullDictionaryOffersNothing()
         testExpiryRechecksSafety()
         testEditsNeedVocabulary()
+        testSuggestionWithdrawal()
+        testIgnoreListFull()
+        testKeepsWatchingAfterACheck()
+        testWatchEndsWithCapturedEdit()
+        testExhaustedCandidatesAreSkipped()
+        testWatcherReportsAndContinues()
+        testForbiddenStopAbandonsReportedEdits()
+        testCorrectionChecksKeepTheirOrder()
         DictionaryVectorTests.run()
     }
 
@@ -133,14 +141,14 @@ enum DictionaryTests {
         TestSupport.expect(validate(String(repeating: "e\u{301}", count: 51)) == .failure(.tooLong), "Limits count scalars")
         TestSupport.expect(validate("12 34") == .failure(.noLetter), "At least one letter")
         TestSupport.expect(validate("naïve—x") == .failure(.unencodable), "Unencodable text")
-        TestSupport.expect(validate("C#", 0.25).isSuccess && validate("C#", 4).isSuccess, "Strength bounds are inclusive")
-        for bad: Float in [0.24, 4.01, .nan, .infinity, -1] {
+        TestSupport.expect(validate("C#", 0.25).isSuccess && validate("C#", 8).isSuccess, "Strength bounds are inclusive")
+        for bad: Float in [0.24, 8.01, .nan, .infinity, -1] {
             TestSupport.expect(validate("C#", bad) == .failure(.invalidStrength), "Strength \(bad) is invalid")
         }
         // Without a vocabulary the encodability check cannot run; the rest still applies.
         TestSupport.expect(DictionaryValidation.validate(text: "naïve—x", strength: 1, encoder: nil).isSuccess,
                            "No vocabulary skips only the encodability check")
-        TestSupport.expectEqual(DictionaryValidation.presets, [0.5, 1, 1.41, 2, 2.83, 4])
+        TestSupport.expectEqual(DictionaryValidation.presets, [0.5, 1, 1.41, 2, 2.83, 4, 5.66, 8])
     }
 
     private static func testDictionaryRules() {
@@ -510,14 +518,15 @@ enum DictionaryTests {
         }
         var calls: [DictionaryEntry] = []
         TestSupport.expect(find { calls.append($0); return typed } == nil, "Nothing verifies")
-        TestSupport.expectEqual(calls.count, 15)  // three candidates, five strengths each
-        TestSupport.expectEqual(calls.prefix(5).map(\.strength), VerifyDecision.strengths)
-        expectScalars(calls[5].text, "vier")
+        TestSupport.expectEqual(calls.count, 21)  // three candidates, seven strengths each
+        TestSupport.expectEqual(VerifyDecision.strengths, [1, 1.41, 2, 2.83, 4, 5.66, 8])
+        TestSupport.expectEqual(calls.prefix(7).map(\.strength), VerifyDecision.strengths)
+        expectScalars(calls[7].text, "vier")
 
         var time: TimeInterval = 0
         calls = []
         TestSupport.expect(find(clock: { time }, decode: { calls.append($0); time += 0.5; return typed }) == nil, "Budget")
-        TestSupport.expectEqual(calls.count, 4)  // the 2 s budget is spent before the fifth decode
+        TestSupport.expectEqual(calls.count, 6)  // the 3 s budget is spent by the end of the sixth decode
 
         calls = []
         TestSupport.expect(find(cancelled: { calls.count >= 2 }, decode: { calls.append($0); return typed }) == nil, "Cancel")
@@ -598,14 +607,30 @@ enum DictionaryTests {
         return (.watching, to)
     }
 
+    /// A terminal `.finalize` with this edit.
     private static func expectFinal(_ outcome: CorrectionPollOutcome, typed: String, edited: String,
                                     file: StaticString = #filePath, line: UInt = #line) {
-        guard case .finalize(let final) = outcome else {
+        guard case .finalize(let edit) = outcome else {
             TestSupport.expect(false, "Expected finalize, got \(outcome)", file: file, line: line)
             return
         }
-        TestSupport.expect(s(final.typed) == s(typed) && s(final.edited) == s(edited) && final.dictationID == 7,
-                           "Expected \(edited.debugDescription), got \(final.edited.debugDescription)", file: file, line: line)
+        expectEdit(edit, typed: typed, edited: edited, file: file, line: line)
+    }
+
+    /// A non-terminal `.settled` with this edit.
+    private static func expectSettled(_ outcome: CorrectionPollOutcome, typed: String, edited: String,
+                                      file: StaticString = #filePath, line: UInt = #line) {
+        guard case .settled(let edit) = outcome else {
+            TestSupport.expect(false, "Expected settled, got \(outcome)", file: file, line: line)
+            return
+        }
+        expectEdit(edit, typed: typed, edited: edited, file: file, line: line)
+    }
+
+    private static func expectEdit(_ edit: CorrectionEdit, typed: String, edited: String,
+                                   file: StaticString, line: UInt) {
+        TestSupport.expect(s(edit.typed) == s(typed) && s(edit.edited) == s(edited) && edit.dictationID == 7,
+                           "Expected \(edited.debugDescription), got \(edit.edited.debugDescription)", file: file, line: line)
     }
 
     private static func testSpanTracking() {
@@ -617,8 +642,8 @@ enum DictionaryTests {
             let session = watching(reader, pasted: "hello wrld. ")
             TestSupport.expect(session.record.before == .documentEdge && session.record.after == .documentEdge, "Sentinels")
             let (outcome, second) = pollUntilDone(session) { if $0 == 2 { reader.replace("wrld", with: "world") } }
-            expectFinal(outcome, typed: "hello wrld. ", edited: "hello world. ")
-            TestSupport.expectEqual(second, 6)  // edited at 2, quiet for 4 s
+            expectSettled(outcome, typed: "hello wrld. ", edited: "hello world. ")
+            TestSupport.expectEqual(second, 4)  // edited at 2, quiet for 1.5 s
         }
         // Anchored on both sides, with an edit in the span only.
         do {
@@ -629,7 +654,7 @@ enum DictionaryTests {
             TestSupport.expect(session.record.before == .text(Array("Intro line.\n".utf16)), "Short before context")
             TestSupport.expect(session.record.after == .text(Array(longAfter.utf16.prefix(40))), "40-unit after context")
             let (outcome, _) = pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }
-            expectFinal(outcome, typed: "ship the cart now. ", edited: "ship the chart now. ")
+            expectSettled(outcome, typed: "ship the cart now. ", edited: "ship the chart now. ")
         }
         // docStart with an after anchor; docEnd with a before anchor.
         do {
@@ -638,7 +663,7 @@ enum DictionaryTests {
             reader.paste("cart")
             let session = watching(reader, pasted: "cart")
             TestSupport.expect(session.record.before == .documentEdge && session.record.after != .documentEdge, "docStart")
-            expectFinal(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
+            expectSettled(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
         }
         do {
             let prefix = String(repeating: "p", count: 50) + " "
@@ -647,7 +672,7 @@ enum DictionaryTests {
             let session = watching(reader, pasted: "cart")
             TestSupport.expect(session.record.before == .text(Array(prefix.utf16.suffix(40))) && session.record.after == .documentEdge,
                                "docEnd with a 40-unit before context")
-            expectFinal(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
+            expectSettled(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
         }
         // Appended text: at docEnd it joins the span; past an after anchor it does not.
         do {
@@ -658,7 +683,7 @@ enum DictionaryTests {
                 if second == 1 { reader.replace("cooper netties", with: "Kubernetes") }
                 if second == 2 { reader.append(" rocks") }
             }
-            expectFinal(outcome, typed: "cooper netties", edited: "Kubernetes rocks")
+            expectSettled(outcome, typed: "cooper netties", edited: "Kubernetes rocks")
         }
         do {
             let reader = FakeTextFieldReader(longAfter)
@@ -669,7 +694,7 @@ enum DictionaryTests {
                 if second == 1 { reader.replace("cooper netties", with: "Kubernetes") }
                 if second == 2 { reader.append(" More typing at the end.") }
             }
-            expectFinal(outcome, typed: "cooper netties", edited: "Kubernetes")
+            expectSettled(outcome, typed: "cooper netties", edited: "Kubernetes")
         }
         // Repeated paragraphs: the pasted copy is tracked by offset, not by search.
         do {
@@ -681,7 +706,7 @@ enum DictionaryTests {
             let (outcome, _) = pollUntilDone(session) { second in
                 if second == 1 { reader.replaceLast("beta", with: "Beta-2") }
             }
-            expectFinal(outcome, typed: paragraph, edited: "alpha Beta-2 gamma.\n")
+            expectSettled(outcome, typed: paragraph, edited: "alpha Beta-2 gamma.\n")
         }
         // An after context that repeats inside the window is ambiguous.
         do {
@@ -725,7 +750,7 @@ enum DictionaryTests {
             reader.paste("ship the cart now. ")
             let session = watching(reader, pasted: "ship the cart now. ")
             let (outcome, _) = pollUntilDone(session) { if $0 == 1 { reader.replace("the cart", with: "a chart") } }
-            expectFinal(outcome, typed: "ship the cart now. ", edited: "ship a chart now. ")
+            expectSettled(outcome, typed: "ship the cart now. ", edited: "ship a chart now. ")
         }
         do {
             let reader = FakeTextFieldReader("Intro line.\n" + longAfter)
@@ -751,13 +776,14 @@ enum DictionaryTests {
             TestSupport.expectEqual(pollUntilDone(session) { if $0 == 1 { reader.insert(String(repeating: "y", count: 201), at: 2) } }.0,
                                     .discard(.endNotFound))
         }
-        // Deleting the whole span is tracked (the edited text is empty).
+        // Deleting the whole span ends the watch; with no edit before it, nothing is checked.
         do {
             let reader = FakeTextFieldReader("Intro line.\n" + longAfter)
             reader.caret = 12
             reader.paste("cart ")
             let session = watching(reader, pasted: "cart ")
-            expectFinal(pollUntilDone(session) { if $0 == 1 { reader.replace("cart ", with: "") } }.0, typed: "cart ", edited: "")
+            TestSupport.expectEqual(pollUntilDone(session) { if $0 == 1 { reader.replace("cart ", with: "") } }.0,
+                                    .discard(.spanRemoved))
         }
         // UTF-16 offsets: astral scalars and combining marks before the span.
         do {
@@ -767,7 +793,7 @@ enum DictionaryTests {
             let session = watching(reader, pasted: "naive plan")
             TestSupport.expectEqual(session.record.spanStart, prefix.utf16.count)
             let (outcome, _) = pollUntilDone(session) { if $0 == 1 { reader.replace("naive", with: "naïve 👍") } }
-            expectFinal(outcome, typed: "naive plan", edited: "naïve 👍 plan")
+            expectSettled(outcome, typed: "naive plan", edited: "naïve 👍 plan")
         }
         // A context window that would split a surrogate pair still anchors exactly.
         do {
@@ -775,7 +801,7 @@ enum DictionaryTests {
             let reader = FakeTextFieldReader(prefix)
             reader.paste("cart")
             let session = watching(reader, pasted: "cart")
-            expectFinal(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
+            expectSettled(pollUntilDone(session) { if $0 == 1 { reader.replace("cart", with: "chart") } }.0, typed: "cart", edited: "chart")
         }
     }
 
@@ -819,14 +845,16 @@ enum DictionaryTests {
             TestSupport.expect(reader.rangeReads.allSatisfy { $0.length <= 4600 }, "Never more than 4,600 units")
             TestSupport.expectEqual(reader.uncheckedReads, 0)  // the safety check precedes every read
         }
-        // Discard paths, each checked before reading.
-        let scenarios: [(String, (FakeTextFieldReader) -> Void, CorrectionDiscardReason)] = [
-            ("focus moved", { $0.focused = false }, .focusChanged),
-            ("secure subrole", { $0.secure = true }, .secureField),
-            ("read error", { $0.failReads = true }, .readFailed),
-            ("permission lost", { $0.trusted = false }, .notTrusted),
+        // Stops, each checked before reading. Losing the field finalizes the
+        // edit already read; a secure field or lost permission discards it.
+        let edit = CorrectionEdit(typed: "cart", edited: "chart", dictationID: 7)
+        let scenarios: [(String, (FakeTextFieldReader) -> Void, CorrectionPollOutcome)] = [
+            ("focus moved", { $0.focused = false }, .finalize(edit)),
+            ("secure subrole", { $0.secure = true }, .discard(.secureField)),
+            ("read error", { $0.failReads = true }, .finalize(edit)),
+            ("permission lost", { $0.trusted = false }, .discard(.notTrusted)),
         ]
-        for (name, change, reason) in scenarios {
+        for (name, change, expected) in scenarios {
             let reader = FakeTextFieldReader("")
             reader.paste("cart")
             let session = watching(reader, pasted: "cart")
@@ -836,12 +864,20 @@ enum DictionaryTests {
             let readsBefore = reader.rangeReads.count
             change(reader)
             let outcome = session.poll(now: 3)
-            TestSupport.expect(outcome == .discard(reason), "\(name): expected \(reason), got \(outcome)")
-            if reason != .readFailed {
-                TestSupport.expectEqual(reader.rangeReads.count, readsBefore)
-            }
+            TestSupport.expect(outcome == expected, "\(name): expected \(expected), got \(outcome)")
+            TestSupport.expectEqual(reader.rangeReads.count, readsBefore)
             TestSupport.expect(session.isFinished && session.record.pasted.isEmpty, "\(name): text is cleared")
-            TestSupport.expectEqual(session.poll(now: 4), .discard(reason))
+            TestSupport.expectEqual(session.poll(now: 4), expected)
+        }
+        // With no edit read yet, every stop discards.
+        for (name, change, reason) in [("focus moved", { (r: FakeTextFieldReader) in r.focused = false }, CorrectionDiscardReason.focusChanged),
+                                       ("read error", { $0.failReads = true }, .readFailed)] {
+            let reader = FakeTextFieldReader("")
+            reader.paste("cart")
+            let session = watching(reader, pasted: "cart")
+            reader.replace("cart", with: "chart")  // edited, but not read before the stop
+            change(reader)
+            TestSupport.expect(session.poll(now: 1) == .discard(reason), "\(name) before any edit was read")
         }
         // No edit within 60 s is a timeout; an undo back to the paste is no edit.
         do {
@@ -997,12 +1033,12 @@ enum DictionaryTests {
             base: "one two three four five six seven eight nine ten",
             dictionary: [], ignore: [], encoder: testEncoder, now: { 0 }, isCancelled: { false },
             decode: { calls.append($0); return "one two three four five six seven eight nine ten" })
-        TestSupport.expectEqual(calls.count, 15)
+        TestSupport.expectEqual(calls.count, 21)
         TestSupport.expect(Set(calls.map { DictionaryText.string(s($0.text)) }) == ["zwei", "vier", "sechs"],
                            "Three mappable candidates are attempted")
 
         // One unmappable candidate, then three mappable ones where the third
-        // recovers: the unmappable one is free, so it costs 5 + 5 + 1 decodes.
+        // recovers: the unmappable one is free, so it costs 7 + 7 + 1 decodes.
         calls = []
         let third = DictionarySuggestionFinder.find(
             typed: "[dictated] one two three four five six seven eight nine ten",
@@ -1016,7 +1052,7 @@ enum DictionaryTests {
             })
         TestSupport.expect(third == DictionarySuggestion(word: "sechs", strength: 1, kind: .replace),
                            "The third mappable candidate verifies, got \(String(describing: third))")
-        TestSupport.expectEqual(calls.count, 11)
+        TestSupport.expectEqual(calls.count, 15)
 
         // A result that arrives past the deadline is discarded, even if it verifies.
         time = 0
@@ -1024,7 +1060,7 @@ enum DictionaryTests {
         let late = DictionarySuggestionFinder.find(
             typed: "ship the cart now", edited: "ship the chart now", base: "ship the cart now",
             dictionary: [], ignore: [], encoder: testEncoder, now: { time }, isCancelled: { false },
-            decode: { calls.append($0); time += 2.5; return "ship the chart now" })
+            decode: { calls.append($0); time += 3.5; return "ship the chart now" })
         TestSupport.expect(late == nil && calls.count == 1, "Late results are discarded")
 
         // Cancellation during a decode also discards its result.
@@ -1187,15 +1223,18 @@ enum DictionaryTests {
 
     // MARK: - Review round 4
 
-    /// #1: at the deadline, cached text is finalized only if the field is still
-    /// focused, not secure and permitted; the checks are metadata, never text.
+    /// #1: at the deadline, cached text is finalized only if the field is not
+    /// secure and permission remains; the checks are metadata, never text.
+    /// Moving focus does not prevent it (a deliberate change: the edit was
+    /// read while the field was focused).
     private static func testExpiryRechecksSafety() {
-        let changes: [(String, (FakeTextFieldReader) -> Void, CorrectionDiscardReason)] = [
-            ("focus moved", { $0.focused = false }, .focusChanged),
-            ("secure subrole", { $0.secure = true }, .secureField),
-            ("permission lost", { $0.trusted = false }, .notTrusted),
+        let changes: [(String, (FakeTextFieldReader) -> Void, CorrectionPollOutcome)] = [
+            ("focus moved", { $0.focused = false },
+             .finalize(CorrectionEdit(typed: "cart", edited: "chart59", dictationID: 7))),
+            ("secure subrole", { $0.secure = true }, .discard(.secureField)),
+            ("permission lost", { $0.trusted = false }, .discard(.notTrusted)),
         ]
-        for (name, change, reason) in changes {
+        for (name, change, expected) in changes {
             for late in [false, true] {
                 let reader = FakeTextFieldReader("")
                 reader.paste("cart")
@@ -1208,7 +1247,7 @@ enum DictionaryTests {
                 change(reader)
                 let reads = reader.rangeReads.count
                 let outcome = session.poll(now: late ? 75 : 60)
-                TestSupport.expect(outcome == .discard(reason), "\(name) at expiry: got \(outcome)")
+                TestSupport.expect(outcome == expected, "\(name) at expiry: got \(outcome)")
                 TestSupport.expectEqual(reader.rangeReads.count, reads)
             }
         }
@@ -1221,6 +1260,340 @@ enum DictionaryTests {
             _ = session.poll(now: TimeInterval(second))
         }
         expectFinal(session.poll(now: 60), typed: "cart", edited: "chart59")
+    }
+
+    // MARK: - Faster, repeated checks
+
+    /// An edit is reported 1.5 s after it was last seen to change, and the
+    /// watch continues: each later distinct edit is reported again, up to
+    /// three reports, the last of which ends the watch.
+    private static func testKeepsWatchingAfterACheck() {
+        TestSupport.expectEqual(CorrectionWatchSession.quietPeriod, 1.5)
+        TestSupport.expectEqual(CorrectionWatchSession.maxChecks, 3)
+        TestSupport.expectEqual(CorrectionWatcher.pollInterval, 0.5)
+        let reader = FakeTextFieldReader("Note: ")
+        reader.paste("ship the cart to fred now")
+        let session = watching(reader, pasted: "ship the cart to fred now")
+        func poll(_ time: TimeInterval) -> CorrectionPollOutcome { session.poll(now: time) }
+        TestSupport.expectEqual(poll(0.5), .watching)
+        reader.replace("cart", with: "chart")
+        TestSupport.expectEqual(poll(1.0), .watching)  // first seen at 1.0
+        TestSupport.expectEqual(poll(1.5), .watching)
+        TestSupport.expectEqual(poll(2.0), .watching)
+        expectSettled(poll(2.5), typed: "ship the cart to fred now", edited: "ship the chart to fred now")
+        // The same edit is not reported twice, and the watch goes on reading.
+        let reads = reader.rangeReads.count
+        TestSupport.expectEqual(poll(3.0), .watching)
+        TestSupport.expectEqual(poll(9.0), .watching)
+        TestSupport.expect(reader.rangeReads.count > reads && !session.isFinished, "Still watching after a report")
+        // A later edit is reported in full, against the original paste.
+        reader.replace("fred", with: "Fred")
+        TestSupport.expectEqual(poll(10.0), .watching)
+        expectSettled(poll(11.5), typed: "ship the cart to fred now", edited: "ship the chart to Fred now")
+        // Returning to an earlier state is not a new edit: back to the
+        // reported one, or back to the paste.
+        reader.replace("Fred", with: "Ted")
+        TestSupport.expectEqual(poll(12.0), .watching)
+        reader.replace("Ted", with: "Fred")
+        TestSupport.expectEqual(poll(12.5), .watching)
+        TestSupport.expectEqual(poll(20.0), .watching)
+        // The third report is the last.
+        reader.replace("now", with: "today")
+        TestSupport.expectEqual(poll(21.0), .watching)
+        expectFinal(poll(22.5), typed: "ship the cart to fred now", edited: "ship the chart to Fred today")
+        TestSupport.expect(session.isFinished && session.record.pasted.isEmpty, "Text is cleared after the last report")
+        let finalReads = reader.rangeReads.count
+        _ = poll(23.0)
+        TestSupport.expectEqual(reader.rangeReads.count, finalReads)
+
+        // An undo back to the paste is never reported.
+        let undo = FakeTextFieldReader("")
+        undo.paste("cart")
+        let undone = watching(undo, pasted: "cart")
+        undo.replace("cart", with: "chart")
+        TestSupport.expectEqual(undone.poll(now: 0.5), .watching)
+        undo.replace("chart", with: "cart")
+        TestSupport.expectEqual(undone.poll(now: 1.0), .watching)
+        TestSupport.expectEqual(undone.poll(now: 5.0), .watching)
+    }
+
+    /// When the field can no longer be followed (focus moved, the field was
+    /// cleared on send, the text around the span changed), the last edit read
+    /// is finalized from memory if it was not checked yet. Nothing more is read.
+    private static func testWatchEndsWithCapturedEdit() {
+        let longAfter = "\nAn unrelated paragraph follows here, long enough to anchor."
+        let edit = { (edited: String) in CorrectionEdit(typed: "ship the cart now. ", edited: edited, dictationID: 7) }
+        // A chat field that clears on send: before the quiet period, and after a report.
+        do {
+            let reader = FakeTextFieldReader("")
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            reader.replace("ship the chart now. ", with: "")
+            let reads = reader.rangeReads.count
+            TestSupport.expectEqual(session.poll(now: 1.0), .finalize(edit("ship the chart now. ")))
+            TestSupport.expectEqual(reader.rangeReads.count, reads + 1)  // the read that found it cleared
+            TestSupport.expect(session.record.pasted.isEmpty, "Text is cleared")
+        }
+        do {
+            let reader = FakeTextFieldReader("")
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            expectSettled(session.poll(now: 2.0), typed: "ship the cart now. ", edited: "ship the chart now. ")
+            reader.replace("ship the chart now. ", with: "")
+            TestSupport.expectEqual(session.poll(now: 2.5), .discard(.spanRemoved))  // already checked
+        }
+        // A field with text before the span that clears entirely.
+        do {
+            let reader = FakeTextFieldReader("Intro line.\n")
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            reader.replace("Intro line.\nship the chart now. ", with: "")
+            TestSupport.expectEqual(session.poll(now: 1.0), .finalize(edit("ship the chart now. ")))
+        }
+        // Focus moves after an unchecked edit: finalized without another read.
+        do {
+            let reader = FakeTextFieldReader("Intro line.\n" + longAfter)
+            reader.caret = 12
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            reader.focused = false
+            let reads = reader.rangeReads.count
+            TestSupport.expectEqual(session.poll(now: 1.0), .finalize(edit("ship the chart now. ")))
+            TestSupport.expectEqual(reader.rangeReads.count, reads)
+        }
+        // Focus moves after the edit was checked: nothing new to check.
+        do {
+            let reader = FakeTextFieldReader("")
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            expectSettled(session.poll(now: 2.0), typed: "ship the cart now. ", edited: "ship the chart now. ")
+            reader.focused = false
+            TestSupport.expectEqual(session.poll(now: 2.5), .discard(.focusChanged))
+        }
+        // Anchor changes and a cancel: finalized, and discarded respectively.
+        do {
+            let reader = FakeTextFieldReader("Intro line.\n" + longAfter)
+            reader.caret = 12
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            reader.replace("Intro", with: "Outro")
+            TestSupport.expectEqual(session.poll(now: 1.0), .finalize(edit("ship the chart now. ")))
+        }
+        do {
+            let reader = FakeTextFieldReader("")
+            reader.paste("ship the cart now. ")
+            let session = watching(reader, pasted: "ship the cart now. ")
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 0.5), .watching)
+            session.cancel()
+            TestSupport.expectEqual(session.poll(now: 1.0), .discard(.cancelled))
+        }
+    }
+
+    /// A candidate decoded at every strength without being accepted is not
+    /// decoded again by a later check of the same dictation; one cut short by
+    /// the budget or a cancel is.
+    private static func testExhaustedCandidatesAreSkipped() {
+        let typed = "ship the cart to fred now"
+        let exhausted = ExhaustedCandidates()
+        var calls: [DictionaryEntry] = []
+        func find(_ edited: String, clock: @escaping () -> TimeInterval = { 0 },
+                  decode: @escaping (DictionaryEntry) -> String? = { _ in "ship the cart to fred now" }) -> DictionarySuggestion? {
+            DictionarySuggestionFinder.find(typed: typed, edited: edited, base: typed, dictionary: [], ignore: [],
+                                            encoder: testEncoder, exhausted: exhausted, now: clock, isCancelled: { false },
+                                            decode: { calls.append($0); return decode($0) })
+        }
+        TestSupport.expect(find("ship the chart to fred now") == nil, "Not recovered")
+        TestSupport.expectEqual(calls.count, 7)
+        // A later check with a second correction decodes only the new candidate.
+        calls = []
+        let found = find("ship the chart to fried now", decode: { entry in
+            s(entry.text) == s("fried") && entry.strength >= 2 ? "ship the cart to fried now" : typed
+        })
+        TestSupport.expect(found == DictionarySuggestion(word: "fried", strength: 2, kind: .replace),
+                           "The new candidate verifies, got \(String(describing: found))")
+        TestSupport.expect(calls.allSatisfy { s($0.text) == s("fried") }, "The exhausted candidate is skipped")
+        TestSupport.expectEqual(calls.count, 3)
+        // Cut short by the budget: tried again next time.
+        let fresh = ExhaustedCandidates()
+        var time: TimeInterval = 0
+        calls = []
+        _ = DictionarySuggestionFinder.find(typed: typed, edited: "ship the chart to fred now", base: typed, dictionary: [],
+                                            ignore: [], encoder: testEncoder, exhausted: fresh, now: { time },
+                                            isCancelled: { false },
+                                            decode: { calls.append($0); time += 1; return typed })
+        TestSupport.expectEqual(calls.count, 3)
+        calls = []
+        _ = DictionarySuggestionFinder.find(typed: typed, edited: "ship the chart to fred now", base: typed, dictionary: [],
+                                            ignore: [], encoder: testEncoder, exhausted: fresh, now: { 0 },
+                                            isCancelled: { false }, decode: { calls.append($0); return typed })
+        TestSupport.expectEqual(calls.count, 7)
+    }
+
+    /// The live watcher reports a settled edit with `isLast` false, keeps
+    /// reading, and stops reading once cancelled.
+    private static func testWatcherReportsAndContinues() {
+        let reader = FakeTextFieldReader("Note: ")
+        reader.paste("cart")
+        let watcher = CorrectionWatcher(reader: reader)
+        var edits: [(CorrectionEdit, Bool)] = []
+        watcher.onEdit = { edit, isLast, _ in edits.append((edit, isLast)) }
+        var captured: CorrectionCapture?
+        watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+        spin(timeout: 1) { captured != nil }
+        watcher.start(captured!, pasted: "cart", dictationID: 7)
+        spin(timeout: 1) { !reader.rangeReads.isEmpty }
+        reader.replace("cart", with: "chart")
+        spin(timeout: 4) { !edits.isEmpty }
+        TestSupport.expectEqual(edits.count, 1)
+        if let (edit, isLast) = edits.first {
+            TestSupport.expect(s(edit.edited) == s("chart") && !isLast, "A settled edit, not the last")
+        }
+        let reads = reader.rangeReads.count
+        spin(timeout: 1.2) { reader.rangeReads.count > reads }
+        TestSupport.expect(reader.rangeReads.count > reads, "The watch continues after a report")
+        watcher.cancel()
+        spin(timeout: 0.2)
+        let afterCancel = reader.rangeReads.count
+        spin(timeout: 1.2)
+        TestSupport.expectEqual(reader.rangeReads.count, afterCancel)
+        TestSupport.expectEqual(edits.count, 1)
+    }
+
+    /// Review F1 #1 and F2 #1: after an edit was reported, a field that turns
+    /// secure or lost permission makes that watch stale on the watcher's own
+    /// queue, before the main thread runs, so a check result already queued
+    /// there cannot be used; the app is then told to stop. Losing focus does
+    /// neither, and a cancelled watch is left alone.
+    private static func testForbiddenStopAbandonsReportedEdits() {
+        struct Run { var edits: [Bool] = [], abandons = 0, staleBeforeMain = false, claimed = false }
+        func run(_ change: (FakeTextFieldReader) -> Void, cancelFirst: Bool = false) -> Run {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let watcher = CorrectionWatcher(reader: reader)
+            var result = Run(), watch: UInt64?
+            watcher.onEdit = { _, isLast, token in result.edits.append(isLast); watch = token }
+            watcher.onAbandon = { result.abandons += 1 }
+            var captured: CorrectionCapture?
+            watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+            spin(timeout: 1) { captured != nil }
+            watcher.start(captured!, pasted: "cart", dictationID: 7)
+            spin(timeout: 1) { !reader.rangeReads.isEmpty }
+            reader.replace("cart", with: "chart")
+            spin(timeout: 4) { !result.edits.isEmpty }
+            if cancelFirst { watcher.cancel() }
+            change(reader)
+            // The main thread stays blocked through the next poll (bounded, for slow runners).
+            Thread.sleep(forTimeInterval: 0.8)
+            let deadline = Date().addingTimeInterval(2)
+            while let watch, watcher.isCurrent(watch), !cancelFirst, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+            result.staleBeforeMain = watch.map { !watcher.isCurrent($0) } ?? false
+            // A result that arrives now cannot claim an abandoned watch.
+            result.claimed = watch.map { watcher.claim($0) } ?? false
+            spin(timeout: 1) { result.edits.count > 1 || result.abandons > 0 }
+            spin(timeout: 0.2)
+            return result
+        }
+        for (name, change) in [("A secure field", { (r: FakeTextFieldReader) in r.secure = true }),
+                               ("Lost permission", { $0.trusted = false })] {
+            let result = run(change)
+            TestSupport.expect(result.edits == [false] && result.abandons == 1 && result.staleBeforeMain && !result.claimed,
+                               "\(name) abandons the watch on its queue, got \(result)")
+        }
+        let moved = run { $0.focused = false }
+        TestSupport.expect(moved.edits == [false] && moved.abandons == 0 && !moved.staleBeforeMain && moved.claimed,
+                           "Lost focus keeps the reported edit usable, got \(moved)")
+        let stale = run({ $0.secure = true }, cancelFirst: true)
+        TestSupport.expect(stale.edits == [false] && stale.abandons == 0 && !stale.claimed,
+                           "A cancelled watch abandons nothing and cannot be claimed, got \(stale)")
+        testClaimingAWatch()
+    }
+
+    /// Review F3 #1: using a result claims its watch atomically. A claimed
+    /// watch stops reading, cannot be claimed again, and is not abandoned by
+    /// a later secure field.
+    private static func testClaimingAWatch() {
+        let generation = CorrectionWatchGeneration()
+        let first = generation.advance()
+        TestSupport.expectEqual(generation.advance(from: first), first + 1)
+        TestSupport.expectEqual(generation.advance(from: first), nil)
+        // Contended claims of one generation: exactly one wins, and the loser changes nothing.
+        for _ in 0..<500 {
+            let current = generation.current
+            let wins = ClaimCounter()
+            DispatchQueue.concurrentPerform(iterations: 4) { _ in
+                if generation.advance(from: current) != nil { wins.increment() }
+            }
+            TestSupport.expectEqual(wins.value, 1)
+            TestSupport.expectEqual(generation.current, current + 1)
+        }
+
+        let reader = FakeTextFieldReader("Note: ")
+        reader.paste("cart")
+        let watcher = CorrectionWatcher(reader: reader)
+        var watch: UInt64?, abandons = 0
+        watcher.onEdit = { _, _, token in watch = token }
+        watcher.onAbandon = { abandons += 1 }
+        var captured: CorrectionCapture?
+        watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+        spin(timeout: 1) { captured != nil }
+        watcher.start(captured!, pasted: "cart", dictationID: 7)
+        spin(timeout: 1) { !reader.rangeReads.isEmpty }
+        reader.replace("cart", with: "chart")
+        spin(timeout: 4) { watch != nil }
+        TestSupport.expect(watch.map { watcher.claim($0) } == true, "A current watch is claimed")
+        TestSupport.expect(watch.map { watcher.claim($0) } == false, "A claimed watch cannot be claimed again")
+        spin(timeout: 0.2)
+        let reads = reader.rangeReads.count
+        reader.secure = true
+        spin(timeout: 1.2)
+        TestSupport.expectEqual(reader.rangeReads.count, reads)
+        TestSupport.expectEqual(abandons, 0)
+    }
+
+    /// Review F1 #2: checks are ordered when registered, not when their work
+    /// starts. An older check that starts late cannot cancel a newer one, and
+    /// cancelling the calling task cancels its check.
+    private static func testCorrectionChecksKeepTheirOrder() {
+        final class Box: @unchecked Sendable { var result: DictionarySuggestion?? = .none }
+        let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst)
+        let older = service.beginCorrectionCheck()
+        let newer = service.beginCorrectionCheck()
+        TestSupport.expect(older.isCancelled && !newer.isCancelled, "Registering a newer check cancels the older one")
+        let box = Box(), done = DispatchSemaphore(value: 0)
+        Task.detached {
+            box.result = .some(await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1,
+                                                               ignore: [], isLast: false, check: older))
+            done.signal()
+        }
+        TestSupport.expect(done.wait(timeout: .now() + 5) == .success, "The older check must finish")
+        TestSupport.expect(box.result != nil && box.result! == nil, "The older check offers nothing")
+        TestSupport.expect(!newer.isCancelled, "The older check's late start leaves the newer one running")
+
+        // The calling task is cancelled before it calls in, so the outcome
+        // does not depend on timing.
+        let latest = service.beginCorrectionCheck()
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1, ignore: [],
+                                                isLast: false, check: latest)
+            finished.signal()
+        }
+        TestSupport.expect(finished.wait(timeout: .now() + 5) == .success, "The cancelled check must finish")
+        TestSupport.expect(latest.isCancelled, "Cancelling the calling task cancels its check")
     }
 
     /// #2: without the speech model's vocabulary nothing may change, saved
@@ -1271,6 +1644,45 @@ enum DictionaryTests {
         }
         TestSupport.expect(added.contains(DictionaryKey("nixos")), "Added")
         TestSupport.expect(editor.removing(DictionaryKey("absent"), in: added) == nil, "Nothing to remove")
+    }
+
+    /// A recording press or a dictionary edit withdraws a visible suggestion
+    /// and voids one already requested, while one requested afterwards shows.
+    private static func testSuggestionWithdrawal() {
+        let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
+        var gate = SuggestionPresentationGate()
+        // Visible, then a recording press.
+        let visible = gate.present(word, requestedAt: gate.withdrawals)
+        TestSupport.expect(visible != nil && gate.suggestion == word, "Shown")
+        gate.withdraw()
+        TestSupport.expect(gate.suggestion == nil && gate.activeID == nil, "Withdrawn and cleared")
+        TestSupport.expect(gate.resolve(visible!) == nil, "Its buttons and timer do nothing")
+        // Requested, then a dictionary edit before it reaches the screen.
+        let requested = gate.withdrawals
+        gate.withdraw()
+        TestSupport.expect(gate.present(word, requestedAt: requested) == nil && gate.suggestion == nil,
+                           "A presentation requested before the withdrawal never shows")
+        // Requested after the withdrawal: shows normally.
+        let later = gate.withdrawals
+        TestSupport.expect(gate.present(word, requestedAt: later) != nil && gate.suggestion == word, "A later one shows")
+    }
+
+    /// "Don't suggest" with a full ignore list reports the ignore list, not the dictionary.
+    private static func testIgnoreListFull() {
+        var full = CustomDictionary()
+        for index in 0..<DictionaryValidation.ignoreCapacity { _ = full.addIgnore(DictionaryKey("w\(index)")) }
+        let editor = DictionaryEditor(encoder: testEncoder)
+        let result = editor.ignoring(DictionaryKey("eldar"), in: full)
+        TestSupport.expect(result == .failure(.ignoreFull), "Ignore list full")
+        TestSupport.expectEqual(DictionaryEditError.ignoreFull.message, "The ignored-words list is full (1000 words).")
+        TestSupport.expectEqual(DictionaryEditError.full.message, "The dictionary is full (1000 entries).")
+        // Entries keep their own message and capacity.
+        var entries = CustomDictionary()
+        for index in 0..<DictionaryValidation.capacity { _ = entries.upsert(entry("word\(index)x")) }
+        TestSupport.expect(editor.saving(text: "NixOS", strength: 1, replacing: nil, in: entries) == .failure(.full),
+                           "Dictionary full")
+        TestSupport.expect(editor.ignoring(DictionaryKey("eldar"), in: entries).isSuccess,
+                           "A full dictionary does not block ignoring")
     }
 
     /// #2: a full dictionary could not take the word, so nothing is offered or decoded.
@@ -1412,4 +1824,11 @@ final class FakeTextFieldReader: TextFieldReader {
         let slice = Array(units[range.location..<range.location + range.length])
         return String(utf16CodeUnits: slice, count: slice.count)
     }
+}
+
+private final class ClaimCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func increment() { lock.lock(); count += 1; lock.unlock() }
 }

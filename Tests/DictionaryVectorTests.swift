@@ -156,7 +156,7 @@ enum DictionaryVectorTests {
         (value as! [Object]).map { ($0["tokens"] as! [Int], Float($0["strength"] as! Double)) }
     }
 
-    /// The vector keys: "1.0", "1.41", "2.0", "2.83", "4.0".
+    /// The vector keys: "1.0", "1.41", "2.0", "2.83", "4.0", "5.66", "8.0".
     private static func strengthKey(_ strength: Float) -> String {
         let text = DictionaryValidation.label(strength).dropFirst()
         return text.contains(".") ? String(text) : text + ".0"

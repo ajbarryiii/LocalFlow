@@ -7,6 +7,8 @@ enum DictionaryEditError: Error, Equatable {
     case noVocabulary
     case invalid(DictionaryEntryError)
     case full
+    /// The ignore list, which has its own capacity.
+    case ignoreFull
     case invalidKey
 
     /// Content-free: never quotes the entry.
@@ -15,6 +17,7 @@ enum DictionaryEditError: Error, Equatable {
         case .noVocabulary: return DictionaryEditor.unavailableMessage
         case .invalid(let error): return error.message
         case .full: return "The dictionary is full (\(DictionaryValidation.capacity) entries)."
+        case .ignoreFull: return "The ignored-words list is full (\(DictionaryValidation.ignoreCapacity) words)."
         case .invalidKey: return DictionaryEntryError.unencodable.message
         }
     }
@@ -59,7 +62,7 @@ struct DictionaryEditor {
         guard canEdit else { return .failure(.noVocabulary) }
         var updated = dictionary
         switch updated.addIgnore(key) {
-        case .full?: return .failure(.full)
+        case .full?: return .failure(.ignoreFull)
         case .invalidKey?: return .failure(.invalidKey)
         case nil: return .success(updated)
         }

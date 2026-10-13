@@ -270,10 +270,14 @@ final class RecordingOverlayManager {
     /// Shows a suggestion only when the panel is free (recording, transcribing,
     /// errors and other overlays take priority). It resolves as Not now after
     /// 12 s; a stale timer or click cannot act on a later phase.
+    /// Main thread only. A withdrawal issued after this call (a recording press,
+    /// a dictionary edit) voids it before it reaches the screen.
     func showDictionarySuggestion(_ suggestion: DictionarySuggestion) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let requested = overlayState.suggestionGate.withdrawals
         DispatchQueue.main.async {
-            guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion else { return }
-            let id = self.overlayState.suggestionGate.present(suggestion)
+            guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion,
+                  let id = self.overlayState.suggestionGate.present(suggestion, requestedAt: requested) else { return }
             self.lockedOverlayWidth = nil
             self.overlayState.phase = .dictionarySuggestion(id: id)
             self.showOverlayPanel(animatedResize: true)
@@ -283,8 +287,12 @@ final class RecordingOverlayManager {
         }
     }
 
-    /// Withdraws a visible suggestion (setting turned off) without acting on it.
-    func dismissDictionarySuggestion() {
+    /// Withdraws the visible suggestion, and any presentation already requested,
+    /// without acting on it: a recording press or start, a dictionary edit, or
+    /// the setting turned off. Main thread only; takes effect at once.
+    func withdrawDictionarySuggestion() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        overlayState.suggestionGate.withdraw()
         DispatchQueue.main.async {
             guard self.overlayState.phase.isDictionarySuggestion, self.overlayWindow != nil else { return }
             self.preemptSuggestion()

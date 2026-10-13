@@ -3,7 +3,7 @@ import Foundation
 /// The per-strength acceptance rule for a `replace` candidate (DESIGN §1.6,
 /// pins P2 and P3). Pure, so the shared vectors can test it.
 enum VerifyDecision {
-    static let strengths: [Float] = [1.0, 1.41, 2.0, 2.83, 4.0]
+    static let strengths: [Float] = [1.0, 1.41, 2.0, 2.83, 4.0, 5.66, 8.0]
 
     static func norms(_ text: String) -> [[Unicode.Scalar]] { DictionaryWord.split(text).map(\.norm) }
 
@@ -85,16 +85,43 @@ struct DictionarySuggestion: Equatable {
     }
 }
 
-/// Candidates in order, at most three attempted, five decodes each, within
-/// 2 s of elapsed time, stopping when cancelled (DESIGN §1.6 budgets).
+/// Replacement candidates of one dictation that were decoded at every
+/// strength without being accepted. The outcome depends only on the typed
+/// text, the candidate and the retained audio, so a later check of the same
+/// dictation skips them instead of spending its budget again. Used on one
+/// queue only.
+final class ExhaustedCandidates {
+    private struct Key: Hashable {
+        let surface: [Unicode.Scalar]
+        let beforeRange: Range<Int>
+        let beforeWords: [[Unicode.Scalar]]
+    }
+
+    private var keys: Set<Key> = []
+
+    private static func key(_ candidate: CorrectionCandidate) -> Key {
+        Key(surface: Array(candidate.surface.unicodeScalars), beforeRange: candidate.beforeRange,
+            beforeWords: candidate.beforeWords)
+    }
+
+    func contains(_ candidate: CorrectionCandidate) -> Bool { keys.contains(Self.key(candidate)) }
+
+    func insert(_ candidate: CorrectionCandidate) { keys.insert(Self.key(candidate)) }
+}
+
+/// Candidates in order, at most three attempted, seven decodes each, within
+/// 3 s of elapsed time, stopping when cancelled (DESIGN §1.6 budgets).
 enum DictionarySuggestionFinder {
     static let maxCandidates = 3
-    static let maxSeconds: TimeInterval = 2
+    static let maxSeconds: TimeInterval = 3
 
     /// `decode` re-decodes the retained audio with the snapshot plus the given
     /// entry and returns the casing-restored text, or nil on failure.
+    /// Candidates in `exhausted` are dropped before the cap, like unmappable
+    /// ones; a candidate that fails at every strength is added to it.
     static func find(typed: String, edited: String, base: String, dictionary: [DictionaryEntry], ignore: Set<DictionaryKey>,
-                     encoder: BPEEncoder?, now: () -> TimeInterval, isCancelled: () -> Bool,
+                     encoder: BPEEncoder?, exhausted: ExhaustedCandidates = ExhaustedCandidates(),
+                     now: () -> TimeInterval, isCancelled: () -> Bool,
                      decode: (DictionaryEntry) -> String?) -> DictionarySuggestion? {
         // Every candidate would be a new entry; a full dictionary could not take
         // it, so nothing is offered (and nothing is decoded).
@@ -107,7 +134,11 @@ enum DictionarySuggestionFinder {
         // Casing candidates need no audio and are not mapped.
         let attempted = CorrectionCandidates.find(before: typed, after: edited, dictionary: dictionary, ignore: ignore,
                                                   encoder: encoder)
-            .filter { $0.kind == .casing || VerifyDecision.mapBlock(typed: typed, candidate: $0, base: b) != nil }
+            .filter { candidate in
+                candidate.kind == .casing
+                    || (!exhausted.contains(candidate)
+                        && VerifyDecision.mapBlock(typed: typed, candidate: candidate, base: b) != nil)
+            }
             .prefix(maxCandidates)
         for candidate in attempted {
             if candidate.kind == .casing {
@@ -124,6 +155,7 @@ enum DictionarySuggestionFinder {
                     return DictionarySuggestion(word: candidate.surface, strength: strength, kind: .replace)
                 }
             }
+            exhausted.insert(candidate)
         }
         return nil
     }

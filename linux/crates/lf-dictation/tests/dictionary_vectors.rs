@@ -112,6 +112,8 @@ fn verify_vectors() {
         2.0 => "2.0",
         2.83 => "2.83",
         4.0 => "4.0",
+        5.66 => "5.66",
+        8.0 => "8.0",
         _ => unreachable!(),
     };
     for case in section(&v, "verify") {

@@ -170,7 +170,7 @@ capitals keep their exact spelling ("nixos" is typed as "NixOS").
 
 ```bash
 localflowctl dict add Kubernetes             # strength 1 (the default)
-localflowctl dict add New York --strength 2  # 0.25 to 4; higher boosts harder
+localflowctl dict add New York --strength 2  # 0.25 to 8; higher boosts harder
 localflowctl dict remove new york            # case does not matter
 localflowctl dict list                       # one "text<TAB>strength" per line
 localflowctl dict ignored                    # words never suggested
@@ -181,8 +181,8 @@ An entry has 1 to 8 words, at most 100 characters and at least one
 letter, and the model must be able to spell it (otherwise `error
 invalid-entry`). At most 1000 entries and 1000 ignored words. Adding a word
 that differs only in case replaces the old entry. Strengths in the UI
-presets are 0.5, 1, 1.41, 2, 2.83 and 4. Entries that share their first
-tokens share a boost, at the larger strength.
+presets are 0.5, 1, 1.41, 2, 2.83, 4, 5.66 and 8. Entries that share
+their first tokens share a boost, at the larger strength.
 
 The dictionary is `$XDG_DATA_HOME/localflow/dictionary.json` (directory
 0700, file exactly 0600 and owned by you; anything else, including a
@@ -209,7 +209,7 @@ change of capitals only ("nixos" to "NixOS") is offered without
 re-decoding, unless only the first letter changed (a sentence start). This
 checks that the word fits the audio, not that it was said; treat it as a
 suggestion. One suggestion per correction; the check takes at most about
-two seconds and stops when you start a new dictation.
+three seconds and stops when you start a new dictation.
 
 Privacy: the dictation's text and its decoded audio features stay in the
 daemon's memory for those two minutes (dropped earlier by a new
@@ -242,7 +242,7 @@ dict-unignore word=<pct>               ok <status>  | error not-found, storage
 `<pct>` is UTF-8 with only `A-Z a-z 0-9 . _ ~ -` literal and every other
 byte as `%XX` (uppercase hex), decoded once; control characters and
 invalid UTF-8 are refused. `<dec>` is `[0-9]{1,2}(.[0-9]{1,3})?` between
-0.25 and 4. Each field appears once; unknown, repeated or missing fields
+0.25 and 8. Each field appears once; unknown, repeated or missing fields
 are `error bad-request`. These lines may be up to 16 KiB and a decoded
 value up to 4096 bytes; every other request stays within 256 bytes.
 `correct-submit` answers at once; poll `correct-result` (localflowctl
