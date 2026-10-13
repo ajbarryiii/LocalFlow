@@ -242,7 +242,7 @@ dict-unignore word=<pct>               ok <status>  | error not-found, storage
 `<pct>` is UTF-8 with only `A-Z a-z 0-9 . _ ~ -` literal and every other
 byte as `%XX` (uppercase hex), decoded once; control characters and
 invalid UTF-8 are refused. `<dec>` is `[0-9]{1,2}(.[0-9]{1,3})?` between
-0.25 and 4. Each field appears once; unknown, repeated or missing fields
+0.25 and 8. Each field appears once; unknown, repeated or missing fields
 are `error bad-request`. These lines may be up to 16 KiB and a decoded
 value up to 4096 bytes; every other request stays within 256 bytes.
 `correct-submit` answers at once; poll `correct-result` (localflowctl

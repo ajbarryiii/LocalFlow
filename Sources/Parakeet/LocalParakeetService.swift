@@ -141,40 +141,49 @@ final class LocalParakeetService: @unchecked Sendable {
         }
     }
 
+    /// Registers a correction check now, cancelling any older one. Call it
+    /// synchronously when the check is decided, so checks keep that order
+    /// however late their work starts.
+    func beginCorrectionCheck() -> CorrectionCheck {
+        CorrectionCheck(cancellation: beginVerification())
+    }
+
     /// Runs candidates and verification (DESIGN §1.5-1.6) against the retained
     /// session on the model queue. A stale or expired `dictationID`, a new
-    /// recording, a newer check or a dictionary change yields nil. The audio
-    /// stays retained for later checks of the same dictation until `isLast`
-    /// (the watch has ended) or `releaseCorrectionSession`.
-    func suggestCorrection(typed: String, edited: String, dictationID: UInt64,
-                           ignore: Set<DictionaryKey>, isLast: Bool) async -> DictionarySuggestion? {
-        let cancellation = beginVerification()
-        return await withCheckedContinuation { continuation in
-            queue.async {
-                let now = { ProcessInfo.processInfo.systemUptime }
-                guard !cancellation.isCancelled, let session = self.corrections.session(id: dictationID, now: now()) else {
-                    continuation.resume(returning: nil)
-                    return
+    /// recording, a newer check, a dictionary change or cancelling the calling
+    /// task yields nil. The audio stays retained for later checks of the same
+    /// dictation until `isLast` (the watch has ended) or `releaseCorrectionSession`.
+    func suggestCorrection(typed: String, edited: String, dictationID: UInt64, ignore: Set<DictionaryKey>,
+                           isLast: Bool, check: CorrectionCheck) async -> DictionarySuggestion? {
+        let cancellation = check.cancellation
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    let now = { ProcessInfo.processInfo.systemUptime }
+                    guard !cancellation.isCancelled, let session = self.corrections.session(id: dictationID, now: now()) else {
+                        continuation.resume(returning: nil)
+                        return
+                    }
+                    let encoder = session.runtime.encoder
+                    let suggestion = DictionarySuggestionFinder.find(
+                        typed: typed, edited: edited, base: session.base, dictionary: session.dictionary.entries, ignore: ignore,
+                        encoder: encoder, exhausted: session.exhausted, now: now,
+                        isCancelled: { cancellation.isCancelled || self.corrections.currentID != dictationID },
+                        decode: { extra in
+                            let entries = session.dictionary.entries.filter { $0.key != extra.key } + [extra]
+                            guard let graph = BiasGraph.build(entries: entries, encoder: encoder),
+                                  let text = try? session.runtime.decode(session.projections, bias: graph, check: cancellation.check) else {
+                                return nil
+                            }
+                            return CasingRestorer.apply(text, entries: entries)
+                        })
+                    let cancelled = cancellation.isCancelled
+                    // After the last check nothing else can use this dictation's audio.
+                    if isLast && !cancelled { self.corrections.expire(id: dictationID) }
+                    continuation.resume(returning: cancelled ? nil : suggestion)
                 }
-                let encoder = session.runtime.encoder
-                let suggestion = DictionarySuggestionFinder.find(
-                    typed: typed, edited: edited, base: session.base, dictionary: session.dictionary.entries, ignore: ignore,
-                    encoder: encoder, exhausted: session.exhausted, now: now,
-                    isCancelled: { cancellation.isCancelled || self.corrections.currentID != dictationID },
-                    decode: { extra in
-                        let entries = session.dictionary.entries.filter { $0.key != extra.key } + [extra]
-                        guard let graph = BiasGraph.build(entries: entries, encoder: encoder),
-                              let text = try? session.runtime.decode(session.projections, bias: graph, check: cancellation.check) else {
-                            return nil
-                        }
-                        return CasingRestorer.apply(text, entries: entries)
-                    })
-                let cancelled = cancellation.isCancelled
-                // After the last check nothing else can use this dictation's audio.
-                if isLast && !cancelled { self.corrections.expire(id: dictationID) }
-                continuation.resume(returning: cancelled ? nil : suggestion)
             }
-        }
+        } onCancel: { cancellation.cancel() }
     }
 
     /// New recording, cancel, setting off or dictionary change: stop any
@@ -514,4 +523,12 @@ private enum ParakeetEncoder {
         length[0] = NSNumber(value: size)
         _ = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["mel": mel, "mel_length": length]))
     }
+}
+
+/// A registered correction check. Registering a newer one, a new recording,
+/// a dictionary change or turning suggestions off cancels it.
+struct CorrectionCheck: Sendable {
+    fileprivate let cancellation: ParakeetCancellation
+
+    var isCancelled: Bool { cancellation.isCancelled }
 }

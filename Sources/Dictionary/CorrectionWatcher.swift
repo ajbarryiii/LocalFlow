@@ -390,6 +390,9 @@ final class CorrectionWatcher: @unchecked Sendable {
 
     /// Main thread only.
     var onEdit: ((_ edit: CorrectionEdit, _ isLast: Bool) -> Void)?
+    /// Main thread only: the field turned secure or permission was lost, so
+    /// edits already reported must not be used. The app stops their checks.
+    var onAbandon: (() -> Void)?
 
     init(reader: TextFieldReader) {
         self.reader = reader
@@ -473,21 +476,28 @@ final class CorrectionWatcher: @unchecked Sendable {
             return
         }
         let delivery: (edit: CorrectionEdit, isLast: Bool)?
+        var abandon = false
         switch session.poll(now: ProcessInfo.processInfo.systemUptime) {
         case .watching: return
         case .settled(let edit): delivery = (edit, false)
         case .finalize(let edit): delivery = (edit, true)
-        case .discard: delivery = nil
+        case .discard(let reason):
+            delivery = nil
+            // A cancel comes from the app, which has already stopped everything.
+            abandon = reason.forbidsCapturedText && reason != .cancelled
         }
         if delivery?.isLast != false {
             self.session = nil
             timer?.cancel()
             timer = nil
         }
-        if let delivery {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.generation.isCurrent(token) else { return }
+        guard delivery != nil || abandon else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation.isCurrent(token) else { return }
+            if let delivery {
                 self.onEdit?(delivery.edit, delivery.isLast)
+            } else {
+                self.onAbandon?()
             }
         }
     }

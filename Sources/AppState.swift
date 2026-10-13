@@ -533,6 +533,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         correctionWatcher.onEdit = { [weak self] edit, isLast in
             self?.handleCorrectionEdit(edit, isLast: isLast)
         }
+        correctionWatcher.onAbandon = { [weak self] in
+            self?.stopCorrectionSuggestions()
+        }
 
         // Clear any stale recording flag left over from an unclean exit.
         AppState.writeRecordingStateFlag(false)
@@ -2149,10 +2152,13 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             return
         }
         let ignore = Set(customDictionary.ignore)
+        // Registered here, in report order, so an older check can never cancel this one.
+        let check = LocalParakeetService.shared.beginCorrectionCheck()
         correctionSuggestionTask?.cancel()
         correctionSuggestionTask = Task { @MainActor [weak self] in
             let suggestion = await LocalParakeetService.shared.suggestCorrection(
-                typed: edit.typed, edited: edit.edited, dictationID: edit.dictationID, ignore: ignore, isLast: isLast)
+                typed: edit.typed, edited: edit.edited, dictationID: edit.dictationID, ignore: ignore, isLast: isLast,
+                check: check)
             guard let self, !Task.isCancelled else { return }
             self.correctionSuggestionTask = nil
             guard let suggestion else { return }

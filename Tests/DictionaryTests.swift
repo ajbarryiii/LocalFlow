@@ -38,6 +38,8 @@ enum DictionaryTests {
         testWatchEndsWithCapturedEdit()
         testExhaustedCandidatesAreSkipped()
         testWatcherReportsAndContinues()
+        testForbiddenStopAbandonsReportedEdits()
+        testCorrectionChecksKeepTheirOrder()
         DictionaryVectorTests.run()
     }
 
@@ -1468,6 +1470,71 @@ enum DictionaryTests {
         spin(timeout: 1.2)
         TestSupport.expectEqual(reader.rangeReads.count, afterCancel)
         TestSupport.expectEqual(edits.count, 1)
+    }
+
+    /// Review F1 #1: after an edit was reported, a field that turns secure or
+    /// lost permission abandons it, so the app stops its check. Losing focus
+    /// does not (a finalize instead), and a stale watch abandons nothing.
+    private static func testForbiddenStopAbandonsReportedEdits() {
+        func run(_ change: (FakeTextFieldReader) -> Void, cancelFirst: Bool = false) -> (edits: [Bool], abandons: Int) {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let watcher = CorrectionWatcher(reader: reader)
+            var edits: [Bool] = [], abandons = 0
+            watcher.onEdit = { _, isLast in edits.append(isLast) }
+            watcher.onAbandon = { abandons += 1 }
+            var captured: CorrectionCapture?
+            watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+            spin(timeout: 1) { captured != nil }
+            watcher.start(captured!, pasted: "cart", dictationID: 7)
+            spin(timeout: 1) { !reader.rangeReads.isEmpty }
+            reader.replace("cart", with: "chart")
+            spin(timeout: 4) { !edits.isEmpty }
+            if cancelFirst { watcher.cancel() }
+            change(reader)
+            spin(timeout: 1.5) { edits.count > 1 || abandons > 0 }
+            spin(timeout: 0.2)
+            return (edits, abandons)
+        }
+        let secure = run { $0.secure = true }
+        TestSupport.expect(secure.edits == [false] && secure.abandons == 1, "A secure field abandons, got \(secure)")
+        let revoked = run { $0.trusted = false }
+        TestSupport.expect(revoked.edits == [false] && revoked.abandons == 1, "Lost permission abandons, got \(revoked)")
+        let moved = run { $0.focused = false }
+        TestSupport.expect(moved.edits == [false] && moved.abandons == 0, "Lost focus keeps the reported edit, got \(moved)")
+        let stale = run({ $0.secure = true }, cancelFirst: true)
+        TestSupport.expect(stale.edits == [false] && stale.abandons == 0, "A cancelled watch abandons nothing, got \(stale)")
+    }
+
+    /// Review F1 #2: checks are ordered when registered, not when their work
+    /// starts. An older check that starts late cannot cancel a newer one, and
+    /// cancelling the calling task cancels its check.
+    private static func testCorrectionChecksKeepTheirOrder() {
+        final class Box: @unchecked Sendable { var result: DictionarySuggestion?? = .none }
+        let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst)
+        let older = service.beginCorrectionCheck()
+        let newer = service.beginCorrectionCheck()
+        TestSupport.expect(older.isCancelled && !newer.isCancelled, "Registering a newer check cancels the older one")
+        let box = Box(), done = DispatchSemaphore(value: 0)
+        Task.detached {
+            box.result = .some(await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1,
+                                                               ignore: [], isLast: false, check: older))
+            done.signal()
+        }
+        TestSupport.expect(done.wait(timeout: .now() + 5) == .success, "The older check must finish")
+        TestSupport.expect(box.result != nil && box.result! == nil, "The older check offers nothing")
+        TestSupport.expect(!newer.isCancelled, "The older check's late start leaves the newer one running")
+
+        let latest = service.beginCorrectionCheck()
+        let task = Task.detached {
+            await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1, ignore: [],
+                                            isLast: false, check: latest)
+        }
+        task.cancel()
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached { _ = await task.value; finished.signal() }
+        TestSupport.expect(finished.wait(timeout: .now() + 5) == .success, "The cancelled check must finish")
+        TestSupport.expect(latest.isCancelled, "Cancelling the calling task cancels its check")
     }
 
     /// #2: without the speech model's vocabulary nothing may change, saved
