@@ -195,6 +195,11 @@ final class LocalParakeetService: @unchecked Sendable {
         return cancellation
     }
 
+    /// Releases one dictation's retained audio, never a newer one's.
+    func releaseCorrectionSession(dictationID: UInt64) {
+        queue.async { self.corrections.expire(id: dictationID) }
+    }
+
     private func cancelVerification() {
         verificationLock.lock()
         verification?.cancel()

@@ -15,8 +15,9 @@
 //! - A change is validated in full, written to a 0600 temporary file,
 //!   synced, renamed over the file and the directory synced; only then is it
 //!   published (a new [`Snapshot`]). A failed write changes nothing; if only
-//!   the directory sync fails, the rename is undone, memory is set to what
-//!   the file then holds, and the change is still refused (`error storage`).
+//!   the directory sync fails, the rename is undone and the change refused
+//!   (`error storage`); memory never changes. If it cannot be undone, the
+//!   daemon replies `error storage` and stops, so it reloads the file.
 //!
 //! The daemon owns the file; `localflowctl dict list` reads it the same way.
 
@@ -74,6 +75,10 @@ pub enum ChangeError {
     BadWord,
     /// The new dictionary could not be saved.
     Storage,
+    /// Like `Storage`, but undoing the failed save failed too: the file may
+    /// differ from memory. The store refuses all further changes and the
+    /// daemon must stop (it reloads the file on restart).
+    Unrecoverable,
 }
 
 /// The identity key of `word` as typed: whitespace collapsed, then folded.
@@ -95,6 +100,8 @@ pub struct Store {
     path: PathBuf,
     tokenizer: Arc<Tokenizer>,
     current: Arc<Snapshot>,
+    /// See [`Store::is_broken`].
+    broken: bool,
     #[cfg(test)]
     faults: Faults,
 }
@@ -121,6 +128,7 @@ impl Store {
                 revision: next_revision(),
                 dictionary,
             }),
+            broken: false,
             #[cfg(test)]
             faults: Faults::default(),
         })
@@ -189,6 +197,9 @@ impl Store {
 
     /// Validates, persists, then publishes `next`.
     fn commit(&mut self, next: Dictionary) -> Result<(), ChangeError> {
+        if self.broken {
+            return Err(ChangeError::Unrecoverable);
+        }
         let bytes = serialize(&next);
         // The same checks as loading, so what is saved always loads.
         if parse(&bytes, Some(&self.tokenizer)).as_ref() != Ok(&next) {
@@ -204,11 +215,27 @@ impl Store {
             // The rename may not survive a crash: undo it, and never
             // acknowledge a change that might be lost.
             crate::warn!("dictionary: cannot sync its directory ({e}); the change is undone");
-            self.recover(existed);
-            return Err(ChangeError::Storage);
+            return Err(self.recover(existed));
         }
         self.publish(next);
         Ok(())
+    }
+
+    /// Whether a failed save could not be undone: the file may then differ
+    /// from memory, so the store refuses every further change and the
+    /// daemon must stop (and reload the file when restarted).
+    pub fn is_broken(&self) -> bool {
+        self.broken
+    }
+
+    /// Injects write failures (tests only): the next `dir_syncs` directory
+    /// syncs fail, and with `no_rollback` undoing a change fails.
+    #[cfg(test)]
+    pub(crate) fn inject_faults(&mut self, dir_syncs: u32, no_rollback: bool) {
+        self.faults = Faults {
+            dir_syncs,
+            no_rollback,
+        };
     }
 
     fn publish(&mut self, dictionary: Dictionary) {
@@ -221,7 +248,7 @@ impl Store {
     /// After a failed directory sync: puts the previous file back (or
     /// removes the new one if there was none), then makes memory match
     /// whatever the file now holds, so memory never claims more than disk.
-    fn recover(&mut self, existed: bool) {
+    fn recover(&mut self, existed: bool) -> ChangeError {
         let undone = if self.skip_rollback() {
             Err("skipped".to_string())
         } else if existed {
@@ -237,13 +264,17 @@ impl Store {
             }
             Err(e) => crate::warn!("dictionary: cannot undo the change ({e})"),
         }
+        // Memory is never changed here: the change was refused. The file
+        // must hold what memory holds, or nothing more can be trusted.
         match read(&self.path, Some(&self.tokenizer)) {
-            Ok(on_disk) if on_disk != self.current.dictionary => {
-                crate::warn!("dictionary: the saved change remains in place");
-                self.publish(on_disk);
+            Ok(on_disk) if on_disk == self.current.dictionary => ChangeError::Storage,
+            _ => {
+                crate::error!(
+                    "dictionary: a failed save could not be undone; the file no longer matches what is in use"
+                );
+                self.broken = true;
+                ChangeError::Unrecoverable
             }
-            Ok(_) => {}
-            Err(e) => crate::warn!("dictionary: cannot read it back: {e}"),
         }
     }
 
@@ -727,23 +758,23 @@ mod tests {
         assert_eq!(read(&file(&s), None).unwrap(), saved);
         assert_eq!(fs::metadata(file(&s)).unwrap().mode() & 0o777, 0o600);
 
-        // Undoing fails: memory follows the file that remains, and the
-        // change is still refused.
-        store.faults.dir_syncs = 1;
-        store.faults.no_rollback = true;
-        assert_eq!(store.ignore("Other"), Err(ChangeError::Storage));
-        store.faults.no_rollback = false;
-        let after = store.snapshot();
-        assert!(after.revision != before.revision);
-        assert_eq!(after.dictionary, read(&file(&s), None).unwrap());
-        assert_eq!(after.dictionary.ignore, ["other"]);
+        assert!(!store.is_broken());
+
+        // Undoing fails too: unrecoverable. The refused change is never
+        // published, and the store refuses everything after it.
+        store.inject_faults(1, true);
+        assert_eq!(store.ignore("Other"), Err(ChangeError::Unrecoverable));
+        store.inject_faults(0, false);
+        assert!(store.is_broken());
+        assert!(Arc::ptr_eq(&before, &store.snapshot()), "memory unchanged");
+        assert_eq!(store.add("Third", 1.0), Err(ChangeError::Unrecoverable));
+        assert!(Arc::ptr_eq(&before, &store.snapshot()));
         // No temporary files are left behind.
         assert_eq!(fs::read_dir(&s.dir).unwrap().count(), 1);
-        // And it all still loads.
-        assert_eq!(
-            Store::open(&s).unwrap().snapshot().dictionary,
-            after.dictionary
-        );
+        // A restart loads what the file holds.
+        let reopened = Store::open(&s).unwrap();
+        assert_eq!(reopened.snapshot().dictionary.ignore, ["other"]);
+        assert!(!reopened.is_broken());
     }
 
     #[test]

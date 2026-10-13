@@ -337,6 +337,60 @@ fn localflowctl_correct_paths_that_change_nothing() {
     assert_eq!(text(&out).0, "no suggestion\n");
 }
 
+/// A fake daemon whose `correct-result` replies never come: `correct`
+/// still gives up within its 5 s polling deadline, whatever `--timeout-ms`.
+#[test]
+fn localflowctl_correct_polling_keeps_its_deadline() {
+    use std::io::{BufRead, BufReader, Write};
+    let t = TempDir::new("stalled-daemon");
+    let run = t.path().join("run");
+    common::private_dir(&run.join("localflow"));
+    let listener = std::os::unix::net::UnixListener::bind(run.join("localflow/ctl.sock")).unwrap();
+    std::thread::spawn(move || {
+        let mut stalled = Vec::new();
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { return };
+            let mut line = String::new();
+            let _ = BufReader::new(&s).read_line(&mut line);
+            let reply = if line.contains("correct-begin") {
+                format!(
+                    "localflow/1 ok state=idle model=ready id=1 text={}\n",
+                    encode_pct(TYPED)
+                )
+            } else if line.contains("correct-submit") {
+                "localflow/1 ok state=idle model=ready job=2\n".into()
+            } else {
+                // correct-result: held open, never answered.
+                stalled.push(s);
+                continue;
+            };
+            let _ = s.write_all(reply.as_bytes());
+        }
+    });
+    let rofi = fake_rofi(t.path(), &format!("echo '{EDITED}'"), "echo 0");
+    let start = Instant::now();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_localflowctl"))
+        .args(["--timeout-ms", "30000", "correct"])
+        .env("XDG_RUNTIME_DIR", &run)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                rofi.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .output()
+        .unwrap();
+    let took = start.elapsed();
+    assert!(out.status.success(), "{:?}", text(&out));
+    assert_eq!(text(&out).0, "no suggestion (the check took too long)\n");
+    assert!(
+        took >= Duration::from_millis(4500) && took < Duration::from_millis(6500),
+        "{took:?}"
+    );
+}
+
 #[test]
 fn localflowctl_dict_subcommands() {
     let (rig, _) = start("dict-ctl-sub");

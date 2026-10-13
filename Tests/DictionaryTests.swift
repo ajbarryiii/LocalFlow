@@ -25,6 +25,9 @@ enum DictionaryTests {
         testSuggestionCleanup()
         testKeyValidity()
         testVerificationOrder()
+        testCancelDuringRead()
+        testStaleDelayedPaste()
+        testEligibilityWindow()
         DictionaryVectorTests.run()
     }
 
@@ -1039,6 +1042,109 @@ enum DictionaryTests {
             encoder: testEncoder, now: { 0 }, isCancelled: { true }, decode: { _ in nil })
         TestSupport.expect(cancelledCasing == nil, "Casing when cancelled")
     }
+
+    // MARK: - Review round 2
+
+    /// #3: a cancel that lands during an in-flight metadata request stops the
+    /// watch before any text is read, in begin and in a poll.
+    private static func testCancelDuringRead() {
+        do {
+            let generation = CorrectionWatchGeneration()
+            let token = generation.advance()
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            reader.onCharacterCount = { generation.advance() }  // a new dictation starts meanwhile
+            let target = reader.captureFocusedTextField()!
+            let begun = CorrectionWatchSession.begin(reader: reader, target: target, pasted: "cart", dictationID: 7, now: 0,
+                                                     isCancelled: { !generation.isCurrent(token) })
+            TestSupport.expect(begun == .failure(.cancelled), "Begin stops on cancel")
+            TestSupport.expect(reader.rangeReads.isEmpty, "No text is read after the cancel")
+        }
+        do {
+            let generation = CorrectionWatchGeneration()
+            let token = generation.advance()
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let target = reader.captureFocusedTextField()!
+            guard case .success(let session) = CorrectionWatchSession.begin(
+                reader: reader, target: target, pasted: "cart", dictationID: 7, now: 0,
+                isCancelled: { !generation.isCurrent(token) }) else { fatalError("Session must begin") }
+            TestSupport.expectEqual(session.poll(now: 1), .watching)
+            let reads = reader.rangeReads.count
+            reader.onCharacterCount = { generation.advance() }
+            TestSupport.expectEqual(session.poll(now: 2), .discard(.cancelled))
+            TestSupport.expectEqual(reader.rangeReads.count, reads)
+            TestSupport.expect(session.record.pasted.isEmpty, "Text is cleared")
+        }
+    }
+
+    /// Runs the main queue until `done` or the timeout.
+    private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {
+        let end = Date().addingTimeInterval(timeout)
+        while !done() && Date() < end {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    /// #1: a paste still waiting for the shortcut release when a new recording
+    /// starts must not capture or watch anything.
+    private static func testStaleDelayedPaste() {
+        let reader = FakeTextFieldReader("Note: ")
+        reader.paste("cart")
+        let watcher = CorrectionWatcher(reader: reader)
+
+        let stale = watcher.currentGeneration  // the dictation finished
+        watcher.cancel()                       // a new recording starts before the paste
+        var staleResult: CorrectionCapture?? = .none
+        watcher.capture(expecting: stale) { staleResult = .some($0) }
+        TestSupport.expect(staleResult != nil && staleResult! == nil, "A stale context gets no capture, at once")
+        spin(timeout: 0.4)
+        TestSupport.expectEqual(reader.captureCalls, 0)
+        TestSupport.expect(reader.rangeReads.isEmpty, "Nothing is read for a stale paste")
+
+        // A capture that is cancelled before it starts never begins watching.
+        var captured: CorrectionCapture?
+        watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+        spin(timeout: 1) { captured != nil }
+        TestSupport.expect(captured != nil, "A current context captures")
+        watcher.cancel()
+        watcher.start(captured!, pasted: "cart", dictationID: 7)
+        spin(timeout: 0.4)
+        TestSupport.expect(reader.rangeReads.isEmpty, "A cancelled capture never starts")
+
+        // A current one begins, and a cancel ends all further reads.
+        captured = nil
+        watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+        spin(timeout: 1) { captured != nil }
+        watcher.start(captured!, pasted: "cart", dictationID: 7)
+        spin(timeout: 1) { !reader.rangeReads.isEmpty }
+        TestSupport.expectEqual(reader.rangeReads.count, 1)
+        watcher.cancel()
+        spin(timeout: 1.4)
+        TestSupport.expectEqual(reader.rangeReads.count, 1)
+    }
+
+    /// #2: an edit between recording stop and model submission (or any later
+    /// cancel) leaves the result ineligible, so its session is released.
+    private static func testEligibilityWindow() {
+        func eligible(snapshot: UInt64 = 3, current: UInt64 = 3, watch: UInt64 = 5, now: UInt64 = 5, enabled: Bool = true,
+                      readable: Bool = true, macro: Bool = false, enter: Bool = false, output: String = "ship the cart now") -> Bool {
+            CorrectionEligibility.isEligible(suggestionsEnabled: enabled, dictionaryReadable: readable, retained: true,
+                                             snapshotRevision: snapshot, currentRevision: current,
+                                             watchGeneration: watch, currentGeneration: now,
+                                             usedMacro: macro, shouldPressEnter: enter, output: output)
+        }
+        TestSupport.expect(eligible(), "A plain current dictation is eligible")
+        TestSupport.expect(!eligible(current: 4), "A dictionary edit after recording stopped")
+        TestSupport.expect(!eligible(now: 6), "A cancel after recording stopped")
+        TestSupport.expect(!eligible(enabled: false) && !eligible(readable: false), "Setting off or unreadable dictionary")
+        TestSupport.expect(!eligible(macro: true) && !eligible(enter: true) && !eligible(output: ""), "Macro, enter, empty")
+        TestSupport.expect(!eligible(output: String(repeating: "a", count: 4097)), "Over 4096 bytes")
+        TestSupport.expect(!CorrectionEligibility.isEligible(
+            suggestionsEnabled: true, dictionaryReadable: true, retained: false, snapshotRevision: 1, currentRevision: 1,
+            watchGeneration: 1, currentGeneration: 1, usedMacro: false, shouldPressEnter: false, output: "x"),
+            "Nothing retained")
+    }
 }
 
 extension Result {
@@ -1062,6 +1168,9 @@ final class FakeTextFieldReader: TextFieldReader {
     private(set) var rangeReads: [(location: Int, length: Int)] = []
     /// Reads not preceded by a safety check since the previous read.
     private(set) var uncheckedReads = 0
+    private(set) var captureCalls = 0
+    /// Runs inside the character-count request, as if during an in-flight AX call.
+    var onCharacterCount: (() -> Void)?
     private var checkedSinceRead = false
     private let element = NSObject()
 
@@ -1095,6 +1204,7 @@ final class FakeTextFieldReader: TextFieldReader {
     func isTrusted() -> Bool { trusted }
 
     func captureFocusedTextField() -> TextFieldTarget? {
+        captureCalls += 1
         guard trusted, focused, !secure else { return nil }
         return TextFieldTarget(pid: 4242, element: element)
     }
@@ -1112,6 +1222,7 @@ final class FakeTextFieldReader: TextFieldReader {
 
     func characterCount(_ target: TextFieldTarget) -> Int? {
         noteRead()
+        onCharacterCount?()
         return failReads ? nil : units.count
     }
 

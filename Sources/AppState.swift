@@ -1550,6 +1550,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Audio is retained only while suggestions are on; macros and press-enter
         // results release it right after processing.
         let retainForCorrection = isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
+        // Any cancel or dictionary edit after this point makes the result ineligible.
+        let watchGeneration = correctionWatcher.currentGeneration
         cancelPendingShortcutStart()
         cancelRecordingInitializationTimer()
         shortcutSessionController.reset()
@@ -1624,14 +1626,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.clearPendingOverlayDismissToken()
                         if !self.showPostTranscriptionUpdateReminderIfNeeded() { self.overlayManager.dismiss() }
                         if result.output.isEmpty {
-                            if transcription.dictationID != nil { LocalParakeetService.shared.discardCorrectionSession() }
+                            if let id = transcription.dictationID { LocalParakeetService.shared.releaseCorrectionSession(dictationID: id) }
                             self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
                             if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
                         } else {
                             self.statusText = completionStatus
                             let pendingRestore = self.writeTranscriptToPasteboard(result.output)
                             self.pasteAtCursorWhenShortcutReleased(
-                                correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID)
+                                correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID,
+                                                         snapshotRevision: dictionary.revision,
+                                                         watchGeneration: watchGeneration)
                             ) {
                                 if result.shouldPressEnter {
                                     self.pressEnterAfterPaste { self.restoreClipboardIfNeeded(pendingRestore) }
@@ -1968,18 +1972,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                                    completion: (() -> Void)? = nil) {
         performAfterShortcutReleased { [weak self] in
             guard let self else { return }
-            guard let correction, self.isCorrectionSuggestionsEnabled else {
+            // A context from before a cancel (new recording, setting off,
+            // dictionary change) is stale: paste plainly, never watch.
+            guard let correction, self.isCorrectionSuggestionsEnabled,
+                  self.correctionWatcher.isCurrent(correction.watchGeneration) else {
+                if let correction { LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID) }
                 self.pasteAtCursor()
                 completion?()
                 return
             }
-            self.correctionWatcher.capture { [weak self] capture in
+            self.correctionWatcher.capture(expecting: correction.watchGeneration) { [weak self] capture in
                 guard let self else { return }
                 self.pasteAtCursor()
                 if let capture, self.isCorrectionSuggestionsEnabled {
                     self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
                 } else {
-                    LocalParakeetService.shared.discardCorrectionSession()
+                    LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
                 }
                 completion?()
             }
@@ -1992,18 +2000,26 @@ final class AppState: ObservableObject, @unchecked Sendable {
         /// Exactly what is pasted, including the trailing space LocalFlow adds.
         let pasted: String
         let dictationID: UInt64
+        /// The watcher generation when recording stopped; any cancel since makes it stale.
+        let watchGeneration: UInt64
     }
 
-    /// Eligible: suggestions on, audio retained, pasted, not a macro, no press-enter.
-    /// Otherwise any retained audio is released immediately.
-    private func correctionPasteContext(for result: LocalDictationResult, dictationID: UInt64?) -> CorrectionPasteContext? {
+    /// Eligible: suggestions on, audio retained with the current dictionary
+    /// revision, nothing cancelled since recording stopped, pasted, not a
+    /// macro, no press-enter. Otherwise this dictation's audio is released.
+    private func correctionPasteContext(for result: LocalDictationResult, dictationID: UInt64?, snapshotRevision: UInt64,
+                                        watchGeneration: UInt64) -> CorrectionPasteContext? {
         guard let dictationID else { return nil }
-        guard isCorrectionSuggestionsEnabled, !result.usedMacro, !result.shouldPressEnter, !result.output.isEmpty,
-              result.output.utf8.count <= CorrectionCandidates.maxBytes else {
-            LocalParakeetService.shared.discardCorrectionSession()
+        guard CorrectionEligibility.isEligible(
+            suggestionsEnabled: isCorrectionSuggestionsEnabled, dictionaryReadable: !dictionaryLoadFailed, retained: true,
+            snapshotRevision: snapshotRevision, currentRevision: dictionaryRevision,
+            watchGeneration: watchGeneration, currentGeneration: correctionWatcher.currentGeneration,
+            usedMacro: result.usedMacro, shouldPressEnter: result.shouldPressEnter, output: result.output) else {
+            LocalParakeetService.shared.releaseCorrectionSession(dictationID: dictationID)
             return nil
         }
-        return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID)
+        return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID,
+                                      watchGeneration: watchGeneration)
     }
 
     /// Discards any watched paste, running verification and retained audio

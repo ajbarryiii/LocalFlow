@@ -95,13 +95,16 @@ final class CorrectionWatchSession {
     private var lastSpan: [UInt16]
     private var lastChange: TimeInterval
     private var cancelled = false
+    /// Thread-safe: true once the watch was cancelled from another thread.
+    private let isCancelled: () -> Bool
     private var outcome: CorrectionPollOutcome?
     private(set) var record: CorrectionSpanRecord
 
     var isFinished: Bool { outcome != nil }
 
     private init(reader: TextFieldReader, target: TextFieldTarget, typed: String, record: CorrectionSpanRecord,
-                 dictationID: UInt64, now: TimeInterval) {
+                 dictationID: UInt64, now: TimeInterval, isCancelled: @escaping () -> Bool) {
+        self.isCancelled = isCancelled
         self.reader = reader
         self.target = target
         self.typed = typed
@@ -115,15 +118,15 @@ final class CorrectionWatchSession {
     /// Reads just after the paste: the pasted text must end exactly at an empty
     /// selection. Records the span and up to 40 units of context on each side.
     static func begin(reader: TextFieldReader, target: TextFieldTarget, pasted: String, dictationID: UInt64,
-                      now: TimeInterval) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
+                      now: TimeInterval, isCancelled: @escaping () -> Bool = { false }) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
         let units = Array(pasted.utf16)
         guard !units.isEmpty else { return .failure(.pasteNotAtCaret) }
         guard units.count <= maxPastedUnits else { return .failure(.tooLong) }
         let count: Int, selection: TextFieldRange, window: (text: String, units: [UInt16])
         let caret: Int, spanStart: Int
         do {
-            count = try guardedRead(reader, target) { reader.characterCount(target) }
-            selection = try guardedRead(reader, target) { reader.selectedRange(target) }
+            count = try guardedRead(reader, target, isCancelled) { reader.characterCount(target) }
+            selection = try guardedRead(reader, target, isCancelled) { reader.selectedRange(target) }
             guard count >= 0, selection.length == 0, selection.location >= units.count, selection.location <= count else {
                 return .failure(.pasteNotAtCaret)
             }
@@ -132,7 +135,7 @@ final class CorrectionWatchSession {
             let windowStart = max(0, spanStart - contextUnits)
             let windowEnd = min(count, caret + contextUnits)
             guard windowEnd - windowStart <= beginWindowLimit else { return .failure(.tooLong) }
-            window = try guardedRead(reader, target) { read(reader: reader, target: target, from: windowStart, to: windowEnd) }
+            window = try guardedRead(reader, target, isCancelled) { read(reader: reader, target: target, from: windowStart, to: windowEnd) }
         } catch {
             return .failure(error as? CorrectionDiscardReason ?? .readFailed)
         }
@@ -145,7 +148,7 @@ final class CorrectionWatchSession {
         record.after = caret == count ? .documentEdge : .text(Array(window.units[(local + units.count)...]))
         record.pasted = units
         return .success(CorrectionWatchSession(reader: reader, target: target, typed: pasted, record: record,
-                                               dictationID: dictationID, now: now))
+                                               dictationID: dictationID, now: now, isCancelled: isCancelled))
     }
 
     /// Setting off, permission withdrawn by the app, a new dictation, a
@@ -154,7 +157,7 @@ final class CorrectionWatchSession {
 
     func poll(now: TimeInterval) -> CorrectionPollOutcome {
         if let outcome { return outcome }
-        if cancelled { return finish(.discard(.cancelled)) }
+        if cancelled || isCancelled() { return finish(.discard(.cancelled)) }
         let span: [UInt16]
         let edited: String
         do {
@@ -183,14 +186,14 @@ final class CorrectionWatchSession {
     /// shrinkage (or the span runs to the end of the document).
     private func locate() throws -> ([UInt16], String) {
         let (reader, target) = (self.reader, self.target)
-        let count = try Self.guardedRead(reader, target) { reader.characterCount(target) }
+        let count = try Self.guardedRead(reader, target, isCancelled) { reader.characterCount(target) }
         let before = record.before.units, after = record.after.units
         guard count >= 0 else { throw CorrectionDiscardReason.readFailed }
         guard count >= record.spanStart else { throw CorrectionDiscardReason.startMoved }
         let windowStart = record.spanStart - before.count
         let windowEnd = min(count, record.spanStart + record.spanLength + Self.maxGrowth + after.count)
         guard windowEnd - windowStart <= Self.pollWindowLimit else { throw CorrectionDiscardReason.tooLong }
-        let window = try Self.guardedRead(reader, target) {
+        let window = try Self.guardedRead(reader, target, isCancelled) {
             Self.read(reader: reader, target: target, from: windowStart, to: windowEnd)
         }
         let units = window.units
@@ -223,9 +226,14 @@ final class CorrectionWatchSession {
     }
 
     /// Every read is preceded by the safety check, so a field that turns
-    /// secure or loses focus is never read again.
-    private static func guardedRead<T>(_ reader: TextFieldReader, _ target: TextFieldTarget, _ read: () -> T?) throws -> T {
+    /// secure or loses focus is never read again. Cancellation is checked
+    /// immediately before the check and again before the read itself, so a
+    /// cancel that lands during an in-flight AX call stops the next one.
+    private static func guardedRead<T>(_ reader: TextFieldReader, _ target: TextFieldTarget,
+                                       _ isCancelled: () -> Bool, _ read: () -> T?) throws -> T {
+        if isCancelled() { throw CorrectionDiscardReason.cancelled }
         if let reason = safetyCheck(reader: reader, target: target) { throw reason }
+        if isCancelled() { throw CorrectionDiscardReason.cancelled }
         guard let value = read() else { throw CorrectionDiscardReason.readFailed }
         return value
     }
@@ -283,6 +291,11 @@ final class CorrectionWatchGeneration: @unchecked Sendable {
         return value
     }
 
+    var current: UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+
     func isCurrent(_ generation: UInt64) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return value == generation
@@ -316,11 +329,23 @@ final class CorrectionWatcher: @unchecked Sendable {
         self.reader = reader
     }
 
-    /// Captures the destination just before the paste is posted. Any previous
-    /// session is discarded. `completion` runs once on the main thread, within
-    /// the deadline, so the paste is never held up by a slow application.
-    func capture(completion: @escaping (CorrectionCapture?) -> Void) {
+    /// The generation a finished dictation's paste is bound to. Any cancel
+    /// (new recording, setting off, dictionary change, quit) makes it stale.
+    var currentGeneration: UInt64 { generation.current }
+
+    func isCurrent(_ token: UInt64) -> Bool { generation.isCurrent(token) }
+
+    /// Captures the destination just before the paste is posted, only if
+    /// `expected` (the generation when the dictation finished) is still current;
+    /// a stale context gets nil at once and touches nothing. `completion` runs
+    /// once on the main thread, within the deadline, so the paste is never held
+    /// up by a slow application.
+    func capture(expecting expected: UInt64, completion: @escaping (CorrectionCapture?) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
+        guard generation.isCurrent(expected) else {
+            completion(nil)
+            return
+        }
         let token = generation.advance()
         stopOnQueue()
         var delivered = false
@@ -345,7 +370,8 @@ final class CorrectionWatcher: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in
             guard let self, self.generation.isCurrent(capture.generation) else { return }
             let begun = CorrectionWatchSession.begin(reader: self.reader, target: capture.target, pasted: pasted,
-                                                     dictationID: dictationID, now: ProcessInfo.processInfo.systemUptime)
+                                                     dictationID: dictationID, now: ProcessInfo.processInfo.systemUptime,
+                                                     isCancelled: { [generation = self.generation] in !generation.isCurrent(capture.generation) })
             guard case .success(let session) = begun else { return }
             self.session = session
             let timer = DispatchSource.makeTimerSource(queue: self.queue)

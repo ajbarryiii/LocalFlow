@@ -230,6 +230,8 @@ pub struct Controller {
     correction: Option<CorrectionSession>,
     next_session: u64,
     check: Option<Check>,
+    /// Set when the daemon cannot go on (see [`Controller::take_fatal`]).
+    fatal: Option<String>,
 }
 
 /// A hold too short to dictate; a quick second press makes a prompt.
@@ -306,7 +308,17 @@ impl Controller {
             correction: None,
             next_session: 1,
             check: None,
+            fatal: None,
         }
+    }
+
+    /// Why the daemon must stop, once a request has made it impossible to
+    /// go on (a dictionary save that could not be undone). The control loop
+    /// sends the request's reply, then stops with this error, so the daemon
+    /// exits non-zero and reloads the dictionary when restarted. The text
+    /// carries no content.
+    pub fn take_fatal(&mut self) -> Option<String> {
+        self.fatal.take()
     }
 
     /// Uses `store` for dictation and the dictionary commands.
@@ -478,6 +490,12 @@ impl Controller {
             Err(ChangeError::NotFound) => Err(ErrorCode::NotFound),
             Err(ChangeError::BadWord) => Err(ErrorCode::BadRequest),
             Err(ChangeError::Storage) => Err(ErrorCode::Storage),
+            Err(ChangeError::Unrecoverable) => {
+                self.fatal = Some(
+                    "the dictionary could not be saved or restored; restart to reload it".into(),
+                );
+                Err(ErrorCode::Storage)
+            }
         }
     }
 

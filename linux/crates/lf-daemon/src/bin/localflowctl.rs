@@ -372,19 +372,33 @@ fn correct(args: &Args) -> Result<&'static str, Failure> {
         args,
     )?;
     let job = number(&submitted, "job")?;
+    // The whole wait, every exchange and sleep included, ends at `until`.
+    const TOO_LONG: &str = "no suggestion (the check took too long)";
     let until = Instant::now() + RESULT_WAIT;
     let result = loop {
-        let r = text_command(
-            Command::CorrectResult,
-            protocol::Args {
-                job: Some(job),
-                ..Default::default()
-            },
-            args,
-        )?;
+        let deadline = until.min(Instant::now() + args.timeout);
+        let r = match exchange(
+            &Request::with_args(
+                Command::CorrectResult,
+                protocol::Args {
+                    job: Some(job),
+                    ..Default::default()
+                },
+            ),
+            deadline,
+        ) {
+            Ok(r) => r,
+            Err(Failure::Timeout) if Instant::now() >= until => return Ok(TOO_LONG),
+            Err(f) => return Err(f),
+        };
         match field(&r, "result")? {
-            "pending" if Instant::now() < until => std::thread::sleep(RESULT_POLL),
-            "pending" => return Ok("no suggestion (the check took too long)"),
+            "pending" => {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Ok(TOO_LONG);
+                }
+                std::thread::sleep(RESULT_POLL.min(left));
+            }
             "none" => return Ok("no suggestion"),
             "suggest" => break r,
             _ => return Err(Failure::Protocol("bad result".into())),
