@@ -31,6 +31,10 @@ are not supported by this model bundle yet. The app and model are about
 4. Dictate into any text field. LocalFlow transcribes locally and pastes at
    the cursor, optionally restoring the previous clipboard.
 
+An optional setting, off by default, lets you double-tap Hold to Talk (tap,
+then press and hold again within 0.4 seconds) to dictate in prompt mode;
+while it is on, holds shorter than 0.3 seconds are discarded.
+
 The model prepares in the background at startup and stays in memory for the
 session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.

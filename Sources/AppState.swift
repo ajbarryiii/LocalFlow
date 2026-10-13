@@ -135,6 +135,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let keepDictationInClipboardHistoryStorageKey = "keep_dictation_in_clipboard_history"
     private let pressEnterVoiceCommandStorageKey = "press_enter_voice_command_enabled"
+    private let doubleTapPromptStorageKey = "double_tap_prompt_enabled"
     private let spokenDelimitersStorageKey = "spoken_delimiters_enabled"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
     private let soundVolumeStorageKey = "sound_volume"
@@ -237,6 +238,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             UserDefaults.standard.set(keepDictationInClipboardHistory, forKey: keepDictationInClipboardHistoryStorageKey)
         }
     }
+
+    /// Double-tap Hold to Talk for prompt mode; off by default. While on, a Hold to
+    /// Talk recording shorter than 0.3 s is discarded untranscribed.
+    @Published var isDoubleTapPromptEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isDoubleTapPromptEnabled, forKey: doubleTapPromptStorageKey)
+            doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
+        }
+    }
+    private var doubleTapPrompt = DoubleTapPromptDetector()
 
     @Published var isPressEnterVoiceCommandEnabled: Bool {
         didSet {
@@ -408,6 +419,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let dictationAudioInterruptionEnabled = UserDefaults.standard.bool(
             forKey: dictationAudioInterruptionEnabledStorageKey
         )
+        let isDoubleTapPromptEnabled = UserDefaults.standard.bool(forKey: doubleTapPromptStorageKey)
         let isPressEnterVoiceCommandEnabled = UserDefaults.standard.object(forKey: pressEnterVoiceCommandStorageKey) == nil
             ? true
             : UserDefaults.standard.bool(forKey: pressEnterVoiceCommandStorageKey)
@@ -460,6 +472,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.keepDictationInClipboardHistory = keepDictationInClipboardHistory
         self.dictationAudioInterruptionEnabled = dictationAudioInterruptionEnabled
         self.isPressEnterVoiceCommandEnabled = isPressEnterVoiceCommandEnabled
+        self.isDoubleTapPromptEnabled = isDoubleTapPromptEnabled
+        self.doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
         self.isSpokenDelimitersEnabled = isSpokenDelimitersEnabled
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
@@ -1038,8 +1052,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func startHotkeyMonitoring() {
         shouldMonitorHotkeys = true
         hotkeyManager.onShortcutEvent = { [weak self] event in
+            // Monotonic time at the event, before the hop to the main queue.
+            let time = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async {
-                self?.handleShortcutEvent(event)
+                self?.handleShortcutEvent(event, at: time)
             }
         }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
@@ -1086,15 +1102,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func handleShortcutEvent(_ event: ShortcutEvent) {
+    private func handleShortcutEvent(_ event: ShortcutEvent, at time: TimeInterval) {
         if event == .copyAgainTriggered {
+            doubleTapPrompt.interrupt()
             copyLastTranscriptToPasteboard()
             return
         }
 
-        guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
-            return
+        let fromIdle = !isRecording && !isTranscribing && pendingShortcutStartMode == nil
+            && shortcutSessionController.activeMode == nil
+        let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing)
+
+        // Double-tap prompt mode reads only the Hold to Talk starts and stops the
+        // controller already decided on; every other event clears a pending tap.
+        var holdTooShort = false
+        switch (event, action) {
+        case (.holdActivated, .start(.hold)?):
+            if doubleTapPrompt.holdStarted(at: time, fromIdle: fromIdle) {
+                shortcutSessionController.markPromptSession()
+            }
+        case (.holdDeactivated, .stop?):
+            holdTooShort = doubleTapPrompt.holdReleased(at: time)
+        default:
+            doubleTapPrompt.interrupt()
         }
+
+        guard let action else { return }
 
         switch action {
         case .start(let mode):
@@ -1102,6 +1135,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             scheduleShortcutStart(mode: mode)
         case .stop:
             cancelPendingShortcutStart()
+            if holdTooShort {
+                discardTooShortHold()
+                return
+            }
             guard isRecording else {
                 shortcutSessionController.reset()
                 activeRecordingTriggerMode = nil
@@ -1119,6 +1156,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleEscapeKeyPress() -> Bool {
+        doubleTapPrompt.interrupt()
         if isTranscribing {
             cancelTranscription()
             return true
@@ -1160,6 +1198,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
         stopAndTranscribe()
     }
 
+    /// A Hold to Talk recording under the double-tap minimum (0.3 s): stop and
+    /// throw it away. No model run, paste, history entry or error toast.
+    private func discardTooShortHold() {
+        shortcutSessionController.reset()
+        activeRecordingTriggerMode = nil
+        guard isRecording else { return }
+        audioRecorder.onRecordingReady = nil
+        audioRecorder.onRecordingFailure = nil
+        audioLevelCancellable?.cancel()
+        audioLevelCancellable = nil
+        cancelRecordingInitializationTimer()
+        isRecording = false
+        errorMessage = nil
+        debugStatusMessage = "Idle"
+        statusText = "Ready"
+        overlayManager.dismiss()
+        audioRecorder.cancelRecording()
+        restoreAudioInterruptionIfNeeded()
+        endCriticalDictationActivity()
+        refreshAvailableMicrophonesIfNeeded()
+    }
+
     private func cancelToggleShortcutSession() {
         guard pendingShortcutStartMode == .toggle || activeRecordingTriggerMode == .toggle else { return }
 
@@ -1187,6 +1247,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func cancelTranscription() {
         guard isTranscribing else { return }
+        doubleTapPrompt.interrupt()
 
         transcriptionTask?.cancel()
         transcriptionTask = nil

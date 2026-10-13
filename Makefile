@@ -41,6 +41,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/UpdateManager.swift \
 	Sources/UpdateSignatureVerifier.swift \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
+	Sources/ShortcutCore/DoubleTapPromptDetector.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
 	Sources/ShortcutCore/ShortcutModels.swift
 TEST_SOURCES = $(shell find Tests -name '*.swift' -type f | LC_ALL=C sort)
