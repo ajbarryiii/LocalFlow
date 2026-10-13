@@ -530,8 +530,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, action in
             self?.handleDictionarySuggestionAction(suggestion, action)
         }
-        correctionWatcher.onEdit = { [weak self] edit, isLast in
-            self?.handleCorrectionEdit(edit, isLast: isLast)
+        correctionWatcher.onEdit = { [weak self] edit, isLast, watch in
+            self?.handleCorrectionEdit(edit, isLast: isLast, watch: watch)
         }
         correctionWatcher.onAbandon = { [weak self] in
             self?.stopCorrectionSuggestions()
@@ -2144,7 +2144,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     /// Checks each settled edit; a newer edit supersedes a running check. The
     /// watch continues after a check that offers nothing, and stops once one
     /// does (one suggestion per dictation).
-    private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool) {
+    private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool, watch: UInt64) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
         guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
               customDictionary.entries.count < DictionaryValidation.capacity else {
@@ -2161,7 +2161,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                 check: check)
             guard let self, !Task.isCancelled else { return }
             self.correctionSuggestionTask = nil
-            guard let suggestion else { return }
+            // A watch made stale since (a secure field, lost permission, any cancel) offers nothing.
+            guard let suggestion, self.correctionWatcher.isCurrent(watch) else { return }
             self.correctionWatcher.cancel()
             LocalParakeetService.shared.releaseCorrectionSession(dictationID: edit.dictationID)
             guard self.mayPresentCorrectionSuggestion else { return }

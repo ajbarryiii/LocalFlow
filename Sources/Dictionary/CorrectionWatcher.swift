@@ -365,6 +365,14 @@ final class CorrectionWatchGeneration: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return value == generation
     }
+
+    /// Advances only if `generation` is still current; returns the new value.
+    func advance(from generation: UInt64) -> UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        guard value == generation else { return nil }
+        value += 1
+        return value
+    }
 }
 
 struct CorrectionCapture {
@@ -388,10 +396,12 @@ final class CorrectionWatcher: @unchecked Sendable {
     private var session: CorrectionWatchSession?
     private var timer: DispatchSourceTimer?
 
-    /// Main thread only.
-    var onEdit: ((_ edit: CorrectionEdit, _ isLast: Bool) -> Void)?
+    /// Main thread only. `watch` is the generation of the watch that read the
+    /// edit: check `isCurrent(watch)` before using a result for it.
+    var onEdit: ((_ edit: CorrectionEdit, _ isLast: Bool, _ watch: UInt64) -> Void)?
     /// Main thread only: the field turned secure or permission was lost, so
-    /// edits already reported must not be used. The app stops their checks.
+    /// edits already reported must not be used. The watch's generation was
+    /// already made stale on the watcher's queue; the app stops their checks.
     var onAbandon: (() -> Void)?
 
     init(reader: TextFieldReader) {
@@ -491,13 +501,18 @@ final class CorrectionWatcher: @unchecked Sendable {
             timer?.cancel()
             timer = nil
         }
-        guard delivery != nil || abandon else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.generation.isCurrent(token) else { return }
-            if let delivery {
-                self.onEdit?(delivery.edit, delivery.isLast)
-            } else {
+        if abandon {
+            // Stale at once, here, so no result for this watch is used even if
+            // it reaches the main thread before the callback below.
+            guard let abandoned = generation.advance(from: token) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation.isCurrent(abandoned) else { return }
                 self.onAbandon?()
+            }
+        } else if let delivery {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation.isCurrent(token) else { return }
+                self.onEdit?(delivery.edit, delivery.isLast, token)
             }
         }
     }

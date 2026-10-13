@@ -1449,7 +1449,7 @@ enum DictionaryTests {
         reader.paste("cart")
         let watcher = CorrectionWatcher(reader: reader)
         var edits: [(CorrectionEdit, Bool)] = []
-        watcher.onEdit = { edits.append(($0, $1)) }
+        watcher.onEdit = { edit, isLast, _ in edits.append((edit, isLast)) }
         var captured: CorrectionCapture?
         watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
         spin(timeout: 1) { captured != nil }
@@ -1472,36 +1472,45 @@ enum DictionaryTests {
         TestSupport.expectEqual(edits.count, 1)
     }
 
-    /// Review F1 #1: after an edit was reported, a field that turns secure or
-    /// lost permission abandons it, so the app stops its check. Losing focus
-    /// does not (a finalize instead), and a stale watch abandons nothing.
+    /// Review F1 #1 and F2 #1: after an edit was reported, a field that turns
+    /// secure or lost permission makes that watch stale on the watcher's own
+    /// queue, before the main thread runs, so a check result already queued
+    /// there cannot be used; the app is then told to stop. Losing focus does
+    /// neither, and a cancelled watch is left alone.
     private static func testForbiddenStopAbandonsReportedEdits() {
-        func run(_ change: (FakeTextFieldReader) -> Void, cancelFirst: Bool = false) -> (edits: [Bool], abandons: Int) {
+        struct Run { var edits: [Bool] = [], abandons = 0, staleBeforeMain = false }
+        func run(_ change: (FakeTextFieldReader) -> Void, cancelFirst: Bool = false) -> Run {
             let reader = FakeTextFieldReader("Note: ")
             reader.paste("cart")
             let watcher = CorrectionWatcher(reader: reader)
-            var edits: [Bool] = [], abandons = 0
-            watcher.onEdit = { _, isLast in edits.append(isLast) }
-            watcher.onAbandon = { abandons += 1 }
+            var result = Run(), watch: UInt64?
+            watcher.onEdit = { _, isLast, token in result.edits.append(isLast); watch = token }
+            watcher.onAbandon = { result.abandons += 1 }
             var captured: CorrectionCapture?
             watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
             spin(timeout: 1) { captured != nil }
             watcher.start(captured!, pasted: "cart", dictationID: 7)
             spin(timeout: 1) { !reader.rangeReads.isEmpty }
             reader.replace("cart", with: "chart")
-            spin(timeout: 4) { !edits.isEmpty }
+            spin(timeout: 4) { !result.edits.isEmpty }
             if cancelFirst { watcher.cancel() }
             change(reader)
-            spin(timeout: 1.5) { edits.count > 1 || abandons > 0 }
+            // The main thread stays blocked through the next poll.
+            Thread.sleep(forTimeInterval: 0.8)
+            result.staleBeforeMain = watch.map { !watcher.isCurrent($0) } ?? false
+            spin(timeout: 1) { result.edits.count > 1 || result.abandons > 0 }
             spin(timeout: 0.2)
-            return (edits, abandons)
+            return result
         }
-        let secure = run { $0.secure = true }
-        TestSupport.expect(secure.edits == [false] && secure.abandons == 1, "A secure field abandons, got \(secure)")
-        let revoked = run { $0.trusted = false }
-        TestSupport.expect(revoked.edits == [false] && revoked.abandons == 1, "Lost permission abandons, got \(revoked)")
+        for (name, change) in [("A secure field", { (r: FakeTextFieldReader) in r.secure = true }),
+                               ("Lost permission", { $0.trusted = false })] {
+            let result = run(change)
+            TestSupport.expect(result.edits == [false] && result.abandons == 1 && result.staleBeforeMain,
+                               "\(name) abandons the watch on its queue, got \(result)")
+        }
         let moved = run { $0.focused = false }
-        TestSupport.expect(moved.edits == [false] && moved.abandons == 0, "Lost focus keeps the reported edit, got \(moved)")
+        TestSupport.expect(moved.edits == [false] && moved.abandons == 0 && !moved.staleBeforeMain,
+                           "Lost focus keeps the reported edit usable, got \(moved)")
         let stale = run({ $0.secure = true }, cancelFirst: true)
         TestSupport.expect(stale.edits == [false] && stale.abandons == 0, "A cancelled watch abandons nothing, got \(stale)")
     }
@@ -1525,14 +1534,16 @@ enum DictionaryTests {
         TestSupport.expect(box.result != nil && box.result! == nil, "The older check offers nothing")
         TestSupport.expect(!newer.isCancelled, "The older check's late start leaves the newer one running")
 
+        // The calling task is cancelled before it calls in, so the outcome
+        // does not depend on timing.
         let latest = service.beginCorrectionCheck()
-        let task = Task.detached {
-            await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1, ignore: [],
-                                            isLast: false, check: latest)
-        }
-        task.cancel()
         let finished = DispatchSemaphore(value: 0)
-        Task.detached { _ = await task.value; finished.signal() }
+        Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = await service.suggestCorrection(typed: "ship the cart", edited: "ship the chart", dictationID: 1, ignore: [],
+                                                isLast: false, check: latest)
+            finished.signal()
+        }
         TestSupport.expect(finished.wait(timeout: .now() + 5) == .success, "The cancelled check must finish")
         TestSupport.expect(latest.isCancelled, "Cancelling the calling task cancels its check")
     }
