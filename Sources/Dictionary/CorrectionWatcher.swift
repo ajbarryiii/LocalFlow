@@ -97,14 +97,22 @@ final class CorrectionWatchSession {
     private var cancelled = false
     /// Thread-safe: true once the watch was cancelled from another thread.
     private let isCancelled: () -> Bool
+    /// Live time for the deadline check before each read; nil uses the poll's time.
+    private let clock: (() -> TimeInterval)?
+    private var pollTime: TimeInterval
+    /// The edited text from the last read inside the window.
+    private var lastEdited: String
     private var outcome: CorrectionPollOutcome?
     private(set) var record: CorrectionSpanRecord
 
     var isFinished: Bool { outcome != nil }
 
     private init(reader: TextFieldReader, target: TextFieldTarget, typed: String, record: CorrectionSpanRecord,
-                 dictationID: UInt64, now: TimeInterval, isCancelled: @escaping () -> Bool) {
+                 dictationID: UInt64, now: TimeInterval, isCancelled: @escaping () -> Bool, clock: (() -> TimeInterval)?) {
         self.isCancelled = isCancelled
+        self.clock = clock
+        pollTime = now
+        lastEdited = typed
         self.reader = reader
         self.target = target
         self.typed = typed
@@ -118,15 +126,16 @@ final class CorrectionWatchSession {
     /// Reads just after the paste: the pasted text must end exactly at an empty
     /// selection. Records the span and up to 40 units of context on each side.
     static func begin(reader: TextFieldReader, target: TextFieldTarget, pasted: String, dictationID: UInt64,
-                      now: TimeInterval, isCancelled: @escaping () -> Bool = { false }) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
+                      now: TimeInterval, isCancelled: @escaping () -> Bool = { false },
+                      clock: (() -> TimeInterval)? = nil) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
         let units = Array(pasted.utf16)
         guard !units.isEmpty else { return .failure(.pasteNotAtCaret) }
         guard units.count <= maxPastedUnits else { return .failure(.tooLong) }
         let count: Int, selection: TextFieldRange, window: (text: String, units: [UInt16])
         let caret: Int, spanStart: Int
         do {
-            count = try guardedRead(reader, target, isCancelled) { reader.characterCount(target) }
-            selection = try guardedRead(reader, target, isCancelled) { reader.selectedRange(target) }
+            count = try guardedRead(reader, target, isCancelled, { false }) { reader.characterCount(target) }
+            selection = try guardedRead(reader, target, isCancelled, { false }) { reader.selectedRange(target) }
             guard count >= 0, selection.length == 0, selection.location >= units.count, selection.location <= count else {
                 return .failure(.pasteNotAtCaret)
             }
@@ -135,7 +144,7 @@ final class CorrectionWatchSession {
             let windowStart = max(0, spanStart - contextUnits)
             let windowEnd = min(count, caret + contextUnits)
             guard windowEnd - windowStart <= beginWindowLimit else { return .failure(.tooLong) }
-            window = try guardedRead(reader, target, isCancelled) { read(reader: reader, target: target, from: windowStart, to: windowEnd) }
+            window = try guardedRead(reader, target, isCancelled, { false }) { read(reader: reader, target: target, from: windowStart, to: windowEnd) }
         } catch {
             return .failure(error as? CorrectionDiscardReason ?? .readFailed)
         }
@@ -148,7 +157,7 @@ final class CorrectionWatchSession {
         record.after = caret == count ? .documentEdge : .text(Array(window.units[(local + units.count)...]))
         record.pasted = units
         return .success(CorrectionWatchSession(reader: reader, target: target, typed: pasted, record: record,
-                                               dictationID: dictationID, now: now, isCancelled: isCancelled))
+                                               dictationID: dictationID, now: now, isCancelled: isCancelled, clock: clock))
     }
 
     /// Setting off, permission withdrawn by the app, a new dictation, a
@@ -158,26 +167,40 @@ final class CorrectionWatchSession {
     func poll(now: TimeInterval) -> CorrectionPollOutcome {
         if let outcome { return outcome }
         if cancelled || isCancelled() { return finish(.discard(.cancelled)) }
+        pollTime = now
+        // Past the 60 s window nothing is read again, however late the poll runs.
+        if isExpired() { return finish(expiryOutcome()) }
         let span: [UInt16]
         let edited: String
         do {
             (span, edited) = try locate()
+        } catch CorrectionDiscardReason.timeout {
+            return finish(expiryOutcome())
         } catch {
             return finish(.discard(error as? CorrectionDiscardReason ?? .readFailed))
         }
         if span != lastSpan {
             lastSpan = span
+            lastEdited = edited
             lastChange = now
         }
         let changed = span != record.pasted
         if changed && now - lastChange >= Self.quietPeriod {
             return finish(.finalize(CorrectionFinal(typed: typed, edited: edited, dictationID: dictationID)))
         }
-        if now - startTime >= Self.maxDuration {
-            return finish(changed ? .finalize(CorrectionFinal(typed: typed, edited: edited, dictationID: dictationID))
-                                  : .discard(.timeout))
-        }
+        if isExpired() { return finish(expiryOutcome()) }
         return .watching
+    }
+
+    private func isExpired() -> Bool {
+        (clock?() ?? pollTime) - startTime >= Self.maxDuration
+    }
+
+    /// At the deadline: finalize from text captured inside the window, or discard.
+    private func expiryOutcome() -> CorrectionPollOutcome {
+        lastSpan != record.pasted
+            ? .finalize(CorrectionFinal(typed: typed, edited: lastEdited, dictationID: dictationID))
+            : .discard(.timeout)
     }
 
     /// Deterministic span tracking: the before context still sits right before
@@ -186,14 +209,14 @@ final class CorrectionWatchSession {
     /// shrinkage (or the span runs to the end of the document).
     private func locate() throws -> ([UInt16], String) {
         let (reader, target) = (self.reader, self.target)
-        let count = try Self.guardedRead(reader, target, isCancelled) { reader.characterCount(target) }
+        let count = try Self.guardedRead(reader, target, isCancelled, isExpired) { reader.characterCount(target) }
         let before = record.before.units, after = record.after.units
         guard count >= 0 else { throw CorrectionDiscardReason.readFailed }
         guard count >= record.spanStart else { throw CorrectionDiscardReason.startMoved }
         let windowStart = record.spanStart - before.count
         let windowEnd = min(count, record.spanStart + record.spanLength + Self.maxGrowth + after.count)
         guard windowEnd - windowStart <= Self.pollWindowLimit else { throw CorrectionDiscardReason.tooLong }
-        let window = try Self.guardedRead(reader, target, isCancelled) {
+        let window = try Self.guardedRead(reader, target, isCancelled, isExpired) {
             Self.read(reader: reader, target: target, from: windowStart, to: windowEnd)
         }
         let units = window.units
@@ -230,10 +253,15 @@ final class CorrectionWatchSession {
     /// immediately before the check and again before the read itself, so a
     /// cancel that lands during an in-flight AX call stops the next one.
     private static func guardedRead<T>(_ reader: TextFieldReader, _ target: TextFieldTarget,
-                                       _ isCancelled: () -> Bool, _ read: () -> T?) throws -> T {
-        if isCancelled() { throw CorrectionDiscardReason.cancelled }
+                                       _ isCancelled: () -> Bool, _ isExpired: () -> Bool,
+                                       _ read: () -> T?) throws -> T {
+        func stopIfNeeded() throws {
+            if isCancelled() { throw CorrectionDiscardReason.cancelled }
+            if isExpired() { throw CorrectionDiscardReason.timeout }
+        }
+        try stopIfNeeded()
         if let reason = safetyCheck(reader: reader, target: target) { throw reason }
-        if isCancelled() { throw CorrectionDiscardReason.cancelled }
+        try stopIfNeeded()
         guard let value = read() else { throw CorrectionDiscardReason.readFailed }
         return value
     }
@@ -243,6 +271,7 @@ final class CorrectionWatchSession {
         record = CorrectionSpanRecord()
         lastSpan = []
         typed = ""
+        lastEdited = ""
         return outcome
     }
 
@@ -371,7 +400,8 @@ final class CorrectionWatcher: @unchecked Sendable {
             guard let self, self.generation.isCurrent(capture.generation) else { return }
             let begun = CorrectionWatchSession.begin(reader: self.reader, target: capture.target, pasted: pasted,
                                                      dictationID: dictationID, now: ProcessInfo.processInfo.systemUptime,
-                                                     isCancelled: { [generation = self.generation] in !generation.isCurrent(capture.generation) })
+                                                     isCancelled: { [generation = self.generation] in !generation.isCurrent(capture.generation) },
+                                                     clock: { ProcessInfo.processInfo.systemUptime })
             guard case .success(let session) = begun else { return }
             self.session = session
             let timer = DispatchSource.makeTimerSource(queue: self.queue)

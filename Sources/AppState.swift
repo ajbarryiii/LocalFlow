@@ -2033,7 +2033,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleCorrectionFinalized(_ final: CorrectionFinal) {
-        guard isCorrectionSuggestionsEnabled, !dictionaryLoadFailed, !isRecording, !isTranscribing, AXIsProcessTrusted() else {
+        // A full dictionary could not take a new word, so nothing is verified or offered.
+        guard isCorrectionSuggestionsEnabled, !dictionaryLoadFailed, !isRecording, !isTranscribing, AXIsProcessTrusted(),
+              customDictionary.entries.count < DictionaryValidation.capacity else {
             stopCorrectionSuggestions()
             return
         }
@@ -2055,7 +2057,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func handleDictionarySuggestionAction(_ suggestion: DictionarySuggestion, _ action: DictionarySuggestionAction) {
         switch action {
         case .add:
-            _ = saveDictionaryEntry(text: suggestion.word, strength: suggestion.strength, replacing: nil)
+            // Defensive: if the add still fails (for example the dictionary filled
+            // meanwhile), say so. The message never contains the word.
+            if let message = saveDictionaryEntry(text: suggestion.word, strength: suggestion.strength, replacing: nil) {
+                overlayManager.showError(message)
+            }
         case .dontSuggest:
             var updated = customDictionary
             guard updated.addIgnore(DictionaryKey(suggestion.word)) == nil else { return }

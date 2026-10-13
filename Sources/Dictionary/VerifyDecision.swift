@@ -96,6 +96,9 @@ enum DictionarySuggestionFinder {
     static func find(typed: String, edited: String, base: String, dictionary: [DictionaryEntry], ignore: Set<DictionaryKey>,
                      encoder: BPEEncoder?, now: () -> TimeInterval, isCancelled: () -> Bool,
                      decode: (DictionaryEntry) -> String?) -> DictionarySuggestion? {
+        // Every candidate would be a new entry; a full dictionary could not take
+        // it, so nothing is offered (and nothing is decoded).
+        guard dictionary.count < DictionaryValidation.capacity else { return nil }
         let start = now()
         func withinBudget() -> Bool { !isCancelled() && now() - start < maxSeconds }
         let b = VerifyDecision.norms(base)

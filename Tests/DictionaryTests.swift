@@ -28,6 +28,8 @@ enum DictionaryTests {
         testCancelDuringRead()
         testStaleDelayedPaste()
         testEligibilityWindow()
+        testDeadlineStopsReads()
+        testFullDictionaryOffersNothing()
         DictionaryVectorTests.run()
     }
 
@@ -857,7 +859,8 @@ enum DictionaryTests {
             reader.paste("cart")
             let session = watching(reader, pasted: "cart")
             let (outcome, second) = pollUntilDone(session) { reader.replace(reader.string, with: "chart\($0)") }
-            expectFinal(outcome, typed: "cart", edited: "chart60")
+            // Nothing is read at the deadline: the text captured at 59 s is final.
+            expectFinal(outcome, typed: "cart", edited: "chart59")
             TestSupport.expectEqual(second, 60)
         }
         // Cancel (setting off, new dictation, dictionary change, quit) discards without finalizing.
@@ -1122,6 +1125,86 @@ enum DictionaryTests {
         watcher.cancel()
         spin(timeout: 1.4)
         TestSupport.expectEqual(reader.rangeReads.count, 1)
+    }
+
+    // MARK: - Review round 3
+
+    /// #1: past the 60 s window nothing is read again. A late poll finalizes
+    /// from text captured inside the window, or discards.
+    private static func testDeadlineStopsReads() {
+        // A timer callback delayed to 75 s.
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let session = watching(reader, pasted: "cart")
+            TestSupport.expectEqual(session.poll(now: 1), .watching)
+            reader.replace("cart", with: "chart")
+            TestSupport.expectEqual(session.poll(now: 2), .watching)
+            reader.replace("chart", with: "chart typed after the window")
+            let reads = reader.rangeReads.count
+            let outcome = session.poll(now: 75)
+            expectFinal(outcome, typed: "cart", edited: "chart")
+            TestSupport.expectEqual(reader.rangeReads.count, reads)
+        }
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let session = watching(reader, pasted: "cart")
+            reader.replace("cart", with: "chart")  // edited, but never read inside the window
+            let reads = reader.rangeReads.count
+            TestSupport.expectEqual(session.poll(now: 75), .discard(.timeout))
+            TestSupport.expectEqual(reader.rangeReads.count, reads)
+        }
+        // A metadata request that crosses the deadline: no text read follows.
+        for edited in [false, true] {
+            var time: TimeInterval = 0
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let target = reader.captureFocusedTextField()!
+            guard case .success(let session) = CorrectionWatchSession.begin(
+                reader: reader, target: target, pasted: "cart", dictationID: 7, now: 0, clock: { time }) else {
+                fatalError("Session must begin")
+            }
+            if edited { reader.replace("cart", with: "chart") }
+            time = 2
+            TestSupport.expectEqual(session.poll(now: 2), .watching)
+            reader.replace(reader.string.hasSuffix("chart") ? "chart" : "cart", with: "late")
+            let reads = reader.rangeReads.count
+            reader.onCharacterCount = { time = 60.5 }
+            time = 59.9
+            let outcome = session.poll(now: 59.9)
+            TestSupport.expectEqual(reader.rangeReads.count, reads)
+            if edited {
+                expectFinal(outcome, typed: "cart", edited: "chart")
+            } else {
+                TestSupport.expectEqual(outcome, .discard(.timeout))
+            }
+            TestSupport.expect(session.record.pasted.isEmpty, "Text is cleared")
+        }
+    }
+
+    /// #2: a full dictionary could not take the word, so nothing is offered or decoded.
+    private static func testFullDictionaryOffersNothing() {
+        let full = (0..<DictionaryValidation.capacity).map { entry("word\($0)x") }
+        var calls = 0
+        let replace = DictionarySuggestionFinder.find(
+            typed: "ship the cart now", edited: "ship the chart now", base: "ship the cart now", dictionary: full, ignore: [],
+            encoder: testEncoder, now: { 0 }, isCancelled: { false },
+            decode: { _ in calls += 1; return "ship the chart now" })
+        TestSupport.expect(replace == nil && calls == 0, "No replacement offered at capacity")
+        let casing = DictionarySuggestionFinder.find(
+            typed: "we run nixos", edited: "we run NixOS", base: "we run nixos", dictionary: full, ignore: [],
+            encoder: testEncoder, now: { 0 }, isCancelled: { false }, decode: { _ in nil })
+        TestSupport.expect(casing == nil, "No casing suggestion at capacity")
+        let room = DictionarySuggestionFinder.find(
+            typed: "ship the cart now", edited: "ship the chart now", base: "ship the cart now",
+            dictionary: Array(full.dropLast()), ignore: [], encoder: testEncoder, now: { 0 }, isCancelled: { false },
+            decode: { _ in "ship the chart now" })
+        TestSupport.expect(room != nil, "One free slot still offers the word")
+        // Adding at capacity is refused, not silently dropped.
+        var dictionary = CustomDictionary()
+        for item in full { _ = dictionary.upsert(item) }
+        TestSupport.expect(dictionary.upsert(entry("chart")) == .full, "The add reports full")
     }
 
     /// #2: an edit between recording stop and model submission (or any later
