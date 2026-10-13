@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The model vocabulary and the dictionary's shared text rules (custom dictionary).
+lf-asr.workspace = true
 # Swift `String` semantics: grapheme clusters (`Character`), general category
 # (`Character.isPunctuation`) and canonical equivalence (`==`).
 unicode-normalization = "0.1"

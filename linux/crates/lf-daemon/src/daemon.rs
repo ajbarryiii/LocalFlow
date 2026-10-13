@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use lf_io_api::{AudioCapture, MediaPlayers, TextOutput};
 
 use crate::controller::{Controller, Limits};
+use crate::dictionary::{self, Store};
 use crate::history::{self, History};
 use crate::media::MediaJoin;
 use crate::protocol::{Reply, Request};
@@ -37,6 +38,8 @@ pub struct Parts {
     pub settings: worker::Settings,
     pub limits: Limits,
     pub history: history::Setting,
+    /// The custom dictionary (always on; empty until words are added).
+    pub dictionary: dictionary::Setting,
     /// Media players to pause while recording (`pause_media`); `None`
     /// leaves them alone.
     pub media: Option<Box<dyn MediaPlayers>>,
@@ -115,6 +118,7 @@ pub fn start_with(
         history::remove_stale_temporaries(&parts.history.dir);
         None
     };
+    let store = Store::open(&parts.dictionary).map_err(|e| format!("dictionary: {e}"))?;
     let (events_tx, events_rx) = mpsc::channel::<Event>();
     let (jobs_tx, jobs_rx) = mpsc::channel();
 
@@ -137,7 +141,8 @@ pub fn start_with(
     capture.watch_input(Box::new(move || {
         let _ = input_events.send(Event::Input);
     }));
-    let mut controller = Controller::new(capture, Box::new(jobs_tx), parts.limits, history);
+    let mut controller =
+        Controller::new(capture, Box::new(jobs_tx), parts.limits, history).with_dictionary(store);
     let mut media = None;
     if let Some(players) = parts.media {
         match crate::media::spawn(players, lf_media::Timing::default()) {

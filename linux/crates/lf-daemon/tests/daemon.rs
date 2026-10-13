@@ -70,7 +70,9 @@ fn voice_macros_and_disabled_history() {
     rig.cmd("toggle");
     rig.wait_for("state=idle");
     assert_eq!(rig.output.text(), "Synthetic regards. ");
-    assert!(!common::data_dir(&rig.dir).exists());
+    // The data directory holds the dictionary whether or not history is
+    // on, but no history is written.
+    assert!(!common::data_dir(&rig.dir).join("history.json").exists());
 }
 
 #[test]
@@ -244,6 +246,7 @@ fn records_while_the_model_loads() {
                 dir: dir.path().join("data"),
                 enabled: false,
             },
+            dictionary: common::dictionary(dir.path().join("data")),
             media: None,
         },
         &runtime_dir(&dir),
@@ -306,6 +309,7 @@ fn model_failure_stops_the_daemon() {
                 dir: dir.path().join("data"),
                 enabled: false,
             },
+            dictionary: common::dictionary(dir.path().join("data")),
             media: None,
         },
         &runtime_dir(&dir),
@@ -1276,6 +1280,7 @@ fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
                     dir: dir.path().join("data"),
                     enabled: false,
                 },
+                dictionary: common::dictionary(dir.path().join("data")),
                 media: None,
             },
             &rd,

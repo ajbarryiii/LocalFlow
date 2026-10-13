@@ -21,6 +21,16 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
 	Sources/SetupFlowCore.swift \
+	Sources/Dictionary/BiasGraph.swift \
+	Sources/Dictionary/BPEEncoder.swift \
+	Sources/Dictionary/CasingRestorer.swift \
+	Sources/Dictionary/CorrectionCandidates.swift \
+	Sources/Dictionary/CorrectionSessionStore.swift \
+	Sources/Dictionary/CorrectionWatcher.swift \
+	Sources/Dictionary/DictionaryEntry.swift \
+	Sources/Dictionary/DictionaryText.swift \
+	Sources/Dictionary/SuggestionPresentationGate.swift \
+	Sources/Dictionary/VerifyDecision.swift \
 	Sources/Parakeet/LocalParakeetCore.swift \
 	Sources/Parakeet/LocalParakeetService.swift \
 	Sources/Parakeet/ParakeetAudioReader.swift \

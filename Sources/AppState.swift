@@ -11,6 +11,7 @@ private let recordingLog = OSLog(subsystem: "com.ajbarryiii.localflow", category
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case macros
+    case dictionary
     case runLog
     case debug
 
@@ -26,6 +27,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .macros: return "Voice Macros"
+        case .dictionary: return "Dictionary"
         case .runLog: return "Run Log"
         case .debug: return "Debug"
         }
@@ -35,6 +37,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .macros: return "music.mic"
+        case .dictionary: return "character.book.closed"
         case .runLog: return "clock.arrow.circlepath"
         case .debug: return "wrench.and.screwdriver"
         }
@@ -267,6 +270,43 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    // MARK: Custom dictionary (DESIGN §3.2). Entries and corrections are never logged.
+
+    private static let dictionaryStorageKey = "custom_dictionary"
+    private static let dictionaryIgnoreStorageKey = "custom_dictionary_ignore"
+    private static let correctionSuggestionsStorageKey = "correction_suggestions_enabled"
+
+    /// The bundled model's vocabulary, so Settings can reject unencodable entries.
+    static let dictionaryEncoder: BPEEncoder? = LocalParakeetService.bundleDirectory.flatMap {
+        try? BPEEncoder(vocabularyFile: $0.appendingPathComponent("vocabulary.json"))
+    }
+
+    @Published private(set) var customDictionary = CustomDictionary()
+    /// Saved data failed validation. It stays untouched, the dictionary is
+    /// empty in memory, and editing waits for an explicit reset.
+    @Published private(set) var dictionaryLoadFailed = false
+    /// Opt-in, off by default: watch pasted dictations for corrections.
+    @Published var isCorrectionSuggestionsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isCorrectionSuggestionsEnabled, forKey: Self.correctionSuggestionsStorageKey)
+            if !isCorrectionSuggestionsEnabled {
+                stopCorrectionSuggestions()
+                overlayManager.dismissDictionarySuggestion()
+            }
+        }
+    }
+    private var dictionaryRevision: UInt64 = 1
+    private let correctionWatcher = CorrectionWatcher(reader: AccessibilityTextFieldReader())
+    private var correctionSuggestionTask: Task<Void, Never>?
+
+    var dictionaryEntries: [DictionaryEntry] { customDictionary.entries }
+    var dictionaryIgnore: [DictionaryKey] { customDictionary.ignore }
+
+    /// The immutable dictionary a transcription decodes with.
+    var dictionarySnapshot: DictionarySnapshot {
+        DictionarySnapshot(revision: dictionaryRevision, entries: dictionaryLoadFailed ? [] : customDictionary.entries)
+    }
+
     private static let dictationStatsStorageKey = "dictation_stats"
     @Published private(set) var dictationStats = AppState.loadDictationStats() {
         didSet {
@@ -388,6 +428,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             initialMacros = []
         }
 
+        let dictionaryLoad = Self.loadCustomDictionary()
+        let isCorrectionSuggestionsEnabled = UserDefaults.standard.bool(forKey: Self.correctionSuggestionsStorageKey)
+
         let initialAccessibility = AXIsProcessTrusted()
         var removedAudioFileNames: [String] = []
         do {
@@ -421,6 +464,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
         self.voiceMacros = initialMacros
+        self.customDictionary = dictionaryLoad.dictionary
+        self.dictionaryLoadFailed = dictionaryLoad.failed
+        self.isCorrectionSuggestionsEnabled = isCorrectionSuggestionsEnabled
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -463,6 +509,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             DispatchQueue.main.async {
                 self?.handleUpdateOverlayPressed()
             }
+        }
+        overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, action in
+            self?.handleDictionarySuggestionAction(suggestion, action)
+        }
+        correctionWatcher.onFinalize = { [weak self] final in
+            self?.handleCorrectionFinalized(final)
         }
 
         // Clear any stale recording flag left over from an unclean exit.
@@ -707,7 +759,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             defer { retryingItemIDs.remove(item.id) }
             var updated = item
             do {
-                let raw = try await LocalParakeetService.shared.transcribe(fileURL: audioURL)
+                // Casing restoration runs inside, before LocalDictationCore.
+                let raw = try await LocalParakeetService.shared.transcribe(fileURL: audioURL, dictionary: dictionarySnapshot,
+                                                                           retainForCorrection: false).text
                 let result = LocalDictationCore.process(raw, macros: voiceMacros,
                                                        pressEnterEnabled: isPressEnterVoiceCommandEnabled,
                                                        spokenDelimitersEnabled: isSpokenDelimitersEnabled)
@@ -1136,6 +1190,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         transcriptionTask?.cancel()
         transcriptionTask = nil
+        stopCorrectionSuggestions()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
         isRecording = false
@@ -1193,6 +1248,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func startRecording(triggerMode: RecordingTriggerMode) {
         guard !isRecording && !isTranscribing else { return }
+        // A new dictation ends any correction watch and verification without a suggestion.
+        stopCorrectionSuggestions()
         cancelPendingShortcutStart()
         guard prepareRecordingStart(triggerMode: triggerMode), ensureMicrophoneAccess() else { return }
         applyAudioInterruptionIfNeeded()
@@ -1489,6 +1546,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func stopAndTranscribe() {
         let appliedPromptTag = shortcutSessionController.isPromptSession ? promptTag : nil
+        let dictionary = dictionarySnapshot
+        // Audio is retained only while suggestions are on; macros and press-enter
+        // results release it right after processing.
+        let retainForCorrection = isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
         cancelPendingShortcutStart()
         cancelRecordingInitializationTimer()
         shortcutSessionController.reset()
@@ -1535,7 +1596,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 do {
                     // Read off the main thread, alongside transcription, so it never delays it.
                     async let audioSeconds = Self.audioDuration(of: input)
-                    let raw = try await LocalParakeetService.shared.transcribe(fileURL: input)
+                    // Casing restoration runs inside, before LocalDictationCore.
+                    let transcription = try await LocalParakeetService.shared.transcribe(
+                        fileURL: input, dictionary: dictionary, retainForCorrection: retainForCorrection)
+                    let raw = transcription.text
                     try Task.checkCancellation()
                     let seconds = await audioSeconds
                     await MainActor.run {
@@ -1560,12 +1624,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.clearPendingOverlayDismissToken()
                         if !self.showPostTranscriptionUpdateReminderIfNeeded() { self.overlayManager.dismiss() }
                         if result.output.isEmpty {
+                            if transcription.dictationID != nil { LocalParakeetService.shared.discardCorrectionSession() }
                             self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
                             if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
                         } else {
                             self.statusText = completionStatus
                             let pendingRestore = self.writeTranscriptToPasteboard(result.output)
-                            self.pasteAtCursorWhenShortcutReleased {
+                            self.pasteAtCursorWhenShortcutReleased(
+                                correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID)
+                            ) {
                                 if result.shouldPressEnter {
                                     self.pressEnterAfterPaste { self.restoreClipboardIfNeeded(pendingRestore) }
                                 } else {
@@ -1802,18 +1869,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// types for clipboard managers, and saving the clipboard state for later restoration.
     /// - Parameter transcript: The text to be pasted.
     /// - Returns: A `PendingClipboardRestore` object if clipboard preservation is enabled, otherwise nil.
+    /// Append a space when ending with sentence-ending punctuation so the
+    /// next dictation does not jam against the prior period.
+    private static func pasteboardText(for transcript: String) -> String {
+        if let last = transcript.last, ".!?".contains(last) {
+            return transcript + " "
+        }
+        return transcript
+    }
+
     private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
-        // Append a space when ending with sentence-ending punctuation so the
-        // next dictation does not jam against the prior period.
-        let textToWrite: String
-        if let last = transcript.last, ".!?".contains(last) {
-            textToWrite = transcript + " "
-        } else {
-            textToWrite = transcript
-        }
+        let textToWrite = Self.pasteboardText(for: transcript)
 
         if keepDictationInClipboardHistory {
             // Plain write so clipboard managers record the dictation in history.
@@ -1892,10 +1961,160 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func pasteAtCursorWhenShortcutReleased(completion: (() -> Void)? = nil) {
+    /// With a correction context (suggestions on), the destination field is
+    /// captured on the watcher's queue immediately before Cmd-V is posted. The
+    /// capture is bounded (0.3 s) so it can never hold the paste back for long.
+    private func pasteAtCursorWhenShortcutReleased(correction: CorrectionPasteContext? = nil,
+                                                   completion: (() -> Void)? = nil) {
         performAfterShortcutReleased { [weak self] in
-            self?.pasteAtCursor()
-            completion?()
+            guard let self else { return }
+            guard let correction, self.isCorrectionSuggestionsEnabled else {
+                self.pasteAtCursor()
+                completion?()
+                return
+            }
+            self.correctionWatcher.capture { [weak self] capture in
+                guard let self else { return }
+                self.pasteAtCursor()
+                if let capture, self.isCorrectionSuggestionsEnabled {
+                    self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
+                } else {
+                    LocalParakeetService.shared.discardCorrectionSession()
+                }
+                completion?()
+            }
+        }
+    }
+
+    // MARK: - Custom dictionary and correction suggestions
+
+    private struct CorrectionPasteContext {
+        /// Exactly what is pasted, including the trailing space LocalFlow adds.
+        let pasted: String
+        let dictationID: UInt64
+    }
+
+    /// Eligible: suggestions on, audio retained, pasted, not a macro, no press-enter.
+    /// Otherwise any retained audio is released immediately.
+    private func correctionPasteContext(for result: LocalDictationResult, dictationID: UInt64?) -> CorrectionPasteContext? {
+        guard let dictationID else { return nil }
+        guard isCorrectionSuggestionsEnabled, !result.usedMacro, !result.shouldPressEnter, !result.output.isEmpty,
+              result.output.utf8.count <= CorrectionCandidates.maxBytes else {
+            LocalParakeetService.shared.discardCorrectionSession()
+            return nil
+        }
+        return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID)
+    }
+
+    /// Discards any watched paste, running verification and retained audio
+    /// without finalizing: new dictation, cancel, setting off, dictionary
+    /// change, quit.
+    func stopCorrectionSuggestions() {
+        correctionWatcher.cancel()
+        correctionSuggestionTask?.cancel()
+        correctionSuggestionTask = nil
+        LocalParakeetService.shared.discardCorrectionSession()
+    }
+
+    private func handleCorrectionFinalized(_ final: CorrectionFinal) {
+        guard isCorrectionSuggestionsEnabled, !dictionaryLoadFailed, !isRecording, !isTranscribing, AXIsProcessTrusted() else {
+            stopCorrectionSuggestions()
+            return
+        }
+        let ignore = Set(customDictionary.ignore)
+        correctionSuggestionTask?.cancel()
+        correctionSuggestionTask = Task { @MainActor [weak self] in
+            let suggestion = await LocalParakeetService.shared.suggestCorrection(
+                typed: final.typed, edited: final.edited, dictationID: final.dictationID, ignore: ignore)
+            guard let self, !Task.isCancelled else { return }
+            self.correctionSuggestionTask = nil
+            guard let suggestion, self.isCorrectionSuggestionsEnabled, !self.dictionaryLoadFailed,
+                  !self.isRecording, !self.isTranscribing else { return }
+            let key = DictionaryKey(suggestion.word)
+            guard !self.customDictionary.contains(key), !self.customDictionary.isIgnored(key) else { return }
+            self.overlayManager.showDictionarySuggestion(suggestion)
+        }
+    }
+
+    private func handleDictionarySuggestionAction(_ suggestion: DictionarySuggestion, _ action: DictionarySuggestionAction) {
+        switch action {
+        case .add:
+            _ = saveDictionaryEntry(text: suggestion.word, strength: suggestion.strength, replacing: nil)
+        case .dontSuggest:
+            var updated = customDictionary
+            guard updated.addIgnore(DictionaryKey(suggestion.word)) == nil else { return }
+            applyDictionary(updated)
+        case .notNow:
+            break
+        }
+    }
+
+    /// Adds or edits an entry. Returns a user-facing error, or nil on success.
+    func saveDictionaryEntry(text: String, strength: Float, replacing original: DictionaryKey?) -> String? {
+        guard !dictionaryLoadFailed else { return "Reset the saved dictionary first." }
+        switch DictionaryValidation.validate(text: text, strength: strength, encoder: Self.dictionaryEncoder) {
+        case .failure(let error):
+            return error.message
+        case .success(let entry):
+            var updated = customDictionary
+            if let original, original != entry.key { updated.remove(original) }
+            if updated.upsert(entry) == .full {
+                return "The dictionary is full (\(DictionaryValidation.capacity) entries)."
+            }
+            applyDictionary(updated)
+            return nil
+        }
+    }
+
+    func removeDictionaryEntry(_ key: DictionaryKey) {
+        var updated = customDictionary
+        guard updated.remove(key) else { return }
+        applyDictionary(updated)
+    }
+
+    func unignoreDictionarySuggestion(_ key: DictionaryKey) {
+        var updated = customDictionary
+        guard updated.removeIgnore(key) else { return }
+        applyDictionary(updated)
+    }
+
+    /// The explicit recovery for unreadable saved data: removes it and starts empty.
+    func resetSavedDictionary() {
+        UserDefaults.standard.removeObject(forKey: Self.dictionaryStorageKey)
+        UserDefaults.standard.removeObject(forKey: Self.dictionaryIgnoreStorageKey)
+        dictionaryLoadFailed = false
+        customDictionary = CustomDictionary()
+        dictionaryDidChange()
+    }
+
+    /// Persists a validated state, then publishes it. Never writes over
+    /// unreadable saved data.
+    private func applyDictionary(_ updated: CustomDictionary) {
+        guard !dictionaryLoadFailed else { return }
+        let encoded = DictionaryStorage.encode(updated)
+        UserDefaults.standard.set(encoded.entries, forKey: Self.dictionaryStorageKey)
+        UserDefaults.standard.set(encoded.ignore, forKey: Self.dictionaryIgnoreStorageKey)
+        customDictionary = updated
+        dictionaryDidChange()
+    }
+
+    /// Any change invalidates the retained correction session (DESIGN §3.4).
+    private func dictionaryDidChange() {
+        dictionaryRevision += 1
+        stopCorrectionSuggestions()
+    }
+
+    private static func loadCustomDictionary() -> (dictionary: CustomDictionary, failed: Bool) {
+        let defaults = UserDefaults.standard
+        let entries = defaults.object(forKey: dictionaryStorageKey)
+        let ignore = defaults.object(forKey: dictionaryIgnoreStorageKey)
+        // A value of the wrong type is unreadable, never "missing".
+        if (entries != nil && !(entries is Data)) || (ignore != nil && !(ignore is Data)) {
+            return (CustomDictionary(), true)
+        }
+        switch DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data, encoder: dictionaryEncoder) {
+        case .success(let dictionary): return (dictionary, false)
+        case .failure: return (CustomDictionary(), true)
         }
     }
 

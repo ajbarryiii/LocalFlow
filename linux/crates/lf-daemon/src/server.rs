@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::daemon::Event;
 use crate::paths::{self, APP_DIR, LOCK_NAME, SOCKET_NAME};
-use crate::protocol::{Command, ErrorCode, MAX_LINE, Reply, parse_request};
+use crate::protocol::{Command, ErrorCode, MAX_LINE, MAX_TEXT_LINE, Reply, parse_request};
 use crate::watch::Admission;
 
 /// Time a client has to send its request line. Connections are served one at
@@ -209,7 +209,7 @@ fn handle(mut stream: UnixStream, events: &Sender<Event>, admission: &Arc<Admiss
         },
         Err(code) => (Reply::Error(code), code != ErrorCode::Timeout),
     };
-    if let Reply::Error(code) = reply {
+    if let Reply::Error(code) = &reply {
         crate::debug!("control request rejected: {}", code.name());
     }
     let _ = stream.set_write_timeout(Some(REQUEST_DEADLINE));
@@ -238,10 +238,10 @@ fn dispatch(req: crate::protocol::Request, events: &Sender<Event>) -> Reply {
         .unwrap_or(Reply::Error(ErrorCode::Unavailable))
 }
 
-/// Reads one `\n`-terminated line of at most `MAX_LINE` bytes (newline
+/// Reads one `\n`-terminated line of at most `MAX_TEXT_LINE` bytes (newline
 /// included) before `deadline`. The line must be all the client sends.
 pub fn read_request(stream: &mut UnixStream, deadline: Instant) -> Result<Vec<u8>, ErrorCode> {
-    let mut buf = [0u8; MAX_LINE];
+    let mut buf = vec![0u8; MAX_TEXT_LINE];
     let mut len = 0;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -273,8 +273,24 @@ pub fn read_request(stream: &mut UnixStream, deadline: Instant) -> Result<Vec<u8
             }
             return Ok(buf[..end].to_vec());
         }
-        if len == MAX_LINE {
+        // Only text commands may run past the short limit; anything else is
+        // refused as soon as it does, without waiting for more.
+        if len == MAX_TEXT_LINE || (len >= MAX_LINE && !is_text_frame(&buf[..len])) {
             return Err(ErrorCode::TooLong);
         }
     }
+}
+
+/// Whether a frame starts `localflow/1 <text command>` (see
+/// [`crate::protocol::Command::is_text`]).
+fn is_text_frame(frame: &[u8]) -> bool {
+    let mut fields = frame.splitn(3, |&b| b == b' ');
+    let (Some(version), Some(cmd), Some(_)) = (fields.next(), fields.next(), fields.next()) else {
+        return false;
+    };
+    version == crate::protocol::VERSION.as_bytes()
+        && std::str::from_utf8(cmd)
+            .ok()
+            .and_then(crate::protocol::Command::parse)
+            .is_some_and(crate::protocol::Command::is_text)
 }

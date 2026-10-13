@@ -6,9 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use lf_asr::Projection;
+use lf_asr::dictionary::DictionaryEntry;
+use lf_asr::tokenizer::Tokenizer;
 use lf_io_api::{AudioCapture, IoError, SAMPLE_RATE, TextOutput};
 
-use crate::recognizer::Recognizer;
+use crate::dictionary::Snapshot;
+use crate::recognizer::{Recognized, Recognizer};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -261,6 +265,15 @@ pub struct RecognizerState {
     /// Number of samples in each call.
     pub lengths: Vec<usize>,
     pub delay: Duration,
+    /// The dictionary each transcription saw: revision and entry count.
+    pub dictionaries: Vec<(u64, usize)>,
+    /// What a re-decode returns when its extra entry has this strength (in
+    /// thousandths); otherwise `text`.
+    pub redecoded: Vec<(u32, String)>,
+    /// Re-decodes run so far.
+    pub redecodes: usize,
+    /// How long each re-decode takes.
+    pub redecode_delay: Duration,
 }
 
 /// Returns preset text. Clones share state.
@@ -280,16 +293,67 @@ impl FakeRecognizer {
 }
 
 impl Recognizer for FakeRecognizer {
-    fn transcribe(&mut self, samples: &[f32]) -> Result<String, String> {
+    fn transcribe(
+        &mut self,
+        samples: &[f32],
+        dictionary: &Snapshot,
+        retain: bool,
+    ) -> Result<Recognized, String> {
         let delay = self.state().delay;
         std::thread::sleep(delay);
         let mut s = self.state();
         s.calls += 1;
         s.lengths.push(samples.len());
-        s.text
+        s.dictionaries
+            .push((dictionary.revision, dictionary.dictionary.entries.len()));
+        let text = s
+            .text
             .clone()
-            .ok_or_else(|| "synthetic recognition failure".into())
+            .ok_or_else(|| "synthetic recognition failure".to_string())?;
+        Ok(Recognized {
+            text,
+            projection: retain.then(|| Projection {
+                data: vec![0.5; 4],
+                frames: 1,
+            }),
+        })
     }
+
+    fn redecode(
+        &mut self,
+        _projection: &Projection,
+        _dictionary: &Snapshot,
+        extra: &DictionaryEntry,
+    ) -> Result<String, String> {
+        let delay = self.state().redecode_delay;
+        std::thread::sleep(delay);
+        let mut s = self.state();
+        s.redecodes += 1;
+        let milli = (extra.strength * 1000.0).round() as u32;
+        match s.redecoded.iter().find(|(m, _)| *m == milli) {
+            Some((_, t)) => Ok(t.clone()),
+            None => s
+                .text
+                .clone()
+                .ok_or_else(|| "synthetic recognition failure".into()),
+        }
+    }
+}
+
+/// A small invented vocabulary for tests and `--fake-io`-style rigs:
+/// `<unk>`, `▁`, ASCII letters and digits and common punctuation, so
+/// ordinary ASCII words encode and accented letters such as `é` do not.
+pub fn synthetic_tokenizer() -> Tokenizer {
+    let mut pieces = vec!["<unk>".to_string(), "\u{2581}".to_string()];
+    pieces.extend(('a'..='z').map(String::from));
+    pieces.extend(('A'..='Z').map(String::from));
+    pieces.extend(('0'..='9').map(String::from));
+    pieces.extend(
+        ["#", ".", ",", "'", "-", "?", "!", "_", "\"", "+", "&"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    Tokenizer::from_pieces(pieces).expect("synthetic vocabulary")
 }
 
 /// A private temporary directory (mode 0700), removed on drop.

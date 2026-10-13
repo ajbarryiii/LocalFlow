@@ -12,12 +12,18 @@ final class RecordingOverlayState: ObservableObject {
     @Published var toastID: UUID?
 }
 
-enum OverlayPhase {
+enum OverlayPhase: Equatable {
     case initializing
     case recording
     case transcribing
     case feedback
     case updateAvailable
+    /// A dictionary suggestion after a correction; timers and buttons are bound to `id`.
+    case dictionarySuggestion(id: UUID, word: String, strength: Float)
+
+    var isDictionarySuggestion: Bool {
+        if case .dictionarySuggestion = self { return true } else { return false }
+    }
 }
 
 // MARK: - NSScreen Helpers
@@ -34,8 +40,20 @@ extension NSScreen {
 
 // MARK: - Panel Helpers
 
+/// The overlay never becomes key or main, so typing stays in the destination app
+/// even after a click on one of its buttons.
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Accepts the first click without activating or focusing the overlay first.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 private func makeOverlayPanel(width: CGFloat, height: CGFloat) -> NSPanel {
-    let panel = NSPanel(
+    let panel = OverlayPanel(
         contentRect: NSRect(x: 0, y: 0, width: width, height: height),
         styleMask: [.borderless, .nonactivatingPanel],
         backing: .buffered,
@@ -56,6 +74,7 @@ private func makeNotchContent<V: View>(
     width: CGFloat,
     height: CGFloat,
     cornerRadius: CGFloat,
+    acceptsFirstMouse: Bool = false,
     rootView: V
 ) -> NSView {
     let shaped = rootView
@@ -63,7 +82,7 @@ private func makeNotchContent<V: View>(
         .background(Color.black)
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: cornerRadius, bottomTrailingRadius: cornerRadius))
 
-    let hosting = NSHostingView(rootView: shaped)
+    let hosting = acceptsFirstMouse ? FirstMouseHostingView(rootView: shaped) : NSHostingView(rootView: shaped)
     hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
     hosting.autoresizingMask = [.width, .height]
     return hosting
@@ -78,6 +97,10 @@ final class RecordingOverlayManager {
 
     var onStopButtonPressed: (() -> Void)?
     var onUpdateOverlayPressed: (() -> Void)?
+    /// Called on the main thread at most once per suggestion, only for the one on screen.
+    var onDictionarySuggestionAction: ((DictionarySuggestion, DictionarySuggestionAction) -> Void)?
+    private var suggestionGate = SuggestionPresentationGate()
+    private var currentSuggestion: DictionarySuggestion?
 
     /// The screen the overlay should drop down on. The user picks one of
     /// three modes in Settings, stored in UserDefaults under
@@ -125,10 +148,12 @@ final class RecordingOverlayManager {
     private var overlayAcceptsMouseEvents: Bool {
         (overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle)
             || overlayState.phase == .updateAvailable
+            || overlayState.phase.isDictionarySuggestion
     }
 
     func showInitializing(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
             self.overlayState.phase = .initializing
@@ -139,6 +164,7 @@ final class RecordingOverlayManager {
 
     func showRecording(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
             self.overlayState.phase = .recording
@@ -149,6 +175,7 @@ final class RecordingOverlayManager {
 
     func transitionToRecording(mode: RecordingTriggerMode = .hold) {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.lockedOverlayWidth = nil
             self.overlayState.recordingTriggerMode = mode
             self.overlayState.phase = .recording
@@ -171,12 +198,14 @@ final class RecordingOverlayManager {
 
     func showTranscribing() {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.setTranscribingPhase()
         }
     }
 
     func showFailureIndicator() {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.showFeedbackPanel()
         }
     }
@@ -199,6 +228,7 @@ final class RecordingOverlayManager {
             return String(message[..<cutoff]) + "…"
         }()
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             let toastID = UUID()
             self.overlayState.errorMessage = truncated
             self.overlayState.toastID = toastID
@@ -221,6 +251,7 @@ final class RecordingOverlayManager {
 
     func showUpdateAvailable(version: String) {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.lockedOverlayWidth = nil
             self.overlayState.updateVersion = version
             self.overlayState.phase = .updateAvailable
@@ -230,8 +261,47 @@ final class RecordingOverlayManager {
 
     func dismiss() {
         DispatchQueue.main.async {
+            self.preemptSuggestion()
             self.dismissAll()
         }
+    }
+
+    /// Shows a suggestion only when the panel is free (recording, transcribing,
+    /// errors and other overlays take priority). It resolves as Not now after
+    /// 12 s; a stale timer or click cannot act on a later phase.
+    func showDictionarySuggestion(_ suggestion: DictionarySuggestion) {
+        DispatchQueue.main.async {
+            guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion else { return }
+            let id = self.suggestionGate.present()
+            self.currentSuggestion = suggestion
+            self.lockedOverlayWidth = nil
+            self.overlayState.phase = .dictionarySuggestion(id: id, word: suggestion.word, strength: suggestion.strength)
+            self.showOverlayPanel(animatedResize: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + SuggestionPresentationGate.lifetime) { [weak self] in
+                self?.resolveSuggestion(id: id, action: .notNow)
+            }
+        }
+    }
+
+    /// Withdraws a visible suggestion (setting turned off) without acting on it.
+    func dismissDictionarySuggestion() {
+        DispatchQueue.main.async {
+            guard self.overlayState.phase.isDictionarySuggestion, self.overlayWindow != nil else { return }
+            self.preemptSuggestion()
+            self.dismissAll()
+        }
+    }
+
+    private func resolveSuggestion(id: UUID, action: DictionarySuggestionAction) {
+        guard suggestionGate.resolve(id), let suggestion = currentSuggestion else { return }
+        currentSuggestion = nil
+        dismissAll()
+        onDictionarySuggestionAction?(suggestion, action)
+    }
+
+    private func preemptSuggestion() {
+        suggestionGate.preempt()
+        currentSuggestion = nil
     }
 
     private func showOverlayPanel(animatedResize: Bool) {
@@ -239,6 +309,7 @@ final class RecordingOverlayManager {
 
         if let panel = overlayWindow {
             panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
+            panel.becomesKeyOnlyIfNeeded = overlayState.phase.isDictionarySuggestion
             panel.contentView = makeOverlayContent(frame: frame)
             resize(panel: panel, to: frame, animated: animatedResize)
             panel.alphaValue = 1
@@ -249,6 +320,7 @@ final class RecordingOverlayManager {
         let panel = makeOverlayPanel(width: frame.width, height: frame.height)
         panel.hasShadow = false
         panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
+        panel.becomesKeyOnlyIfNeeded = overlayState.phase.isDictionarySuggestion
         panel.contentView = makeOverlayContent(frame: frame)
 
         guard let screen = targetScreen else { return }
@@ -270,6 +342,7 @@ final class RecordingOverlayManager {
     private func updateOverlayLayout(animated: Bool) {
         guard let panel = overlayWindow else { return }
         let frame = overlayFrame
+        panel.becomesKeyOnlyIfNeeded = overlayState.phase.isDictionarySuggestion
         panel.ignoresMouseEvents = !overlayAcceptsMouseEvents
         panel.contentView = makeOverlayContent(frame: frame)
         resize(panel: panel, to: frame, animated: animated)
@@ -306,6 +379,7 @@ final class RecordingOverlayManager {
             width: frame.width,
             height: frame.height,
             cornerRadius: screenHasNotch ? 18 : 12,
+            acceptsFirstMouse: overlayState.phase.isDictionarySuggestion,
             rootView: AnyView(
                 RecordingOverlayView(
                     state: overlayState,
@@ -314,6 +388,9 @@ final class RecordingOverlayManager {
                     },
                     onUpdateOverlayPressed: { [weak self] in
                         self?.onUpdateOverlayPressed?()
+                    },
+                    onSuggestionAction: { [weak self] id, action in
+                        self?.resolveSuggestion(id: id, action: action)
                     }
                 )
                 .padding(.top, screenHasNotch ? notchOverlap : 0)
@@ -346,7 +423,7 @@ final class RecordingOverlayManager {
             return true
         case .feedback:
             return overlayState.errorMessage?.isEmpty ?? true
-        case .updateAvailable:
+        case .updateAvailable, .dictionarySuggestion:
             return false
         }
     }
@@ -379,6 +456,11 @@ final class RecordingOverlayManager {
         let useCompact = (UserDefaults.standard.object(forKey: "use_compact_overlay") as? Bool) ?? true
         let forceDropDownPill = overlayState.phase == .feedback
             && !(overlayState.errorMessage?.isEmpty ?? true)
+        if overlayState.phase.isDictionarySuggestion {
+            // A taller drop-down with a prompt row and a button row.
+            let height = DictionarySuggestionOverlayView.height + (screenHasNotch ? notchOverlap : 0)
+            return NSRect(x: screen.frame.midX - width / 2, y: screen.frame.maxY - height, width: width, height: height)
+        }
         // Compact mode: overlay sits flush with the menu bar on every display.
         // notchOverlap equals the menu-bar height on non-notched screens too,
         // so zero protrusion is universal — not notch-only. The legacy
@@ -414,6 +496,12 @@ final class RecordingOverlayManager {
             }()
             guard screenHasNotch else { return feedbackWidth }
             return max(notchWidth, feedbackWidth)
+        }
+
+        if case .dictionarySuggestion(_, let word, _) = overlayState.phase {
+            let suggestionWidth = DictionarySuggestionOverlayView.width(for: word)
+            guard screenHasNotch else { return suggestionWidth }
+            return max(notchWidth, suggestionWidth)
         }
 
         if overlayState.phase == .updateAvailable {
@@ -917,6 +1005,7 @@ struct RecordingOverlayView: View {
     @ObservedObject var state: RecordingOverlayState
     let onStopButtonPressed: () -> Void
     let onUpdateOverlayPressed: () -> Void
+    let onSuggestionAction: (UUID, DictionarySuggestionAction) -> Void
 
     private let leadingAccessoryWidth: CGFloat = 24
     private let trailingAccessoryWidth: CGFloat = 32
@@ -937,6 +1026,8 @@ struct RecordingOverlayView: View {
                 FailureIndicatorView()
             } else if state.phase == .updateAvailable {
                 UpdateAvailableOverlayView(onPress: onUpdateOverlayPressed)
+            } else if case .dictionarySuggestion(let id, let word, _) = state.phase {
+                DictionarySuggestionOverlayView(word: word) { onSuggestionAction(id, $0) }
             } else {
                 ZStack {
                     Group {
@@ -1038,6 +1129,49 @@ struct UpdateAvailableOverlayView: View {
             }
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// "Add “word” to your dictionary?" with Add, Not now and Don't suggest.
+/// Fits a phrase of up to 40 characters; longer ones truncate in the middle.
+struct DictionarySuggestionOverlayView: View {
+    static let height: CGFloat = 62
+
+    static func width(for word: String) -> CGFloat {
+        let characters = min(word.count, 40)
+        return min(460, max(300, CGFloat(characters) * 7 + 190))
+    }
+
+    let word: String
+    let onAction: (DictionarySuggestionAction) -> Void
+
+    var body: some View {
+        VStack(spacing: 7) {
+            Text("Add “\(word)” to your dictionary?")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            HStack(spacing: 6) {
+                button("Add", prominent: true) { onAction(.add) }
+                button("Not now", prominent: false) { onAction(.notNow) }
+                button("Don't suggest", prominent: false) { onAction(.dontSuggest) }
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func button(_ title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(prominent ? Color.accentColor : Color.white.opacity(0.16)))
         }
         .buttonStyle(.plain)
     }

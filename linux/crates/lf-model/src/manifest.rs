@@ -116,6 +116,24 @@ impl Export {
         })
     }
 
+    /// Reads one file listed in `dir`'s manifest, verified against its hash,
+    /// without opening or hashing the tensors. Returns the manifest too.
+    pub fn read_one(dir: &Path, path: &str) -> Result<(Manifest, Vec<u8>)> {
+        let dir = dir.canonicalize()?;
+        let manifest = Manifest::parse(&std::fs::read(dir.join("manifest.json"))?)?;
+        if manifest.format != EXPORT_FORMAT {
+            bail!("unsupported export format {}", manifest.format);
+        }
+        let Some(hash) = manifest.files.get(path) else {
+            bail!("manifest does not list {path}");
+        };
+        let bytes = std::fs::read(contained(&dir, path)?)?;
+        if sha256_hex(&bytes) != *hash {
+            bail!("{path}: SHA-256 mismatch");
+        }
+        Ok((manifest, bytes))
+    }
+
     /// Reads a file listed in the manifest, verifying its hash on the bytes returned.
     pub fn read_verified(&self, path: &str) -> Result<Vec<u8>> {
         let Some(hash) = self.manifest.files.get(path) else {

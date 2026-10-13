@@ -8,6 +8,7 @@
 //! is not in those vectors, since the Swift on `main` lacks it; its unit
 //! tests port `runPromptTagTests` from the Swift branch that adds it.
 
+pub mod correction;
 mod delimiters;
 mod press_enter;
 pub mod swift;
