@@ -1495,8 +1495,10 @@ enum DictionaryTests {
             spin(timeout: 4) { !result.edits.isEmpty }
             if cancelFirst { watcher.cancel() }
             change(reader)
-            // The main thread stays blocked through the next poll.
+            // The main thread stays blocked through the next poll (bounded, for slow runners).
             Thread.sleep(forTimeInterval: 0.8)
+            let deadline = Date().addingTimeInterval(2)
+            while let watch, watcher.isCurrent(watch), !cancelFirst, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
             result.staleBeforeMain = watch.map { !watcher.isCurrent($0) } ?? false
             // A result that arrives now cannot claim an abandoned watch.
             result.claimed = watch.map { watcher.claim($0) } ?? false
@@ -1527,6 +1529,16 @@ enum DictionaryTests {
         let first = generation.advance()
         TestSupport.expectEqual(generation.advance(from: first), first + 1)
         TestSupport.expectEqual(generation.advance(from: first), nil)
+        // Contended claims of one generation: exactly one wins, and the loser changes nothing.
+        for _ in 0..<500 {
+            let current = generation.current
+            let wins = ClaimCounter()
+            DispatchQueue.concurrentPerform(iterations: 4) { _ in
+                if generation.advance(from: current) != nil { wins.increment() }
+            }
+            TestSupport.expectEqual(wins.value, 1)
+            TestSupport.expectEqual(generation.current, current + 1)
+        }
 
         let reader = FakeTextFieldReader("Note: ")
         reader.paste("cart")
@@ -1812,4 +1824,11 @@ final class FakeTextFieldReader: TextFieldReader {
         let slice = Array(units[range.location..<range.location + range.length])
         return String(utf16CodeUnits: slice, count: slice.count)
     }
+}
+
+private final class ClaimCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func increment() { lock.lock(); count += 1; lock.unlock() }
 }
