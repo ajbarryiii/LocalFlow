@@ -670,7 +670,12 @@ struct DictionarySettingsView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Add Word") { editor = DictionaryEditorTarget(original: nil) }
-                    .disabled(appState.dictionaryEntries.count >= DictionaryValidation.capacity)
+                    .disabled(!appState.canEditDictionary || appState.dictionaryEntries.count >= DictionaryValidation.capacity)
+            }
+            if !appState.dictionaryEditor.canEdit {
+                Text(DictionaryEditor.unavailableMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
             if appState.dictionaryEntries.isEmpty {
                 Text("No words yet. Add names, jargon or product terms that are often misheard.")
@@ -692,9 +697,11 @@ struct DictionarySettingsView: View {
                             Spacer()
                             Button("Edit") { editor = DictionaryEditorTarget(original: entry) }
                                 .buttonStyle(.borderless)
+                                .disabled(!appState.canEditDictionary)
                                 .font(.caption)
                             Button("Delete") { appState.removeDictionaryEntry(entry.key) }
                                 .buttonStyle(.borderless)
+                                .disabled(!appState.canEditDictionary)
                                 .font(.caption)
                                 .foregroundStyle(.red)
                         }
@@ -738,6 +745,7 @@ struct DictionarySettingsView: View {
                         Spacer()
                         Button("Remove") { appState.unignoreDictionarySuggestion(key) }
                             .buttonStyle(.borderless)
+                            .disabled(!appState.canEditDictionary)
                             .font(.caption)
                     }
                 }

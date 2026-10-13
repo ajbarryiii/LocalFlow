@@ -169,13 +169,13 @@ final class CorrectionWatchSession {
         if cancelled || isCancelled() { return finish(.discard(.cancelled)) }
         pollTime = now
         // Past the 60 s window nothing is read again, however late the poll runs.
-        if isExpired() { return finish(expiryOutcome()) }
+        if isExpired() { return finish(expire()) }
         let span: [UInt16]
         let edited: String
         do {
             (span, edited) = try locate()
         } catch CorrectionDiscardReason.timeout {
-            return finish(expiryOutcome())
+            return finish(expire())
         } catch {
             return finish(.discard(error as? CorrectionDiscardReason ?? .readFailed))
         }
@@ -188,12 +188,21 @@ final class CorrectionWatchSession {
         if changed && now - lastChange >= Self.quietPeriod {
             return finish(.finalize(CorrectionFinal(typed: typed, edited: edited, dictationID: dictationID)))
         }
-        if isExpired() { return finish(expiryOutcome()) }
+        if isExpired() { return finish(expire()) }
         return .watching
     }
 
     private func isExpired() -> Bool {
         (clock?() ?? pollTime) - startTime >= Self.maxDuration
+    }
+
+    /// At the deadline: the same safety checks as before any read (metadata
+    /// only; text is never requested past the deadline). A field that lost
+    /// focus, turned secure or lost permission is discarded, never finalized.
+    private func expire() -> CorrectionPollOutcome {
+        if cancelled || isCancelled() { return .discard(.cancelled) }
+        if let reason = Self.safetyCheck(reader: reader, target: target) { return .discard(reason) }
+        return expiryOutcome()
     }
 
     /// At the deadline: finalize from text captured inside the window, or discard.

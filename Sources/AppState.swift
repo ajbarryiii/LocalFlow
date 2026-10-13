@@ -2034,7 +2034,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func handleCorrectionFinalized(_ final: CorrectionFinal) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
-        guard isCorrectionSuggestionsEnabled, !dictionaryLoadFailed, !isRecording, !isTranscribing, AXIsProcessTrusted(),
+        guard isCorrectionSuggestionsEnabled, canEditDictionary, !isRecording, !isTranscribing, AXIsProcessTrusted(),
               customDictionary.entries.count < DictionaryValidation.capacity else {
             stopCorrectionSuggestions()
             return
@@ -2063,43 +2063,42 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 overlayManager.showError(message)
             }
         case .dontSuggest:
-            var updated = customDictionary
-            guard updated.addIgnore(DictionaryKey(suggestion.word)) == nil else { return }
-            applyDictionary(updated)
+            if let message = apply(dictionaryEditor.ignoring(DictionaryKey(suggestion.word), in: customDictionary)) {
+                overlayManager.showError(message)
+            }
         case .notNow:
             break
         }
     }
 
+    /// Every change needs the speech model's vocabulary (DESIGN §1.1 step 3).
+    let dictionaryEditor = DictionaryEditor(encoder: AppState.dictionaryEncoder)
+
+    var canEditDictionary: Bool { dictionaryEditor.canEdit && !dictionaryLoadFailed }
+
     /// Adds or edits an entry. Returns a user-facing error, or nil on success.
     func saveDictionaryEntry(text: String, strength: Float, replacing original: DictionaryKey?) -> String? {
-        guard !dictionaryLoadFailed else { return "Reset the saved dictionary first." }
-        switch DictionaryValidation.validate(text: text, strength: strength, encoder: Self.dictionaryEncoder) {
-        case .failure(let error):
-            return error.message
-        case .success(let entry):
-            var updated = customDictionary
-            if let original, original != entry.key { updated.remove(original) }
-            switch updated.upsert(entry) {
-            case .full?: return "The dictionary is full (\(DictionaryValidation.capacity) entries)."
-            case .invalidKey?: return DictionaryEntryError.unencodable.message
-            case nil: break
-            }
-            applyDictionary(updated)
-            return nil
-        }
+        apply(dictionaryEditor.saving(text: text, strength: strength, replacing: original, in: customDictionary))
     }
 
     func removeDictionaryEntry(_ key: DictionaryKey) {
-        var updated = customDictionary
-        guard updated.remove(key) else { return }
-        applyDictionary(updated)
+        if let result = dictionaryEditor.removing(key, in: customDictionary) { _ = apply(result) }
     }
 
     func unignoreDictionarySuggestion(_ key: DictionaryKey) {
-        var updated = customDictionary
-        guard updated.removeIgnore(key) else { return }
-        applyDictionary(updated)
+        if let result = dictionaryEditor.unignoring(key, in: customDictionary) { _ = apply(result) }
+    }
+
+    /// Persists and publishes an accepted change; returns a content-free error otherwise.
+    private func apply(_ result: Result<CustomDictionary, DictionaryEditError>) -> String? {
+        guard !dictionaryLoadFailed else { return "Reset the saved dictionary first." }
+        switch result {
+        case .success(let updated):
+            applyDictionary(updated)
+            return nil
+        case .failure(let error):
+            return error.message
+        }
     }
 
     /// The explicit recovery for unreadable saved data: removes it and starts empty.

@@ -27,6 +27,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Dictionary/CorrectionCandidates.swift \
 	Sources/Dictionary/CorrectionSessionStore.swift \
 	Sources/Dictionary/CorrectionWatcher.swift \
+	Sources/Dictionary/DictionaryEditor.swift \
 	Sources/Dictionary/DictionaryEntry.swift \
 	Sources/Dictionary/DictionaryText.swift \
 	Sources/Dictionary/SuggestionPresentationGate.swift \

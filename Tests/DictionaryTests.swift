@@ -30,6 +30,8 @@ enum DictionaryTests {
         testEligibilityWindow()
         testDeadlineStopsReads()
         testFullDictionaryOffersNothing()
+        testExpiryRechecksSafety()
+        testEditsNeedVocabulary()
         DictionaryVectorTests.run()
     }
 
@@ -1181,6 +1183,94 @@ enum DictionaryTests {
             }
             TestSupport.expect(session.record.pasted.isEmpty, "Text is cleared")
         }
+    }
+
+    // MARK: - Review round 4
+
+    /// #1: at the deadline, cached text is finalized only if the field is still
+    /// focused, not secure and permitted; the checks are metadata, never text.
+    private static func testExpiryRechecksSafety() {
+        let changes: [(String, (FakeTextFieldReader) -> Void, CorrectionDiscardReason)] = [
+            ("focus moved", { $0.focused = false }, .focusChanged),
+            ("secure subrole", { $0.secure = true }, .secureField),
+            ("permission lost", { $0.trusted = false }, .notTrusted),
+        ]
+        for (name, change, reason) in changes {
+            for late in [false, true] {
+                let reader = FakeTextFieldReader("")
+                reader.paste("cart")
+                let session = watching(reader, pasted: "cart")
+                // Editing through 59 s, so the quiet period never finalizes early.
+                for second in 1...59 {
+                    reader.replace(reader.string, with: "chart\(second)")
+                    TestSupport.expectEqual(session.poll(now: TimeInterval(second)), .watching)
+                }
+                change(reader)
+                let reads = reader.rangeReads.count
+                let outcome = session.poll(now: late ? 75 : 60)
+                TestSupport.expect(outcome == .discard(reason), "\(name) at expiry: got \(outcome)")
+                TestSupport.expectEqual(reader.rangeReads.count, reads)
+            }
+        }
+        // Unchanged safety still finalizes from the text captured at 59 s.
+        let reader = FakeTextFieldReader("")
+        reader.paste("cart")
+        let session = watching(reader, pasted: "cart")
+        for second in 1...59 {
+            reader.replace(reader.string, with: "chart\(second)")
+            _ = session.poll(now: TimeInterval(second))
+        }
+        expectFinal(session.poll(now: 60), typed: "cart", edited: "chart59")
+    }
+
+    /// #2: without the speech model's vocabulary nothing may change, saved
+    /// data loads as is, and the same data loads once the vocabulary is back.
+    private static func testEditsNeedVocabulary() {
+        var saved = CustomDictionary()
+        _ = saved.upsert(entry("Kubernetes", 1.41))
+        _ = saved.addIgnore(DictionaryKey("eldar"))
+        let stored = DictionaryStorage.encode(saved)
+
+        guard case .success(let withoutVocabulary) = DictionaryStorage.load(
+            entriesData: stored.entries, ignoreData: stored.ignore, encoder: nil) else {
+            fatalError("Saved data loads without a vocabulary")
+        }
+        TestSupport.expect(withoutVocabulary == saved, "Loaded unchanged")
+        let locked = DictionaryEditor(encoder: nil)
+        TestSupport.expect(!locked.canEdit, "No vocabulary, no edits")
+        TestSupport.expect(locked.saving(text: "NixOS", strength: 1, replacing: nil, in: withoutVocabulary) == .failure(.noVocabulary),
+                           "Add refused")
+        TestSupport.expect(locked.saving(text: "Kubernetes", strength: 2, replacing: DictionaryKey("kubernetes"),
+                                         in: withoutVocabulary) == .failure(.noVocabulary), "Edit refused")
+        func refused(_ result: Result<CustomDictionary, DictionaryEditError>?) -> Bool {
+            if case .failure(.noVocabulary)? = result { return true }
+            return false
+        }
+        TestSupport.expect(refused(locked.removing(DictionaryKey("kubernetes"), in: withoutVocabulary)),
+                           "Delete refused")
+        TestSupport.expect(locked.ignoring(DictionaryKey("nixos"), in: withoutVocabulary) == .failure(.noVocabulary),
+                           "Don't suggest refused")
+        TestSupport.expect(refused(locked.unignoring(DictionaryKey("eldar"), in: withoutVocabulary)),
+                           "Unignore refused")
+        TestSupport.expect(DictionaryEditError.noVocabulary.message == DictionaryEditor.unavailableMessage, "Clear message")
+
+        // Nothing changed, so the stored bytes are what loads once the vocabulary is back.
+        TestSupport.expect(DictionaryStorage.encode(withoutVocabulary) == stored, "Storage untouched")
+        guard case .success(let withVocabulary) = DictionaryStorage.load(
+            entriesData: stored.entries, ignoreData: stored.ignore, encoder: testEncoder) else {
+            fatalError("The same data loads with the vocabulary back")
+        }
+        TestSupport.expect(withVocabulary == saved, "Same dictionary")
+
+        // With a vocabulary, edits are checked for encodability as usual.
+        let editor = DictionaryEditor(encoder: testEncoder)
+        TestSupport.expect(editor.saving(text: "naïve—x", strength: 1, replacing: nil, in: withVocabulary)
+                           == .failure(.invalid(.unencodable)), "Unencodable refused")
+        guard case .success(let added) = editor.saving(text: "NixOS", strength: 1, replacing: nil, in: withVocabulary) else {
+            fatalError("Encodable add")
+        }
+        TestSupport.expect(added.contains(DictionaryKey("nixos")), "Added")
+        TestSupport.expect(editor.removing(DictionaryKey("absent"), in: added) == nil, "Nothing to remove")
     }
 
     /// #2: a full dictionary could not take the word, so nothing is offered or decoded.
