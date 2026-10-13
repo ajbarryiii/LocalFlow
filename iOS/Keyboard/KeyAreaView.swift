@@ -4,8 +4,8 @@ import UIKit
 protocol KeyAreaViewDelegate: AnyObject {
     /// A key touched down (any key but the globe), before anything it does: trackpad settlement ends.
     func keyAreaTouchedDownKey(_ keyArea: KeyAreaView, timestamp: TimeInterval)
-    /// A key acted: characters, space and return on touch-up or rollover; shift and layer keys on
-    /// touch-down; delete here only from VoiceOver (a held delete uses the begin and end calls).
+    /// A key acted: characters, shift and layer keys on touch-down; space and return on touch-up or
+    /// rollover; delete here only from VoiceOver (a held delete uses the begin and end calls).
     /// `field`: the field the keyboard served when the finger touched down (`currentField`).
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, field: UUID?, timestamp: TimeInterval)
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval)
@@ -63,6 +63,9 @@ final class KeyAreaView: UIView {
     private var trackpadLast: CGPoint?
     private var shownPressed: Set<KeyAction> = []
     private var shownCallout: KeyAction?
+    /// The last character typed and its caption then: typing it may turn the shift off before the callout
+    /// is drawn.
+    private var typedCallout: (action: KeyAction, title: String)?
     private var isBlank = false
 
     private var placedKeys: [PlacedKey] { model.keys }
@@ -256,6 +259,7 @@ final class KeyAreaView: UIView {
             case .keyDown:
                 delegate?.keyAreaTouchedDownKey(self, timestamp: timestamp)
             case .type(let action, let field):
+                if case .character(let character) = action { typedCallout = (action, displayed(character)) }
                 delegate?.keyArea(self, typed: action, field: field, timestamp: timestamp)
             case .beginDelete:
                 delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
@@ -290,7 +294,8 @@ final class KeyAreaView: UIView {
         shownCallout = callout
         if let callout, case .character(let character) = callout,
            let index = placedKeys.firstIndex(where: { $0.action == callout }), keyViews.indices.contains(index) {
-            self.callout.show(displayed(character), over: keyViews[index].frame, within: bounds, compact: isCompact)
+            let title = typedCallout?.action == callout ? typedCallout?.title : nil
+            self.callout.show(title ?? displayed(character), over: keyViews[index].frame, within: bounds, compact: isCompact)
         } else {
             self.callout.hide()
         }

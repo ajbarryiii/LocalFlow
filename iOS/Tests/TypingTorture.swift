@@ -517,7 +517,7 @@ private final class TortureWorld {
 
     private func touchDown(_ action: KeyAction) -> KeyTouchModel.TouchID {
         guard let point = harness.center(action) else { preconditionFailure("the script pressed \(action), not shown") }
-        // A new finger commits every earlier one still held: characters, space and return.
+        // A new finger commits every earlier one still held: space and return (characters type at once).
         var committed = false
         for (id, held) in bindings.sorted(by: { $0.key < $1.key }) where !held.committed {
             switch (held.role, held.action) {
@@ -529,8 +529,15 @@ private final class TortureWorld {
                 break
             }
         }
+        let field = current
         let id = harness.touchDown(action)
-        if committed { verify(after: "rollover") }
+        // Typing model v3: a character types at its touch-down, after the rollover. Modeled once the keyboard
+        // has typed it: on a slow host its case may come from the host.
+        if case .character = action {
+            type(action, binding: field, verifying: false)
+            committed = true
+        }
+        if committed { verify(after: "touch-down") }
         let role: Role
         switch action {
         case .character: role = .character
@@ -538,7 +545,7 @@ private final class TortureWorld {
         case .returnKey: role = .returnKey
         default: role = .other
         }
-        bindings[id] = Held(action: action, role: role, field: current, x: point.x, y: point.y)
+        bindings[id] = Held(action: action, role: role, field: field, committed: role == .character, x: point.x, y: point.y)
         switch action {
         case .shift:
             note("key down shift (keyboard: \(harness.editor.typing.shift), oracle before: \(typing.shift))")
@@ -978,7 +985,11 @@ private final class TortureWorld {
     }
 
     private func switchShown(to field: UUID, identified: Bool) {
-        parked[shown] = harness.document.host
+        // A parked field's frames stop, but time goes on: by the time focus returns, its proxy shows the
+        // keyboard's last edits there (one typed as focus left included).
+        var leaving = harness.document.host
+        leaving.refreshContext()
+        parked[shown] = leaving
         harness.document.switchField(to: parked.removeValue(forKey: field)!, id: identified ? field : nil)
         shown = field
         current = identified ? field : nil

@@ -7,10 +7,11 @@ import Foundation
 ///   remaps held fingers onto the new keys or drops them, so a held finger can never point at a
 ///   key that no longer exists.
 /// - Rollover: a new finger first commits every key still held by earlier fingers, in press order:
-///   characters, space and return alike. A committed space no longer becomes the trackpad.
-/// - Characters, space and return type on lift (or rollover); shift and layer keys on touch-down;
-///   delete starts repeating on touch-down. Every key's touch-down first ends trackpad settlement
-///   (`keyDown`).
+///   space, return and slides alike. A committed space no longer becomes the trackpad.
+/// - Characters, shift and layer keys act on touch-down, so a tap that rolls off its key still types
+///   it; space, return and slides from a layer key type on lift (or rollover); delete starts repeating
+///   on touch-down (ARCHITECTURE.md, "Typing model v3"). Every key's touch-down first ends trackpad
+///   settlement (`keyDown`).
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2").
@@ -75,9 +76,12 @@ struct KeyTouchModel: Equatable, Sendable {
         })
     }
 
-    /// The character to show in a callout: the newest held, uncommitted character.
+    /// The character to show in a callout: the newest held character, typed or still sliding.
     var calloutAction: KeyAction? {
-        touches.last { !$0.committed && ($0.role == .character || $0.role == .slide) && $0.action?.isCharacter == true }?.action
+        touches.last { touch in
+            guard touch.action?.isCharacter == true else { return false }
+            return touch.role == .character || (touch.role == .slide && !touch.committed)
+        }?.action
     }
 
     // MARK: Events
@@ -90,7 +94,10 @@ struct KeyTouchModel: Equatable, Sendable {
         var effects: [Effect] = [.keyDown] + commitPending()
         var touch = Touch(id: id, role: .character, action: action, startX: x, startY: y, x: x, y: y, field: field)
         switch action {
-        case .character, .nextKeyboard:
+        case .character:
+            touch.committed = true
+            effects.append(.type(action, field: field))
+        case .nextKeyboard:
             break
         case .space:
             touch.role = .space

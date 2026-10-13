@@ -154,13 +154,13 @@ final class KeyboardEditor {
 
     /// Any key touched down (characters, space, Return, delete, Shift, layer keys): trackpad settlement
     /// or verification ends on the spot (ARCHITECTURE.md, "Typing model v2"), so nothing the gesture
-    /// still hears from can move the caret before the key acts. A character still inserts at its release.
+    /// still hears from can move the caret before the key acts. A character inserts right after.
     func keyTouchedDown(now: TimeInterval) {
         trackpad.interrupt(at: now)
     }
 
-    /// A key acted: characters, space and return on release or rollover; shift and layer keys on
-    /// touch-down; delete only from VoiceOver (the held delete key uses `heldDelete`). `field` is the
+    /// A key acted: characters, shift and layer keys on touch-down; space and return on release or
+    /// rollover; delete only from VoiceOver (the held delete key uses `heldDelete`). `field` is the
     /// field identified when the key was pressed (nil if none was).
     func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
         switch action {
