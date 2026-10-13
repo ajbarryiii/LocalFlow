@@ -1478,7 +1478,7 @@ enum DictionaryTests {
     /// there cannot be used; the app is then told to stop. Losing focus does
     /// neither, and a cancelled watch is left alone.
     private static func testForbiddenStopAbandonsReportedEdits() {
-        struct Run { var edits: [Bool] = [], abandons = 0, staleBeforeMain = false }
+        struct Run { var edits: [Bool] = [], abandons = 0, staleBeforeMain = false, claimed = false }
         func run(_ change: (FakeTextFieldReader) -> Void, cancelFirst: Bool = false) -> Run {
             let reader = FakeTextFieldReader("Note: ")
             reader.paste("cart")
@@ -1498,6 +1498,8 @@ enum DictionaryTests {
             // The main thread stays blocked through the next poll.
             Thread.sleep(forTimeInterval: 0.8)
             result.staleBeforeMain = watch.map { !watcher.isCurrent($0) } ?? false
+            // A result that arrives now cannot claim an abandoned watch.
+            result.claimed = watch.map { watcher.claim($0) } ?? false
             spin(timeout: 1) { result.edits.count > 1 || result.abandons > 0 }
             spin(timeout: 0.2)
             return result
@@ -1505,14 +1507,48 @@ enum DictionaryTests {
         for (name, change) in [("A secure field", { (r: FakeTextFieldReader) in r.secure = true }),
                                ("Lost permission", { $0.trusted = false })] {
             let result = run(change)
-            TestSupport.expect(result.edits == [false] && result.abandons == 1 && result.staleBeforeMain,
+            TestSupport.expect(result.edits == [false] && result.abandons == 1 && result.staleBeforeMain && !result.claimed,
                                "\(name) abandons the watch on its queue, got \(result)")
         }
         let moved = run { $0.focused = false }
-        TestSupport.expect(moved.edits == [false] && moved.abandons == 0 && !moved.staleBeforeMain,
+        TestSupport.expect(moved.edits == [false] && moved.abandons == 0 && !moved.staleBeforeMain && moved.claimed,
                            "Lost focus keeps the reported edit usable, got \(moved)")
         let stale = run({ $0.secure = true }, cancelFirst: true)
-        TestSupport.expect(stale.edits == [false] && stale.abandons == 0, "A cancelled watch abandons nothing, got \(stale)")
+        TestSupport.expect(stale.edits == [false] && stale.abandons == 0 && !stale.claimed,
+                           "A cancelled watch abandons nothing and cannot be claimed, got \(stale)")
+        testClaimingAWatch()
+    }
+
+    /// Review F3 #1: using a result claims its watch atomically. A claimed
+    /// watch stops reading, cannot be claimed again, and is not abandoned by
+    /// a later secure field.
+    private static func testClaimingAWatch() {
+        let generation = CorrectionWatchGeneration()
+        let first = generation.advance()
+        TestSupport.expectEqual(generation.advance(from: first), first + 1)
+        TestSupport.expectEqual(generation.advance(from: first), nil)
+
+        let reader = FakeTextFieldReader("Note: ")
+        reader.paste("cart")
+        let watcher = CorrectionWatcher(reader: reader)
+        var watch: UInt64?, abandons = 0
+        watcher.onEdit = { _, _, token in watch = token }
+        watcher.onAbandon = { abandons += 1 }
+        var captured: CorrectionCapture?
+        watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+        spin(timeout: 1) { captured != nil }
+        watcher.start(captured!, pasted: "cart", dictationID: 7)
+        spin(timeout: 1) { !reader.rangeReads.isEmpty }
+        reader.replace("cart", with: "chart")
+        spin(timeout: 4) { watch != nil }
+        TestSupport.expect(watch.map { watcher.claim($0) } == true, "A current watch is claimed")
+        TestSupport.expect(watch.map { watcher.claim($0) } == false, "A claimed watch cannot be claimed again")
+        spin(timeout: 0.2)
+        let reads = reader.rangeReads.count
+        reader.secure = true
+        spin(timeout: 1.2)
+        TestSupport.expectEqual(reader.rangeReads.count, reads)
+        TestSupport.expectEqual(abandons, 0)
     }
 
     /// Review F1 #2: checks are ordered when registered, not when their work

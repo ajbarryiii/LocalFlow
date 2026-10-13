@@ -2161,9 +2161,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                 check: check)
             guard let self, !Task.isCancelled else { return }
             self.correctionSuggestionTask = nil
-            // A watch made stale since (a secure field, lost permission, any cancel) offers nothing.
-            guard let suggestion, self.correctionWatcher.isCurrent(watch) else { return }
-            self.correctionWatcher.cancel()
+            // Claimed atomically: a watch made stale since (a secure field, lost
+            // permission, any cancel) offers nothing, and a claimed one stops.
+            guard let suggestion, self.correctionWatcher.claim(watch) else { return }
             LocalParakeetService.shared.releaseCorrectionSession(dictationID: edit.dictationID)
             guard self.mayPresentCorrectionSuggestion else { return }
             let key = DictionaryKey(suggestion.word)

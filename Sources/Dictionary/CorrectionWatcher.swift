@@ -397,7 +397,7 @@ final class CorrectionWatcher: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
 
     /// Main thread only. `watch` is the generation of the watch that read the
-    /// edit: check `isCurrent(watch)` before using a result for it.
+    /// edit: `claim(watch)` before using a result for it.
     var onEdit: ((_ edit: CorrectionEdit, _ isLast: Bool, _ watch: UInt64) -> Void)?
     /// Main thread only: the field turned secure or permission was lost, so
     /// edits already reported must not be used. The watch's generation was
@@ -466,6 +466,15 @@ final class CorrectionWatcher: @unchecked Sendable {
     func cancel() {
         generation.advance()
         stopOnQueue()
+    }
+
+    /// Ends watch `watch` to use a result for it, in one atomic step: false,
+    /// changing nothing, if that watch is no longer current (abandoned on its
+    /// queue, or cancelled). Safe from any thread.
+    func claim(_ watch: UInt64) -> Bool {
+        guard generation.advance(from: watch) != nil else { return false }
+        stopOnQueue()
+        return true
     }
 
     private func stopOnQueue() {
