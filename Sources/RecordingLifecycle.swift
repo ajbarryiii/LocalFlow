@@ -99,6 +99,13 @@ final class CaptureLifecycle: @unchecked Sendable {
     /// that no cancel or replacement reservation has superseded.
     func mayDeliver(_ capture: UInt64) -> Bool { state.withLock { $0.deliverable == capture } }
 
+    /// Main thread: a successful start may publish `isRecording = true` only while
+    /// its capture is still current (not stopped) and deliverable (not cancelled
+    /// or replaced).
+    func mayPublishStart(_ capture: UInt64) -> Bool {
+        state.withLock { $0.current == capture && $0.deliverable == capture }
+    }
+
     /// The first non-silent buffer of the current capture: true exactly once.
     func claimReady(_ capture: UInt64, rms: Float) -> Bool {
         state.withLock { state in

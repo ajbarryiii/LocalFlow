@@ -32,6 +32,7 @@ enum DoubleTapPromptTests {
         testManualRecordingVoidsTap()
         testSuggestionDuringDelayedStart()
         testQueuedInputInterruptionsStayInOrder()
+        testDiscardedStartNeverPublishesRecording()
     }
 
     private static func enabled() -> DoubleTapPromptDetector {
@@ -782,6 +783,46 @@ enum DoubleTapPromptTests {
         escaped.detector.interrupt()
         escaped.handle(waiting)
         TestSupport.expectEqual(escaped.prompts, [false, false])
+    }
+
+    /// Review 6: tap A is discarded during setup. The cancel drains A and queues
+    /// `isRecording = false`; A's caller then resumes and queues its success
+    /// publication. That publication must not set `isRecording` back to true.
+    private static func testDiscardedStartNeverPublishesRecording() {
+        let lifecycle = CaptureLifecycle()
+        let sessionQueue = DispatchQueue(label: "test.session")
+        var isRecording = false
+        let captureA = sessionQueue.sync { lifecycle.admit(ticket: lifecycle.reserve(), at: 1)! }
+        // cancelRecording: at once, then on the session queue, then the main thread.
+        lifecycle.cancel()
+        sessionQueue.sync { lifecycle.stop(lifecycle.currentCapture) {} }
+        DispatchQueue.main.async { isRecording = false }
+        // A's startRecording returns and queues its publication, as AudioRecorder does.
+        DispatchQueue.main.async { if lifecycle.mayPublishStart(captureA) { isRecording = true } }
+        spin(timeout: 0.1)
+        TestSupport.expect(!isRecording, "A discarded start never publishes recording")
+
+        // The publication runs after the cancel but before its session-queue
+        // stop has ended the capture: still not published.
+        let early = CaptureLifecycle()
+        let captureE = early.admit(ticket: early.reserve(), at: 1)!
+        early.cancel()
+        TestSupport.expect(early.isCurrent(captureE) && !early.mayPublishStart(captureE),
+                           "Cancelled but not yet stopped: not published")
+
+        // A normal stop before the publication runs: also not published.
+        let stopped = CaptureLifecycle()
+        let captureS = stopped.admit(ticket: stopped.reserve(), at: 1)!
+        stopped.stop(captureS) {}
+        TestSupport.expect(!stopped.mayPublishStart(captureS), "A stopped capture is not published")
+
+        // A start that is still live publishes as before.
+        let live = CaptureLifecycle()
+        let captureL = live.admit(ticket: live.reserve(), at: 1)!
+        var published = false
+        DispatchQueue.main.async { if live.mayPublishStart(captureL) { published = true } }
+        spin(timeout: 0.1)
+        TestSupport.expect(published, "A live start publishes recording")
     }
 
     private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {

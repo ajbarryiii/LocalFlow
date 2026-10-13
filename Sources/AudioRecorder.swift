@@ -644,8 +644,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         // reserved wins), per-capture resets, setup, and on failure all of this
         // start's cleanup. Nothing runs later that could touch a start queued
         // behind it, such as clearing its file URL.
-        try sessionQueue.sync {
-            _ = try self.lifecycle.start(ticket: ticket, at: t0, setup: { capture in
+        let capture = try sessionQueue.sync {
+            try self.lifecycle.start(ticket: ticket, at: t0, setup: { capture in
                 self._bufferCount.withLock { $0 = 0 }
                 self.liveLevelNormalizerLock.withLock { $0.reset() }
                 try self.makeSession(deviceUID: deviceUID, outputURL: outputURL, capture: capture)
@@ -656,7 +656,10 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             }, cancelled: AudioRecorderError.captureCancelled)
         }
 
+        // Published only if this capture is still the live one when the block runs:
+        // a cancel or stop in between (a discarded tap) has already published false.
         DispatchQueue.main.async {
+            guard self.lifecycle.mayPublishStart(capture) else { return }
             self.isRecording = true
             self.audioLevel = 0.0
         }
