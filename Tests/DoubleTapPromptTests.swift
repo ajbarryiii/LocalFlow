@@ -22,6 +22,10 @@ enum DoubleTapPromptTests {
         testDiscardedAudioIsDeleted()
         testDelayedTapStillEndsCorrections()
         testCaptureStateIsPerAttempt()
+        testCancelBeforeBackgroundStartEnters()
+        testStaleFailureCannotHitNextCapture()
+        testNormalStopKeepsQueuedBuffers()
+        testIdleResetClearsPendingTap()
     }
 
     private static func enabled() -> DoubleTapPromptDetector {
@@ -220,11 +224,16 @@ enum DoubleTapPromptTests {
             let result = ShortcutMatcher.reduce(state: state, event: input, configuration: configuration)
             state = result.state
             let idle = controller.activeMode == nil
-            let stamped = result.emittedEvents.map { event in
-                (event, detector.stamp(at: time, appIdle: idle,
-                                       releaseOrigin: event == .holdDeactivated ? result.holdReleaseOrigin : nil))
+            // Stamped on arrival, as the app does; an invalidation is queued in order.
+            let arrived = result.deliveries(for: input).map { delivery -> (ShortcutDelivery, DoubleTapPromptDetector.Stamp?) in
+                guard case .event(_, let origin) = delivery else { return (delivery, nil) }
+                return (delivery, detector.stamp(at: time, appIdle: idle, releaseOrigin: origin))
             }
-            for (event, stamp) in stamped {
+            for (delivery, stamp) in arrived {
+                guard case .event(let event, _) = delivery, let stamp else {
+                    detector.interrupt()
+                    continue
+                }
                 let decision = detector.route(event, stamp: stamp, controller: controller, isTranscribing: false)
                 if case .start? = decision.action { prompts.append(decision.markedPrompt) }
                 if case .stop? = decision.action { discards.append(decision.discardTooShort) }
@@ -328,22 +337,104 @@ enum DoubleTapPromptTests {
         let next = attempts.begin()  // the double-tap's second press
         TestSupport.expect(attempts.isCurrent(next) && !attempts.isCurrent(tap), "Only the new attempt is current")
 
-        let gate = CaptureStartGate()
-        let lateStart = gate.requestStart()  // the tap's start, still on its way to the capture queue
-        gate.cancel()                        // the discard
-        let secondStart = gate.requestStart()
-        TestSupport.expect(!gate.mayStart(lateStart), "The discarded tap's late start creates no session")
-        TestSupport.expect(gate.mayStart(secondStart), "The next recording starts normally")
-        let early = CaptureStartGate()
-        let started = early.requestStart()
-        TestSupport.expect(early.mayStart(started), "A start without a cancel proceeds")
+        // A ticket reserved before the discard is void, wherever its start then is.
+        let lifecycle = CaptureLifecycle()
+        let lateStart = lifecycle.reserve()  // reserved on the main thread before dispatching
+        lifecycle.cancel()                   // the discard
+        let secondStart = lifecycle.reserve()
+        TestSupport.expect(lifecycle.admit(ticket: lateStart, at: 1) == nil, "The discarded tap's late start creates no session")
+        TestSupport.expect(lifecycle.admit(ticket: secondStart, at: 2) != nil, "The next recording starts normally")
 
-        // Concurrent ordering: cancels from one thread, starts from another.
-        let concurrent = CaptureStartGate()
-        let requests = (0..<200).map { _ in concurrent.requestStart() }
+        // Concurrent ordering: cancels from many threads void every earlier ticket.
+        let concurrent = CaptureLifecycle()
+        let tickets = (0..<200).map { _ in concurrent.reserve() }
         DispatchQueue.concurrentPerform(iterations: 50) { _ in concurrent.cancel() }
-        TestSupport.expect(requests.allSatisfy { !concurrent.mayStart($0) }, "Every earlier request is void")
-        TestSupport.expect(concurrent.mayStart(concurrent.requestStart()), "A new request is valid")
+        TestSupport.expect(tickets.allSatisfy { concurrent.admit(ticket: $0, at: 0) == nil }, "Every earlier ticket is void")
+        TestSupport.expect(concurrent.admit(ticket: concurrent.reserve(), at: 0) != nil, "A new ticket is valid")
+    }
+
+    /// Review 2 #1: the ticket is taken before dispatch, so a cancel that lands
+    /// before the background block even enters the recorder still voids it.
+    private static func testCancelBeforeBackgroundStartEnters() {
+        let lifecycle = CaptureLifecycle()
+        let sessionQueue = DispatchQueue(label: "test.session")
+        let entered = DispatchSemaphore(value: 0)
+        var admitted: UInt64?? = .none
+        // beginRecording: reserve on the main thread, then dispatch the start.
+        let ticket = lifecycle.reserve()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            entered.wait()  // the background block has not reached the recorder yet
+            admitted = .some(sessionQueue.sync { lifecycle.admit(ticket: ticket, at: 1) })
+            done.signal()
+        }
+        lifecycle.cancel()  // the tap is discarded first
+        entered.signal()
+        done.wait()
+        TestSupport.expect(admitted != nil && admitted! == nil, "The cancelled start creates no session")
+        TestSupport.expectEqual(lifecycle.currentCapture, nil)
+    }
+
+    /// Review 2 #2: on the session queue, cancel A, then start B, then A's queued
+    /// failure. A's failure claims, tears down and calls back for nothing.
+    private static func testStaleFailureCannotHitNextCapture() {
+        let outputs = [NSObject(), NSObject()]
+        defer { withExtendedLifetime(outputs) {} }
+        let outputA = ObjectIdentifier(outputs[0]), outputB = ObjectIdentifier(outputs[1])
+        let lifecycle = CaptureLifecycle()
+        let sessionQueue = DispatchQueue(label: "test.session")
+        let captureA = sessionQueue.sync { lifecycle.admit(ticket: lifecycle.reserve(), at: 1)! }
+        lifecycle.attach(outputA, to: captureA)
+
+        var teardowns: [UInt64] = [], deliveries: [UInt64] = []
+        func reportFailure(_ capture: UInt64) {  // as AudioRecorder.reportRecordingFailure
+            sessionQueue.async {
+                guard lifecycle.claimFailure(capture) else { return }
+                lifecycle.stop(capture) {}
+                teardowns.append(capture)
+                if lifecycle.isLatest(capture) { deliveries.append(capture) }
+            }
+        }
+        lifecycle.cancel()
+        sessionQueue.async { lifecycle.stop(lifecycle.currentCapture) {} }  // cancel A
+        let ticketB = lifecycle.reserve()
+        var captureB: UInt64?
+        sessionQueue.async {  // start B
+            captureB = lifecycle.admit(ticket: ticketB, at: 2)
+            lifecycle.attach(outputB, to: captureB!)
+        }
+        reportFailure(captureA)  // A's failure, queued last
+        sessionQueue.sync {}
+        TestSupport.expect(teardowns.isEmpty && deliveries.isEmpty, "A's failure does nothing to B")
+        TestSupport.expect(lifecycle.isCurrent(captureB!) && lifecycle.capture(for: outputB) == captureB, "B keeps recording")
+        TestSupport.expectEqual(lifecycle.capture(for: outputA), nil)
+        reportFailure(captureB!)  // B's own failure still works
+        sessionQueue.sync {}
+        TestSupport.expect(teardowns == [captureB!] && deliveries == [captureB!], "B's failure is handled once")
+    }
+
+    /// Review 2 #3: a normal stop keeps the stopping capture's output eligible
+    /// until the buffers already queued have been written, then detaches it.
+    private static func testNormalStopKeepsQueuedBuffers() {
+        let outputs = [NSObject()]
+        defer { withExtendedLifetime(outputs) {} }
+        let output = ObjectIdentifier(outputs[0])
+        let lifecycle = CaptureLifecycle()
+        let capture = lifecycle.admit(ticket: lifecycle.reserve(), at: 1)!
+        lifecycle.attach(output, to: capture)
+        let sampleQueue = DispatchQueue(label: "test.samples")
+        let held = DispatchSemaphore(value: 0)
+        var written = 0
+        sampleQueue.async { held.wait() }  // the sample queue is behind
+        for _ in 0..<5 {
+            sampleQueue.async { if lifecycle.capture(for: output) == capture { written += 1 } }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { held.signal() }
+        // stopRecording: the drain (sample queue and writer) runs before the detach.
+        lifecycle.stop(capture) { sampleQueue.sync {} }
+        TestSupport.expectEqual(written, 5)
+        TestSupport.expectEqual(lifecycle.capture(for: output), nil)
+        TestSupport.expectEqual(lifecycle.currentCapture, nil)
     }
 
     /// #1: the discarded file is deleted after the writer drains; only a
@@ -419,27 +510,43 @@ enum DoubleTapPromptTests {
         let outputs = [NSObject(), NSObject()]
         let tapOutput = ObjectIdentifier(outputs[0]), nextOutput = ObjectIdentifier(outputs[1])
         defer { withExtendedLifetime(outputs) {} }
-        var state = CaptureAttemptState()
-        state.begin(at: 10)
-        state.attach(tapOutput)
-        TestSupport.expect(state.accepts(tapOutput), "The current output's buffers count")
-        TestSupport.expect(!state.claimReady(rms: 0), "Silence is not ready")
+        let lifecycle = CaptureLifecycle()
+        let tap = lifecycle.admit(ticket: lifecycle.reserve(), at: 10)!
+        lifecycle.attach(tapOutput, to: tap)
+        TestSupport.expectEqual(lifecycle.capture(for: tapOutput), tap)
+        TestSupport.expect(!lifecycle.claimReady(tap, rms: 0), "Silence is not ready")
 
         // The tap is discarded and the second press is admitted.
-        state.detach()
-        state.begin(at: 10.4)
-        TestSupport.expect(!state.accepts(tapOutput), "Nothing is accepted before the new output attaches")
-        state.attach(nextOutput)
-        TestSupport.expect(!state.accepts(tapOutput), "A late buffer from the discarded tap is ignored")
-        TestSupport.expect(state.accepts(nextOutput) && state.startTime == 10.4, "The new capture is current")
-        TestSupport.expect(state.claimReady(rms: 0.2), "Its own first sound marks it ready")
-        TestSupport.expect(!state.claimReady(rms: 0.5), "Only once")
-        TestSupport.expect(state.claimFailure() && !state.claimFailure(), "One failure report per capture")
+        lifecycle.cancel()
+        lifecycle.stop(tap) {}
+        let next = lifecycle.admit(ticket: lifecycle.reserve(), at: 10.4)!
+        TestSupport.expectEqual(lifecycle.capture(for: tapOutput), nil)
+        lifecycle.attach(nextOutput, to: next)
+        TestSupport.expect(lifecycle.capture(for: nextOutput) == next && lifecycle.startTime == 10.4, "The new capture is current")
+        TestSupport.expect(!lifecycle.claimReady(tap, rms: 0.3), "A late buffer from the tap never marks readiness")
+        TestSupport.expect(lifecycle.claimReady(next, rms: 0.2), "Its own first sound marks it ready")
+        TestSupport.expect(!lifecycle.claimReady(next, rms: 0.5), "Only once")
+        TestSupport.expect(lifecycle.claimFailure(next) && !lifecycle.claimFailure(next), "One failure report per capture")
+        TestSupport.expect(!lifecycle.isLatest(tap) && lifecycle.isLatest(next), "Deliveries only for the latest capture")
 
         // A new admitted start re-arms both.
-        state.begin(at: 20)
-        TestSupport.expect(!state.readyFired && !state.failureReported, "Reset on admission")
-        TestSupport.expect(state.claimFailure(), "Failure can be reported again")
+        let third = lifecycle.admit(ticket: lifecycle.reserve(), at: 20)!
+        TestSupport.expect(lifecycle.claimFailure(third), "Failure can be reported again")
+    }
+
+    /// Review 2 #4: tap, release, an idle backend reset, then a press within
+    /// 0.4 s: the reset voids the pending tap.
+    private static func testIdleResetClearsPendingTap() {
+        let reset = Pipeline(.defaultHold)
+        reset.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.0)
+        reset.feed(.modifierChanged(keyCode: 63, isDown: false), at: 1.1)
+        reset.feed(.backendReset, at: 1.2)  // no shortcut active, so no shortcut event
+        reset.feed(.modifierChanged(keyCode: 63, isDown: true), at: 1.3)
+        TestSupport.expectEqual(reset.prompts, [false, false])
+        let matched = ShortcutMatcher.reduce(state: ShortcutInputState(), event: .backendReset,
+                                             configuration: ShortcutConfiguration(hold: .defaultHold, toggle: .disabled))
+        TestSupport.expect(matched.emittedEvents.isEmpty && matched.deliveries(for: .backendReset) == [.inputInvalidated],
+                           "An idle reset is delivered as an invalidation")
     }
 
     private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {

@@ -1065,6 +1065,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self?.handleShortcutEvent(event, stamp: stamp)
             }
         }
+        // A backend reset or a monitoring restart voids a pending double-tap even
+        // when no shortcut was active (so no shortcut event carries it). Queued
+        // like the events, so it lands between the ones around it.
+        hotkeyManager.onInputInvalidated = { [weak self] in
+            DispatchQueue.main.async { self?.doubleTapPrompt.interrupt() }
+        }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
             self?.handleEscapeKeyPress() ?? false
         }
@@ -1076,6 +1082,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         hotkeyMonitoringErrorMessage = nil
         hotkeyManager.onShortcutEvent = nil
         hotkeyManager.onShortcutEventDetail = nil
+        hotkeyManager.onInputInvalidated = nil
+        doubleTapPrompt.interrupt()
         hotkeyManager.onEscapeKeyPressed = nil
         hotkeyManager.stop()
     }
@@ -1506,12 +1514,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
         }
 
+        // Reserve the capture ticket here, before dispatching: a cancel from now on
+        // (a discarded tap) voids this start wherever its work then is.
+        let captureTicket = audioRecorder.reserveCapture()
         // Start engine on background thread so UI isn't blocked
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
-                try self.audioRecorder.startRecording(deviceUID: deviceUID)
+                try self.audioRecorder.startRecording(deviceUID: deviceUID, ticket: captureTicket)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 DispatchQueue.main.async {
                     guard self.recordingAttempts.isCurrent(attempt), self.isRecording,

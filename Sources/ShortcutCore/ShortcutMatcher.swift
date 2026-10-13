@@ -63,6 +63,24 @@ struct ShortcutMatchResult: Equatable {
     var holdReleaseOrigin: ShortcutReleaseOrigin? = nil
 }
 
+/// What the hotkey manager forwards for one input event, in order.
+enum ShortcutDelivery: Equatable {
+    case event(ShortcutEvent, holdReleaseOrigin: ShortcutReleaseOrigin?)
+    /// The input stream was reset. Anything derived from earlier input, such
+    /// as a pending double-tap, is void, even when no shortcut was active.
+    case inputInvalidated
+}
+
+extension ShortcutMatchResult {
+    func deliveries(for input: ShortcutInputEvent) -> [ShortcutDelivery] {
+        var deliveries = emittedEvents.map { event in
+            ShortcutDelivery.event(event, holdReleaseOrigin: event == .holdDeactivated ? holdReleaseOrigin : nil)
+        }
+        if input == .backendReset { deliveries.append(.inputInvalidated) }
+        return deliveries
+    }
+}
+
 enum ShortcutMatcher {
     static func reduce(
         state: ShortcutInputState,

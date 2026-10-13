@@ -11,6 +11,8 @@ final class HotkeyManager {
     var onShortcutEvent: ((ShortcutEvent) -> Void)?
     /// The same events, with how a Hold to Talk deactivation came about.
     var onShortcutEventDetail: ((ShortcutEvent, ShortcutReleaseOrigin?) -> Void)?
+    /// The input stream was reset or monitoring restarted, with or without an active shortcut.
+    var onInputInvalidated: (() -> Void)?
     var onEscapeKeyPressed: (() -> Bool)?
 
     var currentPressedModifiers: ShortcutModifiers {
@@ -38,6 +40,8 @@ final class HotkeyManager {
             inputState = ShortcutInputState()
             throw error
         }
+        // A (re)started input stream: nothing from before it carries over.
+        onInputInvalidated?()
     }
 
     func stop() {
@@ -58,9 +62,14 @@ final class HotkeyManager {
             configuration: configuration
         )
         inputState = result.state
-        for event in result.emittedEvents {
-            onShortcutEvent?(event)
-            onShortcutEventDetail?(event, event == .holdDeactivated ? result.holdReleaseOrigin : nil)
+        for delivery in result.deliveries(for: event) {
+            switch delivery {
+            case .event(let shortcutEvent, let releaseOrigin):
+                onShortcutEvent?(shortcutEvent)
+                onShortcutEventDetail?(shortcutEvent, releaseOrigin)
+            case .inputInvalidated:
+                onInputInvalidated?()
+            }
         }
         return result.consumeDecision
     }

@@ -21,58 +21,102 @@ struct AudioFileDisposition: Equatable {
     }
 }
 
-/// Orders capture starts against cancels. A start remembers the generation
-/// when it was requested; a cancel advances it at once, from the caller's
-/// thread. A start whose session work runs after that cancel creates no
-/// session, while a cancel's own teardown, queued first, can never stop a
-/// later start. Thread-safe.
-final class CaptureStartGate: @unchecked Sendable {
-    private let generation = OSAllocatedUnfairLock(initialState: UInt64(0))
-
-    func requestStart() -> UInt64 { generation.withLock { $0 } }
-
-    func cancel() { generation.withLock { $0 &+= 1 } }
-
-    func mayStart(_ request: UInt64) -> Bool { generation.withLock { $0 == request } }
-}
-
-/// Per-capture recorder state, shared by the session queue and the
-/// sample-buffer queue, so it lives behind one lock. It is reset on the
-/// session queue when a start is admitted; buffers from any output other than
-/// the current one (a late buffer from a discarded tap) are ignored.
-struct CaptureAttemptState {
-    private(set) var startTime: Double = 0
-    private(set) var readyFired = false
-    private(set) var failureReported = false
-    private var output: ObjectIdentifier?
-
-    /// A start was admitted: nothing from an earlier capture carries over.
-    mutating func begin(at time: Double) {
-        startTime = time
-        readyFired = false
-        failureReported = false
-        output = nil
+/// The recorder's capture lifecycle, behind one lock because the main thread,
+/// the session queue and the sample-buffer queue all reach it.
+///
+/// - **Tickets.** A start reserves a ticket on the main thread before its work
+///   is dispatched; `cancel()` voids every ticket reserved so far. The session
+///   queue admits a start only with a still-valid ticket, so a start that was
+///   queued before a cancel but arrives after it creates no session.
+/// - **Captures.** Each admitted start is a new capture id. Readiness and
+///   failures are claimed for the capture they came from, so a queued failure
+///   of capture A can never claim, tear down or call back for capture B, and
+///   main-thread deliveries happen only for the latest capture.
+/// - **Outputs.** Buffers count only from an output attached to a capture.
+///   A stopping capture keeps its output until its queued buffers and the
+///   writer have drained (`stop(_:drain:)`), so a normal stop loses nothing.
+final class CaptureLifecycle: @unchecked Sendable {
+    private struct State {
+        var tickets: UInt64 = 0
+        var lastCapture: UInt64 = 0
+        var current: UInt64?
+        var startTime: Double = 0
+        var readyFired = false
+        var failureReported = false
+        var outputs: [ObjectIdentifier: UInt64] = [:]
     }
 
-    /// The new session's output, attached before it starts running.
-    mutating func attach(_ output: ObjectIdentifier) { self.output = output }
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
-    mutating func detach() { output = nil }
+    /// Main thread, before dispatching the start.
+    func reserve() -> UInt64 { state.withLock { $0.tickets } }
 
-    func accepts(_ output: ObjectIdentifier) -> Bool { self.output == output }
+    /// Any thread, at once: every ticket reserved so far is void.
+    func cancel() { state.withLock { $0.tickets &+= 1 } }
 
-    /// The first non-silent buffer of this capture: true exactly once.
-    mutating func claimReady(rms: Float) -> Bool {
-        guard !readyFired, rms > 0 else { return false }
-        readyFired = true
-        return true
+    /// Session queue: the new capture id, or nil when the ticket was cancelled.
+    func admit(ticket: UInt64, at time: Double) -> UInt64? {
+        state.withLock { state in
+            guard ticket == state.tickets else { return nil }
+            state.lastCapture &+= 1
+            state.current = state.lastCapture
+            state.startTime = time
+            state.readyFired = false
+            state.failureReported = false
+            return state.lastCapture
+        }
     }
 
-    /// The first failure of this capture: true exactly once.
-    mutating func claimFailure() -> Bool {
-        guard !failureReported else { return false }
-        failureReported = true
-        return true
+    /// The capture's output, attached before its session starts running.
+    func attach(_ output: ObjectIdentifier, to capture: UInt64) {
+        state.withLock { $0.outputs[output] = capture }
+    }
+
+    /// The capture a buffer from `output` belongs to, while it is recorded or drained.
+    func capture(for output: ObjectIdentifier) -> UInt64? { state.withLock { $0.outputs[output] } }
+
+    var currentCapture: UInt64? { state.withLock { $0.current } }
+
+    var startTime: Double { state.withLock { $0.startTime } }
+
+    func isCurrent(_ capture: UInt64) -> Bool { state.withLock { $0.current == capture } }
+
+    /// Main-thread delivery: only for the most recently admitted capture.
+    func isLatest(_ capture: UInt64) -> Bool { state.withLock { $0.lastCapture == capture } }
+
+    /// The first non-silent buffer of the current capture: true exactly once.
+    func claimReady(_ capture: UInt64, rms: Float) -> Bool {
+        state.withLock { state in
+            guard state.current == capture, !state.readyFired, rms > 0 else { return false }
+            state.readyFired = true
+            return true
+        }
+    }
+
+    /// The first failure of the current capture: true exactly once. A failure
+    /// from an earlier capture claims nothing.
+    func claimFailure(_ capture: UInt64) -> Bool {
+        state.withLock { state in
+            guard state.current == capture, !state.failureReported else { return false }
+            state.failureReported = true
+            return true
+        }
+    }
+
+    /// Session queue: `drain` (the sample queue and writer) runs first, with the
+    /// capture's buffers still accepted; only then is its output detached.
+    func stop<T>(_ capture: UInt64?, drain: () -> T) -> T {
+        let result = drain()
+        finish(capture)
+        return result
+    }
+
+    private func finish(_ capture: UInt64?) {
+        guard let capture else { return }
+        state.withLock { state in
+            if state.current == capture { state.current = nil }
+            state.outputs = state.outputs.filter { $0.value != capture }
+        }
     }
 }
 
