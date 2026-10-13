@@ -25,6 +25,8 @@
 //! diverge from the first listed precision and the top-2 logit margins there,
 //! and the smallest margins in the stretch where the text leaves M1's.
 
+mod audio;
+mod outpath;
 mod wer;
 
 use std::borrow::Cow;
@@ -34,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use audio::{SAMPLE_RATE, read_flac};
 use lf_asr::config::{D_MODEL, DURATIONS};
 use lf_asr::encoder::{self, EncoderBuffers, Projector};
 use lf_asr::frontend::{self, FrontendBuffers};
@@ -41,9 +44,8 @@ use lf_asr::{MAX_SECONDS, Model, Precision, Timings, Transcriber};
 use lf_cpu::ThreadPool;
 use lf_cpu::decoder::{DecoderParams, Storage, reference};
 use lf_model::Export;
+use outpath::{check_output_path, create_output};
 use wer::{Errors, align, edits, normalize, text_edits};
-
-const SAMPLE_RATE: u32 = 16_000;
 
 enum Audio {
     Memory(Vec<f32>),
@@ -226,83 +228,6 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
         check_output_path(p)?;
     }
     Ok(a)
-}
-
-/// Hypotheses must not land in a repository: refuse paths inside a Git work tree.
-/// A symbolic link is refused too, since it could point into a repository; the
-/// file is then opened without following links (`create_output`).
-fn check_output_path(path: &Path) -> Result<(), String> {
-    if let Ok(m) = std::fs::symlink_metadata(path)
-        && m.file_type().is_symlink()
-    {
-        return Err(format!(
-            "{}: is a symbolic link; refusing to write through it",
-            path.display()
-        ));
-    }
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let dir = parent
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", parent.display()))?;
-    if let Some(repo) = dir.ancestors().find(|d| d.join(".git").exists()) {
-        return Err(format!(
-            "{}: inside the Git work tree {}; write hypotheses outside any repository",
-            path.display(),
-            repo.display()
-        ));
-    }
-    Ok(())
-}
-
-/// Creates or truncates a checked output file, failing if it is a symbolic link.
-/// An existing file is truncated only if it is a regular file with a single
-/// link, checked on the opened file itself, so a hard link to a file elsewhere
-/// (for example in a repository) is never overwritten.
-fn create_output(path: &Path) -> Result<std::fs::File, String> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    check_output_path(path)?;
-    let err = |e: std::io::Error| format!("{}: {e}", path.display());
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(err)?;
-    let meta = file.metadata().map_err(err)?;
-    if !meta.is_file() || meta.nlink() != 1 {
-        return Err(format!(
-            "{}: not a regular file with a single link; refusing to overwrite it",
-            path.display()
-        ));
-    }
-    file.set_len(0).map_err(err)?;
-    Ok(file)
-}
-
-fn read_flac(path: &Path) -> Result<Vec<f32>, String> {
-    let mut reader =
-        claxon::FlacReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let info = reader.streaminfo();
-    if info.sample_rate != SAMPLE_RATE || info.channels != 1 || info.bits_per_sample != 16 {
-        return Err(format!(
-            "{}: need 16 kHz mono 16-bit, got {} Hz, {} ch, {} bit",
-            path.display(),
-            info.sample_rate,
-            info.channels,
-            info.bits_per_sample
-        ));
-    }
-    // soundfile's int16 -> float32 conversion: divide by 32768.
-    reader
-        .samples()
-        .map(|s| {
-            s.map(|v| v as f32 / 32768.0)
-                .map_err(|e| format!("{}: {e}", path.display()))
-        })
-        .collect()
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value, String> {
@@ -1314,9 +1239,9 @@ fn precision_run(
     enc: Vec<f32>,
     frames: usize,
 ) -> Result<PrecisionRun, String> {
-    let (emitted, decisions) = reference::decode(params, &enc, frames);
+    let (emitted, decisions) = reference::decode(params, &enc, frames, None);
     let projected = model.decoder.project_encoder(pool, &enc, frames);
-    let fast = model.decoder.decode(pool, &projected, frames, None);
+    let fast = model.decoder.decode(pool, &projected, frames, None, None);
     let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
     let text = model.tokenizer.decode(&tokens).map_err(|e| e.to_string())?;
     let blank = params.blank();
@@ -1393,55 +1318,6 @@ mod tests {
         assert!(parse_args_from(argv("--export x --precision i8x4")).is_err());
         assert!(parse_args_from(argv("--export x --min-seconds 5 --max-seconds 1")).is_err());
         assert!(parse_args_from(argv("--export x --threads 0")).is_err());
-    }
-
-    #[test]
-    fn save_path_must_be_outside_git() {
-        let base = std::env::temp_dir().join(format!("lf-transcribe-test-{}", std::process::id()));
-        let repo = base.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(repo.join("sub")).unwrap();
-        assert!(check_output_path(&repo.join("sub/h.jsonl")).is_err());
-        assert!(check_output_path(&repo.join("h.jsonl")).is_err());
-        // A worktree's `.git` is a file.
-        let wt = base.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        std::fs::write(wt.join(".git"), "gitdir: elsewhere\n").unwrap();
-        assert!(check_output_path(&wt.join("h.jsonl")).is_err());
-        let out = base.join("out");
-        std::fs::create_dir_all(&out).unwrap();
-        assert!(check_output_path(&out.join("h.jsonl")).is_ok());
-        assert!(check_output_path(&base.join("missing/h.jsonl")).is_err());
-        // Links out of the checked directory are refused, existing or dangling.
-        std::fs::write(repo.join("tracked.jsonl"), "keep").unwrap();
-        let link = out.join("link.jsonl");
-        std::os::unix::fs::symlink(repo.join("tracked.jsonl"), &link).unwrap();
-        assert!(check_output_path(&link).is_err());
-        assert!(create_output(&link).is_err());
-        let dangling = out.join("dangling.jsonl");
-        std::os::unix::fs::symlink(repo.join("new.jsonl"), &dangling).unwrap();
-        assert!(create_output(&dangling).is_err());
-        assert!(!repo.join("new.jsonl").exists());
-        assert_eq!(
-            std::fs::read_to_string(repo.join("tracked.jsonl")).unwrap(),
-            "keep"
-        );
-        // A hard link to a repository file is not truncated.
-        let hard = out.join("hard.jsonl");
-        std::fs::hard_link(repo.join("tracked.jsonl"), &hard).unwrap();
-        assert!(create_output(&hard).is_err());
-        assert_eq!(
-            std::fs::read_to_string(repo.join("tracked.jsonl")).unwrap(),
-            "keep"
-        );
-        // A plain file is created, then truncated on reuse.
-        let plain = out.join("h.jsonl");
-        std::fs::write(&plain, "old").unwrap();
-        drop(create_output(&plain).unwrap());
-        assert_eq!(std::fs::read_to_string(&plain).unwrap(), "");
-        drop(create_output(&out.join("new.jsonl")).unwrap());
-        assert!(out.join("new.jsonl").is_file());
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

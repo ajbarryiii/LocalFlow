@@ -1,0 +1,297 @@
+{
+  "baseline_dev_objective": 1.0,
+  "decoder_storage": "F16",
+  "dev_domains_frozen": [
+    "spgispeech_dev",
+    "earnings22_tune",
+    "librispeech_dev_other_600",
+    "slidespeech_dev",
+    "icsi_dev",
+    "acl6060_dev"
+  ],
+  "dev_domains_present": [
+    "spgispeech_dev",
+    "earnings22_tune",
+    "librispeech_dev_other_600",
+    "slidespeech_dev",
+    "icsi_dev",
+    "acl6060_dev"
+  ],
+  "dev_objective": 0.97,
+  "dev_objective_row": {
+    "fallback": false,
+    "lambda": 1.0,
+    "model": "L3/L3/model-e1.0",
+    "row": "L3/L3/model-e1.0@1"
+  },
+  "dev_objectives_learned": {
+    "L3/L3/model-e1.0@0.5": 1.01,
+    "L3/L3/model-e1.0@0.71": 0.99,
+    "L3/L3/model-e1.0@1": 0.97,
+    "L3/L3/model-e1.0@1.41": 0.98,
+    "L3/L3/model-e1.0@2": 1.03,
+    "baseline@0": 1.0
+  },
+  "df_source": {
+    "acl6060_dev": {
+      "dataset": "acl6060",
+      "keep": null,
+      "manifests": [
+        {
+          "path": "$LF_EXP2_ROOT/datasets/manifests/acl6060_dev.jsonl",
+          "sha256": "2e67d489fef9fa79871c88d4222cb412f32acdaa92f0897efc5ecce1aa8b8639"
+        }
+      ],
+      "max_df": 2,
+      "sessions": 2,
+      "split": "scored",
+      "split_checked": "dev",
+      "split_rule": "Field",
+      "table_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a"
+    },
+    "icsi_dev": {
+      "dataset": "icsi",
+      "keep": null,
+      "manifests": [
+        {
+          "path": "$LF_EXP2_ROOT/datasets/manifests/icsi_train.jsonl",
+          "sha256": "57cc393104505c3e417fb1e532f0ddfe45727b93c3f7161dfbe3bc22fefe5b4f"
+        }
+      ],
+      "max_df": 2,
+      "prep_index": {
+        "df_source_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a",
+        "eval_table_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a",
+        "status": "match"
+      },
+      "sessions": 2,
+      "split": "train",
+      "split_checked": "train",
+      "split_rule": "Field",
+      "table_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a"
+    },
+    "slidespeech_dev": {
+      "dataset": "slidespeech",
+      "keep": null,
+      "manifests": [
+        {
+          "path": "$LF_EXP2_ROOT/datasets/manifests/slidespeech_train_s95.jsonl",
+          "sha256": "57cc393104505c3e417fb1e532f0ddfe45727b93c3f7161dfbe3bc22fefe5b4f"
+        }
+      ],
+      "max_df": 2,
+      "prep_index": {
+        "df_source_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a",
+        "eval_table_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a",
+        "status": "match"
+      },
+      "sessions": 2,
+      "split": "train",
+      "split_checked": "train",
+      "split_rule": "Field",
+      "table_sha256": "6d0bfdf1e0382740075c0ee668170e11c436aee165b33b086064d3621954089a"
+    },
+    "spgispeech_dev": {
+      "dataset": "spgispeech",
+      "keep": "spgi-train",
+      "manifests": [
+        {
+          "path": "$LF_EXP2_ROOT/datasets/manifests/spgi.jsonl",
+          "sha256": "aca61176f161348d0361e4997de69d6597204fd4a14d0d7812b6596bb61f0105"
+        }
+      ],
+      "max_df": 2,
+      "prep_index": {
+        "df_source_sha256": "673038afa210e4cece90129af580c3f6106d07396d172fe65c36d3cb02849492",
+        "eval_table_sha256": "673038afa210e4cece90129af580c3f6106d07396d172fe65c36d3cb02849492",
+        "status": "match"
+      },
+      "sessions": 18,
+      "split": "train",
+      "split_checked": "train",
+      "split_rule": "SpgiHash",
+      "table_sha256": "673038afa210e4cece90129af580c3f6106d07396d172fe65c36d3cb02849492"
+    }
+  },
+  "eligible_for_selection": true,
+  "format": "lf-bias-eval experiment 2 v2",
+  "ineligible_reasons": [],
+  "learned": [
+    {
+      "by_lambda": [
+        {
+          "dev_objective": 1.0,
+          "dev_objective_error": null,
+          "fallback": true,
+          "lambda": 0.0,
+          "row": "baseline@0"
+        },
+        {
+          "dev_objective": 1.01,
+          "dev_objective_error": null,
+          "fallback": false,
+          "lambda": 0.5,
+          "row": "L3/L3/model-e1.0@0.5"
+        },
+        {
+          "dev_objective": 0.99,
+          "dev_objective_error": null,
+          "fallback": false,
+          "lambda": 0.71,
+          "row": "L3/L3/model-e1.0@0.71"
+        },
+        {
+          "dev_objective": 0.97,
+          "dev_objective_error": null,
+          "fallback": false,
+          "lambda": 1.0,
+          "row": "L3/L3/model-e1.0@1"
+        },
+        {
+          "dev_objective": 0.98,
+          "dev_objective_error": null,
+          "fallback": false,
+          "lambda": 1.41,
+          "row": "L3/L3/model-e1.0@1.41"
+        },
+        {
+          "dev_objective": 1.03,
+          "dev_objective_error": null,
+          "fallback": false,
+          "lambda": 2.0,
+          "row": "L3/L3/model-e1.0@2"
+        }
+      ],
+      "id": "L3/L3/model-e1.0",
+      "label": "L3/L3/model-e1.0",
+      "model": "/w/train/L3/model-e1.0.safetensors",
+      "model_lambda": 1.0,
+      "parameters": 5599298,
+      "variant": "L3"
+    }
+  ],
+  "limit": null,
+  "notes": [
+    "synthetic fixture written by learned_eval::tests::rust_results_fixture_is_current"
+  ],
+  "parity_failures": [],
+  "partial": false,
+  "pools": "1 thread per worker",
+  "precision": "i8x2",
+  "seed": 20261011,
+  "sets_selected": "dev",
+  "spec": {
+    "allow_partial_dev": false,
+    "dev_other": {
+      "frozen_ids_sha256": "58040fb1a0076429a61145f676729e6bbdc685978a40a22f3f73700abbd4be95",
+      "frozen_manifest_sha256": "d66037522094c8c3f30e5c8f3c0b1fbc8ae66a848693a9557992ca867396a740",
+      "ids_sha256": "58040fb1a0076429a61145f676729e6bbdc685978a40a22f3f73700abbd4be95",
+      "manifest": "librispeech_dev_other.jsonl",
+      "manifest_sha256": "d66037522094c8c3f30e5c8f3c0b1fbc8ae66a848693a9557992ca867396a740",
+      "selected": 600
+    },
+    "dev_subset": 600,
+    "dev_subset_flag": null,
+    "domains": [
+      {
+        "groups": 2,
+        "name": "spgispeech_dev",
+        "sizes": [
+          100,
+          500,
+          1000
+        ],
+        "utterances": 10
+      },
+      {
+        "groups": 2,
+        "name": "earnings22_tune",
+        "sizes": [
+          100,
+          500,
+          1000
+        ],
+        "utterances": 10
+      },
+      {
+        "groups": 600,
+        "name": "librispeech_dev_other_600",
+        "sizes": [
+          500
+        ],
+        "utterances": 600
+      },
+      {
+        "groups": 2,
+        "name": "slidespeech_dev",
+        "sizes": [
+          100,
+          500,
+          1000
+        ],
+        "utterances": 10
+      },
+      {
+        "groups": 2,
+        "name": "icsi_dev",
+        "sizes": [
+          100,
+          500,
+          1000
+        ],
+        "utterances": 10
+      },
+      {
+        "groups": 2,
+        "name": "acl6060_dev",
+        "sizes": [
+          100,
+          500,
+          1000
+        ],
+        "utterances": 10
+      }
+    ],
+    "frozen_domains": [
+      "spgispeech_dev",
+      "earnings22_tune",
+      "librispeech_dev_other_600",
+      "slidespeech_dev",
+      "icsi_dev",
+      "acl6060_dev"
+    ],
+    "lambdas": [
+      0.5,
+      0.71,
+      1.0,
+      1.41,
+      2.0
+    ],
+    "limit": null,
+    "models": [
+      {
+        "id": "L3/L3/model-e1.0",
+        "lambdas": [
+          0.5,
+          0.71,
+          1.0,
+          1.41,
+          2.0
+        ],
+        "rows": [
+          "L3/L3/model-e1.0@0.5",
+          "L3/L3/model-e1.0@0.71",
+          "L3/L3/model-e1.0@1",
+          "L3/L3/model-e1.0@1.41",
+          "L3/L3/model-e1.0@2"
+        ],
+        "source": "/w/train/L3/model-e1.0.safetensors",
+        "variant": "L3"
+      }
+    ],
+    "seed": 20261011,
+    "sets": "dev",
+    "sizes_flag": null
+  },
+  "workers": 16
+}

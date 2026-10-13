@@ -102,7 +102,7 @@ fn check(p: &DecoderParams) -> bool {
     let frames = 125;
     let enc = encoder_frames(frames, p.enc_dim, 99);
     let start = Instant::now();
-    let (expected, decisions) = reference::decode(p, &enc, frames);
+    let (expected, decisions) = reference::decode(p, &enc, frames, None);
     println!(
         "reference: {} decisions, {} emissions in {:.1?}",
         decisions.len(),
@@ -114,7 +114,7 @@ fn check(p: &DecoderParams) -> bool {
         for threads in [1, 8] {
             let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
             let proj = d.project_encoder(&pool, &enc, frames);
-            let got = d.decode(&pool, &proj, frames, None);
+            let got = d.decode(&pool, &proj, frames, None, None);
             all_match &= got == expected;
             println!(
                 "{storage:?}, {threads} threads: {}",
@@ -200,7 +200,7 @@ fn main() -> ExitCode {
                     let t0 = Instant::now();
                     let proj = d.project_encoder(&pool, &enc, frames);
                     let t1 = Instant::now();
-                    let out = d.decode(&pool, &proj, frames, Some(&sched));
+                    let out = d.decode(&pool, &proj, frames, Some(&sched), None);
                     let t2 = Instant::now();
                     assert_eq!(out.len(), tokens);
                     if rep >= args.warmup {

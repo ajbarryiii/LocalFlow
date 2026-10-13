@@ -9,6 +9,7 @@ use crate::{Result, bail};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dtype {
     U8,
+    I32,
     I64,
     F16,
     F32,
@@ -18,6 +19,7 @@ impl Dtype {
     fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "U8" => Dtype::U8,
+            "I32" => Dtype::I32,
             "I64" => Dtype::I64,
             "F16" => Dtype::F16,
             "F32" => Dtype::F32,
@@ -25,14 +27,120 @@ impl Dtype {
         })
     }
 
+    pub fn name(self) -> &'static str {
+        match self {
+            Dtype::U8 => "U8",
+            Dtype::I32 => "I32",
+            Dtype::I64 => "I64",
+            Dtype::F16 => "F16",
+            Dtype::F32 => "F32",
+        }
+    }
+
     pub fn size(self) -> usize {
         match self {
             Dtype::U8 => 1,
             Dtype::F16 => 2,
-            Dtype::F32 => 4,
+            Dtype::I32 | Dtype::F32 => 4,
             Dtype::I64 => 8,
         }
     }
+}
+
+/// One tensor for [`serialize`]: name, dtype, shape and little-endian bytes.
+pub struct TensorData<'a> {
+    pub name: &'a str,
+    pub dtype: Dtype,
+    pub shape: Vec<usize>,
+    pub bytes: std::borrow::Cow<'a, [u8]>,
+}
+
+impl<'a> TensorData<'a> {
+    pub fn f32(name: &'a str, shape: Vec<usize>, values: &[f32]) -> Self {
+        Self::owned(
+            name,
+            Dtype::F32,
+            shape,
+            values.iter().flat_map(|v| v.to_le_bytes()),
+        )
+    }
+
+    pub fn i32(name: &'a str, shape: Vec<usize>, values: &[i32]) -> Self {
+        Self::owned(
+            name,
+            Dtype::I32,
+            shape,
+            values.iter().flat_map(|v| v.to_le_bytes()),
+        )
+    }
+
+    pub fn i64(name: &'a str, shape: Vec<usize>, values: &[i64]) -> Self {
+        Self::owned(
+            name,
+            Dtype::I64,
+            shape,
+            values.iter().flat_map(|v| v.to_le_bytes()),
+        )
+    }
+
+    pub fn u8(name: &'a str, shape: Vec<usize>, values: &[u8]) -> Self {
+        Self::owned(name, Dtype::U8, shape, values.iter().copied())
+    }
+
+    fn owned(name: &'a str, dtype: Dtype, shape: Vec<usize>, b: impl Iterator<Item = u8>) -> Self {
+        TensorData {
+            name,
+            dtype,
+            shape,
+            bytes: std::borrow::Cow::Owned(b.collect()),
+        }
+    }
+}
+
+/// A safetensors file: string `metadata` and `tensors` (names unique, none
+/// `__metadata__`, byte length matching dtype and shape), data in the given order.
+pub fn serialize(metadata: &BTreeMap<String, String>, tensors: &[TensorData]) -> Result<Vec<u8>> {
+    let mut header = serde_json::Map::new();
+    if !metadata.is_empty() {
+        header.insert("__metadata__".into(), serde_json::json!(metadata));
+    }
+    let mut offset = 0usize;
+    for t in tensors {
+        let need = t
+            .shape
+            .iter()
+            .try_fold(t.dtype.size(), |acc, &d| acc.checked_mul(d));
+        if need != Some(t.bytes.len()) {
+            bail!(
+                "safetensors: {} has {} bytes for shape {:?}",
+                t.name,
+                t.bytes.len(),
+                t.shape
+            );
+        }
+        let entry = serde_json::json!({
+            "dtype": t.dtype.name(),
+            "shape": t.shape,
+            "data_offsets": [offset, offset + t.bytes.len()],
+        });
+        if t.name == "__metadata__" || header.insert(t.name.to_owned(), entry).is_some() {
+            bail!("safetensors: duplicate or reserved tensor name {}", t.name);
+        }
+        offset += t.bytes.len();
+    }
+    let mut json = serde_json::to_vec(&serde_json::Value::Object(header))
+        .map_err(|e| crate::Error(format!("safetensors: {e}")))?;
+    // Pad the header with spaces to 8 bytes, as the reference writer does.
+    while !json.len().is_multiple_of(8) {
+        json.push(b' ');
+    }
+    let mut out = Vec::with_capacity(8 + json.len() + offset);
+    out.extend_from_slice(&(json.len() as u64).to_le_bytes());
+    out.extend_from_slice(&json);
+    for t in tensors {
+        out.extend_from_slice(&t.bytes);
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +252,40 @@ impl SafeTensors {
             .collect())
     }
 
+    pub fn i32_vec(&self, name: &str) -> Result<Vec<i32>> {
+        let (info, data) = self.get(name)?;
+        if info.dtype != Dtype::I32 {
+            bail!("{name}: expected I32, found {:?}", info.dtype);
+        }
+        Ok(data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| i32::from_le_bytes(*b))
+            .collect())
+    }
+
+    pub fn i64_vec(&self, name: &str) -> Result<Vec<i64>> {
+        let (info, data) = self.get(name)?;
+        if info.dtype != Dtype::I64 {
+            bail!("{name}: expected I64, found {:?}", info.dtype);
+        }
+        Ok(data
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| i64::from_le_bytes(*b))
+            .collect())
+    }
+
+    pub fn u8_vec(&self, name: &str) -> Result<Vec<u8>> {
+        let (info, data) = self.get(name)?;
+        if info.dtype != Dtype::U8 {
+            bail!("{name}: expected U8, found {:?}", info.dtype);
+        }
+        Ok(data.to_vec())
+    }
+
     /// An F16 or F32 tensor widened to f32 (exact), with its shape.
     pub fn float_vec(&self, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
         let (info, data) = self.get(name)?;
@@ -230,6 +372,38 @@ mod tests {
             4
         );
         assert!(SafeTensors::parse(build(&huge, &[])).is_err());
+    }
+
+    #[test]
+    fn serialize_round_trips_every_dtype() {
+        let meta: BTreeMap<String, String> = [("variant".to_owned(), "L3".to_owned())].into();
+        let tensors = [
+            TensorData::f32("w", vec![2, 2], &[1.0, -2.5, 3.0, 0.0]),
+            TensorData::i32("t", vec![3], &[-1, 0, 1024]),
+            TensorData::i64("o", vec![2], &[0, i64::MAX]),
+            TensorData::u8("k", vec![1, 2], &[0, 1]),
+            TensorData::f32("s", vec![], &[7.0]),
+        ];
+        let bytes = serialize(&meta, &tensors).unwrap();
+        let st = SafeTensors::parse(bytes).unwrap();
+        assert_eq!(st.metadata, meta);
+        assert_eq!(st.f32_vec("w").unwrap(), [1.0, -2.5, 3.0, 0.0]);
+        assert_eq!(st.tensors["w"].shape, [2, 2]);
+        assert_eq!(st.i32_vec("t").unwrap(), [-1, 0, 1024]);
+        assert_eq!(st.i64_vec("o").unwrap(), [0, i64::MAX]);
+        assert_eq!(st.u8_vec("k").unwrap(), [0, 1]);
+        assert_eq!(st.f32_vec("s").unwrap(), [7.0]);
+        assert!(st.tensors["s"].shape.is_empty());
+        // Typed accessors check the dtype.
+        assert!(st.i32_vec("w").is_err() && st.f32_vec("t").is_err() && st.i64_vec("t").is_err());
+        // Wrong byte counts and duplicate names are refused.
+        let bad = TensorData::f32("w", vec![3], &[1.0]);
+        assert!(serialize(&meta, &[bad]).is_err());
+        let dup = [
+            TensorData::u8("a", vec![1], &[1]),
+            TensorData::u8("a", vec![1], &[2]),
+        ];
+        assert!(serialize(&BTreeMap::new(), &dup).is_err());
     }
 
     #[test]

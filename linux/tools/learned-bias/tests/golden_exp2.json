@@ -1,0 +1,22 @@
+{
+ "L1": {
+  "calls": "spgispeech/c0\nspgispeech/c1\nspgispeech/c2\n",
+  "models": {
+   "model-e0.5.safetensors": "12d5f8163a67a8fb7eae9a6b9645269fd73f4d71affe62db7838a4eb700c9981",
+   "model-e1.0.safetensors": "da883b94c69115444ff872f6a95ce8f7ca1b43f2aa1d39d661e0b94ba5f06127",
+   "model-e1.5.safetensors": "75e71779d1e69d7248c28df14c45f78d1e0035b0bf5233b0e83481800ca363c0",
+   "model-e2.0.safetensors": "68464c5d638922c8cdd1ec3617f292dc1896791d3153c261d6b25b9458ad95d3"
+  },
+  "run_json": "e6107bbf5061be5803d8af933c1194bc2d5b432434c482bd2e88250753a52d8d"
+ },
+ "L2": {
+  "calls": "spgispeech/c0\nspgispeech/c1\nspgispeech/c2\n",
+  "models": {
+   "model-e0.5.safetensors": "fa1feb12764e04014b81353cb49a74efae3b882b12f7b715b257b19407bfb860",
+   "model-e1.0.safetensors": "dd4351f22f2cd6624953cb931c330677483f76b4012bb0bddc56e29cebfdd7b6",
+   "model-e1.5.safetensors": "5d3ae48c43f157ba17e4314196479105c82b79213d6be1f4eb07c68bfe83efca",
+   "model-e2.0.safetensors": "82e27a6d49a5a99151f34662410f6d355e96077e8cfc1090092510766a65da0b"
+  },
+  "run_json": "94c40339830c9dd224b10cc3f104e8d496f0f66f75bee4adc1274332c99505c8"
+ }
+}

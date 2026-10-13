@@ -21,6 +21,14 @@ path = "src/transcribe.rs"
 name = "lf-hypcompare"
 path = "src/hypcompare.rs"
 
+[[bin]]
+name = "lf-bias-eval"
+path = "src/bias_eval.rs"
+
+[[bin]]
+name = "lf-bias-prep"
+path = "src/bias_prep.rs"
+
 [dependencies]
 lf-asr.workspace = true
 lf-cpu.workspace = true

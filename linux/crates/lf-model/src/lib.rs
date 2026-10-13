@@ -33,7 +33,7 @@ macro_rules! bail {
 pub(crate) use bail;
 
 pub use manifest::{Export, Manifest};
-pub use safetensors::{Dtype, SafeTensors, TensorInfo};
+pub use safetensors::{Dtype, SafeTensors, TensorData, TensorInfo};
 pub use ternary::TernaryMatrix;
 
 /// Export format this crate understands.
