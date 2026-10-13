@@ -42,7 +42,7 @@ struct LocalFlowIOSTests {
             ("PowerLog", PowerLogTests.tests),
             ("PowerLogSummary", PowerLogSummaryTests.tests),
             ("PowerLogStore", PowerLogStoreTests.tests),
-            ("HostSessionAlwaysOn", HostSessionAlwaysOnTests.tests),
+            ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
             ("ProtectedDataState", ProtectedDataStateTests.tests),
         ]
