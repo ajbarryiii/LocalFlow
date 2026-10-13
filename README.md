@@ -42,6 +42,16 @@ Voice macros match complete phrases locally and paste predefined text. An
 optional trailing “press enter” command submits after pasting. Neither feature
 uses an LLM. Dictated instructions otherwise remain literal text.
 
+The Dictionary (Settings → Dictionary) helps the recognizer with names and
+technical terms. Entries bias decoding toward their words, each entry has its
+own strength, and entries containing capitals are written exactly as entered.
+An opt-in setting, off by default, notices when you correct a word right after
+a dictation. For up to a minute it reads only the pasted text and a little of
+the text around it, never from password fields. When re-decoding the same
+audio with the corrected word reproduces your correction, LocalFlow offers to
+add the word. That text stays in memory and is discarded afterwards. See
+[docs/word-boosting.md](docs/word-boosting.md) for how this was chosen.
+
 The latest 20 recordings and transcripts are retained locally for playback
 and local retry. Clear or delete them from Run Log. Existing history and
 shortcut preferences remain compatible; old provider preferences and
