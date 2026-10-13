@@ -139,20 +139,21 @@ enum KeyboardEditorTests {
             expected.insert(contentsOf: Array(testCase.typed.utf16), at: caret)
             TestSupport.expectEqual(harness.document.text, String(decoding: expected, as: UTF16.self))
         }
-        // A character held across several frames of settlement: the gesture ends at its touch-down, and
-        // it inserts at its release where the caret was.
+        // A character held across several frames of settlement (typing model v3): the gesture ends at its
+        // touch-down and the letter is typed then, landing after what was already issued; the lift adds
+        // nothing.
         let held = settlingGesture()
         let finger = held.touchDown(.character("q"))
         TestSupport.expect(!held.trackpad.isActive, "a character's touch-down did not end the gesture")
         let adjustments = held.document.host.adjustmentCount
         held.frames(12)
-        TestSupport.expectEqual(held.document.text, "ab\u{1F44D}cdef")
-        let caret = held.document.host.caret
+        let typed = held.document.text
         held.touchUp(finger)
         held.settle()
         TestSupport.expectEqual(held.document.host.adjustmentCount, adjustments)
+        TestSupport.expectEqual(held.document.text, typed)
         var expected = Array("ab\u{1F44D}cdef".utf16)
-        expected.insert(contentsOf: Array("q".utf16), at: caret)
+        expected.insert(contentsOf: Array("q".utf16), at: held.document.host.caret - 1)
         TestSupport.expectEqual(held.document.text, String(decoding: expected, as: UTF16.self))
         // Shift and a layer key pressed without a touch (VoiceOver) end it too.
         for key in [KeyAction.shift, .layer(.numbers)] {
@@ -513,31 +514,32 @@ enum KeyboardEditorTests {
     private static func testHeldTouchesBindToTheFirstIdentifiedField() {
         // The round-8 review's P1: a finger that touched down while no field was identified kept no
         // binding, and released into B after first becoming identified in A. It binds to the first field
-        // identified, A, so it ends without typing in B (both known, different).
+        // identified, A, so it ends without typing in B (both known, different). Characters type at touch-down
+        // (typing model v3), so a held space stands in for them.
         let fieldA = UUID()
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit), documentID: nil)
         let delete = harness.touchDown(.delete)
-        let letter = harness.touchDown(.character("q"))
+        let space = harness.touchDown(.space)
         harness.document.documentID = fieldA
         harness.document.report(after: 1)
         harness.frame()
-        TestSupport.expect(harness.model.touches.contains { $0.id == letter }, "a key held before any identity ended in A")
+        TestSupport.expect(harness.model.touches.contains { $0.id == space }, "a key held before any identity ended in A")
         harness.document.switchField(to: FakeTextHost(text: "Field B.", model: .uikit), id: UUID())
         harness.document.report(after: 1)
         harness.frame()
-        harness.touchUp(letter)
+        harness.touchUp(space)
         harness.touchUp(delete)
         harness.settle()
         TestSupport.expectEqual(harness.document.text, "Field B.")
         TestSupport.expectEqual(harness.document.previousHosts.last?.text, "Field A.")
         // Released in A, it types in A.
         let staying = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit), documentID: nil)
-        let touch = staying.touchDown(.character("q"))
+        let touch = staying.touchDown(.space)
         staying.document.documentID = UUID()
         staying.document.report(after: 1)
         staying.frame()
         staying.touchUp(touch)
-        TestSupport.expectEqual(staying.document.text, "Field A.q")
+        TestSupport.expectEqual(staying.document.text, "Field A. ")
     }
 
     private static func testKeysWithoutAnIdentityRunAtOnce() {
@@ -547,10 +549,10 @@ enum KeyboardEditorTests {
         unidentified.tap(.character("x"))
         TestSupport.expectEqual(unidentified.document.text, "Connecting.x")
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
-        let touch = harness.touchDown(.character("z"))
+        let touch = harness.touchDown(.space)
         harness.document.documentID = nil
         harness.touchUp(touch)
-        TestSupport.expectEqual(harness.document.text, "Field A.z")
+        TestSupport.expectEqual(harness.document.text, "Field A. ")
     }
 
     private static func testOwnTypingReportsNeverDropKeys() {
@@ -588,10 +590,11 @@ enum KeyboardEditorTests {
 
     private static func testKeyReleasedAfterTheFieldChangedNeverLands() {
         // The round-6 review's P1: a letter pressed in field A; the proxy served field B before any
-        // callback said so; the release typed into B. Both identities are known and differ: cancelled.
+        // callback said so; the release typed into B. Both identities are known and differ: cancelled. A
+        // character types at its touch-down (typing model v3), so a held space stands in for it.
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         let fieldA = harness.field
-        let touch = harness.touchDown(.character("x"))
+        let touch = harness.touchDown(.space)
         harness.document.switchField(to: FakeTextHost(text: "Field B.", model: .uikit), id: UUID())
         harness.touchUp(touch)
         for action in [KeyAction.space, .returnKey, .delete] { harness.press(action, field: fieldA) }
@@ -605,10 +608,10 @@ enum KeyboardEditorTests {
     private static func testKeyTouchedDownInTheNewFieldSurvivesItsFirstCallback() {
         // The round-7 review's P1: focus moved A→B; a character touched down in B before B's first
         // callback; that callback cancelled every held touch, B's valid key included. Only touches and a
-        // delete bound to another field end.
+        // delete bound to another field end. Held spaces stand in for characters, which type at touch-down (v3).
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         let deleteInA = harness.touchDown(.delete)
-        let inA = harness.touchDown(.character("q"))
+        let inA = harness.touchDown(.space)
         harness.document.switchField(to: FakeTextHost(text: "Field B.", model: .uikit), id: UUID())
         harness.document.report(after: 1)
         harness.frame()
@@ -617,12 +620,12 @@ enum KeyboardEditorTests {
         let inB = harness.touchDown(.character("w"))
         let early = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         early.document.switchField(to: FakeTextHost(text: "Field B.", model: .uikit), id: UUID())
-        let touchedEarly = early.touchDown(.character("e"))
+        let touchedEarly = early.touchDown(.space)
         early.document.report(after: 1)
         early.frame()
         TestSupport.expect(early.model.touches.contains { $0.id == touchedEarly }, "a key held in B ended by B's first callback")
         early.touchUp(touchedEarly)
-        TestSupport.expectEqual(early.document.text, "Field B.e")
+        TestSupport.expectEqual(early.document.text, "Field B. ")
         harness.touchUp(inB)
         harness.touchUp(inA)
         harness.touchUp(deleteInA)

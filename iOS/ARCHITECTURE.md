@@ -765,8 +765,8 @@ after moving the cursor. Dictation stays primary.
   - Key callouts on press.
   - No autocorrect, predictions or learned words.
 - **Touch handling:** the key area is one UIKit touch-tracking view with
-  nearest-key hit testing (no dead gaps). It highlights on touch-down and
-  inserts on touch-up, which keeps typing latency low in the extension. The
+  nearest-key hit testing (no dead gaps). Characters insert on touch-down;
+  space and Return insert on touch-up ("Typing model v3"). The
   same view runs trackpad mode: touch and hold the space bar, and the letters
   blank out, as on Apple's keyboard.
 
@@ -1567,3 +1567,38 @@ This supersedes the 1 s report retention in the round 10 notes.
   - A field never learned to report once keeps phantom second reports,
     which only suppress echoes.
   - Device latency under load is unmeasured.
+
+### Typing model v3: characters on touch-down (contract change, 2026-10-13)
+
+This supersedes the "Execution" timing in "Typing model v2" for character
+keys. Everything else in v2 stands.
+
+**Why.** On device the keyboard often dropped letters. A character typed on
+release took the key nearest the finger's last position, with no hysteresis.
+A tap that rolled a few points onto space, Shift, delete, a layer key or
+Return typed nothing. The bottom letter row sits 6 pt from the space bar's
+hit boundary.
+
+**New contract:**
+
+- **Characters** insert at touch-down, after `.keyDown` and after any
+  rollover commits of earlier fingers. The key is the one nearest the
+  touch-down point. Moving the finger afterwards changes nothing, so a tap
+  cannot drift off its key or onto a function key, and sliding to correct a
+  letter is no longer possible.
+- **Space and Return** still act on release (or on rollover, in press
+  order). Holding space must be able to become the trackpad without typing,
+  and Return still types only if the finger lifts over it.
+- **Slides from a layer key** still type the character under the finger at
+  release, then return to letters. The slide picks the character.
+- **Field binding:** a character binds to the field current at touch-down
+  and is typed there at once. Fingers already typed are never ended by a
+  later field change.
+- **Callouts** show the character as typed, held while the finger is down.
+- **Unchanged:** Shift and layer keys on touch-down, delete repeating from
+  touch-down, the trackpad hold, rollover order, and keys ignored while the
+  trackpad runs.
+
+**Torture-test contract:** "release order" now means the order keys act:
+characters at touch-down, space and Return at release or rollover. Each edit
+is asserted right after the event that typed it.
