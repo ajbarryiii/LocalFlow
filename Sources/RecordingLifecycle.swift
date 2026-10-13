@@ -40,6 +40,9 @@ final class CaptureLifecycle: @unchecked Sendable {
         var tickets: UInt64 = 0
         var lastCapture: UInt64 = 0
         var current: UInt64?
+        /// The only capture whose main-thread deliveries may run. Cleared at once
+        /// by a cancel or by reserving a replacement, before that is admitted.
+        var deliverable: UInt64?
         var startTime: Double = 0
         var readyFired = false
         var failureReported = false
@@ -49,10 +52,20 @@ final class CaptureLifecycle: @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     /// Main thread, before dispatching the start.
-    func reserve() -> UInt64 { state.withLock { $0.tickets } }
+    func reserve() -> UInt64 {
+        state.withLock { state in
+            state.deliverable = nil
+            return state.tickets
+        }
+    }
 
     /// Any thread, at once: every ticket reserved so far is void.
-    func cancel() { state.withLock { $0.tickets &+= 1 } }
+    func cancel() {
+        state.withLock { state in
+            state.tickets &+= 1
+            state.deliverable = nil
+        }
+    }
 
     /// Session queue: the new capture id, or nil when the ticket was cancelled.
     func admit(ticket: UInt64, at time: Double) -> UInt64? {
@@ -60,6 +73,7 @@ final class CaptureLifecycle: @unchecked Sendable {
             guard ticket == state.tickets else { return nil }
             state.lastCapture &+= 1
             state.current = state.lastCapture
+            state.deliverable = state.lastCapture
             state.startTime = time
             state.readyFired = false
             state.failureReported = false
@@ -81,8 +95,9 @@ final class CaptureLifecycle: @unchecked Sendable {
 
     func isCurrent(_ capture: UInt64) -> Bool { state.withLock { $0.current == capture } }
 
-    /// Main-thread delivery: only for the most recently admitted capture.
-    func isLatest(_ capture: UInt64) -> Bool { state.withLock { $0.lastCapture == capture } }
+    /// Main-thread delivery (readiness, failure): only for the admitted capture
+    /// that no cancel or replacement reservation has superseded.
+    func mayDeliver(_ capture: UInt64) -> Bool { state.withLock { $0.deliverable == capture } }
 
     /// The first non-silent buffer of the current capture: true exactly once.
     func claimReady(_ capture: UInt64, rms: Float) -> Bool {
@@ -101,6 +116,25 @@ final class CaptureLifecycle: @unchecked Sendable {
             state.failureReported = true
             return true
         }
+    }
+
+    /// Session queue: admits `ticket` and runs `setup` for the new capture. If
+    /// setup throws, `cleanUp` runs and the capture ends before this returns,
+    /// inside the same queue operation, so a start queued behind it never has
+    /// its state touched by this one's failure. Throws `cancelled` when the
+    /// ticket was voided.
+    func start(ticket: UInt64, at time: Double, setup: (UInt64) throws -> Void, cleanUp: () -> Void,
+               cancelled: Error) throws -> UInt64 {
+        guard let capture = admit(ticket: ticket, at: time) else { throw cancelled }
+        do {
+            try setup(capture)
+        } catch {
+            cleanUp()
+            finish(capture)
+            state.withLock { if $0.deliverable == capture { $0.deliverable = nil } }
+            throw error
+        }
+        return capture
     }
 
     /// Session queue: `drain` (the sample queue and writer) runs first, with the

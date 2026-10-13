@@ -26,6 +26,8 @@ enum DoubleTapPromptTests {
         testStaleFailureCannotHitNextCapture()
         testNormalStopKeepsQueuedBuffers()
         testIdleResetClearsPendingTap()
+        testQueuedDeliveryBeforeReplacementIsAdmitted()
+        testFailedSetupLeavesNextStartAlone()
     }
 
     private static func enabled() -> DoubleTapPromptDetector {
@@ -392,7 +394,7 @@ enum DoubleTapPromptTests {
                 guard lifecycle.claimFailure(capture) else { return }
                 lifecycle.stop(capture) {}
                 teardowns.append(capture)
-                if lifecycle.isLatest(capture) { deliveries.append(capture) }
+                if lifecycle.mayDeliver(capture) { deliveries.append(capture) }
             }
         }
         lifecycle.cancel()
@@ -527,7 +529,7 @@ enum DoubleTapPromptTests {
         TestSupport.expect(lifecycle.claimReady(next, rms: 0.2), "Its own first sound marks it ready")
         TestSupport.expect(!lifecycle.claimReady(next, rms: 0.5), "Only once")
         TestSupport.expect(lifecycle.claimFailure(next) && !lifecycle.claimFailure(next), "One failure report per capture")
-        TestSupport.expect(!lifecycle.isLatest(tap) && lifecycle.isLatest(next), "Deliveries only for the latest capture")
+        TestSupport.expect(!lifecycle.mayDeliver(tap) && lifecycle.mayDeliver(next), "Deliveries only for the latest capture")
 
         // A new admitted start re-arms both.
         let third = lifecycle.admit(ticket: lifecycle.reserve(), at: 20)!
@@ -547,6 +549,69 @@ enum DoubleTapPromptTests {
                                              configuration: ShortcutConfiguration(hold: .defaultHold, toggle: .disabled))
         TestSupport.expect(matched.emittedEvents.isEmpty && matched.deliveries(for: .backendReset) == [.inputInvalidated],
                            "An idle reset is delivered as an invalidation")
+    }
+
+    /// Review 3 #1: a main-thread delivery queued by capture A runs after A was
+    /// discarded and B reserved, but before B is admitted: it is a no-op.
+    private static func testQueuedDeliveryBeforeReplacementIsAdmitted() {
+        for cancelFirst in [true, false] {
+            let lifecycle = CaptureLifecycle()
+            let captureA = lifecycle.admit(ticket: lifecycle.reserve(), at: 1)!
+            var delivered = 0
+            // A's failure (or readiness) delivery is already on the main queue.
+            DispatchQueue.main.async { if lifecycle.mayDeliver(captureA) { delivered += 1 } }
+            if cancelFirst { lifecycle.cancel() }   // A is discarded
+            let ticketB = lifecycle.reserve()       // B installs its callbacks and reserves
+            spin(timeout: 0.1)                      // A's delivery runs; B is not admitted yet
+            TestSupport.expectEqual(delivered, 0)
+            let captureB = lifecycle.admit(ticket: ticketB, at: 2)
+            TestSupport.expect(captureB.map(lifecycle.mayDeliver) == true, "B's own deliveries run once admitted")
+            TestSupport.expect(!lifecycle.mayDeliver(captureA), "A's never do")
+        }
+        // Without a replacement, the current capture's deliveries still run.
+        let lifecycle = CaptureLifecycle()
+        let capture = lifecycle.admit(ticket: lifecycle.reserve(), at: 1)!
+        TestSupport.expect(lifecycle.mayDeliver(capture), "The admitted capture delivers")
+    }
+
+    /// Review 3 #2: A's setup fails while the tap is discarded and B queues
+    /// its start; A's cleanup happens inside A's own queue operation, so B's
+    /// file URL survives.
+    private static func testFailedSetupLeavesNextStartAlone() {
+        struct SetupFailed: Error {}
+        let lifecycle = CaptureLifecycle()
+        let sessionQueue = DispatchQueue(label: "test.session")
+        var fileURL: String?  // AudioRecorder.tempFileURL, session-queue only
+        let inSetup = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), finishedA = DispatchSemaphore(value: 0)
+        let ticketA = lifecycle.reserve()
+        var resultA: Result<UInt64, Error>?
+        var cleanedUpA = false
+        DispatchQueue.global().async {  // A's background start
+            resultA = Result { try sessionQueue.sync {
+                try lifecycle.start(ticket: ticketA, at: 1, setup: { _ in
+                    inSetup.signal()
+                    release.wait()  // setup still running
+                    throw SetupFailed()
+                }, cleanUp: { fileURL = nil; cleanedUpA = true }, cancelled: CancellationError())
+            } }
+            finishedA.signal()
+        }
+        inSetup.wait()
+        lifecycle.cancel()  // the tap is discarded
+        let ticketB = lifecycle.reserve()
+        var captureB: UInt64?
+        sessionQueue.async {  // B's start, queued behind A
+            captureB = try? lifecycle.start(ticket: ticketB, at: 2, setup: { _ in fileURL = "B.wav" },
+                                            cleanUp: { fileURL = nil }, cancelled: CancellationError())
+        }
+        release.signal()
+        sessionQueue.sync {}
+        finishedA.wait()
+        if case .success = resultA! { TestSupport.expect(false, "A's setup failed") }
+        TestSupport.expect(sessionQueue.sync { cleanedUpA }, "A cleaned up within its own start")
+        TestSupport.expectEqual(sessionQueue.sync { fileURL }, "B.wav")
+        TestSupport.expect(captureB.map(lifecycle.isCurrent) == true, "B is the current capture")
+        TestSupport.expect(captureB.map(lifecycle.mayDeliver) == true, "and delivers")
     }
 
     private static func spin(timeout: TimeInterval, until done: () -> Bool = { false }) {
