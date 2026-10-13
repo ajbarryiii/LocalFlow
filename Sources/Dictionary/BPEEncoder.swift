@@ -40,7 +40,7 @@ final class BPEEncoder {
     }
 
     func encode(_ text: String) -> [Int] {
-        guard !text.isEmpty else { return [] }
+        // Empty text still gets the dummy prefix (pin P7), as SentencePiece does.
         var symbols: [[Unicode.Scalar]] = [[Self.wordBoundary]]
         for scalar in text.unicodeScalars {
             symbols.append([scalar == " " ? Self.wordBoundary : scalar])

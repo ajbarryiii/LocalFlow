@@ -4,27 +4,35 @@ enum DictionarySuggestionAction: Equatable {
     case add, notNow, dontSuggest
 }
 
-/// Binds the suggestion overlay's timers and button callbacks to one
-/// suggestion id (DESIGN §3.5), so a stale timer or late click can never act
-/// on a later phase. Used on the main thread only.
+/// The overlay's only copy of a suggestion (DESIGN §3.5). Timers and button
+/// callbacks are bound to its id, so a stale timer or late click can never
+/// act on a later phase. Every way it leaves the screen (a button, the
+/// timeout, pre-emption, the setting turned off) clears the word.
+/// Used on the main thread only.
 struct SuggestionPresentationGate {
     static let lifetime: TimeInterval = 12
 
     private(set) var activeID: UUID?
+    /// The suggestion on screen; nil once it is resolved or withdrawn.
+    private(set) var suggestion: DictionarySuggestion?
 
-    mutating func present() -> UUID {
+    mutating func present(_ suggestion: DictionarySuggestion) -> UUID {
         let id = UUID()
         activeID = id
+        self.suggestion = suggestion
         return id
     }
 
-    /// Another phase (recording, transcribing, an error) took the panel.
-    mutating func preempt() { activeID = nil }
-
-    /// True exactly once, for the suggestion still on screen.
-    mutating func resolve(_ id: UUID) -> Bool {
-        guard activeID == id else { return false }
+    /// Another phase took the panel, or the suggestion was withdrawn.
+    mutating func preempt() {
         activeID = nil
-        return true
+        suggestion = nil
+    }
+
+    /// The suggestion, exactly once, if `id` is still the one on screen.
+    mutating func resolve(_ id: UUID) -> DictionarySuggestion? {
+        guard activeID == id, let suggestion else { return nil }
+        preempt()
+        return suggestion
     }
 }

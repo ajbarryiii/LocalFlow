@@ -113,8 +113,7 @@ use crate::protocol::{
 };
 use crate::session::{Action, Event, Mode, SessionController};
 use crate::worker::{
-    Audio, CancelToken, Job, JobKind, MAX_VERIFY_CANDIDATES, Outcome, Retained, Suggestion, Verify,
-    WorkerEvent,
+    Audio, CancelToken, Job, JobKind, Outcome, Retained, Suggestion, Verify, WorkerEvent,
 };
 
 /// How long after a dictation is typed it can still be corrected
@@ -392,7 +391,9 @@ impl Controller {
             return Err(ErrorCode::Unavailable);
         };
         let snap = store.snapshot();
-        let mut candidates = correction_candidates(
+        // All of them: the worker drops the ones it cannot attempt before
+        // taking at most three (DESIGN P8).
+        let candidates = correction_candidates(
             &retained.output,
             &text,
             &snap.dictionary.entries,
@@ -400,7 +401,6 @@ impl Controller {
             store.tokenizer(),
         );
         drop(text);
-        candidates.truncate(MAX_VERIFY_CANDIDATES);
         if let Some(c) = &self.check
             && matches!(c.state, CheckState::Pending)
         {
@@ -449,6 +449,7 @@ impl Controller {
             return Err(ErrorCode::Unavailable);
         };
         let word = args.word.ok_or(ErrorCode::BadRequest)?;
+        let before = store.snapshot().revision;
         let changed = match command {
             Command::DictAdd => store.add(
                 &word,
@@ -459,11 +460,14 @@ impl Controller {
             Command::DictIgnore => store.ignore(&word),
             _ => store.unignore(&word),
         };
+        // Any published change (also one recovered from disk after a failed
+        // save) makes the session's frozen dictionary out of date.
+        if store.snapshot().revision != before {
+            self.discard_correction();
+        }
         match changed {
             Ok(()) => {
                 crate::info!("dictionary changed ({})", command.name());
-                // The session's frozen dictionary is out of date.
-                self.discard_correction();
                 Ok(())
             }
             Err(ChangeError::InvalidEntry(e)) => {
@@ -979,6 +983,17 @@ impl Controller {
                 retype,
                 retained,
             } => {
+                // A dictionary change after this job was submitted leaves its
+                // snapshot out of date: such a dictation is not kept, as a
+                // change ends any session (DESIGN §2.4).
+                let current = self.dictionary_snapshot().revision;
+                let retained = retained.filter(|r| {
+                    let fresh = r.dictionary.revision == current;
+                    if !fresh {
+                        crate::debug!("dictionary changed during the dictation; not kept");
+                    }
+                    fresh
+                });
                 if let Some(r) = retained {
                     // Replaces the previous dictation's session.
                     self.discard_correction();
@@ -2423,7 +2438,8 @@ mod tests {
             r.c.handle_request(Request::with_args(command, args), r.t)
         }
 
-        fn retained(output: &str) -> Box<Retained> {
+        /// What the worker keeps of a job transcribed with `dictionary`.
+        fn retained(output: &str, dictionary: Arc<Snapshot>) -> Box<Retained> {
             Box::new(Retained {
                 raw: output.into(),
                 output: output.into(),
@@ -2431,15 +2447,22 @@ mod tests {
                     data: vec![],
                     frames: 0,
                 },
-                dictionary: Arc::default(),
+                dictionary,
             })
         }
 
-        /// Dictates `output` to completion; the worker keeps it if `keep`.
-        fn dictate(r: &mut Rig, output: &str, keep: bool) {
+        /// Starts and stops a dictation: its queued job.
+        fn record(r: &mut Rig) -> Job {
             r.note(Command::Toggle);
             r.note(Command::Toggle);
-            let job = r.jobs.take().pop().unwrap();
+            r.jobs.take().pop().unwrap()
+        }
+
+        /// Finishes `job` as typed `output`; the worker keeps it if `keep`.
+        fn finish(r: &mut Rig, job: Job, output: &str, keep: bool) {
+            let JobKind::Transcribe { dictionary, .. } = job.kind else {
+                panic!("not a transcription");
+            };
             r.c.handle_worker(WorkerEvent::Done(
                 job.id,
                 Outcome::Typed {
@@ -2447,11 +2470,45 @@ mod tests {
                     text: output.into(),
                     pressed_enter: false,
                     retype: false,
-                    retained: keep.then(|| retained(output)),
+                    retained: keep.then(|| retained(output, dictionary)),
                 },
             ))
             .unwrap();
             assert_eq!(r.state(), State::Idle);
+        }
+
+        /// Dictates `output` to completion; the worker keeps it if `keep`.
+        fn dictate(r: &mut Rig, output: &str, keep: bool) {
+            let job = record(r);
+            finish(r, job, output, keep);
+        }
+
+        #[test]
+        fn a_dictation_transcribed_with_an_old_dictionary_is_not_kept() {
+            let dir = TempDir::new("corr-late");
+            let mut r = dict_rig(&dir);
+            // An earlier session, ended by the change below.
+            dictate(&mut r, "earlier synthetic", true);
+            let job = record(&mut r);
+            // The dictionary changes while the job runs.
+            dict(&mut r, Command::DictAdd, "Synthetic").unwrap();
+            finish(&mut r, job, TYPED, true);
+            assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent));
+            // The next dictation, with the current dictionary, is kept.
+            dictate(&mut r, TYPED, true);
+            assert_eq!(begin(&mut r).unwrap().1, TYPED);
+            // A failed save changes nothing, so a session survives it.
+            let data = dir.path().join("data");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let job = record(&mut r);
+            assert_eq!(
+                dict(&mut r, Command::DictAdd, "Other"),
+                Err(ErrorCode::Storage)
+            );
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+            finish(&mut r, job, "kept synthetic", true);
+            assert_eq!(begin(&mut r).unwrap().1, "kept synthetic");
         }
 
         /// `correct-begin`: the session id and text.

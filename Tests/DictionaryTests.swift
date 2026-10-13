@@ -22,6 +22,9 @@ enum DictionaryTests {
         testSpanTracking()
         testWatchLifecycle()
         testSuggestionGate()
+        testSuggestionCleanup()
+        testKeyValidity()
+        testVerificationOrder()
         DictionaryVectorTests.run()
     }
 
@@ -89,7 +92,8 @@ enum DictionaryTests {
         // A run of non-pieces is one <unk> (P4); separated runs are separate.
         TestSupport.expectEqual(encoder.encode("tzzh"), [1, 0, 6])
         TestSupport.expectEqual(encoder.encode("tzhz"), [1, 0, 6, 0])
-        TestSupport.expectEqual(encoder.encode(""), [])
+        // P7: the dummy prefix applies to empty text too, so "" encodes as "▁".
+        TestSupport.expectEqual(encoder.encode(""), [4])
         TestSupport.expect(!encoder.encodesWithoutUnknown("tz"), "<unk> makes text unencodable")
         TestSupport.expect(encoder.encodesWithoutUnknown("the cat"), "Known pieces encode")
         // Pieces are matched by exact scalars: a decomposed é is not the precomposed piece.
@@ -883,17 +887,157 @@ enum DictionaryTests {
     // MARK: - §3.5 overlay identity
 
     private static func testSuggestionGate() {
+        let eldar = DictionarySuggestion(word: "Eldar", strength: 1.41, kind: .replace)
+        let chart = DictionarySuggestion(word: "chart", strength: 2, kind: .replace)
         var gate = SuggestionPresentationGate()
-        let first = gate.present()
-        TestSupport.expect(gate.activeID == first, "Presented")
+        let first = gate.present(eldar)
+        TestSupport.expect(gate.activeID == first && gate.suggestion == eldar, "Presented")
         gate.preempt()  // recording, transcribing or an error took the panel
-        TestSupport.expect(!gate.resolve(first), "A pre-empted suggestion's timer does nothing")
-        let second = gate.present()
-        TestSupport.expect(!gate.resolve(first), "A stale timer cannot dismiss a later suggestion")
-        TestSupport.expect(gate.activeID == second, "Still showing the later suggestion")
-        TestSupport.expect(gate.resolve(second), "Its own action resolves it")
-        TestSupport.expect(!gate.resolve(second), "Only once")
+        TestSupport.expect(gate.resolve(first) == nil, "A pre-empted suggestion's timer does nothing")
+        let second = gate.present(chart)
+        TestSupport.expect(gate.resolve(first) == nil, "A stale timer cannot dismiss a later suggestion")
+        TestSupport.expect(gate.activeID == second && gate.suggestion == chart, "Still showing the later suggestion")
+        TestSupport.expect(gate.resolve(second) == chart, "Its own action resolves it, with its word")
+        TestSupport.expect(gate.resolve(second) == nil, "Only once")
         TestSupport.expectEqual(SuggestionPresentationGate.lifetime, 12)
+    }
+
+    /// Review round 1, #2: no dismissal path may leave the suggested word in
+    /// the overlay's state. The gate holds the overlay's only copy (the phase
+    /// carries just the id), and the manager's dismissals all go through it.
+    private static func testSuggestionCleanup() {
+        let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
+        // Not now, Add and Don't suggest (a click) and the 12 s timeout all resolve by id.
+        var resolved = SuggestionPresentationGate()
+        let id = resolved.present(word)
+        TestSupport.expect(resolved.resolve(id) == word, "The action receives the word")
+        TestSupport.expect(resolved.suggestion == nil && resolved.activeID == nil, "Resolving clears the word")
+        // Turning suggestions off, another phase, or any panel dismissal pre-empts.
+        var withdrawn = SuggestionPresentationGate()
+        _ = withdrawn.present(word)
+        withdrawn.preempt()
+        TestSupport.expect(withdrawn.suggestion == nil && withdrawn.activeID == nil, "Withdrawing clears the word")
+    }
+
+    // MARK: - Pin P6 (review round 1, #1)
+
+    private static func testKeyValidity() {
+        // A valid 100-scalar surface whose key folds to 101 scalars.
+        let surface = "İ" + String(repeating: "a", count: 99)
+        guard case .success(let entry) = DictionaryValidation.validate(text: surface, strength: 1, encoder: nil) else {
+            fatalError("The surface is a valid entry")
+        }
+        let key = entry.key
+        TestSupport.expectEqual(key.scalars.count, 101)
+        TestSupport.expect(key.isValid, "Keys of valid surfaces are valid")
+        // "Don't suggest" then restart: the dictionary must still load.
+        var dictionary = CustomDictionary()
+        TestSupport.expect(dictionary.addIgnore(key) == nil, "Ignoring the key")
+        TestSupport.expect(dictionary.upsert(entry) == nil, "Adding the entry")
+        let stored = DictionaryStorage.encode(dictionary)
+        guard case .success(let reloaded) = DictionaryStorage.load(entriesData: stored.entries, ignoreData: stored.ignore,
+                                                                    encoder: nil) else {
+            fatalError("A saved ignore key must never make storage unreadable")
+        }
+        TestSupport.expect(reloaded == dictionary && reloaded.isIgnored(key), "Ignore key round-trips")
+
+        TestSupport.expect(DictionaryKey(folded: s(String(repeating: "a", count: 300))).isValid, "300 scalars")
+        TestSupport.expect(DictionaryKey(folded: s("a b c d e f g h")).isValid, "Eight words")
+        let invalid: [[Unicode.Scalar]] = [
+            [], s(String(repeating: "a", count: 301)), s("a b c d e f g h i"), s("a\u{7}b"), s("a\tb"), s("Eldar"),
+        ]
+        for scalars in invalid {
+            var probe = CustomDictionary()
+            TestSupport.expect(!DictionaryKey(folded: scalars).isValid, "Invalid key \(scalars)")
+            TestSupport.expect(probe.addIgnore(DictionaryKey(folded: scalars)) == .invalidKey, "Never saved")
+            let json = String(data: try! JSONSerialization.data(withJSONObject: ["version": 1, "ignore": [DictionaryText.string(scalars)]]),
+                              encoding: .utf8)!
+            TestSupport.expect(DictionaryStorage.load(entriesData: nil, ignoreData: Data(json.utf8), encoder: nil) == .failure(.unreadable),
+                               "Never loaded")
+        }
+        // A control scalar is unencodable (§1.1), with or without a vocabulary.
+        TestSupport.expect(DictionaryValidation.validate(text: "a\u{7}b", strength: 1, encoder: nil) == .failure(.unencodable),
+                           "Control scalars are unencodable")
+        TestSupport.expect(DictionaryValidation.validate(text: "a\u{7}b", strength: 1, encoder: testEncoder) == .failure(.unencodable),
+                           "Control scalars are unencodable")
+    }
+
+    // MARK: - Pin P8 (review round 1, #3)
+
+    private static func testVerificationOrder() {
+        // The review's case: the unmappable tag rewrite must not spend the budget.
+        var time: TimeInterval = 0
+        var calls: [DictionaryEntry] = []
+        let found = DictionarySuggestionFinder.find(
+            typed: "[dictated] ship the cart now", edited: "[spoken] ship the chart now", base: "ship the cart now",
+            dictionary: [], ignore: [], encoder: testEncoder, now: { time }, isCancelled: { false },
+            decode: { entry in
+                calls.append(entry)
+                time += 0.5
+                return entry.strength >= 1.41 ? "ship the chart now" : "ship the cart now"
+            })
+        TestSupport.expect(found == DictionarySuggestion(word: "chart", strength: 1.41, kind: .replace),
+                           "The mappable candidate verifies, got \(String(describing: found))")
+        TestSupport.expect(calls.allSatisfy { s($0.text) == s("chart") }, "The unmappable candidate is never decoded")
+        TestSupport.expectEqual(calls.count, 2)
+
+        // Unmappable candidates are dropped before the three-candidate cap.
+        calls = []
+        _ = DictionarySuggestionFinder.find(
+            typed: "[dictated] one two three four five six seven eight nine ten",
+            edited: "[spoken] one zwei three vier five sechs seven acht nine ten",
+            base: "one two three four five six seven eight nine ten",
+            dictionary: [], ignore: [], encoder: testEncoder, now: { 0 }, isCancelled: { false },
+            decode: { calls.append($0); return "one two three four five six seven eight nine ten" })
+        TestSupport.expectEqual(calls.count, 15)
+        TestSupport.expect(Set(calls.map { DictionaryText.string(s($0.text)) }) == ["zwei", "vier", "sechs"],
+                           "Three mappable candidates are attempted")
+
+        // One unmappable candidate, then three mappable ones where the third
+        // recovers: the unmappable one is free, so it costs 5 + 5 + 1 decodes.
+        calls = []
+        let third = DictionarySuggestionFinder.find(
+            typed: "[dictated] one two three four five six seven eight nine ten",
+            edited: "[spoken] one zwei three vier five sechs seven eight nine ten",
+            base: "one two three four five six seven eight nine ten",
+            dictionary: [], ignore: [], encoder: testEncoder, now: { 0 }, isCancelled: { false },
+            decode: { entry in
+                calls.append(entry)
+                return s(entry.text) == s("sechs") ? "one two three four five sechs seven eight nine ten"
+                    : "one two three four five six seven eight nine ten"
+            })
+        TestSupport.expect(third == DictionarySuggestion(word: "sechs", strength: 1, kind: .replace),
+                           "The third mappable candidate verifies, got \(String(describing: third))")
+        TestSupport.expectEqual(calls.count, 11)
+
+        // A result that arrives past the deadline is discarded, even if it verifies.
+        time = 0
+        calls = []
+        let late = DictionarySuggestionFinder.find(
+            typed: "ship the cart now", edited: "ship the chart now", base: "ship the cart now",
+            dictionary: [], ignore: [], encoder: testEncoder, now: { time }, isCancelled: { false },
+            decode: { calls.append($0); time += 2.5; return "ship the chart now" })
+        TestSupport.expect(late == nil && calls.count == 1, "Late results are discarded")
+
+        // Cancellation during a decode also discards its result.
+        var cancelled = false
+        let interrupted = DictionarySuggestionFinder.find(
+            typed: "ship the cart now", edited: "ship the chart now", base: "ship the cart now",
+            dictionary: [], ignore: [], encoder: testEncoder, now: { 0 }, isCancelled: { cancelled },
+            decode: { _ in cancelled = true; return "ship the chart now" })
+        TestSupport.expect(interrupted == nil, "Cancelled results are discarded")
+
+        // Casing candidates respect the deadline and cancellation too.
+        var clock: [TimeInterval] = [0, 3]
+        let lateCasing = DictionarySuggestionFinder.find(
+            typed: "we run nixos", edited: "we run NixOS", base: "we run nixos", dictionary: [], ignore: [],
+            encoder: testEncoder, now: { clock.count > 1 ? clock.removeFirst() : clock[0] }, isCancelled: { false },
+            decode: { _ in nil })
+        TestSupport.expect(lateCasing == nil, "Casing past the deadline")
+        let cancelledCasing = DictionarySuggestionFinder.find(
+            typed: "we run nixos", edited: "we run NixOS", base: "we run nixos", dictionary: [], ignore: [],
+            encoder: testEncoder, now: { 0 }, isCancelled: { true }, decode: { _ in nil })
+        TestSupport.expect(cancelledCasing == nil, "Casing when cancelled")
     }
 }
 

@@ -126,7 +126,24 @@ enum DictionaryVectorTests {
             TestSupport.expect(accepted == expected, "verify \(item["name"]!): got \(String(describing: accepted))")
         }
 
-        for name in ["encode", "validation", "phrases", "graph", "decision", "casing", "candidates", "verify"] {
+        // Pin P6: stored identity and ignore keys.
+        for item in section("keys") {
+            let scalars = Array((item["key"] as! String).unicodeScalars)
+            let key = DictionaryKey(folded: scalars)
+            TestSupport.expect(key.isValid == item["valid"] as! Bool, "key \(scalars.count) scalars: got \(key.isValid)")
+            if let from = item["from"] as? String {
+                TestSupport.expect(DictionaryKey(from) == key, "fold(from) must equal the key")
+            }
+            // Valid keys round-trip through storage; invalid ones are never saved or loaded.
+            var dictionary = CustomDictionary()
+            let saved = dictionary.addIgnore(key) == nil
+            TestSupport.expect(saved == key.isValid, "Only valid keys are saved")
+            let json = try! JSONSerialization.data(withJSONObject: ["version": 1, "ignore": [item["key"] as! String]])
+            let loaded = DictionaryStorage.load(entriesData: nil, ignoreData: json, encoder: encoder)
+            TestSupport.expect(loaded.isSuccess == key.isValid, "Only valid keys load")
+        }
+
+        for name in ["encode", "validation", "phrases", "graph", "decision", "casing", "candidates", "verify", "keys"] {
             TestSupport.expect(counts[name] != nil, "Vector section \(name) was not run")
         }
     }

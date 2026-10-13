@@ -89,7 +89,8 @@ impl std::fmt::Debug for Suggestion {
 /// Checks a correction against a retained dictation.
 pub struct Verify {
     pub session: Arc<Retained>,
-    /// In text order; at most [`MAX_VERIFY_CANDIDATES`] are tried.
+    /// In text order; at most [`MAX_VERIFY_CANDIDATES`] of those that can
+    /// be attempted (casing, or mappable onto the transcript) are tried.
     pub candidates: Vec<Candidate>,
 }
 
@@ -313,25 +314,55 @@ pub fn verify(
     cancel: &CancelToken,
     recognizer: &mut dyn Recognizer,
 ) -> Option<Suggestion> {
-    let start = Instant::now();
-    let s = &v.session;
-    for c in v.candidates.iter().take(MAX_VERIFY_CANDIDATES) {
-        if cancel.is_cancelled() {
-            return None;
+    verify_with_clock(v, cancel, recognizer, &mut Instant::now)
+}
+
+/// [`verify`] with the time taken from `now` (tests use a mocked clock).
+/// DESIGN P8: a candidate is mapped onto the base transcript before any
+/// decode, so an unmappable one costs neither decodes nor time; cancellation
+/// and the budget are checked before every decode, again after it before
+/// its result counts, and before accepting a casing candidate.
+pub fn verify_with_clock(
+    v: &Verify,
+    cancel: &CancelToken,
+    recognizer: &mut dyn Recognizer,
+    now: &mut dyn FnMut() -> Instant,
+) -> Option<Suggestion> {
+    let start = now();
+    let stop = |now: &mut dyn FnMut() -> Instant| {
+        // The clock first, so the cancel flag is read as late as possible.
+        let spent = now().saturating_duration_since(start) >= VERIFY_BUDGET;
+        let over = spent || cancel.is_cancelled();
+        if over {
+            crate::debug!("correction check stopped");
         }
-        if c.kind == CandidateKind::Casing {
+        over
+    };
+    let s = &v.session;
+    // P8 detail: candidates that are not attempted (unmappable
+    // replacements) are dropped first and never count toward the cap.
+    let attempted = v
+        .candidates
+        .iter()
+        .filter_map(|c| match c.kind {
+            CandidateKind::Casing => Some((c, None)),
+            CandidateKind::Replace => Expected::new(&s.raw, &s.output, c).map(|e| (c, Some(e))),
+        })
+        .take(MAX_VERIFY_CANDIDATES);
+    for (c, expected) in attempted {
+        let Some(expected) = expected else {
+            // Casing: not mapped onto the transcript, no audio needed.
+            if stop(now) {
+                return None;
+            }
             return Some(Suggestion {
                 word: c.surface.clone(),
                 strength: 1000,
                 casing: true,
             });
-        }
-        let Some(expected) = Expected::new(&s.raw, &s.output, c) else {
-            continue;
         };
         for strength in VERIFY_STRENGTHS {
-            if cancel.is_cancelled() || start.elapsed() >= VERIFY_BUDGET {
-                crate::debug!("correction check stopped");
+            if stop(now) {
                 return None;
             }
             let extra = DictionaryEntry {
@@ -345,6 +376,10 @@ pub fn verify(
                     return None;
                 }
             };
+            // A result that arrives cancelled or past the budget is dropped.
+            if stop(now) {
+                return None;
+            }
             if expected.accepts(&n) {
                 return Some(Suggestion {
                     word: c.surface.clone(),
@@ -789,6 +824,24 @@ mod tests {
         }
 
         #[test]
+        fn unattempted_candidates_do_not_count_toward_the_cap() {
+            // "bb" is not in the transcript, so "Xb" cannot be mapped; the
+            // three after it are all tried, and the third one recovers.
+            let before = "aa bb cc dd ee ff gg hh ii jj kk ll";
+            let mut v = job(before, "aa Xb cc Xd ee Xf gg Xh ii jj kk ll");
+            v.session = Arc::new(Retained {
+                raw: "aa zz cc dd ee ff gg hh ii jj kk ll".into(),
+                ..Arc::try_unwrap(session(before)).ok().unwrap()
+            });
+            let words: Vec<&str> = v.candidates.iter().map(|c| c.surface.as_str()).collect();
+            assert_eq!(words, ["Xb", "Xd", "Xf", "Xh"]);
+            let mut rec = recognizer(&[(1000, "aa zz cc dd ee ff gg xh ii jj kk ll")]);
+            let got = verify(&v, &CancelToken::default(), &mut rec).unwrap();
+            assert_eq!(got.word, "Xh");
+            assert_eq!(rec.state().redecodes, 5 + 5 + 1);
+        }
+
+        #[test]
         fn cancellation_stops_between_decodes() {
             let v = job(TYPED, EDITED);
             let token = Arc::new(CancelToken::default());
@@ -825,6 +878,107 @@ mod tests {
             let n = rec.state().redecodes;
             assert!((6..=7).contains(&n), "{n}");
             assert!(start.elapsed() < VERIFY_BUDGET + Duration::from_millis(500));
+        }
+
+        /// A mocked clock: every finished re-decode of `rec` took `step`.
+        fn decode_clock(rec: &FakeRecognizer, step: Duration) -> impl FnMut() -> Instant + use<> {
+            let (t0, rec) = (Instant::now(), rec.clone());
+            move || t0 + step * rec.state().redecodes as u32
+        }
+
+        #[test]
+        fn a_result_past_the_budget_is_dropped() {
+            let v = job(TYPED, EDITED);
+            // Recovered by the fourth decode (2.83), which starts in budget.
+            // At 0.6 s per decode it ends at 2.4 s: too late, dropped.
+            let mut rec = recognizer(&[(2830, RECOVERED)]);
+            let mut clock = decode_clock(&rec, Duration::from_millis(600));
+            let got = verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock);
+            assert_eq!(got, None);
+            assert_eq!(rec.state().redecodes, 4);
+            // At 0.4 s per decode it ends at 1.6 s and counts.
+            let mut rec = recognizer(&[(2830, RECOVERED)]);
+            let mut clock = decode_clock(&rec, Duration::from_millis(400));
+            let got = verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock);
+            assert_eq!(got.map(|s| s.strength), Some(2830));
+            // No decode starts once the budget is spent: 0.5 s each, the
+            // fifth would start at 2.0 s.
+            let mut rec = recognizer(&[]);
+            let mut clock = decode_clock(&rec, Duration::from_millis(500));
+            assert_eq!(
+                verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock),
+                None
+            );
+            assert_eq!(rec.state().redecodes, 4);
+        }
+
+        #[test]
+        fn a_cancel_during_a_decode_drops_its_result() {
+            let v = job(TYPED, EDITED);
+            let token = CancelToken::default();
+            let mut rec = recognizer(&[(1000, RECOVERED)]);
+            // The clock is read after the decode: cancel arrives meanwhile.
+            let r2 = rec.clone();
+            let mut clock = || {
+                if r2.state().redecodes > 0 {
+                    token.cancel();
+                }
+                Instant::now()
+            };
+            assert_eq!(verify_with_clock(&v, &token, &mut rec, &mut clock), None);
+            assert_eq!(rec.state().redecodes, 1);
+        }
+
+        #[test]
+        fn casing_respects_the_budget_and_cancel() {
+            let v = job("i like nixos", "i like NixOS");
+            let t0 = Instant::now();
+            // The clock reads 0 at the start and 2.1 s at the casing check.
+            let mut times = [t0, t0 + Duration::from_millis(2100)].into_iter();
+            let mut clock = move || times.next().unwrap_or(t0 + VERIFY_BUDGET * 2);
+            let mut rec = recognizer(&[]);
+            assert_eq!(
+                verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock),
+                None
+            );
+            let token = CancelToken::default();
+            token.cancel();
+            assert_eq!(verify(&v, &token, &mut rec), None);
+            assert!(verify(&v, &CancelToken::default(), &mut rec).is_some());
+        }
+
+        #[test]
+        fn unmappable_candidates_cost_no_decodes_or_time() {
+            // The typed text's corrected words are not in the transcript.
+            let mut v = job(TYPED, EDITED);
+            v.session = Arc::new(Retained {
+                raw: "we deployed it on copper netties yesterday".into(),
+                ..Arc::try_unwrap(session(TYPED)).ok().unwrap()
+            });
+            let mut rec = recognizer(&[]);
+            let mut reads = 0;
+            let mut clock = || {
+                reads += 1;
+                Instant::now()
+            };
+            assert_eq!(
+                verify_with_clock(&v, &CancelToken::default(), &mut rec, &mut clock),
+                None
+            );
+            assert_eq!(rec.state().redecodes, 0);
+            // Only the start was read; no budget was spent on the candidate.
+            assert_eq!(reads, 1);
+            // A later mappable candidate still gets its decodes.
+            let before = "aa bb cc dd ee ff gg";
+            let mut v = job(before, "aa Xb cc dd Xe ff gg");
+            v.session = Arc::new(Retained {
+                raw: "aa zz cc dd ee ff gg".into(),
+                ..Arc::try_unwrap(session(before)).ok().unwrap()
+            });
+            assert_eq!(v.candidates.len(), 2);
+            let mut rec = recognizer(&[(1000, "aa zz cc dd xe ff gg")]);
+            let got = verify(&v, &CancelToken::default(), &mut rec).unwrap();
+            assert_eq!((got.word.as_str(), rec.state().redecodes), ("Xe", 1));
         }
 
         fn transcribe(

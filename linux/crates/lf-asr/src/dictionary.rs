@@ -195,9 +195,25 @@ pub fn normalize(text: &str) -> std::result::Result<String, EntryError> {
     Ok(joined)
 }
 
-/// Whether `text` encodes with no `<unk>`.
+/// Whether `text` encodes with no `<unk>`. A control character (Cc) is never
+/// a vocabulary piece (DESIGN P6), so text with one is never encodable.
 pub fn encodable(text: &str, tokenizer: &Tokenizer) -> bool {
-    !tokenizer.encode(text).contains(&UNK_ID)
+    !text.chars().any(char::is_control) && !tokenizer.encode(text).contains(&UNK_ID)
+}
+
+/// Most scalars in a stored identity or ignore key (folding can expand a
+/// 100-scalar entry).
+pub const MAX_KEY_SCALARS: usize = 300;
+
+/// DESIGN P6: a stored identity or ignore key is non-empty, has at most
+/// [`MAX_KEY_SCALARS`] scalars and [`MAX_WORDS`] space-separated words, no
+/// control character (Cc), and is its own fold.
+pub fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().count() <= MAX_KEY_SCALARS
+        && key.split(' ').count() <= MAX_WORDS
+        && !key.chars().any(char::is_control)
+        && fold(key) == key
 }
 
 /// Checks a strength (DESIGN §1.1 step 4).
@@ -297,6 +313,25 @@ mod tests {
         assert_eq!(strip_edge_punct("C#."), "C#");
         assert_eq!(strip_edge_punct("—"), "");
         assert!(is_whitespace('\u{A0}') && !is_whitespace('\u{200B}'));
+    }
+
+    #[test]
+    fn key_validity() {
+        let expanded = fold(&format!("\u{130}{}", "a".repeat(99)));
+        assert_eq!(expanded.chars().count(), 101);
+        assert!(valid_key(&expanded));
+        assert!(valid_key("new york") && valid_key("12") && valid_key(&"a".repeat(300)));
+        for bad in [
+            String::new(),
+            "a".repeat(301),
+            "a b c d e f g h i".into(),
+            "New".into(),
+            "a\u{7}b".into(),
+            "a\u{85}b".into(),
+            "\u{3a3}".into(),
+        ] {
+            assert!(!valid_key(&bad), "{bad:?}");
+        }
     }
 
     #[test]

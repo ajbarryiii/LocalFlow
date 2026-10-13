@@ -97,15 +97,26 @@ enum DictionarySuggestionFinder {
                      encoder: BPEEncoder?, now: () -> TimeInterval, isCancelled: () -> Bool,
                      decode: (DictionaryEntry) -> String?) -> DictionarySuggestion? {
         let start = now()
-        let candidates = CorrectionCandidates.find(before: typed, after: edited, dictionary: dictionary, ignore: ignore,
-                                                   encoder: encoder)
-        for candidate in candidates.prefix(maxCandidates) {
+        func withinBudget() -> Bool { !isCancelled() && now() - start < maxSeconds }
+        let b = VerifyDecision.norms(base)
+        // Pin P8: candidates that cannot be attempted (a replacement that does
+        // not map onto B) are dropped before the cap, without decoding.
+        // Casing candidates need no audio and are not mapped.
+        let attempted = CorrectionCandidates.find(before: typed, after: edited, dictionary: dictionary, ignore: ignore,
+                                                  encoder: encoder)
+            .filter { $0.kind == .casing || VerifyDecision.mapBlock(typed: typed, candidate: $0, base: b) != nil }
+            .prefix(maxCandidates)
+        for candidate in attempted {
             if candidate.kind == .casing {
+                guard withinBudget() else { return nil }
                 return DictionarySuggestion(word: candidate.surface, strength: DictionaryValidation.defaultStrength, kind: .casing)
             }
             for strength in VerifyDecision.strengths {
-                guard !isCancelled(), now() - start < maxSeconds else { return nil }
-                guard let decoded = decode(DictionaryEntry(text: candidate.surface, strength: strength)) else { break }
+                guard withinBudget() else { return nil }
+                // A decode error ends verification without a suggestion.
+                guard let decoded = decode(DictionaryEntry(text: candidate.surface, strength: strength)) else { return nil }
+                // A result that arrives cancelled or past the deadline is discarded.
+                guard withinBudget() else { return nil }
                 if VerifyDecision.accepts(typed: typed, candidate: candidate, base: base, decoded: decoded) {
                     return DictionarySuggestion(word: candidate.surface, strength: strength, kind: .replace)
                 }

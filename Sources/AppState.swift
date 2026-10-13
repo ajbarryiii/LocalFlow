@@ -2058,8 +2058,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         case .success(let entry):
             var updated = customDictionary
             if let original, original != entry.key { updated.remove(original) }
-            if updated.upsert(entry) == .full {
-                return "The dictionary is full (\(DictionaryValidation.capacity) entries)."
+            switch updated.upsert(entry) {
+            case .full?: return "The dictionary is full (\(DictionaryValidation.capacity) entries)."
+            case .invalidKey?: return DictionaryEntryError.unencodable.message
+            case nil: break
             }
             applyDictionary(updated)
             return nil

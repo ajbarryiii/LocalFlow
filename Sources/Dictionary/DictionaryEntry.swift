@@ -36,6 +36,8 @@ enum DictionaryEntryError: String, Error, Equatable {
 
 enum DictionaryMutationError: Error, Equatable {
     case full
+    /// The identity or ignore key fails pin P6; nothing is changed.
+    case invalidKey
 }
 
 enum DictionaryValidation {
@@ -66,6 +68,9 @@ enum DictionaryValidation {
         let normalized = words.map { DictionaryText.string($0) }.joined(separator: " ")
         guard normalized.unicodeScalars.count <= maxScalars else { return .failure(.tooLong) }
         guard normalized.unicodeScalars.contains(where: DictionaryText.isLetter) else { return .failure(.noLetter) }
+        // A control scalar is never a vocabulary piece, so it is unencodable even
+        // when no vocabulary is loaded (and could never form a valid key, pin P6).
+        if normalized.unicodeScalars.contains(where: DictionaryText.isControl) { return .failure(.unencodable) }
         if let encoder, !encoder.encodesWithoutUnknown(normalized) { return .failure(.unencodable) }
         guard isValidStrength(strength) else { return .failure(.invalidStrength) }
         return .success(DictionaryEntry(text: normalized, strength: strength))
@@ -92,6 +97,7 @@ struct CustomDictionary: Equatable {
     /// Adds, or replaces the entry with the same identity key.
     mutating func upsert(_ entry: DictionaryEntry) -> DictionaryMutationError? {
         let key = entry.key
+        guard key.isValid else { return .invalidKey }
         if let index = entries.firstIndex(where: { $0.key == key }) {
             entries[index] = entry
             return nil
@@ -109,6 +115,7 @@ struct CustomDictionary: Equatable {
     }
 
     mutating func addIgnore(_ key: DictionaryKey) -> DictionaryMutationError? {
+        guard key.isValid else { return .invalidKey }
         guard !ignore.contains(key) else { return nil }
         guard ignore.count < DictionaryValidation.ignoreCapacity else { return .full }
         ignore.append(key)
@@ -171,11 +178,9 @@ enum DictionaryStorage {
                 return .failure(.unreadable)
             }
             for stored in file.ignore {
-                let key = DictionaryKey(stored)
-                let scalars = Array(stored.unicodeScalars)
-                guard !scalars.isEmpty, scalars.count <= DictionaryValidation.maxScalars, key.scalars == scalars,
-                      DictionaryValidation.normalize(stored).unicodeScalars.elementsEqual(scalars),
-                      !dictionary.isIgnored(key), dictionary.addIgnore(key) == nil else {
+                // Stored exactly as saved: valid per pin P6 (already folded), no duplicates.
+                let key = DictionaryKey(folded: Array(stored.unicodeScalars))
+                guard key.isValid, !dictionary.isIgnored(key), dictionary.addIgnore(key) == nil else {
                     return .failure(.unreadable)
                 }
             }

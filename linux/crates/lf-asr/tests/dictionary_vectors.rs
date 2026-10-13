@@ -109,6 +109,23 @@ fn validation_vectors() {
 }
 
 #[test]
+fn key_vectors() {
+    let v = vectors();
+    for case in section(&v, "keys") {
+        let key = case["key"].as_str().unwrap();
+        let shown = &key[..key.len().min(24)];
+        assert_eq!(
+            dictionary::valid_key(key),
+            case["valid"].as_bool().unwrap(),
+            "{shown:?}"
+        );
+        if let Some(from) = case.get("from") {
+            assert_eq!(dictionary::fold(from.as_str().unwrap()), key, "{shown:?}");
+        }
+    }
+}
+
+#[test]
 fn phrase_vectors() {
     let v = vectors();
     let t = tokenizer(&v);

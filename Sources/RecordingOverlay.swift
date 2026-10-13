@@ -10,6 +10,8 @@ final class RecordingOverlayState: ObservableObject {
     @Published var updateVersion: String = ""
     @Published var errorMessage: String?
     @Published var toastID: UUID?
+    /// The only copy of a visible suggestion; cleared whenever it leaves the screen.
+    @Published var suggestionGate = SuggestionPresentationGate()
 }
 
 enum OverlayPhase: Equatable {
@@ -19,7 +21,8 @@ enum OverlayPhase: Equatable {
     case feedback
     case updateAvailable
     /// A dictionary suggestion after a correction; timers and buttons are bound to `id`.
-    case dictionarySuggestion(id: UUID, word: String, strength: Float)
+    /// The word itself lives only in `RecordingOverlayState.suggestionGate`.
+    case dictionarySuggestion(id: UUID)
 
     var isDictionarySuggestion: Bool {
         if case .dictionarySuggestion = self { return true } else { return false }
@@ -99,8 +102,6 @@ final class RecordingOverlayManager {
     var onUpdateOverlayPressed: (() -> Void)?
     /// Called on the main thread at most once per suggestion, only for the one on screen.
     var onDictionarySuggestionAction: ((DictionarySuggestion, DictionarySuggestionAction) -> Void)?
-    private var suggestionGate = SuggestionPresentationGate()
-    private var currentSuggestion: DictionarySuggestion?
 
     /// The screen the overlay should drop down on. The user picks one of
     /// three modes in Settings, stored in UserDefaults under
@@ -272,10 +273,9 @@ final class RecordingOverlayManager {
     func showDictionarySuggestion(_ suggestion: DictionarySuggestion) {
         DispatchQueue.main.async {
             guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion else { return }
-            let id = self.suggestionGate.present()
-            self.currentSuggestion = suggestion
+            let id = self.overlayState.suggestionGate.present(suggestion)
             self.lockedOverlayWidth = nil
-            self.overlayState.phase = .dictionarySuggestion(id: id, word: suggestion.word, strength: suggestion.strength)
+            self.overlayState.phase = .dictionarySuggestion(id: id)
             self.showOverlayPanel(animatedResize: true)
             DispatchQueue.main.asyncAfter(deadline: .now() + SuggestionPresentationGate.lifetime) { [weak self] in
                 self?.resolveSuggestion(id: id, action: .notNow)
@@ -293,15 +293,13 @@ final class RecordingOverlayManager {
     }
 
     private func resolveSuggestion(id: UUID, action: DictionarySuggestionAction) {
-        guard suggestionGate.resolve(id), let suggestion = currentSuggestion else { return }
-        currentSuggestion = nil
+        guard let suggestion = overlayState.suggestionGate.resolve(id) else { return }
         dismissAll()
         onDictionarySuggestionAction?(suggestion, action)
     }
 
     private func preemptSuggestion() {
-        suggestionGate.preempt()
-        currentSuggestion = nil
+        overlayState.suggestionGate.preempt()
     }
 
     private func showOverlayPanel(animatedResize: Bool) {
@@ -498,8 +496,8 @@ final class RecordingOverlayManager {
             return max(notchWidth, feedbackWidth)
         }
 
-        if case .dictionarySuggestion(_, let word, _) = overlayState.phase {
-            let suggestionWidth = DictionarySuggestionOverlayView.width(for: word)
+        if overlayState.phase.isDictionarySuggestion {
+            let suggestionWidth = DictionarySuggestionOverlayView.width(for: overlayState.suggestionGate.suggestion?.word ?? "")
             guard screenHasNotch else { return suggestionWidth }
             return max(notchWidth, suggestionWidth)
         }
@@ -531,6 +529,8 @@ final class RecordingOverlayManager {
     }
 
     private func dismissAll() {
+        // Whatever closes the panel, no suggested word stays in memory.
+        overlayState.suggestionGate.preempt()
         lockedOverlayWidth = nil
         overlayState.updateVersion = ""
         if let panel = overlayWindow {
@@ -1026,8 +1026,8 @@ struct RecordingOverlayView: View {
                 FailureIndicatorView()
             } else if state.phase == .updateAvailable {
                 UpdateAvailableOverlayView(onPress: onUpdateOverlayPressed)
-            } else if case .dictionarySuggestion(let id, let word, _) = state.phase {
-                DictionarySuggestionOverlayView(word: word) { onSuggestionAction(id, $0) }
+            } else if case .dictionarySuggestion(let id) = state.phase, let suggestion = state.suggestionGate.suggestion {
+                DictionarySuggestionOverlayView(word: suggestion.word) { onSuggestionAction(id, $0) }
             } else {
                 ZStack {
                     Group {

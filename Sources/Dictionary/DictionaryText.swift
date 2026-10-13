@@ -101,4 +101,22 @@ struct DictionaryKey: Hashable {
     init(folded scalars: [Unicode.Scalar]) { self.scalars = scalars }
 
     var text: String { DictionaryText.string(scalars) }
+
+    static let maxScalars = 300
+    static let maxWords = 8
+
+    /// Pin P6, checked on load and before saving: non-empty, at most 300
+    /// scalars and 8 space-separated words, no control scalars, and already
+    /// folded. Folding a valid 100-scalar surface can expand it, so the limit
+    /// is not §1.1's.
+    var isValid: Bool {
+        !scalars.isEmpty && scalars.count <= Self.maxScalars
+            && scalars.split(separator: " ", omittingEmptySubsequences: false).count <= Self.maxWords
+            && !scalars.contains(where: DictionaryText.isControl)
+            && DictionaryText.fold(scalars) == scalars
+    }
+}
+
+extension DictionaryText {
+    static func isControl(_ scalar: Unicode.Scalar) -> Bool { scalar.properties.generalCategory == .control }
 }

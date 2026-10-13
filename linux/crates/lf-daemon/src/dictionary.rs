@@ -10,11 +10,13 @@
 //!   reads stop at [`MAX_FILE_BYTES`]. A missing file is an empty dictionary.
 //! - On load: version 1, at most 1000 entries each valid (DESIGN §1.1) and
 //!   stored normalized, no two with the same identity key, and at most 1000
-//!   ignored keys, each normalized and folded, without repeats. Anything
+//!   ignored keys, each a valid key (DESIGN P6), without repeats. Anything
 //!   else is an error that quotes no content.
 //! - A change is validated in full, written to a 0600 temporary file,
 //!   synced, renamed over the file and the directory synced; only then is it
-//!   published (a new [`Snapshot`]). A failed write changes nothing.
+//!   published (a new [`Snapshot`]). A failed write changes nothing; if only
+//!   the directory sync fails, the rename is undone, memory is set to what
+//!   the file then holds, and the change is still refused (`error storage`).
 //!
 //! The daemon owns the file; `localflowctl dict list` reads it the same way.
 
@@ -93,6 +95,8 @@ pub struct Store {
     path: PathBuf,
     tokenizer: Arc<Tokenizer>,
     current: Arc<Snapshot>,
+    #[cfg(test)]
+    faults: Faults,
 }
 
 static REVISION: AtomicU64 = AtomicU64::new(1);
@@ -117,6 +121,8 @@ impl Store {
                 revision: next_revision(),
                 dictionary,
             }),
+            #[cfg(test)]
+            faults: Faults::default(),
         })
     }
 
@@ -156,8 +162,9 @@ impl Store {
 
     /// Never suggests `word` again. Already ignored is fine.
     pub fn ignore(&mut self, word: &str) -> Result<(), ChangeError> {
-        let text = rules::normalize(word).map_err(|_| ChangeError::BadWord)?;
-        let key = fold(&text);
+        let key = lookup_key(word)
+            .filter(|k| rules::valid_key(k))
+            .ok_or(ChangeError::BadWord)?;
         let mut next = self.current.dictionary.clone();
         if next.ignore.contains(&key) {
             return Ok(());
@@ -188,16 +195,84 @@ impl Store {
             crate::error!("dictionary: a change failed validation; nothing saved");
             return Err(ChangeError::Storage);
         }
-        if let Err(e) = write_atomic(&self.path, &bytes) {
+        let existed = fs::symlink_metadata(&self.path).is_ok();
+        if let Err(e) = replace_file(&self.path, &bytes) {
             crate::warn!("dictionary: {e}; nothing changed");
             return Err(ChangeError::Storage);
         }
-        self.current = Arc::new(Snapshot {
-            revision: next_revision(),
-            dictionary: next,
-        });
+        if let Err(e) = self.sync_dir() {
+            // The rename may not survive a crash: undo it, and never
+            // acknowledge a change that might be lost.
+            crate::warn!("dictionary: cannot sync its directory ({e}); the change is undone");
+            self.recover(existed);
+            return Err(ChangeError::Storage);
+        }
+        self.publish(next);
         Ok(())
     }
+
+    fn publish(&mut self, dictionary: Dictionary) {
+        self.current = Arc::new(Snapshot {
+            revision: next_revision(),
+            dictionary,
+        });
+    }
+
+    /// After a failed directory sync: puts the previous file back (or
+    /// removes the new one if there was none), then makes memory match
+    /// whatever the file now holds, so memory never claims more than disk.
+    fn recover(&mut self, existed: bool) {
+        let undone = if self.skip_rollback() {
+            Err("skipped".to_string())
+        } else if existed {
+            replace_file(&self.path, &serialize(&self.current.dictionary))
+        } else {
+            fs::remove_file(&self.path).map_err(|e| e.to_string())
+        };
+        match undone {
+            Ok(()) => {
+                if let Err(e) = self.sync_dir() {
+                    crate::warn!("dictionary: cannot sync its directory after undoing ({e})");
+                }
+            }
+            Err(e) => crate::warn!("dictionary: cannot undo the change ({e})"),
+        }
+        match read(&self.path, Some(&self.tokenizer)) {
+            Ok(on_disk) if on_disk != self.current.dictionary => {
+                crate::warn!("dictionary: the saved change remains in place");
+                self.publish(on_disk);
+            }
+            Ok(_) => {}
+            Err(e) => crate::warn!("dictionary: cannot read it back: {e}"),
+        }
+    }
+
+    fn sync_dir(&mut self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self.faults.dir_syncs > 0 {
+            self.faults.dir_syncs -= 1;
+            return Err(std::io::Error::other("injected fault"));
+        }
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        File::open(dir)?.sync_all()
+    }
+
+    fn skip_rollback(&self) -> bool {
+        #[cfg(test)]
+        return self.faults.no_rollback;
+        #[cfg(not(test))]
+        false
+    }
+}
+
+/// Failures injected into [`Store`] writes (tests only).
+#[cfg(test)]
+#[derive(Default)]
+struct Faults {
+    /// The next this many directory syncs fail.
+    dir_syncs: u32,
+    /// Undoing a change after a failed sync fails.
+    no_rollback: bool,
 }
 
 /// A strength as its shortest decimal, so the file reads `1.41`, not
@@ -269,6 +344,11 @@ pub fn parse(bytes: &[u8], tokenizer: Option<&Tokenizer>) -> Result<Dictionary, 
         if entry.text != text {
             return Err("has an entry that is not normalized");
         }
+        // Its identity key (without a tokenizer, control characters are
+        // caught here).
+        if !rules::valid_key(&entry.key()) {
+            return Err("has an invalid entry");
+        }
         if d.entries.iter().any(|e| e.key() == entry.key()) {
             return Err("has a repeated entry");
         }
@@ -283,8 +363,7 @@ pub fn parse(bytes: &[u8], tokenizer: Option<&Tokenizer>) -> Result<Dictionary, 
     }
     for k in ignore {
         let k = k.as_str().ok_or("has an invalid ignored word")?;
-        let canonical = rules::normalize(k).map(|t| fold(&t));
-        if canonical.as_deref() != Ok(k) {
+        if !rules::valid_key(k) {
             return Err("has an invalid ignored word");
         }
         if d.ignore.iter().any(|x| x == k) {
@@ -347,10 +426,9 @@ pub fn remove_stale_temporaries(dir: &Path) {
     }
 }
 
-/// Writes `bytes` to a new 0600 file next to `path`, syncs it, renames it
-/// over `path` and syncs the directory. A failed directory sync after the
-/// rename is only logged: the new file is in place either way.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Writes `bytes` to a new 0600 file next to `path`, syncs it and renames
+/// it over `path`. The caller syncs the directory.
+fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().ok_or("the dictionary path has no parent")?;
     let tmp = dir.join(format!(
@@ -374,9 +452,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
         return Err(format!("cannot write {}: {e}", path.display()));
-    }
-    if let Err(e) = File::open(dir).and_then(|d| d.sync_all()) {
-        crate::warn!("dictionary: cannot sync its directory: {e}");
     }
     Ok(())
 }
@@ -451,7 +526,9 @@ mod tests {
         assert_eq!(store.remove("absent"), Err(ChangeError::NotFound));
         assert_eq!(store.unignore("absent"), Err(ChangeError::NotFound));
         assert_eq!(store.remove("  "), Err(ChangeError::BadWord));
-        assert_eq!(store.ignore("12"), Err(ChangeError::BadWord));
+        // P6: any valid key may be ignored, but not more than 8 words.
+        assert_eq!(store.ignore("a b c d e f g h i"), Err(ChangeError::BadWord));
+        assert_eq!(store.ignore(" \t "), Err(ChangeError::BadWord));
     }
 
     #[test]
@@ -619,6 +696,87 @@ mod tests {
         assert_eq!(d.entries.len(), 1);
         assert_eq!(d.ignore, ["a b"]);
         assert!(read(&file(&s), Some(&synthetic_tokenizer())).is_err());
+    }
+
+    #[test]
+    fn a_failed_directory_sync_is_undone_and_refused() {
+        let t = TempDir::new("dict-dirsync");
+        let s = setting(&t);
+        let mut store = Store::open(&s).unwrap();
+
+        // The very first write: the new file is removed again.
+        store.faults.dir_syncs = 1;
+        assert_eq!(store.add("Synthetic", 1.0), Err(ChangeError::Storage));
+        assert!(store.snapshot().dictionary.entries.is_empty());
+        assert!(!file(&s).exists());
+
+        store.add("Synthetic", 1.0).unwrap();
+        let before = store.snapshot();
+        let saved = read(&file(&s), None).unwrap();
+
+        // Rename done, directory sync fails: the old file is put back.
+        store.faults.dir_syncs = 1;
+        assert_eq!(store.add("Other", 2.0), Err(ChangeError::Storage));
+        assert!(Arc::ptr_eq(&before, &store.snapshot()), "memory unchanged");
+        assert_eq!(read(&file(&s), None).unwrap(), saved, "disk as before");
+
+        // The sync after undoing fails too: the undo is still in place.
+        store.faults.dir_syncs = 2;
+        assert_eq!(store.remove("Synthetic"), Err(ChangeError::Storage));
+        assert!(Arc::ptr_eq(&before, &store.snapshot()));
+        assert_eq!(read(&file(&s), None).unwrap(), saved);
+        assert_eq!(fs::metadata(file(&s)).unwrap().mode() & 0o777, 0o600);
+
+        // Undoing fails: memory follows the file that remains, and the
+        // change is still refused.
+        store.faults.dir_syncs = 1;
+        store.faults.no_rollback = true;
+        assert_eq!(store.ignore("Other"), Err(ChangeError::Storage));
+        store.faults.no_rollback = false;
+        let after = store.snapshot();
+        assert!(after.revision != before.revision);
+        assert_eq!(after.dictionary, read(&file(&s), None).unwrap());
+        assert_eq!(after.dictionary.ignore, ["other"]);
+        // No temporary files are left behind.
+        assert_eq!(fs::read_dir(&s.dir).unwrap().count(), 1);
+        // And it all still loads.
+        assert_eq!(
+            Store::open(&s).unwrap().snapshot().dictionary,
+            after.dictionary
+        );
+    }
+
+    #[test]
+    fn expanded_keys_round_trip() {
+        // P6: fold("İ" + 99 × "a") has 101 scalars and is a valid key.
+        let t = TempDir::new("dict-keys");
+        let s = setting(&t);
+        let mut store = Store::open(&s).unwrap();
+        let word = format!("\u{130}{}", "a".repeat(99));
+        store.ignore(&word).unwrap();
+        let key = fold(&word);
+        assert_eq!(
+            store.snapshot().dictionary.ignore,
+            std::slice::from_ref(&key)
+        );
+        let reopened = Store::open(&s).unwrap();
+        assert_eq!(reopened.snapshot().dictionary.ignore, [key]);
+        // Keys a dictionary file may not hold.
+        for bad in ["NixOS", "a\\u0007b", "a b c d e f g h i", ""] {
+            write_file(
+                &s,
+                &format!("{{\"version\":1,\"entries\":[],\"ignore\":[\"{bad}\"]}}"),
+            );
+            assert!(Store::open(&s).is_err(), "{bad:?}");
+        }
+        write_file(
+            &s,
+            &format!(
+                "{{\"version\":1,\"entries\":[],\"ignore\":[\"{}\"]}}",
+                "a".repeat(301)
+            ),
+        );
+        assert!(Store::open(&s).is_err());
     }
 
     #[test]
