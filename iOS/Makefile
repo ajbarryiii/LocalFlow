@@ -58,8 +58,11 @@ HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
+# The Parakeet service refers to the custom-dictionary types (boosting and
+# correction). The iOS app compiles them but transcribes without a dictionary.
+DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift
-APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTATION_CORE_SOURCES)
+APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
 
 OBJ_DIR = $(BUILD_DIR)/obj

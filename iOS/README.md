@@ -39,7 +39,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
 Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
-`HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`) can be overridden, for
+`HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`, `DICTIONARY_SOURCES`) can be overridden, for
 example `make -C iOS check SHARED_SOURCES= HOSTCORE_SOURCES=`.
 
 ## Simulator
