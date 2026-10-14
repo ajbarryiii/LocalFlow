@@ -27,6 +27,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `CHANNEL` | `dev` | `appstore` presets the production identifiers, icon and a device build (see [App Store build](#app-store-build)) |
 | `PLATFORM` | `simulator` | `simulator` or `device` (arm64 only) |
 | `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | app ID; the keyboard is `$(BUNDLE_ID).keyboard` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | shared container for app and keyboard |
@@ -36,6 +37,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `PARAKEET_BUNDLE_DIR` | empty | model bundle to embed |
 | `BUILD_DIR` | `build/$(PLATFORM)` | output directory |
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
+| `BUILD_NUMBER` | empty | `CFBundleVersion` for both bundles; empty keeps the template's `1` |
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
 Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
@@ -203,6 +205,56 @@ Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
 | Neural Engine, later launches | 0.69 s | 0.040 s | 166 MB |
 | CPU only (self-test only) | 61 s | 0.52 s | 3.2 GB |
 
+## App Store build
+
+`CHANNEL=appstore` builds the production app: `com.ajbarryiii.localflow.ios`
+(keyboard `.keyboard`), App Group `group.com.ajbarryiii.localflow.ios`, URL
+scheme `localflow`, display name "LocalFlow" and the production icon, into
+`build/appstore/`. It always builds for the device, refuses the self-test
+variant, needs the model, and accepts only App Store distribution profiles.
+
+One-time setup in the Apple Developer account, on the Mac:
+
+1. Register the production App IDs and App Group, for example with the
+   signing helper above set to the production identifiers.
+2. Create an **Apple Distribution** certificate (Xcode → Settings → Accounts →
+   Manage Certificates) and an **App Store** provisioning profile for the app
+   and for the keyboard, each with the App Group.
+3. Create the app record in App Store Connect, and an App Store Connect API key
+   (Users and Access → Integrations) saved as
+   `~/.appstoreconnect/private_keys/AuthKey_<key id>.p8`. The key is a secret:
+   never copy it into the repository.
+
+Then, in Terminal.app (signing needs the unlocked keychain):
+
+```bash
+P="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+STORE=(CHANNEL=appstore CODESIGN_IDENTITY="Apple Distribution: Name (XXXXXXXXXX)" TEAM_ID=XXXXXXXXXX
+       APP_PROFILE="$P/<app-store-app-uuid>.mobileprovision" KEYBOARD_PROFILE="$P/<app-store-keyboard-uuid>.mobileprovision"
+       PARAKEET_BUNDLE_DIR=/path/to/bundle BUILD_NUMBER=<n>)
+make -C iOS ipa appstore-check "${STORE[@]}"          # build/appstore/LocalFlow.ipa, checked locally
+make -C iOS appstore-validate "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<issuer id>   # Apple's checks
+make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<issuer id>     # to App Store Connect
+```
+
+- `BUILD_NUMBER` must grow with every upload of the same version
+  (`CFBundleShortVersionString`, in `Config/*-Info.plist`).
+- `appstore-check` (`scripts/check-appstore-bundle.sh`) reads only the build,
+  and checks the app inside the `.ipa`. It checks:
+  - the identifiers and matching versions of both bundles, and a universal
+    keyboard
+  - the compiled, opaque 1024-pixel icon
+  - both privacy manifests, with only reasons Apple defines
+  - the Xcode build metadata and export compliance
+  - the model, and that no self-test code is present
+  - the distribution signature, and unexpired App Store profiles that
+    authorize the signing certificate
+  - the entitlements: no `get-task-allow`, `beta-reports-active` for
+    TestFlight, the App Group
+  - the `.ipa` layout
+- `appstore-validate` and `appstore-upload` send the `.ipa` to Apple. They run
+  `appstore-check` first, and nothing else ever runs them.
+
 ## Using the keyboard
 
 - **Dictation:** the top bar has the mic and stop button, a level meter,
@@ -255,3 +307,4 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Two-thumb rollover, including space, keeps typing order.
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
 - [ ] Haptics only with Full Access; VoiceOver labels; dark mode; landscape; SE-size layout.
+- [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.
