@@ -664,7 +664,8 @@ no Xcode project:
   keyboard is universal (1 and 2), because App Review requires every app
   extension to be universal whatever its app's family. On an iPad it runs
   natively, while the app runs in iPhone compatibility mode, so the keyboard's
-  iPad layout needs its own manual test.
+  iPad layout needs its own manual test. Both executables are arm64 only, so
+  both Info.plists require `arm64` in `UIRequiredDeviceCapabilities`.
 - **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
   cryptography is SHA-256 for model verification. Both Info.plists carry the
   toolchain keys Xcode would write, from `xcodebuild -version`, the SDK and the

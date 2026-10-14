@@ -326,7 +326,9 @@ endif
 ipa: all
 	@rm -rf "$(OBJ_DIR)/ipa" "$(IPA)" && mkdir -p "$(OBJ_DIR)/ipa/Payload"
 	@ditto "$(APP_BUNDLE)" "$(OBJ_DIR)/ipa/Payload/LocalFlow.app"
-	@ipa=$(call shell_quote,$(abspath $(IPA))); cd "$(OBJ_DIR)/ipa" && zip -qry -X "$$ipa" Payload
+	@# Made absolute in the shell, where a path with spaces stays one word.
+	@ipa=$(call shell_quote,$(IPA)); case "$$ipa" in /*) ;; *) ipa="$$PWD/$$ipa" ;; esac; \
+	mkdir -p "$$(dirname "$$ipa")" && cd "$(OBJ_DIR)/ipa" && zip -qry -X "$$ipa" Payload
 	@rm -rf "$(OBJ_DIR)/ipa"
 	@echo "Packaged $(IPA)"
 

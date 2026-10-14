@@ -49,8 +49,8 @@ if [ -n "$ipa" ]; then
     if [ ! -f "$ipa" ]; then
         fail "missing $ipa"
     elif unzip -Z1 "$ipa" > "$work/ipa.txt" 2>/dev/null; then
-        grep -qx 'Payload/LocalFlow.app/Info.plist' "$work/ipa.txt" || fail "ipa: Payload/LocalFlow.app/Info.plist is missing"
-        stray=$(grep -v '^Payload/LocalFlow.app/' "$work/ipa.txt" | grep -vx 'Payload/' | head -3)
+        grep -Fqx 'Payload/LocalFlow.app/Info.plist' "$work/ipa.txt" || fail "ipa: Payload/LocalFlow.app/Info.plist is missing"
+        stray=$(grep -v '^Payload/LocalFlow\.app/' "$work/ipa.txt" | grep -Fvx 'Payload/' | head -3)
         [ -z "$stray" ] || fail "ipa: unexpected entries: $stray"
         if mkdir "$work/ipa" && unzip -q "$ipa" -d "$work/ipa" && [ -d "$work/ipa/Payload/LocalFlow.app" ]; then
             cmp -s "$app/LocalFlow" "$work/ipa/Payload/LocalFlow.app/LocalFlow" || fail "ipa: it holds a different build than $app"
@@ -66,8 +66,11 @@ appex="$app/PlugIns/LocalFlowKeyboard.appex"
 
 # A scalar at a plutil key path, or empty if absent.
 value() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
-# A value at a key path as compact JSON, or empty if absent.
+# A collection at a key path as compact JSON, or empty if absent (plutil cannot
+# write a scalar as JSON).
 json() { plutil -extract "$2" json -o - "$1" 2>/dev/null; }
+# The type at a key path (string, array, dictionary, ...), or empty if absent.
+kind() { plutil -type "$2" "$1" 2>/dev/null; }
 
 # A key path for messages, without the escapes of dotted keys.
 shown() { printf '%s' "$1" | tr -d '\\'; }
@@ -111,6 +114,7 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
         done
         expect "$plist" DTPlatformName iphoneos "$what"
         expect_json "$plist" CFBundleSupportedPlatforms '["iPhoneOS"]' "$what"
+        expect_json "$plist" UIRequiredDeviceCapabilities '["arm64"]' "$what"
         expect "$plist" LocalFlowAppGroupIdentifier "$app_group" "$what"
         expect "$plist" LocalFlowURLScheme "$url_scheme" "$what"
     done
@@ -168,20 +172,34 @@ for target in app keyboard; do
     expect "$manifest" NSPrivacyTracking false "$target privacy manifest"
     expect_json "$manifest" NSPrivacyTrackingDomains '[]' "$target privacy manifest"
     expect_json "$manifest" NSPrivacyCollectedDataTypes '[]' "$target privacy manifest"
+    # Every element is visited by index (the type is empty only past the end),
+    # and every reason must be a string equal to one approved code.
     declared= index=0
-    while type=$(value "$manifest" "NSPrivacyAccessedAPITypes.$index.NSPrivacyAccessedAPIType") && [ -n "$type" ]; do
+    [ "$(kind "$manifest" NSPrivacyAccessedAPITypes)" = array ] ||
+        fail "$target privacy manifest: NSPrivacyAccessedAPITypes is not an array"
+    while entry=$(kind "$manifest" "NSPrivacyAccessedAPITypes.$index") && [ -n "$entry" ]; do
+        base="NSPrivacyAccessedAPITypes.$index"
+        [ "$entry" = dictionary ] || fail "$target privacy manifest: entry $index is a $entry, not a dictionary"
+        type=$(value "$manifest" "$base.NSPrivacyAccessedAPIType")
         approved=$(approved_reasons "$type")
-        [ -n "$approved" ] || fail "$target privacy manifest: unknown category $type"
+        [ -n "$approved" ] || fail "$target privacy manifest: entry $index has an unknown category '$type'"
+        [ "$(kind "$manifest" "$base.NSPrivacyAccessedAPITypeReasons")" = array ] ||
+            fail "$target privacy manifest: entry $index has no reasons array"
         reasons=0
-        while reason=$(value "$manifest" "NSPrivacyAccessedAPITypes.$index.NSPrivacyAccessedAPITypeReasons.$reasons") &&
-            [ -n "$reason" ]; do
-            case " $approved " in
-                *" $reason "*) declared="$declared ${type#NSPrivacyAccessedAPICategory}:$reason" ;;
-                *) [ -z "$approved" ] || fail "$target privacy manifest: $reason is not a reason Apple defines for $type" ;;
-            esac
+        while item=$(kind "$manifest" "$base.NSPrivacyAccessedAPITypeReasons.$reasons") && [ -n "$item" ]; do
+            reason=$(value "$manifest" "$base.NSPrivacyAccessedAPITypeReasons.$reasons")
+            matched=
+            if [ "$item" = string ]; then
+                for code in $approved; do [ "$reason" = "$code" ] && matched=yes; done
+            fi
+            if [ -n "$matched" ]; then
+                declared="$declared ${type#NSPrivacyAccessedAPICategory}:$reason"
+            elif [ -n "$approved" ]; then
+                fail "$target privacy manifest: '$reason' ($item) is not a reason Apple defines for $type"
+            fi
             reasons=$((reasons + 1))
         done
-        [ "$reasons" -gt 0 ] || fail "$target privacy manifest: $type has no reason"
+        [ "$reasons" -gt 0 ] || fail "$target privacy manifest: entry $index ($type) has no reason"
         index=$((index + 1))
     done
     if [ "$target" = app ]; then
