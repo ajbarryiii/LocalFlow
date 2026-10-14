@@ -1539,7 +1539,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             do {
                 try self.audioRecorder.startRecording(deviceUID: deviceUID, ticket: captureTicket)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [self] in
                     guard self.recordingAttempts.isCurrent(attempt), self.isRecording,
                           self.activeRecordingTriggerMode != nil else { return }
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
