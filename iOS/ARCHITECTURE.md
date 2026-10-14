@@ -138,6 +138,11 @@ keyboard:
   - injectable compute units (default unchanged)
   - streaming SHA-256 verification, so loading never reads a whole 330 MB file
     into memory
+- `Sources/Dictionary/*.swift`: the macOS custom-dictionary types (boosting
+  and correction), compiled only because the Parakeet service refers to them.
+  The iOS app transcribes through `transcribe(samples:directory:)` with no
+  dictionary: nothing is boosted, no dictionary is read or stored, and no
+  audio is retained for correction.
 - `Sources/LocalDictationCore.swift`: deterministic "press enter" and spoken
   delimiter formatting.
 
