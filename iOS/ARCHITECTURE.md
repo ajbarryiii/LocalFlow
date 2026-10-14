@@ -660,6 +660,11 @@ no Xcode project:
   (0.1.0), the same for app and keyboard as App Store Connect requires.
   `BUILD_NUMBER` sets `CFBundleVersion` for both, since it must grow with each
   upload.
+- **Device family.** The app stays iPhone-only (`UIDeviceFamily` 1). The
+  keyboard is universal (1 and 2), because App Review requires every app
+  extension to be universal whatever its app's family. On an iPad it runs
+  natively, while the app runs in iPhone compatibility mode, so the keyboard's
+  iPad layout needs its own manual test.
 - **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
   cryptography is SHA-256 for model verification. Both Info.plists carry the
   toolchain keys Xcode would write, from `xcodebuild -version`, the SDK and the
@@ -676,11 +681,15 @@ no Xcode project:
   - System boot time, `35F9.1`: elapsed-time measurement.
   - File timestamps, `C617.1`: expiring the App Group's dictation files.
 
-  A new use of a required-reason API must be added to the manifest.
+  A new use of a required-reason API must be added to the manifest and to the
+  checker's required reasons. The checker accepts only the reasons Apple
+  defines for each category.
 - **Packaging.** `make ipa` zips exactly the signed app under `Payload/`.
-  `make appstore-check` runs `scripts/check-appstore-bundle.sh` against the app
-  and `.ipa`. That script is the packaging contract: it reads only the build
-  and lists every failure. `appstore-validate` and `appstore-upload` run
+  `make appstore-check` runs `scripts/check-appstore-bundle.sh` on the app
+  inside the `.ipa`, which is what Apple receives. That script is the packaging
+  contract: it reads only the build and lists every failure. It also checks
+  that each embedded profile is an unexpired App Store profile of the team that
+  authorizes the signing certificate and grants the signed entitlements. `appstore-validate` and `appstore-upload` run
   `xcrun altool` with an App Store Connect API key, never stored in the
   repository. They are the only targets that contact Apple, and no other
   target runs them.

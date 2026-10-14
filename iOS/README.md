@@ -239,13 +239,19 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
 
 - `BUILD_NUMBER` must grow with every upload of the same version
   (`CFBundleShortVersionString`, in `Config/*-Info.plist`).
-- `appstore-check` (`scripts/check-appstore-bundle.sh`) reads only the build.
-  It checks the identifiers and matching versions of both bundles, the
-  compiled 1024-pixel icon, both privacy manifests, the Xcode build metadata,
-  export compliance, the model, that no self-test code is present, the
-  distribution signature, App Store profiles and entitlements (no
-  `get-task-allow`, `beta-reports-active` for TestFlight), and the `.ipa`
-  layout.
+- `appstore-check` (`scripts/check-appstore-bundle.sh`) reads only the build,
+  and checks the app inside the `.ipa`. It checks:
+  - the identifiers and matching versions of both bundles, and a universal
+    keyboard
+  - the compiled, opaque 1024-pixel icon
+  - both privacy manifests, with only reasons Apple defines
+  - the Xcode build metadata and export compliance
+  - the model, and that no self-test code is present
+  - the distribution signature, and unexpired App Store profiles that
+    authorize the signing certificate
+  - the entitlements: no `get-task-allow`, `beta-reports-active` for
+    TestFlight, the App Group
+  - the `.ipa` layout
 - `appstore-validate` and `appstore-upload` send the `.ipa` to Apple. They run
   `appstore-check` first, and nothing else ever runs them.
 
@@ -301,3 +307,4 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Two-thumb rollover, including space, keeps typing order.
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
 - [ ] Haptics only with Full Access; VoiceOver labels; dark mode; landscape; SE-size layout.
+- [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.

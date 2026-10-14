@@ -7,7 +7,9 @@
 #
 # Usage: check-appstore-bundle.sh --app PATH --bundle-id ID --app-group GROUP
 #          --url-scheme SCHEME --display-name NAME --team-id TEAM [--ipa PATH]
-# Prints every failure and exits 1 if there is any.
+# With --ipa, every check runs on the app inside the .ipa, which is what Apple
+# receives; it must hold the same build as --app. Prints every failure and
+# exits 1 if there is any.
 set -u
 
 app= bundle_id= app_group= url_scheme= display_name= team_id= ipa=
@@ -29,8 +31,8 @@ for required in app bundle_id app_group url_scheme display_name team_id; do
     [ -n "$value" ] || { echo "Missing --$(echo "$required" | tr _ -)" >&2; exit 2; }
 done
 [ -d "$app" ] || { echo "Not a directory: $app" >&2; exit 2; }
+built=$app
 
-appex="$app/PlugIns/LocalFlowKeyboard.appex"
 work=$(mktemp -d "${TMPDIR:-/tmp}/localflow-appstore-check.XXXXXX") || exit 2
 trap 'rm -rf "$work"' EXIT
 failures=0
@@ -39,6 +41,28 @@ fail() {
     echo "FAIL: $*"
     failures=$((failures + 1))
 }
+
+# The .ipa: exactly the app under Payload/. The checks below then run on its
+# copy of the app, so a damaged archive cannot pass on the strength of the
+# loose build.
+if [ -n "$ipa" ]; then
+    if [ ! -f "$ipa" ]; then
+        fail "missing $ipa"
+    elif unzip -Z1 "$ipa" > "$work/ipa.txt" 2>/dev/null; then
+        grep -qx 'Payload/LocalFlow.app/Info.plist' "$work/ipa.txt" || fail "ipa: Payload/LocalFlow.app/Info.plist is missing"
+        stray=$(grep -v '^Payload/LocalFlow.app/' "$work/ipa.txt" | grep -vx 'Payload/' | head -3)
+        [ -z "$stray" ] || fail "ipa: unexpected entries: $stray"
+        if mkdir "$work/ipa" && unzip -q "$ipa" -d "$work/ipa" && [ -d "$work/ipa/Payload/LocalFlow.app" ]; then
+            cmp -s "$app/LocalFlow" "$work/ipa/Payload/LocalFlow.app/LocalFlow" || fail "ipa: it holds a different build than $app"
+            app="$work/ipa/Payload/LocalFlow.app"
+        else
+            fail "ipa: cannot extract Payload/LocalFlow.app"
+        fi
+    else
+        fail "ipa: not a readable zip archive"
+    fi
+fi
+appex="$app/PlugIns/LocalFlowKeyboard.appex"
 
 # A scalar at a plutil key path, or empty if absent.
 value() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
@@ -96,6 +120,8 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
     [ -n "$(value "$app_plist" NSMicrophoneUsageDescription)" ] || fail "app: NSMicrophoneUsageDescription is missing"
     expect_json "$app_plist" CFBundleURLTypes.0.CFBundleURLSchemes "[\"$url_scheme\"]" app
     expect "$keyboard_plist" NSExtension.NSExtensionAttributes.RequestsOpenAccess true keyboard
+    # App Review requires every extension to be universal, whatever the app's family.
+    expect_json "$keyboard_plist" UIDeviceFamily '[1,2]' keyboard
 
     # The icon comes from a compiled asset catalog, as App Store Connect requires.
     expect "$app_plist" CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName AppIcon app
@@ -120,8 +146,18 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
     fi
 fi
 
-# Privacy manifests: no tracking, no collected data, a reason for every
-# required-reason API category the code uses.
+# Privacy manifests: no tracking, no collected data, only reasons Apple defines
+# for each category, and the reasons ARCHITECTURE.md records for what the code
+# uses (a new use needs both the manifest and this list).
+approved_reasons() {
+    case "$1" in
+        NSPrivacyAccessedAPICategoryUserDefaults) echo "CA92.1 1C8F.1 C56D.1 AC6B.1" ;;
+        NSPrivacyAccessedAPICategorySystemBootTime) echo "35F9.1 8FFB.1 3D61.1" ;;
+        NSPrivacyAccessedAPICategoryFileTimestamp) echo "DDA9.1 C617.1 3B52.1 0A2A.1" ;;
+        NSPrivacyAccessedAPICategoryDiskSpace) echo "85F4.1 E174.1 7D9E.1 B728.1" ;;
+        NSPrivacyAccessedAPICategoryActiveKeyboards) echo "3EC4.1 54BD.1" ;;
+    esac
+}
 for target in app keyboard; do
     if [ "$target" = app ]; then manifest="$app/PrivacyInfo.xcprivacy"; else manifest="$appex/PrivacyInfo.xcprivacy"; fi
     if [ ! -f "$manifest" ]; then
@@ -134,14 +170,29 @@ for target in app keyboard; do
     expect_json "$manifest" NSPrivacyCollectedDataTypes '[]' "$target privacy manifest"
     declared= index=0
     while type=$(value "$manifest" "NSPrivacyAccessedAPITypes.$index.NSPrivacyAccessedAPIType") && [ -n "$type" ]; do
-        reason=$(value "$manifest" "NSPrivacyAccessedAPITypes.$index.NSPrivacyAccessedAPITypeReasons.0")
-        if echo "$reason" | grep -Eqx '[0-9A-F]{4}\.[0-9]'; then declared="$declared $type"; fi
+        approved=$(approved_reasons "$type")
+        [ -n "$approved" ] || fail "$target privacy manifest: unknown category $type"
+        reasons=0
+        while reason=$(value "$manifest" "NSPrivacyAccessedAPITypes.$index.NSPrivacyAccessedAPITypeReasons.$reasons") &&
+            [ -n "$reason" ]; do
+            case " $approved " in
+                *" $reason "*) declared="$declared ${type#NSPrivacyAccessedAPICategory}:$reason" ;;
+                *) [ -z "$approved" ] || fail "$target privacy manifest: $reason is not a reason Apple defines for $type" ;;
+            esac
+            reasons=$((reasons + 1))
+        done
+        [ "$reasons" -gt 0 ] || fail "$target privacy manifest: $type has no reason"
         index=$((index + 1))
     done
-    for category in UserDefaults SystemBootTime FileTimestamp; do
+    if [ "$target" = app ]; then
+        required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
+    else
+        required="UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
+    fi
+    for pair in $required; do
         case "$declared " in
-            *" NSPrivacyAccessedAPICategory$category "*) ;;
-            *) fail "$target privacy manifest: no reason declared for NSPrivacyAccessedAPICategory$category" ;;
+            *" $pair "*) ;;
+            *) fail "$target privacy manifest: missing reason ${pair#*:} for NSPrivacyAccessedAPICategory${pair%%:*}" ;;
         esac
     done
 done
@@ -186,28 +237,37 @@ for bundle in "$app" "$appex"; do
         [ "$(value "$profile" ProvisionsAllDevices)" != true ] || fail "$what: the provisioning profile is an enterprise profile"
         [ "$(value "$profile" Entitlements.get-task-allow)" != true ] || fail "$what: the provisioning profile allows debugging"
         expect "$profile" Entitlements.application-identifier "$team_id.$id" "$what profile"
+        expect "$profile" TeamIdentifier.0 "$team_id" "$what profile"
+        expect "$profile" Entitlements.beta-reports-active true "$what profile"
+        json "$profile" Entitlements.com\\.apple\\.security\\.application-groups | tr -d '[]' | tr ',' '\n' |
+            grep -Fqx "\"$app_group\"" || fail "$what profile: it does not grant App Group $app_group"
+        # ISO 8601 UTC strings compare in date order.
+        expires=$(value "$profile" ExpirationDate)
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        if [ -z "$expires" ] || [ "$(printf '%s\n%s\n' "$now" "$expires" | LC_ALL=C sort | tail -1)" != "$expires" ] ||
+            [ "$expires" = "$now" ]; then
+            fail "$what profile: expired or without an expiration date ('$expires')"
+        fi
+        # The signing certificate must be one the profile authorizes.
+        if codesign -d --extract-certificates="$work/$what-certificate" "$bundle" 2>/dev/null &&
+            [ -s "$work/$what-certificate0" ]; then
+            leaf=$(base64 < "$work/$what-certificate0" | tr -d '\n')
+            authorized= index=0
+            while certificate=$(value "$profile" "DeveloperCertificates.$index") && [ -n "$certificate" ]; do
+                [ "$(printf '%s' "$certificate" | tr -d '\n')" = "$leaf" ] && authorized=yes
+                index=$((index + 1))
+            done
+            [ -n "$authorized" ] || fail "$what: its signing certificate is not one the provisioning profile authorizes"
+        else
+            fail "$what: cannot read its signing certificate"
+        fi
     else
         fail "$what: cannot decode embedded.mobileprovision"
     fi
 done
 
-# The .ipa: exactly the app under Payload/, nothing else.
-if [ -n "$ipa" ]; then
-    if [ ! -f "$ipa" ]; then
-        fail "missing $ipa"
-    elif unzip -Z1 "$ipa" > "$work/ipa.txt" 2>/dev/null; then
-        grep -qx 'Payload/LocalFlow.app/Info.plist' "$work/ipa.txt" || fail "ipa: Payload/LocalFlow.app/Info.plist is missing"
-        stray=$(grep -v '^Payload/LocalFlow.app/' "$work/ipa.txt" | grep -vx 'Payload/' | head -3)
-        [ -z "$stray" ] || fail "ipa: unexpected entries: $stray"
-        mkdir "$work/ipa" && unzip -q "$ipa" -d "$work/ipa" &&
-            cmp -s "$app/LocalFlow" "$work/ipa/Payload/LocalFlow.app/LocalFlow" || fail "ipa: its app binary differs from $app"
-    else
-        fail "ipa: not a readable zip archive"
-    fi
-fi
-
 if [ "$failures" -gt 0 ]; then
     echo "$failures App Store bundle check(s) failed."
     exit 1
 fi
-echo "App Store bundle checks passed: $app${ipa:+ and $ipa}"
+echo "App Store bundle checks passed: ${ipa:-$built}"

@@ -171,7 +171,7 @@ all: signing-requirements $(APP_SIGNATURE)
 binaries: $(APP_BINARY) $(KEYBOARD_BINARY)
 
 # Rebuild when identifiers, flags, signing inputs or source lists change.
-CONFIGURATION = $(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
+CONFIGURATION = $(CHANNEL)|$(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
 configuration:
 	@mkdir -p "$(OBJ_DIR)"
 	@printf '%s\n' "$(CONFIGURATION)" > "$(CONFIG_STAMP).tmp"
@@ -233,11 +233,14 @@ ifeq ($(PLATFORM),device)
 		/usr/libexec/PlistBuddy -c "Add :beta-reports-active bool true" "$@.tmp"; \
 	fi
 ifeq ($(CHANNEL),appstore)
-	@# An App Store profile lists no devices and never allows debugging.
+	@# An App Store profile lists no devices, is not an enterprise profile, never
+	@# allows debugging, and allows TestFlight (beta-reports-active).
 	@profile="$@.profile.plist"; trap 'rm -f "$$profile"' EXIT; \
 	security cms -D -i "$(ENTITLED_PROFILE)" > "$$profile" 2>/dev/null; \
 	if /usr/libexec/PlistBuddy -c "Print :ProvisionedDevices" "$$profile" >/dev/null 2>&1 || \
-		[ "$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$$profile" 2>/dev/null)" = true ]; then \
+		[ "$$(/usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$$profile" 2>/dev/null)" = true ] || \
+		[ "$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$$profile" 2>/dev/null)" = true ] || \
+		[ "$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:beta-reports-active" "$$profile" 2>/dev/null)" != true ]; then \
 		echo "$(ENTITLED_PROFILE) is not an App Store distribution profile." >&2; exit 1; \
 	fi
 endif
@@ -328,8 +331,9 @@ ipa: all
 	@echo "Packaged $(IPA)"
 
 # What App Store Connect needs, checked locally from the built app and .ipa
-# (scripts/check-appstore-bundle.sh); it never contacts Apple.
-appstore-check:
+# (scripts/check-appstore-bundle.sh); it never contacts Apple. Asked for with
+# ipa, it waits for the package, also under -j.
+appstore-check: $(filter ipa,$(MAKECMDGOALS))
 	@sh scripts/check-appstore-bundle.sh --app "$(APP_BUNDLE)" --ipa "$(IPA)" --bundle-id "$(BUNDLE_ID)" \
 		--app-group "$(APP_GROUP)" --url-scheme "$(URL_SCHEME)" --display-name "$(DISPLAY_NAME)" --team-id "$(TEAM_ID)"
 
