@@ -76,8 +76,14 @@ this change a lock ended the session.
 - **Idle expiry still applies.** The countdown is unchanged: it runs from the
   end of the last dictation (or the session start) and restarts with each
   dictation, never from the lock. A locked session ends at
-  `idleSince + sessionDuration` like any other. Interruptions, unrecoverable
-  engine failures and End session also still end it.
+  `idleSince + sessionDuration` like any other. Expiry is checked on every
+  tick and before every reconciliation, so a request read after the deadline
+  (as after a resume) never joins the expired session. Interruptions,
+  unrecoverable engine failures and End session also still end it.
+- **Capture recovery while locked** rebuilds the engine within the running
+  audio session (`restart()`), as in the background, even if the app still
+  reads as foreground during the lock window. The audio session is never
+  reactivated while locked.
 - **Locked means no dictation.** The lock notification latches a locked
   state. While locked, no intent is admitted and no session, pending capture
   or dictation starts, even if the intent file is still readable: iOS posts

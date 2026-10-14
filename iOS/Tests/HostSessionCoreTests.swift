@@ -1399,6 +1399,8 @@ enum HostSessionLockTests {
             ("lockCancelsTranscriptionButKeepsTheSession", isolated(testLockCancelsTranscriptionButKeepsTheSession)),
             ("idleExpiryEndsALockedSession", isolated(testIdleExpiryEndsALockedSession)),
             ("countdownRestartsFromTheLastDictation", isolated(testCountdownRestartsFromTheLastDictation)),
+            ("expiredSessionAdmitsNothingAfterUnlock", isolated(testExpiredSessionAdmitsNothingAfterUnlock)),
+            ("bounceAfterTheDeadlineStartsANewSession", isolated(testBounceAfterTheDeadlineStartsANewSession)),
             ("otherEndReasonsStillEndALockedSession", isolated(testOtherEndReasonsStillEndALockedSession)),
             ("neverStartsASessionInTheBackground", isolated(testNeverStartsASessionInTheBackground)),
             ("unlockAdmitsTheNextIntentWithoutARestart", isolated(testUnlockAdmitsTheNextIntentWithoutARestart)),
@@ -1471,6 +1473,7 @@ enum HostSessionLockTests {
         TestSupport.expectEqual(h.core.sessionID, sessionID)
         TestSupport.expectEqual(h.capture.isRunning, true)
         TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.restartCount, 0)
         // The cancelled dictation ended at the lock: idle from there.
         TestSupport.expectEqual(h.status?.sessionExpiresAt, h.clock.now + 300)
     }
@@ -1481,6 +1484,7 @@ enum HostSessionLockTests {
         defer { h.cleanup() }
         h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
+        let sessionID = h.core.sessionID
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
         h.completeTail()
@@ -1490,12 +1494,23 @@ enum HostSessionLockTests {
         TestSupport.expectEqual(h.status?.dictation?.error, .deviceLocked)
         TestSupport.expectEqual(h.background.ended, 1)
         TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
         TestSupport.expectEqual(h.status?.error, nil)
         TestSupport.expectEqual(h.capture.isRunning, true)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.restartCount, 0)
         h.transcriber.complete(.success("late words"))
         _ = TestSupport.waitUntil(timeout: 0.2) { false }
         TestSupport.expectEqual(h.store.readResult(requestID: R), .absent)
         TestSupport.expectEqual(h.core.current?.phase, .cancelled)
+
+        // After the unlock, the next dictation runs in the same session and capture.
+        h.core.deviceDidUnlock()
+        h.clock.now += 1
+        h.record(S)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.restartCount, 0)
     }
 
     /// Locked in the background, ticking every minute: the session ends at `idleSince + duration`.
@@ -1554,6 +1569,50 @@ enum HostSessionLockTests {
         TestSupport.expectEqual(h.core.session, .inactive)
         TestSupport.expectEqual(h.status?.error, nil)
         TestSupport.expectEqual(h.capture.isRunning, false)
+    }
+
+    /// Past the deadline with no tick in between (a resume): the intent signal after the unlock finds the
+    /// session expired, so the background request is not admitted into it.
+    @MainActor
+    private static func testExpiredSessionAdmitsNothingAfterUnlock() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        backgroundSession(h)
+        h.core.deviceWillLock()
+        h.clock.now = Fixture.now + 300 + 1
+        h.core.deviceDidUnlock()
+        try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
+        h.writeIntent(.record, S)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, nil)
+        TestSupport.expectEqual(h.capture.isRunning, false)
+        TestSupport.expect(h.core.current?.phase != .starting && h.core.current?.phase != .recording, "admitted")
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+    }
+
+    /// The bounce after the deadline with no tick in between: the expired session ends first, and the
+    /// request starts a new one in the foreground.
+    @MainActor
+    private static func testBounceAfterTheDeadlineStartsANewSession() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        backgroundSession(h)
+        let sessionID = h.core.sessionID
+        h.core.deviceWillLock()
+        h.clock.protectedDataAvailable = false
+        h.clock.now = Fixture.now + 300 + 1
+        h.clock.protectedDataAvailable = true
+        h.writeIntent(.record, R)
+        h.core.appWillEnterForeground()
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        h.deliver()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .recording }, "not recording")
+        TestSupport.expectEqual(h.core.current?.requestID, R)
+        TestSupport.expect(h.core.sessionID != nil && h.core.sessionID != sessionID, "admitted into the expired session")
+        TestSupport.expectEqual(h.capture.startCount, 2)
     }
 
     /// An interruption, an engine that cannot be restarted and End session still end a locked session.
@@ -1631,6 +1690,7 @@ enum HostSessionLockLatchTests {
             ("delayedIntentAfterLockIsRefused", isolated(testDelayedIntentAfterLockIsRefused)),
             ("latchHoldsAcrossPollingAndTicks", isolated(testLatchHoldsAcrossPollingAndTicks)),
             ("lockWindowTicksAndPollsKeepTheLatch", isolated(testLockWindowTicksAndPollsKeepTheLatch)),
+            ("captureRecoveryWhileLockedActivatesNothing", isolated(testCaptureRecoveryWhileLockedActivatesNothing)),
             ("intentsAfterUnlockAreAdmitted", isolated(testIntentsAfterUnlockAreAdmitted)),
             ("unreadIntentGetsOnlyTheFreshnessCheck", isolated(testUnreadIntentGetsOnlyTheFreshnessCheck)),
             ("unreadablePollingWhileLockedThenUnlock", isolated(testUnreadablePollingWhileLockedThenUnlock)),
@@ -1743,6 +1803,23 @@ enum HostSessionLockLatchTests {
             TestSupport.expect(h.core.isLocked, "step \(step): the latch was cleared")
             expectNotRecording(h, request, "step \(step)")
         }
+    }
+
+    /// An engine failure recovered during the lock window, with the app still in front: the engine is rebuilt
+    /// within the running audio session, which is never reactivated while locked.
+    @MainActor
+    private static func testCaptureRecoveryWhileLockedActivatesNothing() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.userStartSession()
+        h.core.deviceWillLock()
+        TestSupport.expect(h.clock.isForeground, "the window")
+        h.core.captureFailed(generation: h.capture.engineGeneration)
+        h.clock.now += HostSessionPolicy.captureStallGrace + 0.001
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.restartCount, 1)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.core.session, .active)
     }
 
     /// After unlock, a new intent is admitted into the same session at once.

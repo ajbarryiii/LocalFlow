@@ -155,10 +155,7 @@ final class HostSessionCore {
             drainClosing(now)   // the tail never arrived (a stalled engine): transcribe what did
         }
         if pendingStart != nil, !slot.isInProgress { endSession(.startFailed(.audioSessionFailed), now) }
-        if session == .active, !slot.isInProgress,
-           HostSessionPolicy.isIdleExpired(idleSince: idleSince, duration: settings.sessionDuration, now: now) {
-            endSession(.idleExpired, now)
-        }
+        endSessionIfIdleExpired(now)
         releaseModelIfPending()
         let live = session != .inactive || foreground || slot.isInProgress
         if session != .inactive || foreground,
@@ -327,6 +324,8 @@ final class HostSessionCore {
 
     private func reconcilePass(_ trigger: ReconcileTrigger, _ now: Date) {
         lastReconcileAt = now
+        // A request read past the deadline (no tick since, as after a resume) never joins the expired session.
+        endSessionIfIdleExpired(now)
         guard let isForeground = HostSessionPolicy.reconcileForeground(
             trigger: trigger, isForeground: environment.isForeground(), hasBeenForeground: hasBeenForeground) else { return }
         let intent = store.readIntent()
@@ -514,9 +513,9 @@ final class HostSessionCore {
         needsPublish = true
     }
 
-    /// While the audio session is active the engine may be rebuilt even in the background: `restart()`
-    /// never activates anything. In the foreground a full start also reconfigures the audio session. The
-    /// session ends if that fails, or if recoveries keep producing no input.
+    /// While the audio session is active the engine may be rebuilt even in the background or locked:
+    /// `restart()` never activates anything. In the foreground, unlocked, a full start also reconfigures
+    /// the audio session. The session ends if that fails, or if recoveries keep producing no input.
     private func recoverCapture(_ now: Date) {
         guard session == .active else { return }
         captureFailingSince = nil
@@ -525,7 +524,7 @@ final class HostSessionCore {
             return
         }
         do {
-            if environment.isForeground() {
+            if environment.isForeground(), !isLocked {
                 capture.stop()
                 try capture.start()
             } else {
@@ -656,6 +655,12 @@ final class HostSessionCore {
         recoveriesWithoutInput = 0
         if !slot.isInProgress { idleSince = now }
         needsPublish = true
+    }
+
+    private func endSessionIfIdleExpired(_ now: Date) {
+        guard session == .active, !slot.isInProgress,
+              HostSessionPolicy.isIdleExpired(idleSince: idleSince, duration: settings.sessionDuration, now: now) else { return }
+        endSession(.idleExpired, now)
     }
 
     private func endSession(_ reason: SessionEndReason, _ now: Date) {
