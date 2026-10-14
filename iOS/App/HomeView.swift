@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum HomeRoute: Hashable {
-    case tryIt, keyboardSetup, diagnostics
+    case tryIt, keyboardSetup, diagnostics, reportBug
 }
 
 struct HomeView: View {
@@ -67,6 +67,10 @@ struct HomeView: View {
                         RowLabel(title: "Diagnostics", detail: "Measurements and cursor tuning", symbol: "gauge.with.dots.needle.67percent")
                     }
                     .accessibilityIdentifier("home.diagnostics")
+                    NavigationLink(value: HomeRoute.reportBug) {
+                        RowLabel(title: "Report a bug", detail: "Send feedback by email", symbol: "envelope")
+                    }
+                    .accessibilityIdentifier("home.reportBug")
                 } footer: {
                     Text("LocalFlow \(AppIdentity.version) · Nothing you say leaves this iPhone.")
                         .frame(maxWidth: .infinity)
@@ -80,6 +84,7 @@ struct HomeView: View {
                 case .tryIt: TryItView()
                 case .keyboardSetup: KeyboardSetupScreen()
                 case .diagnostics: DiagnosticsView(transcriber: transcriber)
+                case .reportBug: ReportBugView(recipient: "localflow@wildernesslabs.ai")
                 }
             }
         }
