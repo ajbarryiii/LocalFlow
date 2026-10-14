@@ -4,6 +4,7 @@ import Foundation
 struct LocalFlowIOSTests {
     static func main() {
         let suites: [(String, [TestCase])] = [
+            ("BugReportEmail", BugReportEmailTests.tests),
             ("LocalFlowConfiguration", LocalFlowConfigurationTests.tests),
             ("DictationProtocol", DictationProtocolTests.tests),
             ("SharedDictationStore", SharedDictationStoreTests.tests),

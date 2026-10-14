@@ -228,7 +228,7 @@ final class RecordingOverlayManager {
             let cutoff = message.index(message.startIndex, offsetBy: Self.maxToastMessageLength - 1)
             return String(message[..<cutoff]) + "…"
         }()
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [self] in
             self.preemptSuggestion()
             let toastID = UUID()
             self.overlayState.errorMessage = truncated
@@ -275,7 +275,7 @@ final class RecordingOverlayManager {
     func showDictionarySuggestion(_ suggestion: DictionarySuggestion) {
         dispatchPrecondition(condition: .onQueue(.main))
         let requested = overlayState.suggestionGate.withdrawals
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [self] in
             guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion,
                   let id = self.overlayState.suggestionGate.present(suggestion, requestedAt: requested) else { return }
             self.lockedOverlayWidth = nil
