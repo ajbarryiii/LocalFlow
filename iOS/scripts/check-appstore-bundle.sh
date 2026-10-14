@@ -53,7 +53,9 @@ if [ -n "$ipa" ]; then
         stray=$(grep -v '^Payload/LocalFlow\.app/' "$work/ipa.txt" | grep -Fvx 'Payload/' | head -3)
         [ -z "$stray" ] || fail "ipa: unexpected entries: $stray"
         if mkdir "$work/ipa" && unzip -q "$ipa" -d "$work/ipa" && [ -d "$work/ipa/Payload/LocalFlow.app" ]; then
-            cmp -s "$app/LocalFlow" "$work/ipa/Payload/LocalFlow.app/LocalFlow" || fail "ipa: it holds a different build than $app"
+            # Every file, the keyboard, resources and signatures included.
+            diff -rq "$app" "$work/ipa/Payload/LocalFlow.app" > "$work/ipa-diff.txt" 2>&1 ||
+                fail "ipa: it holds a different build than $app ($(head -1 "$work/ipa-diff.txt"))"
             app="$work/ipa/Payload/LocalFlow.app"
         else
             fail "ipa: cannot extract Payload/LocalFlow.app"
@@ -78,6 +80,15 @@ shown() { printf '%s' "$1" | tr -d '\\'; }
 expect() {   # file keypath expected what
     actual=$(value "$1" "$2")
     [ "$actual" = "$3" ] || fail "$4: $(shown "$2") is '$actual', expected '$3'"
+}
+
+expect_bool() {   # file keypath true|false what: a Boolean, not a string that reads the same
+    actual_kind=$(kind "$1" "$2")
+    if [ "$actual_kind" != bool ]; then
+        fail "$4: $(shown "$2") is ${actual_kind:-missing}, expected the Boolean $3"
+    else
+        expect "$1" "$2" "$3" "$4"
+    fi
 }
 
 expect_json() {   # file keypath expected-json what
@@ -119,11 +130,11 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
         expect "$plist" LocalFlowURLScheme "$url_scheme" "$what"
     done
 
-    expect "$app_plist" ITSAppUsesNonExemptEncryption false app
+    expect_bool "$app_plist" ITSAppUsesNonExemptEncryption false app
     expect_json "$app_plist" UIBackgroundModes '["audio"]' app
     [ -n "$(value "$app_plist" NSMicrophoneUsageDescription)" ] || fail "app: NSMicrophoneUsageDescription is missing"
     expect_json "$app_plist" CFBundleURLTypes.0.CFBundleURLSchemes "[\"$url_scheme\"]" app
-    expect "$keyboard_plist" NSExtension.NSExtensionAttributes.RequestsOpenAccess true keyboard
+    expect_bool "$keyboard_plist" NSExtension.NSExtensionAttributes.RequestsOpenAccess true keyboard
     # App Review requires every extension to be universal, whatever the app's family.
     expect_json "$keyboard_plist" UIDeviceFamily '[1,2]' keyboard
 
@@ -169,7 +180,7 @@ for target in app keyboard; do
         continue
     fi
     plutil -lint -s "$manifest" || { fail "$target: PrivacyInfo.xcprivacy is not a valid plist"; continue; }
-    expect "$manifest" NSPrivacyTracking false "$target privacy manifest"
+    expect_bool "$manifest" NSPrivacyTracking false "$target privacy manifest"
     expect_json "$manifest" NSPrivacyTrackingDomains '[]' "$target privacy manifest"
     expect_json "$manifest" NSPrivacyCollectedDataTypes '[]' "$target privacy manifest"
     # Every element is visited by index (the type is empty only past the end),
@@ -242,8 +253,11 @@ for bundle in "$app" "$appex"; do
         expect "$entitlements" application-identifier "$team_id.$id" "$what entitlements"
         expect "$entitlements" com\\.apple\\.developer\\.team-identifier "$team_id" "$what entitlements"
         expect_json "$entitlements" com\\.apple\\.security\\.application-groups "[\"$app_group\"]" "$what entitlements"
-        [ "$(value "$entitlements" get-task-allow)" != true ] || fail "$what entitlements: get-task-allow is true (a development signature)"
-        expect "$entitlements" beta-reports-active true "$what entitlements"
+        debuggable=$(kind "$entitlements" get-task-allow)
+        if [ -n "$debuggable" ] && { [ "$debuggable" != bool ] || [ "$(value "$entitlements" get-task-allow)" != false ]; }; then
+            fail "$what entitlements: get-task-allow is present and not the Boolean false (a development signature)"
+        fi
+        expect_bool "$entitlements" beta-reports-active true "$what entitlements"
     else
         fail "$what: cannot read its signed entitlements"
     fi
@@ -256,7 +270,7 @@ for bundle in "$app" "$appex"; do
         [ "$(value "$profile" Entitlements.get-task-allow)" != true ] || fail "$what: the provisioning profile allows debugging"
         expect "$profile" Entitlements.application-identifier "$team_id.$id" "$what profile"
         expect "$profile" TeamIdentifier.0 "$team_id" "$what profile"
-        expect "$profile" Entitlements.beta-reports-active true "$what profile"
+        expect_bool "$profile" Entitlements.beta-reports-active true "$what profile"
         json "$profile" Entitlements.com\\.apple\\.security\\.application-groups | tr -d '[]' | tr ',' '\n' |
             grep -Fqx "\"$app_group\"" || fail "$what profile: it does not grant App Group $app_group"
         # ISO 8601 UTC strings compare in date order.
