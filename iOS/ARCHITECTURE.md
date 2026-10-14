@@ -623,7 +623,12 @@ No transcript history is stored.
   does.
 - `make -C iOS check` runs three steps: a simulator type-check of the app and
   keyboard with `-warnings-as-errors`, the host tests (`Shared` + `HostCore` +
-  `Tests`, compiled for macOS), and `plutil -lint`.
+  `Tests`, compiled for macOS), and lint (`plutil -lint` of the plists,
+  entitlements and privacy manifests, and `sh -n` of `scripts/`).
+- Every build compiles the app icon into an asset catalog (`Assets.car`, one
+  opaque 1024-pixel image) with `actool`, records Xcode's build metadata
+  (`DTXcode`, `DTSDKBuild` and the rest) in both Info.plists, and copies each
+  target's privacy manifest. See "App Store packaging".
 - `make -C iOS smoke-sim` builds the self-test variant into a separate build
   dir, installs it on a dedicated `LocalFlow-` simulator, and transcribes
   `say`-generated synthetic speech.
@@ -632,6 +637,57 @@ No transcript history is stored.
 - The root `make check` is unchanged in scope apart from the shared Parakeet
   changes. CI (`macos-15`) does not yet run iOS checks. Enabling that is a
   workflow change and needs approval.
+
+### App Store packaging (user decision 2026-10-13)
+
+The user wants to share v0.1 with non-technical friends through the App Store
+rather than TestFlight or registered devices. Still with `swiftc` and Make, and
+no Xcode project:
+
+- **Channel.** `CHANNEL=appstore` presets the production identity:
+  `com.ajbarryiii.localflow.ios` (keyboard `com.ajbarryiii.localflow.ios.keyboard`),
+  App Group `group.com.ajbarryiii.localflow.ios`, URL scheme `localflow`,
+  display name "LocalFlow", the production icon, and a device build into
+  `build/appstore/`. It follows the macOS pattern (`.dev` for development).
+  It refuses the self-test variant and a build without the model. It accepts
+  only App Store distribution profiles: no devices, no `get-task-allow`.
+  The bundle ID becomes permanent at the first upload.
+- **Signing.** Entitlements come from the profile as for development builds,
+  plus `beta-reports-active` when the profile grants it (App Store profiles do;
+  TestFlight needs it). Signing uses an Apple Distribution identity, which the
+  user creates in their account.
+- **Versions.** `CFBundleShortVersionString` stays in the Info.plist templates
+  (0.1.0), the same for app and keyboard as App Store Connect requires.
+  `BUILD_NUMBER` sets `CFBundleVersion` for both, since it must grow with each
+  upload.
+- **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
+  cryptography is SHA-256 for model verification. Both Info.plists carry the
+  toolchain keys Xcode would write, from `xcodebuild -version`, the SDK and the
+  build machine.
+- **Icon.** The production icon source has a transparent margin and an alpha
+  channel. The build crops the opaque square, flattens it (JPEG at the best
+  quality) and scales it to one 1024-pixel image in an asset catalog. The
+  crop is 788 pixels, so the store icon is upscaled. A source drawn at 1024
+  pixels without margins would be sharper.
+- **Privacy manifests** (`Config/*-PrivacyInfo.xcprivacy`, one per target):
+  no tracking, no tracking domains, no collected data. Required-reason APIs:
+  - UserDefaults: `CA92.1` for the app's own preferences, `1C8F.1` for the
+    App Group settings. The keyboard declares only `1C8F.1`.
+  - System boot time, `35F9.1`: elapsed-time measurement.
+  - File timestamps, `C617.1`: expiring the App Group's dictation files.
+
+  A new use of a required-reason API must be added to the manifest.
+- **Packaging.** `make ipa` zips exactly the signed app under `Payload/`.
+  `make appstore-check` runs `scripts/check-appstore-bundle.sh` against the app
+  and `.ipa`. That script is the packaging contract: it reads only the build
+  and lists every failure. `appstore-validate` and `appstore-upload` run
+  `xcrun altool` with an App Store Connect API key, never stored in the
+  repository. They are the only targets that contact Apple, and no other
+  target runs them.
+- **Not covered here:** the App Store listing, the privacy policy URL, the
+  "Data Not Collected" privacy label, review notes on the keyboard opening the
+  app and on the background microphone, and the account steps (App IDs,
+  distribution certificate, profiles, app record).
 
 ## Verification plan
 

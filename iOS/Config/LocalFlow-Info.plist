@@ -8,16 +8,6 @@
     <string>$(DISPLAY_NAME)</string>
     <key>CFBundleExecutable</key>
     <string>LocalFlow</string>
-    <key>CFBundleIcons</key>
-    <dict>
-        <key>CFBundlePrimaryIcon</key>
-        <dict>
-            <key>CFBundleIconFiles</key>
-            <array>
-                <string>AppIcon60x60</string>
-            </array>
-        </dict>
-    </dict>
     <key>CFBundleIdentifier</key>
     <string>$(BUNDLE_ID)</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -51,6 +41,8 @@
     <string>$(SDK_VERSION)</string>
     <key>DTSDKName</key>
     <string>$(SDK)$(SDK_VERSION)</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>LocalFlowAppGroupIdentifier</key>

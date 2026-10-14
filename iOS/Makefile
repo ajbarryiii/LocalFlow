@@ -3,6 +3,35 @@
 # this directory. README.md documents usage; ARCHITECTURE.md is the contract.
 .DEFAULT_GOAL := all
 
+# dev (the default) or appstore. appstore presets the production identifiers
+# and icon for a device build signed for App Store Connect (README.md, "App
+# Store build"); every preset can still be overridden.
+CHANNEL ?= dev
+ifeq ($(CHANNEL),appstore)
+PLATFORM ?= device
+BUNDLE_ID ?= com.ajbarryiii.localflow.ios
+URL_SCHEME ?= localflow
+DISPLAY_NAME ?= LocalFlow
+ICON_SOURCE ?= ../Resources/AppIcon-Source.png
+BUILD_DIR ?= build/appstore
+ifneq ($(PLATFORM),device)
+$(error CHANNEL=appstore needs PLATFORM=device)
+endif
+ifneq ($(findstring LOCALFLOW_SELFTEST,$(SWIFT_FLAGS)),)
+$(error CHANNEL=appstore never builds the self-test variant)
+endif
+else ifneq ($(CHANNEL),dev)
+$(error CHANNEL must be dev or appstore)
+endif
+# Optional CFBundleVersion for both bundles, which App Store Connect requires to
+# grow with every upload of a version; empty keeps the template's.
+BUILD_NUMBER ?=
+ifneq ($(strip $(BUILD_NUMBER)),)
+ifneq ($(shell printf '%s' '$(BUILD_NUMBER)' | grep -Ex '[0-9]+(\.[0-9]+){0,2}'),$(BUILD_NUMBER))
+$(error BUILD_NUMBER must be one to three dot-separated integers)
+endif
+endif
+
 PLATFORM ?= simulator
 BUNDLE_ID ?= com.ajbarryiii.localflow.ios.dev
 KEYBOARD_BUNDLE_ID = $(BUNDLE_ID).keyboard
@@ -35,6 +64,9 @@ CODESIGN_IDENTITY ?= -
 ifneq ($(filter install-device,$(MAKECMDGOALS)),)
 $(error install-device needs PLATFORM=device)
 endif
+ifneq ($(filter ipa appstore-check appstore-validate appstore-upload,$(MAKECMDGOALS)),)
+$(error $(filter ipa appstore-check appstore-validate appstore-upload,$(MAKECMDGOALS)) needs PLATFORM=device (or CHANNEL=appstore))
+endif
 else ifeq ($(PLATFORM),device)
 SDK = iphoneos
 SUPPORTED_PLATFORM = iPhoneOS
@@ -48,6 +80,13 @@ $(error PLATFORM must be simulator or device)
 endif
 SDK_PATH := $(shell xcrun --sdk $(SDK) --show-sdk-path)
 SDK_VERSION := $(shell xcrun --sdk $(SDK) --show-sdk-version)
+# What Xcode records in every Info.plist; App Store Connect checks it against its
+# minimum toolchain. Xcode 26.4.1 is DTXcode 2641.
+SDK_BUILD := $(shell xcrun --sdk $(SDK) --show-sdk-build-version)
+XCODE_VERSION := $(shell xcodebuild -version 2>/dev/null | awk '/^Xcode / { print $$2 }')
+XCODE_BUILD := $(shell xcodebuild -version 2>/dev/null | awk '/^Build version / { print $$3 }')
+DT_XCODE := $(shell printf '%s\n' '$(XCODE_VERSION)' | awk -F. 'NF { printf "%02d%d%d", $$1, $$2, $$3 }')
+BUILD_MACHINE_OS_BUILD := $(shell sw_vers -buildVersion 2>/dev/null)
 
 # Every list can be overridden, e.g. `make SHARED_SOURCES= HOSTCORE_SOURCES=`.
 swift_sources = $(shell find $(1) -name '*.swift' -type f 2>/dev/null | LC_ALL=C sort)
@@ -73,6 +112,8 @@ KEYBOARD_BINARY = $(OBJ_DIR)/LocalFlowKeyboard
 APP_ENTITLEMENTS = $(OBJ_DIR)/LocalFlow.xcent
 KEYBOARD_ENTITLEMENTS = $(OBJ_DIR)/LocalFlowKeyboard.xcent
 APP_SIGNATURE = $(APP_BUNDLE)/_CodeSignature/CodeResources
+ICON_CATALOG = $(OBJ_DIR)/Assets.xcassets
+IPA = $(BUILD_DIR)/LocalFlow.ipa
 CONFIG_STAMP = $(OBJ_DIR)/configuration
 PARAKEET_STAMP = $(OBJ_DIR)/parakeet-selection
 PARAKEET_INSTALL_KEY = $(OBJ_DIR)/parakeet-installed
@@ -112,6 +153,13 @@ info_plist = cp "$(1)" "$(2)" && \
 	plutil -replace DTPlatformName -string "$(SDK)" "$(2)" && \
 	plutil -replace DTPlatformVersion -string "$(SDK_VERSION)" "$(2)" && \
 	plutil -replace DTSDKName -string "$(SDK)$(SDK_VERSION)" "$(2)" && \
+	plutil -replace DTSDKBuild -string "$(SDK_BUILD)" "$(2)" && \
+	plutil -replace DTPlatformBuild -string "$(SDK_BUILD)" "$(2)" && \
+	plutil -replace DTXcode -string "$(DT_XCODE)" "$(2)" && \
+	plutil -replace DTXcodeBuild -string "$(XCODE_BUILD)" "$(2)" && \
+	plutil -replace DTCompiler -string com.apple.compilers.llvm.clang.1_0 "$(2)" && \
+	plutil -replace BuildMachineOSBuild -string "$(BUILD_MACHINE_OS_BUILD)" "$(2)" && \
+	$(if $(strip $(BUILD_NUMBER)),plutil -replace CFBundleVersion -string "$(BUILD_NUMBER)" "$(2)" &&) \
 	plutil -replace MinimumOSVersion -string "$(DEPLOYMENT_TARGET)" "$(2)" && \
 	plutil -replace LocalFlowAppGroupIdentifier -string "$(APP_GROUP)" "$(2)" && \
 	plutil -replace LocalFlowURLScheme -string "$(URL_SCHEME)" "$(2)"
@@ -123,7 +171,7 @@ all: signing-requirements $(APP_SIGNATURE)
 binaries: $(APP_BINARY) $(KEYBOARD_BINARY)
 
 # Rebuild when identifiers, flags, signing inputs or source lists change.
-CONFIGURATION = $(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
+CONFIGURATION = $(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
 configuration:
 	@mkdir -p "$(OBJ_DIR)"
 	@printf '%s\n' "$(CONFIGURATION)" > "$(CONFIG_STAMP).tmp"
@@ -153,6 +201,9 @@ ifeq ($(PLATFORM),device)
 		[ -f "$$profile" ] || { echo "Provisioning profile not found: $$profile" >&2; exit 1; }; \
 	done
 endif
+ifeq ($(CHANNEL),appstore)
+	@[ -n "$(strip $(PARAKEET_BUNDLE_DIR))" ] || { echo "CHANNEL=appstore needs PARAKEET_BUNDLE_DIR (the model ships in the app)." >&2; exit 1; }
+endif
 
 $(APP_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(BUNDLE_ID)
 $(APP_ENTITLEMENTS): ENTITLED_PROFILE = $(APP_PROFILE)
@@ -177,7 +228,19 @@ ifeq ($(PLATFORM),device)
 	debuggable=$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$$profile" 2>/dev/null || echo false); \
 	/usr/libexec/PlistBuddy -c "Add :application-identifier string $$expected" \
 		-c "Add :com.apple.developer.team-identifier string $(TEAM_ID)" \
-		-c "Add :get-task-allow bool $$debuggable" "$@.tmp"
+		-c "Add :get-task-allow bool $$debuggable" "$@.tmp"; \
+	if [ "$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:beta-reports-active" "$$profile" 2>/dev/null)" = true ]; then \
+		/usr/libexec/PlistBuddy -c "Add :beta-reports-active bool true" "$@.tmp"; \
+	fi
+ifeq ($(CHANNEL),appstore)
+	@# An App Store profile lists no devices and never allows debugging.
+	@profile="$@.profile.plist"; trap 'rm -f "$$profile"' EXIT; \
+	security cms -D -i "$(ENTITLED_PROFILE)" > "$$profile" 2>/dev/null; \
+	if /usr/libexec/PlistBuddy -c "Print :ProvisionedDevices" "$$profile" >/dev/null 2>&1 || \
+		[ "$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$$profile" 2>/dev/null)" = true ]; then \
+		echo "$(ENTITLED_PROFILE) is not an App Store distribution profile." >&2; exit 1; \
+	fi
+endif
 endif
 	@mv "$@.tmp" "$@"
 ifeq ($(PLATFORM),simulator)
@@ -196,6 +259,7 @@ $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITL
 
 $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS) Makefile \
 		Config/LocalFlow-Info.plist Config/LocalFlowKeyboard-Info.plist $(ICON_SOURCE) $(PARAKEET_STAMP) \
+		Config/LocalFlow-PrivacyInfo.xcprivacy Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy \
 		$(wildcard ../Resources/Parakeet/*) ../scripts/label-localflow-model.py
 	@rm -rf "$(APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision"
 	@mkdir -p "$(APPEX_BUNDLE)"
@@ -207,11 +271,26 @@ $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(APP_ENTITLEMENTS) $(KEYBOAR
 	@$(call info_plist,Config/LocalFlowKeyboard-Info.plist,$(APPEX_BUNDLE)/Info.plist,$(KEYBOARD_BUNDLE_ID))
 	@! grep -l '\$$(' "$(APP_BUNDLE)/Info.plist" "$(APPEX_BUNDLE)/Info.plist" || { echo "Unexpanded Info.plist placeholder" >&2; exit 1; }
 	@printf 'APPL????' > "$(APP_BUNDLE)/PkgInfo"
+	@cp Config/LocalFlow-PrivacyInfo.xcprivacy "$(APP_BUNDLE)/PrivacyInfo.xcprivacy"
+	@cp Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy "$(APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
 	@# The macOS icon source has a transparent margin and rounded corners; keep
-	@# the opaque square inside them so iOS can apply its own mask.
+	@# the opaque square inside them so iOS can apply its own mask. The App Store
+	@# rejects an icon with an alpha channel, so it is flattened (through JPEG at
+	@# the best quality) before scaling to the single 1024-pixel size.
+	@rm -rf "$(ICON_CATALOG)" "$(APP_BUNDLE)"/AppIcon*.png && mkdir -p "$(ICON_CATALOG)/AppIcon.appiconset"
 	@sips --cropToHeightWidth 788 788 --cropOffset 118 118 "$(ICON_SOURCE)" --out "$(OBJ_DIR)/AppIcon.png" >/dev/null
-	@sips -z 120 120 "$(OBJ_DIR)/AppIcon.png" --out "$(APP_BUNDLE)/AppIcon60x60@2x.png" >/dev/null
-	@sips -z 180 180 "$(OBJ_DIR)/AppIcon.png" --out "$(APP_BUNDLE)/AppIcon60x60@3x.png" >/dev/null
+	@sips -s format jpeg -s formatOptions best "$(OBJ_DIR)/AppIcon.png" --out "$(OBJ_DIR)/AppIcon-flat.jpg" >/dev/null
+	@sips -s format png -z 1024 1024 "$(OBJ_DIR)/AppIcon-flat.jpg" --out "$(ICON_CATALOG)/AppIcon.appiconset/AppIcon-1024.png" >/dev/null
+	@[ "$$(sips -g hasAlpha "$(ICON_CATALOG)/AppIcon.appiconset/AppIcon-1024.png" | awk '/hasAlpha/ { print $$2 }')" = no ] || \
+		{ echo "The App Store icon still has an alpha channel." >&2; exit 1; }
+	@printf '%s\n' '{"info":{"author":"xcode","version":1}}' > "$(ICON_CATALOG)/Contents.json"
+	@printf '%s\n' '{"images":[{"filename":"AppIcon-1024.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' \
+		> "$(ICON_CATALOG)/AppIcon.appiconset/Contents.json"
+	@xcrun actool --compile "$(APP_BUNDLE)" --platform $(SDK) --minimum-deployment-target $(DEPLOYMENT_TARGET) \
+		--target-device iphone --app-icon AppIcon --output-partial-info-plist "$(OBJ_DIR)/assets-Info.plist" \
+		--errors --warnings --output-format human-readable-text "$(ICON_CATALOG)" > "$(OBJ_DIR)/actool.log" 2>&1 || \
+		{ cat "$(OBJ_DIR)/actool.log" >&2; exit 1; }
+	@/usr/libexec/PlistBuddy -c "Merge $(OBJ_DIR)/assets-Info.plist" "$(APP_BUNDLE)/Info.plist" >/dev/null
 ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@{ cat "$(PARAKEET_STAMP)"; shasum -a 256 ../Resources/Parakeet/* ../scripts/label-localflow-model.py; } > "$(PARAKEET_INSTALL_KEY).tmp"
 	@# Copying 330 MB is slow, so keep the installed copy while its inputs are unchanged.
@@ -237,6 +316,30 @@ endif
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_KEYBOARD_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APPEX_BUNDLE)"
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_APP_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
+
+.PHONY: ipa appstore-check appstore-validate appstore-upload
+
+# The upload package: exactly the signed app under Payload/.
+ipa: all
+	@rm -rf "$(OBJ_DIR)/ipa" "$(IPA)" && mkdir -p "$(OBJ_DIR)/ipa/Payload"
+	@ditto "$(APP_BUNDLE)" "$(OBJ_DIR)/ipa/Payload/LocalFlow.app"
+	@ipa=$(call shell_quote,$(abspath $(IPA))); cd "$(OBJ_DIR)/ipa" && zip -qry -X "$$ipa" Payload
+	@rm -rf "$(OBJ_DIR)/ipa"
+	@echo "Packaged $(IPA)"
+
+# What App Store Connect needs, checked locally from the built app and .ipa
+# (scripts/check-appstore-bundle.sh); it never contacts Apple.
+appstore-check:
+	@sh scripts/check-appstore-bundle.sh --app "$(APP_BUNDLE)" --ipa "$(IPA)" --bundle-id "$(BUNDLE_ID)" \
+		--app-group "$(APP_GROUP)" --url-scheme "$(URL_SCHEME)" --display-name "$(DISPLAY_NAME)" --team-id "$(TEAM_ID)"
+
+# Apple's own checks, then the upload, with an App Store Connect API key
+# (ASC_KEY_ID, ASC_ISSUER_ID; the .p8 in ~/.appstoreconnect/private_keys). Both
+# send the .ipa to Apple, so neither runs as part of any other target.
+appstore-validate appstore-upload: appstore-check
+	@[ -n "$(ASC_KEY_ID)" ] && [ -n "$(ASC_ISSUER_ID)" ] || { echo "$@ needs ASC_KEY_ID and ASC_ISSUER_ID." >&2; exit 1; }
+	xcrun altool $(if $(filter appstore-upload,$@),--upload-package,--validate-app) "$(IPA)" -t ios \
+		--api-key "$(ASC_KEY_ID)" --api-issuer "$(ASC_ISSUER_ID)"
 
 check: typecheck test lint
 
@@ -265,7 +368,8 @@ else
 endif
 
 lint:
-	plutil -lint Config/*.plist Config/*.entitlements
+	plutil -lint Config/*.plist Config/*.entitlements Config/*.xcprivacy
+	@for script in scripts/*.sh; do sh -n "$$script" || exit 1; done
 
 SIM_DEVICE ?= LocalFlow-Smoke
 SIM_DEVICE_TYPE ?= iPhone 17 Pro
