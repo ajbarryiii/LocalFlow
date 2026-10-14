@@ -225,6 +225,16 @@ Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
   and cannot be replaced. Turning off Settings → General → Keyboard → Enable
   Dictation hides Apple's microphone system-wide.
 
+## Reporting a bug
+
+Open **Report a bug** on the app's home screen, then **Write email** to open a
+draft addressed to `localflow@wildernesslabs.ai`. Review and edit it in your
+email app before sending, or cancel without sending. The draft asks for steps
+to reproduce, expected behavior, and what happened; it includes only the app
+version/build, iOS version, and generic device type (iPhone or iPad). It attaches
+no audio, transcripts, logs, or other user data. If no email app handles the
+draft, the address and draft remain selectable for use in an email app.
+
 ## Manual tests
 
 These need a person at a device, or Sol through computer use at the
@@ -232,6 +242,7 @@ simulator. Record results before merge. The device rows are required by
 AGENTS.md.
 
 Setup and session:
+- [ ] Report a bug: the home-screen row opens the draft preview; Write email opens the configured email app with the correct recipient, subject, prompts, and version/device metadata; cancel sends nothing. With no email handler, the app shows the fallback and the address/draft remain readable and selectable. Check the layout on iPhone and iPad.
 - [x] Device-signed build installs; signatures and entitlements verified (2026-10-09).
 - [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
 - [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
