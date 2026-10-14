@@ -71,6 +71,10 @@ struct HomeView: View {
                         RowLabel(title: "Report a bug", detail: "Send feedback by email", symbol: "envelope")
                     }
                     .accessibilityIdentifier("home.reportBug")
+                    Link(destination: URL(string: "https://ajbarryiii.github.io/LocalFlow/privacy.html")!) {
+                        RowLabel(title: "Privacy policy", detail: "Read how LocalFlow handles your data in your browser", symbol: "hand.raised")
+                    }
+                    .accessibilityIdentifier("home.privacyPolicy")
                 } footer: {
                     Text("LocalFlow \(AppIdentity.version) · Nothing you say leaves this iPhone.")
                         .frame(maxWidth: .infinity)
