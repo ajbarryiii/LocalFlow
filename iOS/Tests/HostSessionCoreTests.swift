@@ -364,17 +364,18 @@ enum HostSessionCoreTests {
         h.core.deviceWillLock()
         TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
         TestSupport.expectEqual(h.status?.dictation?.error, .deviceLocked)
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .deviceLocked)
-        TestSupport.expectEqual(h.capture.isRunning, false)
+        // The session outlives the lock; only idle expiry, a call or End session ends it.
+        TestSupport.expectEqual(h.status?.session, .active)
+        TestSupport.expectEqual(h.status?.error, nil)
+        TestSupport.expectEqual(h.capture.isRunning, true)
         TestSupport.expectEqual(h.background.ended, 1)
         h.transcriber.complete(.success("late words"))
         _ = TestSupport.waitUntil(timeout: 0.2) { false }
         TestSupport.expectEqual(h.store.readResult(requestID: R), .absent)
         TestSupport.expectEqual(h.core.current?.phase, .cancelled)
 
-        // A recording in a live session is cancelled the same way.
-        h.core.userStartSession()
+        // After the unlock, a recording in the same session is cancelled the same way.
+        h.core.deviceDidUnlock()
         h.record(S)
         h.core.deviceWillLock()
         TestSupport.expectEqual(h.status?.dictation?.error, .deviceLocked)
@@ -1386,22 +1387,23 @@ private final class FakeTranscriber: HostTranscriber {
     }
 }
 
-/// The always-on microphone test mode (ARCHITECTURE.md, "Always-on microphone test mode"; only
-/// `LOCALFLOW_POWER_LOG` code sets it): no idle expiry, and a lock cancels a dictation but keeps the
-/// session. Driven through the real core with the same fakes and event sequences as above.
-enum HostSessionAlwaysOnTests {
+/// A device lock keeps the session (ARCHITECTURE.md, "Device lock"): it cancels a dictation in progress,
+/// whose class A files are unwritable while locked, but the session, the audio session and the engine go
+/// on until idle expiry, an interruption, an engine failure or End session. Driven through the real core
+/// with the same fakes and event sequences as above.
+enum HostSessionLockTests {
     static var tests: [TestCase] {
         [
-            ("offByDefault", isolated(testOffByDefault)),
+            ("lockKeepsAnIdleSession", isolated(testLockKeepsAnIdleSession)),
             ("lockCancelsDictationButKeepsTheSession", isolated(testLockCancelsDictationButKeepsTheSession)),
             ("lockCancelsTranscriptionButKeepsTheSession", isolated(testLockCancelsTranscriptionButKeepsTheSession)),
-            ("noIdleExpiry", isolated(testNoIdleExpiry)),
-            ("turningOffCountsIdleFromTheToggle", isolated(testTurningOffCountsIdleFromTheToggle)),
-            ("turningOffMakesTheNextLockEndTheSession", isolated(testTurningOffMakesTheNextLockEndTheSession)),
-            ("otherEndReasonsStillEndTheSession", isolated(testOtherEndReasonsStillEndTheSession)),
+            ("idleExpiryEndsALockedSession", isolated(testIdleExpiryEndsALockedSession)),
+            ("countdownRestartsFromTheLastDictation", isolated(testCountdownRestartsFromTheLastDictation)),
+            ("expiredSessionAdmitsNothingAfterUnlock", isolated(testExpiredSessionAdmitsNothingAfterUnlock)),
+            ("bounceAfterTheDeadlineStartsANewSession", isolated(testBounceAfterTheDeadlineStartsANewSession)),
+            ("otherEndReasonsStillEndALockedSession", isolated(testOtherEndReasonsStillEndALockedSession)),
             ("neverStartsASessionInTheBackground", isolated(testNeverStartsASessionInTheBackground)),
             ("unlockAdmitsTheNextIntentWithoutARestart", isolated(testUnlockAdmitsTheNextIntentWithoutARestart)),
-            ("settingItBeforeLaunchPublishesNothing", isolated(testSettingItBeforeLaunchPublishesNothing)),
         ]
     }
 
@@ -1412,35 +1414,55 @@ enum HostSessionAlwaysOnTests {
     private static let R = Fixture.requestID
     private static let S = Fixture.otherRequestID
 
-    /// An always-on session running with LocalFlow in the background, as after the user swipes away.
+    /// A session running with LocalFlow in the background, as after the user swipes away.
     @MainActor
     private static func backgroundSession(_ h: CoreHarness) {
-        h.core.setAlwaysOn(true)
         h.core.userStartSession()
         TestSupport.expectEqual(h.core.session, .active)
         h.clock.isForeground = false
         h.core.foregroundChanged()
     }
 
+    /// Ticks every minute (the last step shorter) until `deadline`, with the engine delivering throughout.
     @MainActor
-    private static func testOffByDefault() {
+    private static func tick(_ h: CoreHarness, until deadline: Date) {
+        while h.clock.now < deadline {
+            h.clock.now = min(h.clock.now + 60, deadline)
+            h.keepCaptureFresh()
+            h.core.tick()
+        }
+    }
+
+    @MainActor
+    private static func testLockKeepsAnIdleSession() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        TestSupport.expect(!h.core.alwaysOn, "off by default")
-        h.core.userStartSession()
-        TestSupport.expectEqual(h.status?.sessionExpiresAt, Fixture.now + 300)
+        backgroundSession(h)
+        let sessionID = h.core.sessionID
+        h.clock.now += 10
         h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .deviceLocked)
+        TestSupport.expect(h.core.isLocked, "latched")
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.status?.session, .active)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.status?.sessionID, sessionID)
+        TestSupport.expectEqual(h.status?.error, nil)
+        TestSupport.expectEqual(h.core.sessionError, nil)
+        TestSupport.expectEqual(h.capture.isRunning, true)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        // Idle since the session started, not since the lock.
+        TestSupport.expectEqual(h.core.sessionExpiresAt, Fixture.now + 300)
+        TestSupport.expectEqual(h.status?.sessionExpiresAt, Fixture.now + 300)
     }
 
     @MainActor
     private static func testLockCancelsDictationButKeepsTheSession() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.record(R)
         let sessionID = h.core.sessionID
+        h.clock.now += 20
+        h.feed()
         h.core.deviceWillLock()
         TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
         TestSupport.expectEqual(h.status?.dictation?.error, .deviceLocked)
@@ -1451,16 +1473,18 @@ enum HostSessionAlwaysOnTests {
         TestSupport.expectEqual(h.core.sessionID, sessionID)
         TestSupport.expectEqual(h.capture.isRunning, true)
         TestSupport.expectEqual(h.capture.startCount, 1)
-        TestSupport.expectEqual(h.status?.sessionExpiresAt, nil)   // no expiry while on
+        TestSupport.expectEqual(h.capture.restartCount, 0)
+        // The cancelled dictation ended at the lock: idle from there.
+        TestSupport.expectEqual(h.status?.sessionExpiresAt, h.clock.now + 300)
     }
 
     @MainActor
     private static func testLockCancelsTranscriptionButKeepsTheSession() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.transcriber.honorsCancellation = false   // a runtime that finishes anyway: the fence must drop it
         h.record(R)
+        let sessionID = h.core.sessionID
         h.writeIntent(.finish, R)
         h.core.reconcile(.intentSignal)
         h.completeTail()
@@ -1470,104 +1494,151 @@ enum HostSessionAlwaysOnTests {
         TestSupport.expectEqual(h.status?.dictation?.error, .deviceLocked)
         TestSupport.expectEqual(h.background.ended, 1)
         TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.status?.error, nil)
         TestSupport.expectEqual(h.capture.isRunning, true)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.restartCount, 0)
         h.transcriber.complete(.success("late words"))
         _ = TestSupport.waitUntil(timeout: 0.2) { false }
         TestSupport.expectEqual(h.store.readResult(requestID: R), .absent)
         TestSupport.expectEqual(h.core.current?.phase, .cancelled)
+
+        // After the unlock, the next dictation runs in the same session and capture.
+        h.core.deviceDidUnlock()
+        h.clock.now += 1
+        h.record(S)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.capture.restartCount, 0)
     }
 
-    /// Eight hours locked in the background, ticking every minute: the session never expires.
+    /// Locked in the background, ticking every minute: the session ends at `idleSince + duration`.
     @MainActor
-    private static func testNoIdleExpiry() {
+    private static func testIdleExpiryEndsALockedSession() {
         let h = CoreHarness()
         defer { h.cleanup() }
         backgroundSession(h)
+        h.clock.now += 30
         h.core.deviceWillLock()
-        for _ in 0 ..< 8 * 60 {
-            h.clock.now += 60
-            h.keepCaptureFresh()
-            h.core.tick()
-        }
+        let expiresAt = Fixture.now + 300
+        tick(h, until: expiresAt)
         TestSupport.expectEqual(h.core.session, .active)
-        TestSupport.expectEqual(h.status?.session, .active)
         TestSupport.expectEqual(h.capture.isRunning, true)
+        h.clock.now += 0.1
+        h.core.tick()
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, nil)   // `.idleExpired` is not an error
+        TestSupport.expectEqual(h.status?.sessionExpiresAt, nil)
+        TestSupport.expectEqual(h.capture.isRunning, false)
         TestSupport.expectEqual(h.capture.startCount, 1)
-        TestSupport.expectEqual(h.core.sessionExpiresAt, nil)
     }
 
+    /// A dictation finishing just before the lock restarts the countdown from its end, not from the
+    /// session start or the lock.
     @MainActor
-    private static func testTurningOffCountsIdleFromTheToggle() {
+    private static func testCountdownRestartsFromTheLastDictation() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.core.userStartSession()
-        h.clock.now += 3_600
+        h.clock.now += 200
         h.keepCaptureFresh()
         h.core.tick()
-        TestSupport.expectEqual(h.core.session, .active)
-        let off = h.clock.now
-        h.core.setAlwaysOn(false)
-        TestSupport.expect(!h.core.alwaysOn, "off")
-        TestSupport.expectEqual(h.core.sessionExpiresAt, off + 300)
-        TestSupport.expectEqual(h.status?.sessionExpiresAt, off + 300)   // published at once
-        h.clock.now = off + 300
-        h.keepCaptureFresh()
-        h.core.tick()
+        h.record(R)
+        h.clock.now += 20
+        h.feed()
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "not transcribing")
+        h.clock.now += 1
+        h.transcriber.complete(.success("words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .completed }, "not completed")
+        let finishedAt = h.clock.now
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        h.clock.now += 5
+        h.core.deviceWillLock()
+        TestSupport.expectEqual(h.core.sessionExpiresAt, finishedAt + 300)
+        TestSupport.expectEqual(h.status?.sessionExpiresAt, finishedAt + 300)
+        tick(h, until: finishedAt + 300)
         TestSupport.expectEqual(h.core.session, .active)
         h.clock.now += 0.1
         h.core.tick()
         TestSupport.expectEqual(h.core.session, .inactive)
         TestSupport.expectEqual(h.status?.error, nil)
+        TestSupport.expectEqual(h.capture.isRunning, false)
     }
 
+    /// Past the deadline with no tick in between (a resume): the intent signal after the unlock finds the
+    /// session expired, so the background request is not admitted into it.
     @MainActor
-    private static func testTurningOffMakesTheNextLockEndTheSession() {
+    private static func testExpiredSessionAdmitsNothingAfterUnlock() {
         let h = CoreHarness()
         defer { h.cleanup() }
         backgroundSession(h)
         h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, .active)
-        h.core.setAlwaysOn(false)
-        TestSupport.expectEqual(h.core.session, .active)   // turning off ends nothing by itself
-        h.core.deviceWillLock()
+        h.clock.now = Fixture.now + 300 + 1
+        h.core.deviceDidUnlock()
+        try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
+        h.writeIntent(.record, S)
+        h.core.reconcile(.intentSignal)
         TestSupport.expectEqual(h.core.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .deviceLocked)
+        TestSupport.expectEqual(h.status?.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, nil)
         TestSupport.expectEqual(h.capture.isRunning, false)
+        TestSupport.expect(h.core.current?.phase != .starting && h.core.current?.phase != .recording, "admitted")
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
     }
 
-    /// An interruption, an engine that cannot be restarted and End session still end it; the next
-    /// foreground session is always-on again.
+    /// The bounce after the deadline with no tick in between: the expired session ends first, and the
+    /// request starts a new one in the foreground.
     @MainActor
-    private static func testOtherEndReasonsStillEndTheSession() {
+    private static func testBounceAfterTheDeadlineStartsANewSession() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
-        h.record(R)
-        h.core.captureInterrupted()
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .interrupted)
-        TestSupport.expectEqual(h.status?.dictation?.error, .interrupted)
-
-        h.core.userStartSession()
-        h.clock.isForeground = false
-        h.core.foregroundChanged()
-        h.capture.failRestart = true
-        h.core.captureFailed(generation: h.capture.engineGeneration)
-        h.clock.now += HostSessionPolicy.captureStallGrace + 0.001
-        h.core.tick()
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
-
-        h.clock.isForeground = true
-        h.capture.failRestart = false
-        h.core.userStartSession()
+        backgroundSession(h)
+        let sessionID = h.core.sessionID
         h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, .active)   // still always-on
-        h.core.userEndSession()
-        TestSupport.expectEqual(h.status?.session, .inactive)
-        TestSupport.expectEqual(h.capture.isRunning, false)
-        TestSupport.expect(h.core.alwaysOn, "the mode outlives the session")
+        h.clock.protectedDataAvailable = false
+        h.clock.now = Fixture.now + 300 + 1
+        h.clock.protectedDataAvailable = true
+        h.writeIntent(.record, R)
+        h.core.appWillEnterForeground()
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        h.deliver()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .recording }, "not recording")
+        TestSupport.expectEqual(h.core.current?.requestID, R)
+        TestSupport.expect(h.core.sessionID != nil && h.core.sessionID != sessionID, "admitted into the expired session")
+        TestSupport.expectEqual(h.capture.startCount, 2)
+    }
+
+    /// An interruption, an engine that cannot be restarted and End session still end a locked session.
+    @MainActor
+    private static func testOtherEndReasonsStillEndALockedSession() {
+        let endings: [(String, HostErrorCode?, @MainActor (CoreHarness) -> Void)] = [
+            ("interruption", .interrupted, { h in h.core.captureInterrupted() }),
+            ("engine failure", .audioSessionFailed, { h in
+                h.capture.failRestart = true
+                h.core.captureFailed(generation: h.capture.engineGeneration)
+                h.clock.now += HostSessionPolicy.captureStallGrace + 0.001
+                h.core.tick()
+            }),
+            ("End session", nil, { h in h.core.userEndSession() }),
+        ]
+        for (name, error, end) in endings {
+            let h = CoreHarness()
+            defer { h.cleanup() }
+            backgroundSession(h)
+            h.core.deviceWillLock()
+            TestSupport.expectEqual(h.core.session, .active)
+            end(h)
+            TestSupport.expectEqual(h.status?.session, .inactive)
+            TestSupport.expectEqual(h.status?.error, error)
+            TestSupport.expect(!h.capture.isRunning, "\(name): capture still running")
+        }
     }
 
     @MainActor
@@ -1576,7 +1647,6 @@ enum HostSessionAlwaysOnTests {
         defer { h.cleanup() }
         h.clock.isForeground = false
         h.core.foregroundChanged()
-        h.core.setAlwaysOn(true)
         h.core.deviceWillLock()
         h.clock.now += 600
         h.core.tick()
@@ -1586,8 +1656,8 @@ enum HostSessionAlwaysOnTests {
         TestSupport.expectEqual(h.capture.startCount, 0)
     }
 
-    /// Locked in the background, then unlocked: the keyboard's next record intent is admitted into the
-    /// same session, with no capture start or session restart.
+    /// Locked in the background, then unlocked within the session length: the keyboard's next record
+    /// intent is admitted into the same session, with no capture start or session restart.
     @MainActor
     private static func testUnlockAdmitsTheNextIntentWithoutARestart() {
         let h = CoreHarness()
@@ -1595,9 +1665,8 @@ enum HostSessionAlwaysOnTests {
         backgroundSession(h)
         let sessionID = h.core.sessionID
         h.core.deviceWillLock()
-        h.clock.now += 2 * 3_600
-        h.keepCaptureFresh()
-        h.core.tick()
+        tick(h, until: h.clock.now + 240)   // shorter than the 5-minute session
+        TestSupport.expectEqual(h.core.session, .active)
         h.core.deviceDidUnlock()   // protectedDataDidBecomeAvailable
         try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
         h.writeIntent(.record, S)
@@ -1609,25 +1678,9 @@ enum HostSessionAlwaysOnTests {
         TestSupport.expectEqual(h.capture.startCount, 1)
         TestSupport.expectEqual(h.capture.restartCount, 0)
     }
-
-    /// Set at app start, before run recovery has read the previous run's status: it must not write one.
-    @MainActor
-    private static func testSettingItBeforeLaunchPublishesNothing() {
-        let h = CoreHarness(launch: false)
-        defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
-        TestSupport.expectEqual(h.store.readStatus(), .absent)
-        TestSupport.expect(h.core.alwaysOn, "set")
-        h.core.launch()
-        h.core.userStartSession()
-        h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, .active)
-    }
 }
 
-/// "Locked means no dictation" (ARCHITECTURE.md, always-on section): `deviceWillLock` latches a locked
-/// "Locked means no dictation" (ARCHITECTURE.md, always-on section). With always-on off the lock latch
-/// does not exist: behavior is exactly as before the mode. With it on, `deviceWillLock` latches until
+/// "Locked means no dictation" (ARCHITECTURE.md, "Device lock"): `deviceWillLock` latches until
 /// `deviceDidUnlock`, or until the `appWillEnterForeground` / `appDidBecomeActive` events with protected
 /// data available. iOS posts the lock notification before files become inaccessible, so most tests keep
 /// the intent file readable after it: the latch alone must refuse.
@@ -1637,18 +1690,16 @@ enum HostSessionLockLatchTests {
             ("delayedIntentAfterLockIsRefused", isolated(testDelayedIntentAfterLockIsRefused)),
             ("latchHoldsAcrossPollingAndTicks", isolated(testLatchHoldsAcrossPollingAndTicks)),
             ("lockWindowTicksAndPollsKeepTheLatch", isolated(testLockWindowTicksAndPollsKeepTheLatch)),
+            ("captureRecoveryWhileLockedActivatesNothing", isolated(testCaptureRecoveryWhileLockedActivatesNothing)),
             ("intentsAfterUnlockAreAdmitted", isolated(testIntentsAfterUnlockAreAdmitted)),
             ("unreadIntentGetsOnlyTheFreshnessCheck", isolated(testUnreadIntentGetsOnlyTheFreshnessCheck)),
             ("unreadablePollingWhileLockedThenUnlock", isolated(testUnreadablePollingWhileLockedThenUnlock)),
-            ("bounceWhileInactiveAlwaysOn", isolated(testBounceWhileInactiveAlwaysOn)),
-            ("bounceWhileInactiveOffMode", isolated(testBounceWhileInactiveOffMode)),
-            ("offModeBounceAfterAMissedUnlock", isolated(testOffModeBounceAfterAMissedUnlock)),
+            ("bounceWhileInactive", isolated(testBounceWhileInactive)),
+            ("bounceAfterAMissedUnlock", isolated(testBounceAfterAMissedUnlock)),
             ("lateUnlockNotificationStillAdmits", isolated(testLateUnlockNotificationStillAdmits)),
             ("activationWithDataUnavailableKeepsTheLatch", isolated(testActivationWithDataUnavailableKeepsTheLatch)),
             ("permissionCompletionWhileLockedStartsNothing", isolated(testPermissionCompletionWhileLockedStartsNothing)),
             ("pendingStartWhileLockedStartsNothing", isolated(testPendingStartWhileLockedStartsNothing)),
-            ("offModeHasNoLatch", isolated(testOffModeHasNoLatch)),
-            ("turningAlwaysOnOffClearsTheLatch", isolated(testTurningAlwaysOnOffClearsTheLatch)),
             ("lockBeforeLaunchPublishesNothing", isolated(testLockBeforeLaunchPublishesNothing)),
         ]
     }
@@ -1661,10 +1712,9 @@ enum HostSessionLockLatchTests {
     private static let S = Fixture.otherRequestID
     private static let T = UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
 
-    /// An always-on session with LocalFlow in the background, then the lock notification.
+    /// A session with LocalFlow in the background, then the lock notification.
     @MainActor
     private static func lockedBackgroundSession(_ h: CoreHarness) {
-        h.core.setAlwaysOn(true)
         h.core.userStartSession()
         h.clock.isForeground = false
         h.core.foregroundChanged()
@@ -1738,7 +1788,6 @@ enum HostSessionLockLatchTests {
     private static func testLockWindowTicksAndPollsKeepTheLatch() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.core.userStartSession()
         h.core.deviceWillLock()
         TestSupport.expect(h.clock.protectedDataAvailable && h.clock.isForeground, "the window")
@@ -1756,6 +1805,23 @@ enum HostSessionLockLatchTests {
         }
     }
 
+    /// An engine failure recovered during the lock window, with the app still in front: the engine is rebuilt
+    /// within the running audio session, which is never reactivated while locked.
+    @MainActor
+    private static func testCaptureRecoveryWhileLockedActivatesNothing() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.userStartSession()
+        h.core.deviceWillLock()
+        TestSupport.expect(h.clock.isForeground, "the window")
+        h.core.captureFailed(generation: h.capture.engineGeneration)
+        h.clock.now += HostSessionPolicy.captureStallGrace + 0.001
+        h.core.tick()
+        TestSupport.expectEqual(h.capture.restartCount, 1)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.core.session, .active)
+    }
+
     /// After unlock, a new intent is admitted into the same session at once.
     @MainActor
     private static func testIntentsAfterUnlockAreAdmitted() {
@@ -1763,7 +1829,7 @@ enum HostSessionLockLatchTests {
         defer { h.cleanup() }
         lockedBackgroundSession(h)
         let sessionID = h.core.sessionID
-        h.clock.now += 600
+        h.clock.now += 120
         h.keepCaptureFresh()
         h.core.tick()
         h.core.deviceDidUnlock()
@@ -1784,7 +1850,6 @@ enum HostSessionLockLatchTests {
         for (delay, admitted) in [(5.0, true), (DictationProtocol.pendingRecordTTL + 5, false)] {
             let h = CoreHarness()
             defer { h.cleanup() }
-            h.core.setAlwaysOn(true)
             h.core.userStartSession()
             h.clock.isForeground = false
             h.core.foregroundChanged()
@@ -1837,19 +1902,15 @@ enum HostSessionLockLatchTests {
 
     /// The bounce after a lock whose unlock notification was missed while suspended, in Codex's order:
     /// willEnterForeground while the app state still reads background, an intent reconciled while the app
-    /// is inactive (before didBecomeActive), then didBecomeActive.
+    /// is inactive (before didBecomeActive), then didBecomeActive. The session survived the lock.
     @MainActor
-    private static func bounceWhileInactive(alwaysOn: Bool) {
+    private static func testBounceWhileInactive() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(alwaysOn)
-        h.core.userStartSession()
-        h.clock.isForeground = false
-        h.core.foregroundChanged()
-        h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, alwaysOn ? .active : .inactive)
+        lockedBackgroundSession(h)
+        let sessionID = h.core.sessionID
         h.clock.protectedDataAvailable = false
-        h.clock.now += 3_600   // suspended; the unlock notification is never delivered
+        h.clock.now += 120   // the unlock notification is never delivered
         h.clock.protectedDataAvailable = true
         try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
         h.writeIntent(.record, R)
@@ -1859,44 +1920,46 @@ enum HostSessionLockLatchTests {
         h.clock.isForeground = true   // .inactive counts as foreground
         h.core.reconcile(.urlOpen)   // the bounce's URL, before didBecomeActive
         h.core.appDidBecomeActive()
-        expectRecording(h, R, alwaysOn ? "always-on" : "off mode")
+        expectRecording(h, R, "bounce while inactive")
         TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.capture.startCount, 1)
     }
 
+    /// A lock during a dictation, then an unlock whose notification never arrives: the plain bounce (the
+    /// app comes forward and the activation reconciles) lifts the latch and admits the next request into
+    /// the session that survived the lock.
     @MainActor
-    private static func testBounceWhileInactiveAlwaysOn() { bounceWhileInactive(alwaysOn: true) }
-
-    @MainActor
-    private static func testBounceWhileInactiveOffMode() { bounceWhileInactive(alwaysOn: false) }
-
-    /// Off mode across lock, suspension and an unlock whose notification never arrives: the plain bounce
-    /// (the app comes forward and the activation reconciles) admits, exactly as before the mode existed.
-    @MainActor
-    private static func testOffModeBounceAfterAMissedUnlock() {
+    private static func testBounceAfterAMissedUnlock() {
         let h = CoreHarness()
         defer { h.cleanup() }
         h.record(R)
+        let sessionID = h.core.sessionID
         h.core.deviceWillLock()
-        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.core.current?.error, .deviceLocked)
+        TestSupport.expectEqual(h.core.session, .active)
         h.clock.isForeground = false
         h.core.foregroundChanged()
         h.clock.protectedDataAvailable = false
-        h.clock.now += 3_600
+        h.clock.now += 120
         h.clock.protectedDataAvailable = true
         h.writeIntent(.record, S)
+        h.core.appWillEnterForeground()
         h.clock.isForeground = true
-        h.core.foregroundChanged()
-        expectRecording(h, S, "off-mode bounce")
+        h.core.appDidBecomeActive()
+        expectRecording(h, S, "bounce")
+        TestSupport.expectEqual(h.core.sessionID, sessionID)
+        TestSupport.expectEqual(h.capture.startCount, 1)
     }
 
-    /// Always-on: the unlock notification arrives on resume, after the keyboard wrote its intent.
+    /// The unlock notification arrives on resume, after the keyboard wrote its intent.
     @MainActor
     private static func testLateUnlockNotificationStillAdmits() {
         let h = CoreHarness()
         defer { h.cleanup() }
         lockedBackgroundSession(h)
         h.clock.protectedDataAvailable = false
-        h.clock.now += 600
+        h.clock.now += 120
         h.clock.protectedDataAvailable = true
         try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
         h.writeIntent(.record, R)
@@ -1906,7 +1969,7 @@ enum HostSessionLockLatchTests {
         expectRecording(h, R, "late notification")
     }
 
-    /// Always-on: arriving in front while protected data is unavailable keeps the latch.
+    /// Arriving in front while protected data is unavailable keeps the latch.
     @MainActor
     private static func testActivationWithDataUnavailableKeepsTheLatch() {
         let h = CoreHarness()
@@ -1922,12 +1985,11 @@ enum HostSessionLockLatchTests {
         expectNotRecording(h, R, "activation while unavailable")
     }
 
-    /// Always-on: the microphone permission is answered after the lock: no capture starts.
+    /// The microphone permission is answered after the lock: no capture starts.
     @MainActor
     private static func testPermissionCompletionWhileLockedStartsNothing() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.capture.permission = .undetermined
         h.core.userStartSession()
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.capture.hasPendingRequest }, "no permission prompt")
@@ -1940,13 +2002,12 @@ enum HostSessionLockLatchTests {
         TestSupport.expectEqual(h.capture.startCount, 0)
     }
 
-    /// Always-on: a session start waiting for the foreground does not continue while locked, even when
-    /// the app arrives in front with protected data still unavailable.
+    /// A session start waiting for the foreground does not continue while locked, even when the app
+    /// arrives in front with protected data still unavailable.
     @MainActor
     private static func testPendingStartWhileLockedStartsNothing() {
         let h = CoreHarness()
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.capture.permission = .undetermined
         h.core.userStartSession()
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.capture.hasPendingRequest }, "no permission prompt")
@@ -1964,36 +2025,11 @@ enum HostSessionLockLatchTests {
         TestSupport.expect(h.core.session != .active, "no session while locked")
     }
 
-    /// Off mode has no latch: the lock ends the session as before, and nothing afterwards is refused.
-    @MainActor
-    private static func testOffModeHasNoLatch() {
-        let h = CoreHarness()
-        defer { h.cleanup() }
-        h.record(R)
-        h.core.deviceWillLock()
-        TestSupport.expect(!h.core.isLocked, "no latch with always-on off")
-        TestSupport.expectEqual(h.core.session, .inactive)
-        TestSupport.expectEqual(h.status?.error, .deviceLocked)
-        h.clock.now += 1
-        h.record(S)   // no unlock event needed
-        TestSupport.expectEqual(h.core.session, .active)
-    }
-
-    @MainActor
-    private static func testTurningAlwaysOnOffClearsTheLatch() {
-        let h = CoreHarness()
-        defer { h.cleanup() }
-        lockedBackgroundSession(h)
-        h.core.setAlwaysOn(false)
-        TestSupport.expect(!h.core.isLocked, "cleared")
-    }
-
-    /// Always-on and locked at launch: latched, but nothing is published before run recovery.
+    /// Locked at launch: latched, but nothing is published before run recovery.
     @MainActor
     private static func testLockBeforeLaunchPublishesNothing() {
         let h = CoreHarness(launch: false)
         defer { h.cleanup() }
-        h.core.setAlwaysOn(true)
         h.clock.protectedDataAvailable = false
         h.core.deviceWillLock()
         TestSupport.expectEqual(h.store.readStatus(), .absent)

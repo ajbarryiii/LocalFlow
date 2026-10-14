@@ -56,10 +56,62 @@ These lead to the same "Flow session" design Wispr Flow uses:
   - idle expiry
   - an audio interruption (for example a call)
   - an unrecoverable engine failure
-  - device lock
   - the user tapping "End session"
 
   The engine stops and the audio session deactivates. The next dictation needs
+  the app in the foreground again. A device lock does not end the session; it
+  cancels a dictation in progress (see "Device lock").
+
+### Device lock (contract change, 2026-10-13)
+
+The session survives a lock until idle expiry, as Wispr Flow's does. Before
+this change a lock ended the session.
+
+- **At lock** (`protectedDataWillBecomeUnavailable`): a dictation that is
+  starting, recording or transcribing is cancelled with `deviceLocked`.
+  Intents and results are class A and unavailable while locked, so it could
+  not finish. The session, the audio session and the engine keep running.
+  Buffers are dropped in the tap, as between dictations. `status.error` stays
+  nil.
+- **Idle expiry still applies.** The countdown is unchanged: it runs from the
+  end of the last dictation (or the session start) and restarts with each
+  dictation, never from the lock. A locked session ends at
+  `idleSince + sessionDuration` like any other. Expiry is checked on every
+  tick and before every reconciliation, so a request read after the deadline
+  (as after a resume) never joins the expired session. Interruptions,
+  unrecoverable engine failures and End session also still end it.
+- **Capture recovery while locked** rebuilds the engine within the running
+  audio session (`restart()`), as in the background, even if the app still
+  reads as foreground during the lock window. The audio session is never
+  reactivated while locked.
+- **Locked means no dictation.** The lock notification latches a locked
+  state. While locked, no intent is admitted and no session, pending capture
+  or dictation starts, even if the intent file is still readable: iOS posts
+  the notification before files become inaccessible. An intent read while
+  locked is refused with `deviceLocked` and never admitted later. An intent
+  the host could not read while locked gets only the normal freshness check
+  after unlock; there is no "issued before unlock" rule, because the
+  keyboard writes an intent before the host comes forward. The app checks
+  `isProtectedDataAvailable` at launch, so an app launched while locked
+  starts latched.
+- **Unlatching.** The latch clears on `protectedDataDidBecomeAvailable`, and
+  also on the `willEnterForeground` and `didBecomeActive` events themselves
+  (not a derived foreground state, which can still read background during
+  `willEnterForeground`) when protected data is available, before any
+  admission runs, because a suspended app can miss the unlock notification.
+  It is never cleared by polling during the will-become-unavailable window,
+  where UIKit still reports data as available.
+- **Unlock: dictation continues instantly.** Nothing about the session
+  restarts. The next record intent from the keyboard in any app is admitted
+  into the same session without opening LocalFlow.
+- **Status heartbeat:** it continues while locked. `status.json` is class C,
+  so it is writable after first unlock.
+- **Indicator:** iOS shows its orange microphone indicator throughout,
+  including on the lock screen, until the session ends.
+- **Costs accepted.** The microphone stays open at the lock screen for up to
+  the session length after the last dictation, so the battery cost is higher
+  than ending at lock. iOS may still terminate the backgrounded app for
+  memory (jetsam), since the model stays loaded; the next dictation then needs
   the app in the foreground again.
 
 ## Components
@@ -86,6 +138,11 @@ keyboard:
   - injectable compute units (default unchanged)
   - streaming SHA-256 verification, so loading never reads a whole 330 MB file
     into memory
+- `Sources/Dictionary/*.swift`: the macOS custom-dictionary types (boosting
+  and correction), compiled only because the Parakeet service refers to them.
+  The iOS app transcribes through `transcribe(samples:directory:)` with no
+  dictionary: nothing is boosted, no dictionary is read or stored, and no
+  audio is retained for correction.
 - `Sources/LocalDictationCore.swift`: deterministic "press enter" and spoken
   delimiter formatting.
 
@@ -425,9 +482,10 @@ No transcript history is stored.
     `heartbeatInterval` while a session is starting or active.
   - Counts idle expiry only while no dictation is starting, recording or
     transcribing.
-  - Ends the session on `protectedDataWillBecomeUnavailable` (device lock),
-    on an interruption, or on an engine failure it cannot recover from in the
-    background.
+  - Ends the session on idle expiry, on an interruption, or on an engine
+    failure it cannot recover from in the background. On
+    `protectedDataWillBecomeUnavailable` (device lock) it cancels a dictation
+    in progress and latches the lock, but keeps the session ("Device lock").
 - **`MicrophoneCapture`**:
   - Configures `AVAudioSession` as `.playAndRecord` with
     `[.mixWithOthers, .allowBluetoothHFP]`, and activates it only in the
@@ -546,7 +604,8 @@ No transcript history is stored.
    transmits either beyond the instance's memory.
 6. Capture requires a session started in the foreground. Recording requires a
    fresh keyboard intent that the host admits. Recording ends at the maximum
-   duration or when the keyboard disappears. Device lock ends the session.
+   duration or when the keyboard disappears. Device lock cancels a dictation
+   in progress and admits none until unlock; the session ends at idle expiry.
 
 ## Build and test (iOS/Makefile)
 
@@ -592,7 +651,9 @@ No transcript history is stored.
 - **Device, manual, required before merge**:
   - bounce on iOS 26 and 27
   - background capture keep-alive
-  - lock during a session
+  - lock during a session: it stays open (orange indicator on the lock
+    screen) until idle expiry; lock during a dictation cancels it; after
+    unlock, dictation from another app needs no app switch
   - phone-call interruption
   - Bluetooth route change
   - background transcription latency and memory, Neural Engine against CPU
@@ -1260,124 +1321,6 @@ the host is quiet. For an interrupted gesture, only the first key's
 position may be taken from the host's observable insertion point. Every
 later key is checked exactly, case included, relative to it.
 
-## Power log (test builds only; user decision 2026-10-10)
-
-**Purpose.** Estimate what an always-open microphone and transcription cost
-in battery during real daily use. iOS has no public per-app energy API and
-allows no separate daemon, so the host app records content-free proxies while
-it runs. Apple's Power Profiler (procedure in `iOS/POWER-TESTING.md`) gives
-exact per-category energy impact for short controlled runs. The two
-complement each other.
-
-**Build gate.** `make -C iOS POWER_LOG=1` adds `-D LOCALFLOW_POWER_LOG` to the
-host app only. Without it (the default, and every production build) the app
-contains no recorder, writes no power file and shows no Power section.
-`POWER_LOG=1` builds write every product to a separate output directory
-(`$(BUILD_DIR)-power`), so the two configurations never share objects,
-binaries or bundles. A production build therefore cannot reuse an
-instrumented product, whatever the make version, flags or timing. This
-replaces any configuration-stamp or parse-time invalidation for
-`POWER_LOG` (decided after three review rounds on that mechanism). Output
-paths stay relative in the dependency graph, as before. Normalization
-(`abspath`) is used only for the refusal check: a `POWER_LOG=0` build into
-any directory whose normalized path ends in `-power` is refused. `clean`
-quotes each directory as one whole path. The general
-configuration stamp's one-run-late behavior under make 3.81 for other
-variables predates the power log and is out of scope. The pure
-core in HostCore is compiled and tested in every `make check`, but nothing
-outside the gate calls it. Device test builds published to the OTA page set
-`POWER_LOG=1`. The keyboard extension is never instrumented.
-
-**Approval.** The user explicitly approved this local, content-free,
-test-build-only persistence on 2026-10-10. It is an exception to "no
-persistent logging" and must not reach a production build.
-
-**What is recorded.** One CSV row per sample, numbers and enums only. Never
-text, audio, transcripts, field or app context, or identifiers beyond the
-build number and the hardware model identifier:
-
-- wall time (ISO 8601 UTC) and monotonic uptime (seconds)
-- trigger: `periodic`, `state`, `battery`, `thermal`, `powerMode`, `launch`,
-  `foreground`, `background`, `terminate`
-- host state:
-  - `idle`: no audio session
-  - `micOpen`: audio session active, not capturing a dictation
-  - `recording`
-  - `transcribing`
-  - `preparing`: model load or compile
-- app state: `foreground` or `background`
-- battery level (raw `UIDevice.batteryLevel`, −1 when unknown), and battery
-  state: `unplugged`, `charging`, `full` or `unknown`
-- Low Power Mode, and thermal state: `nominal`, `fair`, `serious` or
-  `critical`
-- cumulative process CPU time, user and system, from `getrusage(RUSAGE_SELF)`
-- the process memory footprint (`ProcessMemory`)
-- compute units in use (the existing read-only value), when loaded
-
-**When.**
-- **Samples:** on every host-state and app-state transition, on battery
-  level/state, thermal and Low Power Mode notifications, at launch and at
-  termination, and every 60 s while the app runs.
-- **Probe cost:** the recorder samples only while something else (the app
-  in front, or an active audio session) keeps the process running. It never
-  keeps the process awake or delays suspension on its own, and adds no
-  wakeups beyond the 60 s timer. When background execution is no longer
-  justified (the app is in the background with no audio session, e.g.
-  after lock or idle expiry), it records the boundary, flushes, and
-  invalidates the timer. Sampling resumes on foreground or a new session.
-  Samples are buffered and written at most every 5 minutes, and at every
-  such boundary and at termination. All file work (encoding, rotation,
-  writes, reads for the summary, snapshots for export, clear) runs on one
-  serialized owner off the main thread, so readers see one consistent
-  snapshot and a clear is never undone by a read already in flight.
-- **Gaps:** time the app was suspended or not running appears as a gap
-  between consecutive samples. The analysis treats a gap as the "LocalFlow
-  inactive" baseline. Its charging history is unknown: the endpoints
-  cannot prove the phone stayed unplugged in between. Gap figures are
-  labelled as such and are never presented as a controlled measurement.
-
-**Storage.** `Application Support/PowerLog/power-log.csv` in the app's own
-container, excluded from backup. It is never in the App Group: the keyboard
-cannot read it. It rotates at 4 MB to `power-log.1.csv` (one older file
-kept), and there is a Clear action. Nothing is transmitted. The file starts
-with a header row and a `# schema=1` comment line.
-
-**Pure core (HostCore, tested).**
-- **Model:** the sample model and CSV encoding (stable column order, `.`
-  decimal separator, no locale).
-- **Rotation:** the decision when to rotate.
-- **Summary:**
-  - per host state: total time, CPU seconds and battery percent consumed
-  - drain rate in percent per hour for `micOpen` in the background versus
-    the inactive-gap baseline
-  - CPU seconds per transcription
-- **Charging:** intervals in which the battery state is not `unplugged` are
-  excluded from drain figures.
-- **No automatic projection** (changed after the power-log review): sessions
-  need the screen on and end at lock, while gaps include screen-off time,
-  so the difference would mostly measure the display. The summary shows
-  both observed rates, labelled "Observed whole-device drain; screen
-  conditions differ. Microphone cost requires matched runs."
-  (POWER-TESTING.md).
-- **Confidence:** a drain figure is shown only with at least 1 h of qualifying
-  time and at least 3 percentage points of drop. Otherwise it reads
-  "not enough data".
-
-**Diagnostics (test builds only).** A Power section shows:
-- the summary above
-- the log's size and its time span
-- **Export:** flushes, then shares immutable snapshot copies of the CSV
-  (both files when a rotated one exists) through the share sheet. The
-  copies are excluded from backup and deleted after sharing completes.
-- **Clear:** deletes the log.
-
-A note says that the app's true share of total battery use is in Settings →
-Battery, which an app cannot read.
-
-**Agent access.** An agent on the Mac can copy the log from a paired device
-with `xcrun devicectl device copy from --domain-type appDataContainer`.
-`iOS/POWER-TESTING.md` documents the exact command.
-
 ### Keyboard round 9 notes (typing model v2, 2026-10-10)
 
 - **Implemented.** The key queue, the Return barrier, identity waits, the
@@ -1408,88 +1351,6 @@ with `xcrun devicectl device copy from --domain-type appDataContainer`.
     once-per-context repair rule without the in-flight check (same class,
     not hit by any seed).
   - Device testing of v2 typing is pending.
-
-### Always-on microphone test mode (power test builds only; user decision 2026-10-10)
-
-**Purpose.** Measure what an always-open microphone really costs, including
-locked, screen-off hours. Normal sessions end at lock and on idle expiry, so
-the power log alone cannot observe this.
-
-**Gate.**
-- **Where it exists:** only in `POWER_LOG=1` builds, behind the same
-  `LOCALFLOW_POWER_LOG` condition. Production builds have no toggle and no way
-  to enable it.
-- **The host core:** HostSessionCore takes an `alwaysOn` option that defaults
-  to off. Only gated code sets it. Tests cover it in every `make check`.
-- **The keyboard:** unchanged.
-
-**Control.**
-- **The toggle:** Diagnostics → Power has a switch, "Always-on microphone
-  (test)", off by default. Its state persists in the app's own UserDefaults,
-  never the App Group.
-- **The banner:** while the mode is on, Home shows "Always-on test mode: the
-  microphone stays open, even when locked" with a "Turn off" button.
-
-**Behavior while on.**
-- **Idle expiry:** disabled.
-- **Device lock:** it no longer ends the session. An in-progress dictation is
-  still cancelled at lock exactly as today: intents and results are class A
-  and unavailable while locked. The session, the audio session and the
-  engine keep running. Buffers are dropped in the tap, as between dictations.
-- **Locked means no dictation.** This applies only while always-on is on.
-  With always-on off (the default, and every production build), behavior
-  is exactly as before the mode existed: lock ends the session and no
-  session starts in the background, so nothing can be admitted while
-  locked. While always-on is on, the lock notification latches a locked
-  state until `protectedDataDidBecomeAvailable`. While locked, no intent is
-  admitted and no pending capture or dictation starts, even if the intent
-  file is still readable: iOS posts the notification before files become
-  inaccessible. An intent read while locked is refused and never admitted
-  later. An intent the host could not read while locked gets only the normal
-  freshness check after unlock; there is no "issued before unlock" rule,
-  because the keyboard writes an intent before the host comes forward.
-  The latch clears on `protectedDataDidBecomeAvailable`, and also on the
-  `willEnterForeground` and `didBecomeActive` events themselves (not a
-  derived foreground state, which can still read background during
-  `willEnterForeground`) when protected data is available, before any
-  admission runs, because a suspended app can miss the unlock notification.
-  Turning always-on off clears the latch. It
-  is never cleared by polling during the will-become-unavailable window,
-  where UIKit still reports data as available (added after the always-on
-  review).
-- **Unlock:** dictation continues instantly. Nothing about the session
-  restarts.
-- **Other end reasons:** unchanged. These are an interruption, an
-  unrecoverable engine failure, and the user's End session. The mode never
-  starts a session in the background. The next session started in the
-  foreground is always-on again.
-- **Turning it off:** applies at once. Idle expiry counts from the moment the
-  mode is turned off. If the device is locked by then, the session ends at the
-  next lock.
-- **Retention:** no new audio is kept. The rule that drops buffers between
-  dictations is unchanged. iOS shows its microphone indicator throughout,
-  including on the lock screen.
-- **Status heartbeat:** it continues while locked. `status.json` is class C, so
-  it is writable after first unlock. This is part of the cost being measured.
-
-**Power log, schema 2.** Two columns are added after the existing ones:
-- `always_on`: `true` or `false`, the mode at sample time
-- `protected_data`: `available` or `unavailable`, from
-  `UIApplication.isProtectedDataAvailable`. "Unavailable" means locked (a
-  proxy for screen off).
-
-Samples are also taken on protected-data notifications. Readers must accept
-schema 1 files. The summary adds an observed drain rate for `micOpen` while
-locked with always-on. It is labelled like the other observed rates, with no
-automatic projection. The matched comparison is in `POWER-TESTING.md`: an
-always-on run while locked against a no-session run while locked, with the
-same duration and conditions, for example overnight.
-
-**Risks accepted for the test.**
-- **Jetsam:** iOS may still terminate the backgrounded app for memory, since
-  the model stays loaded. The power log shows this as a gap or a `terminate`
-  row.
-- **Battery cost to the user:** this cost is the point of the test.
 
 ### Keyboard round 10 notes (2026-10-10)
 

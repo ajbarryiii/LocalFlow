@@ -39,12 +39,8 @@ struct LocalFlowIOSTests {
             ("TouchRate", TouchRateTests.tests),
             ("FieldProfile", FieldProfileTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
-            ("PowerLog", PowerLogTests.tests),
-            ("PowerLogSummary", PowerLogSummaryTests.tests),
-            ("PowerLogStore", PowerLogStoreTests.tests),
-            ("HostSessionAlwaysOn", HostSessionAlwaysOnTests.tests),
+            ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
-            ("ProtectedDataState", ProtectedDataStateTests.tests),
         ]
         var count = 0
         for (suite, tests) in suites {

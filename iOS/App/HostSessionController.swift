@@ -25,10 +25,6 @@ final class HostSessionController: ObservableObject {
     @Published var bounceVisible = false
     /// "Try it" has the keyboard in this app, so an admission there must not cover it.
     var tryItVisible = false
-    #if LOCALFLOW_POWER_LOG
-    /// The always-on microphone test mode (power test builds only), mirrored for Diagnostics and Home.
-    @Published private(set) var alwaysOnMicrophone = false
-    #endif
 
     let configuration: LocalFlowConfiguration?
     let preferences = AppPreferences()
@@ -85,26 +81,15 @@ final class HostSessionController: ObservableObject {
         #endif
         transcriber.onStateChange = { [weak core] in core?.modelStateChanged() }
         core.onChange = { [weak self] in self?.refresh() }
-        #if LOCALFLOW_POWER_LOG
-        // Test builds only: a passive observer of every published status (ARCHITECTURE.md, "Power log").
-        core.onPublish = { PowerRecorder.shared.hostStatusPublished($0) }
-        alwaysOnMicrophone = AlwaysOnPreference.isOn
-        core.setAlwaysOn(alwaysOnMicrophone)   // before launch: recorded, not published
-        #endif
     }
 
     /// Call once UIKit has finished launching: run recovery, the launch reconciliation, then the timer
     /// and observers.
     func launch() {
         guard let core, !core.isLaunched else { return }
-        #if LOCALFLOW_POWER_LOG
-        let transcriber = self.transcriber
-        PowerRecorder.shared.start(computeUnits: { transcriber.activeUnits },
-                                   alwaysOn: { [weak core] in core?.alwaysOn ?? false },
-                                   hostLocked: { [weak core] in core?.isLocked ?? false })
-        #endif
-        // Always-on, locked at launch: nothing may be admitted until an unlock (the latch is always-on only).
-        if core.alwaysOn, !UIApplication.shared.isProtectedDataAvailable { core.deviceWillLock() }
+        Self.removePowerLogLeftovers()
+        // Locked at launch: nothing may be admitted until an unlock.
+        if !UIApplication.shared.isProtectedDataAvailable { core.deviceWillLock() }
         core.launch()
         let timer = Timer(timeInterval: HostSessionPolicy.tickInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -119,16 +104,6 @@ final class HostSessionController: ObservableObject {
     }
 
     var isConfigured: Bool { core != nil }
-
-    #if LOCALFLOW_POWER_LOG
-    /// Diagnostics → Power and the Home banner: stored in the app's own defaults, applied at once.
-    func setAlwaysOnMicrophone(_ on: Bool) {
-        AlwaysOnPreference.isOn = on
-        alwaysOnMicrophone = on
-        core?.setAlwaysOn(on)
-        PowerRecorder.shared.alwaysOnChanged()
-    }
-    #endif
 
     // MARK: User actions
 
@@ -209,6 +184,17 @@ final class HostSessionController: ObservableObject {
                                                            spokenDelimitersEnabled: spokenDelimitersEnabled)
                 return (processed.output, processed.shouldPressEnter)
             })
+    }
+
+    /// The removed power log's files and its test-mode switch, left behind by earlier test builds: the log,
+    /// an export copy and the always-on choice. Idempotent; a failure is retried at the next launch.
+    private static func removePowerLogLeftovers() {
+        let files = FileManager.default
+        if let support = files.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            try? files.removeItem(at: support.appendingPathComponent("PowerLog", isDirectory: true))
+        }
+        try? files.removeItem(at: files.temporaryDirectory.appendingPathComponent("PowerLogExport", isDirectory: true))
+        UserDefaults.standard.removeObject(forKey: "powerTestAlwaysOnMicrophone")
     }
 
     private func inputChanged(_ input: InputPortKind?) {

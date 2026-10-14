@@ -16,9 +16,6 @@ APP_PROFILE ?=
 KEYBOARD_PROFILE ?=
 BUILD_DIR ?= build/$(PLATFORM)
 SWIFT_FLAGS ?=
-# 1 builds a power test build: the host app (never the keyboard) gets
-# -D LOCALFLOW_POWER_LOG and records the content-free power log (POWER-TESTING.md).
-POWER_LOG ?= 0
 # Optional keychain holding the signing identity (device builds signed over SSH).
 CODESIGN_KEYCHAIN ?=
 CODESIGN_KEYCHAIN_FLAG = $(if $(strip $(CODESIGN_KEYCHAIN)),--keychain "$(CODESIGN_KEYCHAIN)")
@@ -26,29 +23,9 @@ SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
 ICON_SOURCE ?= ../Resources/AppIcon-Dev-Source.png
 PYTHON ?= python3
 
-ifeq ($(filter 0 1,$(POWER_LOG)),)
-$(error POWER_LOG must be 0 or 1)
-endif
-APP_POWER_LOG_FLAGS = $(if $(filter 1,$(POWER_LOG)),-D LOCALFLOW_POWER_LOG)
-# A power test build writes every product to $(BUILD_DIR)-power, so the two
-# configurations never share objects, binaries or bundles, whatever the make
-# version, flags or timing (ARCHITECTURE.md, "Power log" → Build gate). Every
-# product path below uses OUT_DIR, never BUILD_DIR. Paths stay relative in the
-# dependency graph (a trailing / is dropped before the suffix). Only the refusal
-# normalizes (abspath drops /. and .. too): a POWER_LOG=0 build into a directory
-# whose normalized path ends in -power is refused. A path with spaces splits into
-# words there, and any word ending in -power refuses (conservative).
-POWER_SUFFIX = $(if $(filter 1,$(POWER_LOG)),-power)
-out_dir = $(1:%/=%)$(POWER_SUFFIX)
 # A value as one single-quoted shell word, spaces and quotes kept (subst does not
 # collapse whitespace): for paths handed to the shell whole, as in clean.
 shell_quote = '$(subst ','\'',$(1))'
-OUT_DIR = $(call out_dir,$(BUILD_DIR))
-ifeq ($(POWER_LOG),0)
-ifneq ($(filter %-power,$(abspath $(BUILD_DIR))),)
-$(error BUILD_DIR=$(BUILD_DIR) is a power test build's directory ($(abspath $(BUILD_DIR))); drop -power, or set POWER_LOG=1)
-endif
-endif
 
 ifeq ($(PLATFORM),simulator)
 SDK = iphonesimulator
@@ -81,12 +58,15 @@ HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
+# The Parakeet service refers to the custom-dictionary types (boosting and
+# correction). The iOS app compiles them but transcribes without a dictionary.
+DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift
-APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTATION_CORE_SOURCES)
+APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
 
-OBJ_DIR = $(OUT_DIR)/obj
-APP_BUNDLE = $(OUT_DIR)/LocalFlow.app
+OBJ_DIR = $(BUILD_DIR)/obj
+APP_BUNDLE = $(BUILD_DIR)/LocalFlow.app
 APPEX_BUNDLE = $(APP_BUNDLE)/PlugIns/LocalFlowKeyboard.appex
 APP_BINARY = $(OBJ_DIR)/LocalFlow
 KEYBOARD_BINARY = $(OBJ_DIR)/LocalFlowKeyboard
@@ -143,7 +123,7 @@ all: signing-requirements $(APP_SIGNATURE)
 binaries: $(APP_BINARY) $(KEYBOARD_BINARY)
 
 # Rebuild when identifiers, flags, signing inputs or source lists change.
-CONFIGURATION = $(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|POWER_LOG=$(POWER_LOG)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
+CONFIGURATION = $(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
 configuration:
 	@mkdir -p "$(OBJ_DIR)"
 	@printf '%s\n' "$(CONFIGURATION)" > "$(CONFIG_STAMP).tmp"
@@ -206,7 +186,7 @@ endif
 
 $(APP_BINARY): $(APP_SOURCES) $(CONFIG_STAMP) $(LINKED_APP_ENTITLEMENTS) Makefile
 	@mkdir -p "$(@D)"
-	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) $(APP_POWER_LOG_FLAGS) -module-name LocalFlow \
+	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) -module-name LocalFlow \
 		$(call embedded_entitlements,$(APP_ENTITLEMENTS)) -o "$@" $(APP_SOURCES)
 
 $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITLEMENTS) Makefile
@@ -260,8 +240,8 @@ endif
 
 check: typecheck test lint
 
-# Always against the simulator SDK, independent of PLATFORM. The self-test and
-# power-log variants are checked too, so they cannot rot outside their builds.
+# Always against the simulator SDK, independent of PLATFORM. The self-test
+# variant is checked too, so it cannot rot outside its builds.
 typecheck:
 	@set -e; sdk=$$(xcrun --sdk iphonesimulator --show-sdk-path); \
 	flags="-typecheck -warnings-as-errors -swift-version 5 -parse-as-library -target arm64-apple-ios$(DEPLOYMENT_TARGET)-simulator -sdk $$sdk $(ACCELERATE_FLAGS) $(SWIFT_FLAGS)"; \
@@ -269,8 +249,6 @@ typecheck:
 	xcrun --sdk iphonesimulator swiftc $$flags -module-name LocalFlow $(APP_SOURCES); \
 	echo "Type-checking the app (self-test variant)"; \
 	xcrun --sdk iphonesimulator swiftc $$flags -D LOCALFLOW_SELFTEST -module-name LocalFlow $(APP_SOURCES); \
-	echo "Type-checking the app (power-log variant)"; \
-	xcrun --sdk iphonesimulator swiftc $$flags -D LOCALFLOW_POWER_LOG -module-name LocalFlow $(APP_SOURCES); \
 	echo "Type-checking the keyboard"; \
 	xcrun --sdk iphonesimulator swiftc $$flags $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_SOURCES)
 
@@ -317,11 +295,10 @@ run-sim: install-sim
 	xcrun simctl launch --terminate-running-process "$$udid" "$(BUNDLE_ID)"
 
 SMOKE_BUILD_DIR ?= build/smoke-simulator
-SMOKE_OUT_DIR = $(call out_dir,$(SMOKE_BUILD_DIR))
 SMOKE_PHRASE ?= The blue lantern is beside the green notebook.
 SMOKE_COMPUTE ?= cpuAndNeuralEngine
 SMOKE_TIMEOUT ?= 900
-SMOKE_LOG = $(SMOKE_OUT_DIR)/obj/selftest.log
+SMOKE_LOG = $(SMOKE_BUILD_DIR)/obj/selftest.log
 
 # Transcribes invented speech from `say` inside the self-test build. The app
 # prints only a pass/fail line with timings, never the transcript.
@@ -330,11 +307,11 @@ smoke-sim:
 	@$(MAKE) --no-print-directory all PLATFORM=simulator BUILD_DIR="$(SMOKE_BUILD_DIR)" SWIFT_FLAGS="$(SWIFT_FLAGS) -D LOCALFLOW_SELFTEST"
 	@set -e; $(SIM_RESOLVE); $(SIM_BOOT); \
 	trap '[ "$$booted_here" = 1 ] && xcrun simctl shutdown "$$udid"' EXIT; \
-	xcrun simctl install "$$udid" "$(SMOKE_OUT_DIR)/LocalFlow.app"; \
-	say -o "$(SMOKE_OUT_DIR)/obj/selftest.wav" --data-format=LEI16@16000 "$(SMOKE_PHRASE)"; \
+	xcrun simctl install "$$udid" "$(SMOKE_BUILD_DIR)/LocalFlow.app"; \
+	say -o "$(SMOKE_BUILD_DIR)/obj/selftest.wav" --data-format=LEI16@16000 "$(SMOKE_PHRASE)"; \
 	container=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" data); \
 	mkdir -p "$$container/tmp"; \
-	mv "$(SMOKE_OUT_DIR)/obj/selftest.wav" "$$container/tmp/localflow-selftest.wav"; \
+	mv "$(SMOKE_BUILD_DIR)/obj/selftest.wav" "$$container/tmp/localflow-selftest.wav"; \
 	( trap 'kill $$sleeper 2>/dev/null; exit 0' TERM; sleep $(SMOKE_TIMEOUT) & sleeper=$$!; wait $$sleeper; \
 		xcrun simctl terminate "$$udid" "$(BUNDLE_ID)" ) >/dev/null 2>&1 & watchdog=$$!; \
 	echo "Running the self-test on $(SIM_DEVICE) (compute: $(SMOKE_COMPUTE))"; \
@@ -356,8 +333,7 @@ smoke-sim:
 # A name or identifier from `xcrun devicectl list devices`.
 DEVICE ?=
 SMOKE_DEVICE_BUILD_DIR ?= build/smoke-device
-SMOKE_DEVICE_OUT_DIR = $(call out_dir,$(SMOKE_DEVICE_BUILD_DIR))
-SMOKE_DEVICE_LOG = $(SMOKE_DEVICE_OUT_DIR)/obj/selftest.log
+SMOKE_DEVICE_LOG = $(SMOKE_DEVICE_BUILD_DIR)/obj/selftest.log
 # 0 reruns the self-test build already on DEVICE without building or reinstalling it,
 # so a second run shows whether Core ML kept its on-device specialization (a warm run).
 SMOKE_DEVICE_INSTALL ?= 1
@@ -385,9 +361,9 @@ ifneq ($(SMOKE_DEVICE_INSTALL),0)
 	@[ -n "$(strip $(PARAKEET_BUNDLE_DIR))" ] || { echo "smoke-device needs PARAKEET_BUNDLE_DIR (the Parakeet model bundle)." >&2; exit 1; }
 	@$(MAKE) --no-print-directory all PLATFORM=device BUILD_DIR="$(SMOKE_DEVICE_BUILD_DIR)" SWIFT_FLAGS="$(SWIFT_FLAGS) -D LOCALFLOW_SELFTEST"
 endif
-	@set -e; $(DEVICE_UNLOCKED); obj="$(SMOKE_DEVICE_OUT_DIR)/obj"; mkdir -p "$$obj"; \
+	@set -e; $(DEVICE_UNLOCKED); obj="$(SMOKE_DEVICE_BUILD_DIR)/obj"; mkdir -p "$$obj"; \
 	if [ "$(SMOKE_DEVICE_INSTALL)" != 0 ]; then \
-		xcrun devicectl device install app --quiet --device "$(DEVICE)" "$(SMOKE_DEVICE_OUT_DIR)/LocalFlow.app"; \
+		xcrun devicectl device install app --quiet --device "$(DEVICE)" "$(SMOKE_DEVICE_BUILD_DIR)/LocalFlow.app"; \
 	fi; \
 	copy_audio() { xcrun devicectl device copy to --quiet --device "$(DEVICE)" --domain-type appDataContainer \
 		--domain-identifier "$(BUNDLE_ID)" --source "$$1" --destination tmp/localflow-selftest.wav; }; \
@@ -410,11 +386,10 @@ endif
 .PHONY: e2e-sim e2e-sim-probe e2e-sim-scenarios
 
 E2E_BUILD_DIR ?= build/e2e-simulator
-E2E_OUT_DIR = $(call out_dir,$(E2E_BUILD_DIR))
 E2E_SIM_DEVICE ?= LocalFlow-E2E
 E2E_PHRASE ?= $(SMOKE_PHRASE)
 E2E_AUDIO = tmp/localflow-synthetic-mic.wav
-E2E_LOG = $(E2E_OUT_DIR)/obj/e2e-app.log
+E2E_LOG = $(E2E_BUILD_DIR)/obj/e2e-app.log
 # Launch options of the self-test build (see App/SelfTest.swift).
 E2E_SKIP_ONBOARDING ?=
 E2E_SCREEN ?=
@@ -443,12 +418,12 @@ e2e-sim:
 	@$(MAKE) --no-print-directory all PLATFORM=simulator BUILD_DIR="$(E2E_BUILD_DIR)" SWIFT_FLAGS="$(SWIFT_FLAGS) -D LOCALFLOW_SELFTEST"
 	@set -e; $(SIM_RESOLVE); $(SIM_BOOT); \
 	xcrun simctl terminate "$$udid" "$(BUNDLE_ID)" >/dev/null 2>&1 || true; \
-	xcrun simctl install "$$udid" "$(E2E_OUT_DIR)/LocalFlow.app"; \
+	xcrun simctl install "$$udid" "$(E2E_BUILD_DIR)/LocalFlow.app"; \
 	container=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" data); \
 	group=$$(xcrun simctl get_app_container "$$udid" "$(BUNDLE_ID)" "$(APP_GROUP)"); \
 	mkdir -p "$$container/tmp"; \
-	say -o "$(E2E_OUT_DIR)/obj/synthetic-mic.wav" --data-format=LEI16@16000 "$(E2E_PHRASE)"; \
-	mv "$(E2E_OUT_DIR)/obj/synthetic-mic.wav" "$$container/$(E2E_AUDIO)"; \
+	say -o "$(E2E_BUILD_DIR)/obj/synthetic-mic.wav" --data-format=LEI16@16000 "$(E2E_PHRASE)"; \
+	mv "$(E2E_BUILD_DIR)/obj/synthetic-mic.wav" "$$container/$(E2E_AUDIO)"; \
 	rm -f "$(E2E_LOG)"; \
 	log="$(E2E_LOG)"; case "$$log" in /*) ;; *) log="$(CURDIR)/$$log" ;; esac; \
 	SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" \
@@ -573,10 +548,6 @@ e2e-sim-scenarios:
 	pass url-hint-stale
 
 clean:
-	@# Each directory reaches the shell as one exact path; its -power variant drops a
-	@# final / there, so repeated spaces, slashes and quotes survive intact.
-	rm -rf build $(call shell_quote,$(HOST_BUILD_DIR))
-	for d in $(call shell_quote,$(BUILD_DIR)) $(call shell_quote,$(SMOKE_BUILD_DIR)) \
-		$(call shell_quote,$(SMOKE_DEVICE_BUILD_DIR)) $(call shell_quote,$(E2E_BUILD_DIR)); do \
-		rm -rf "$$d" "$${d%/}-power"; \
-	done
+	@# Each directory reaches the shell as one exact path, spaces and quotes included.
+	rm -rf build $(call shell_quote,$(HOST_BUILD_DIR)) $(call shell_quote,$(BUILD_DIR)) $(call shell_quote,$(SMOKE_BUILD_DIR)) \
+		$(call shell_quote,$(SMOKE_DEVICE_BUILD_DIR)) $(call shell_quote,$(E2E_BUILD_DIR))

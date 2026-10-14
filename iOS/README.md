@@ -36,11 +36,10 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `PARAKEET_BUNDLE_DIR` | empty | model bundle to embed |
 | `BUILD_DIR` | `build/$(PLATFORM)` | output directory |
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
-| `POWER_LOG` | `0` | `1` builds a power test build into `$(BUILD_DIR)-power` (e.g. `build/simulator-power`): the host app records a content-free power log ([POWER-TESTING.md](POWER-TESTING.md)); never for production |
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
 Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
-`HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`) can be overridden, for
+`HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`, `DICTIONARY_SOURCES`) can be overridden, for
 example `make -C iOS check SHARED_SOURCES= HOSTCORE_SOURCES=`.
 
 ## Simulator
@@ -238,14 +237,13 @@ Setup and session:
 - [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
 - [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
-- [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at expiry, lock, a call and End session.
+- [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
 - [ ] Field binding: dictate into Try it field A, switch to field B mid-request; no auto-insert into B, and the chip appears.
 - [ ] Undo: removes exactly the dictation; disappears after typing, cursor moves, 30 s, or hiding the keyboard.
 - [ ] Kill LocalFlow during recording: the request reports interrupted and never restarts; no result file remains.
 - [ ] Battery: 30 min idle session vs no session (and vs Wispr Flow if installed).
-- [ ] Power test build (`POWER_LOG=1`): Diagnostics → Power shows both observed rates with their notes; Export shares snapshot copies that are gone afterwards; Clear empties the log ([POWER-TESTING.md](POWER-TESTING.md)).
-- [ ] Always-on test mode (`POWER_LOG=1`): the switch persists; the Home banner shows and Turn off works; a lock cancels a dictation but the session stays, with the orange indicator on the lock screen; after unlock the next dictation starts without opening LocalFlow; turning it off restores idle expiry and lock ending the session.
+- [ ] Device lock: with a session open, lock; the orange indicator stays on the lock screen. Unlock and dictate from another app without opening LocalFlow. Lock during a dictation: it is cancelled and the keyboard shows "Dictation stopped when iPhone locked". Leave it locked past the session length: the session ends and the indicator disappears.
 - [ ] Peak memory during a 5-minute dictation; no jetsam in the background.
 
 Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practice):
