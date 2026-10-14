@@ -242,7 +242,7 @@ simulator. Record results before merge. The device rows are required by
 AGENTS.md.
 
 Setup and session:
-- [ ] Privacy policy: the home-screen link opens the public policy in the browser only after a tap; the link sends no dictation, recordings, or app metadata. Verify the published policy is readable on iPhone.
+- [ ] Privacy policy: the home-screen link opens the public policy in the browser only after a tap; the link sends no dictation, recordings, or app metadata. Verify the published policy is readable on iPhone. Simulator verification passed on 2026-10-14 with build 9: the link opened the published policy in Safari, and its mobile layout was readable. The physical iPhone TestFlight check remains pending.
 - [ ] Report a bug: the home-screen row opens the draft preview; Write email opens the configured email app with the correct recipient, subject, prompts, and version/device metadata; cancel sends nothing. With no email handler, the app shows the fallback and the address/draft remain readable and selectable. Check the layout on iPhone and iPad.
 - [x] Device-signed build installs; signatures and entitlements verified (2026-10-09).
 - [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
