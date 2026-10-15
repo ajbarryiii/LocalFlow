@@ -56,6 +56,7 @@ final class KeyboardDictationClient: ObservableObject {
     private var ledger = KeyboardResultLedger()
     private var isVisible = false
     private var hapticsEnabled = false
+    private var keyHapticsEnabled = false
     private var generators: (impact: UIImpactFeedbackGenerator, notification: UINotificationFeedbackGenerator)?
     private var timers: [Timer] = []
     private var observations: [DarwinNotifier.Observation] = []
@@ -72,8 +73,9 @@ final class KeyboardDictationClient: ObservableObject {
 
     private var notifier: DarwinNotifier? { configuration.map(DarwinNotifier.init(configuration:)) }
 
-    /// Haptics need Full Access and the user's setting; the keys use the same rule.
+    /// Haptics need Full Access and the user's setting; the keys use the same rule with their own setting.
     var hapticsAllowed: Bool { hapticsEnabled }
+    var keyHapticsAllowed: Bool { keyHapticsEnabled }
 
     private var access: KeyboardAccess {
         guard target?.hasFullAccess == true else { return .noFullAccess }
@@ -88,9 +90,12 @@ final class KeyboardDictationClient: ObservableObject {
         isVisible = true
         if store == nil, let configuration { store = SharedDictationStore(configuration: configuration) }
         hapticsEnabled = false
+        keyHapticsEnabled = false
         // Without Full Access the mode cannot change while visible, so nothing needs polling.
         if access == .fullAccess, let configuration, let notifier {
-            hapticsEnabled = LocalFlowSettings(configuration: configuration)?.hapticsEnabled ?? false
+            let settings = LocalFlowSettings(configuration: configuration)
+            hapticsEnabled = settings?.hapticsEnabled ?? false
+            keyHapticsEnabled = settings?.keyHapticsEnabled ?? false
             observations = [notifier.observe(.status) { [weak self] in self?.refresh() },
                             notifier.observe(.result) { [weak self] in self?.refresh() }]
             let poll = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] timer in

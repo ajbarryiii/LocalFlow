@@ -479,7 +479,8 @@ The keyboard can read these, so they live in App Group `UserDefaults`
 - `sessionMinutes`: 5, 15 or 60; default 5
 - `spokenDelimitersEnabled`: default true
 - `pressEnterEnabled`: default true
-- `hapticsEnabled`: default true
+- `hapticsEnabled`: default true (dictation haptics and the trackpad-mode tap)
+- `keyHapticsEnabled`: default true (a light haptic on each key touch-down)
 
 No transcript history is stored.
 
@@ -597,7 +598,8 @@ No transcript history is stored.
   - a status line, plus Full Access, configuration and update banners
 
   Support light and dark mode. Haptics play only with Full Access and the
-  setting enabled.
+  setting enabled: `hapticsEnabled` for dictation, `keyHapticsEnabled` for
+  keys.
 - The keyboard never links Parakeet, AVFoundation capture or
   LocalDictationCore. It has no network access and does not log content.
 
@@ -909,6 +911,11 @@ after moving the cursor. Dictation stays primary.
   space and Return insert on touch-up ("Typing model v3"). The
   same view runs trackpad mode: touch and hold the space bar, and the letters
   blank out, as on Apple's keyboard.
+- **Key feedback:** every key touch-down plays the system click, which follows
+  the iOS Keyboard Clicks setting. With Full Access and `keyHapticsEnabled`
+  ("Typing haptics" in the app's Keyboard section), it also plays a light
+  impact haptic. A keyboard extension cannot read the iOS Keyboard Feedback
+  haptic setting, so LocalFlow has its own.
 
 ## Host decisions after the host review (2026-10-09)
 

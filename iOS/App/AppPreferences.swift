@@ -44,6 +44,7 @@ final class SharedSettingsModel: ObservableObject {
     @Published var spokenDelimitersEnabled: Bool { didSet { settings?.spokenDelimitersEnabled = spokenDelimitersEnabled } }
     @Published var pressEnterEnabled: Bool { didSet { settings?.pressEnterEnabled = pressEnterEnabled } }
     @Published var hapticsEnabled: Bool { didSet { settings?.hapticsEnabled = hapticsEnabled } }
+    @Published var keyHapticsEnabled: Bool { didSet { settings?.keyHapticsEnabled = keyHapticsEnabled } }
 
     init(settings: LocalFlowSettings?) {
         self.settings = settings
@@ -51,5 +52,6 @@ final class SharedSettingsModel: ObservableObject {
         spokenDelimitersEnabled = settings?.spokenDelimitersEnabled ?? true
         pressEnterEnabled = settings?.pressEnterEnabled ?? true
         hapticsEnabled = settings?.hapticsEnabled ?? true
+        keyHapticsEnabled = settings?.keyHapticsEnabled ?? true
     }
 }
