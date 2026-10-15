@@ -845,7 +845,6 @@ fn choose_small_numbers(pieces: &mut [Piece]) {
         for k in 0..pieces.len() {
             if pieces[k].kind == Some(Kind::Small)
                 && !keep[k]
-                && !after_article(pieces, k)
                 && ((k >= 2 && in_range(pieces, &keep, k - 2, k))
                     || in_range(pieces, &keep, k, k + 2))
             {
@@ -899,9 +898,6 @@ fn kept_before_ranges(pieces: &[Piece], k: usize) -> bool {
         Some(Kind::Other) => return true,
         Some(Kind::Small) => {}
     }
-    if after_article(pieces, k) {
-        return false;
-    }
     let piece = &pieces[k];
     let previous = k.checked_sub(1).map(|p| &pieces[p]).filter(|p| p.is_bare());
     let next = pieces
@@ -915,19 +911,24 @@ fn kept_before_ranges(pieces: &[Piece], k: usize) -> bool {
         UNIT_WORDS.contains(&lower.as_str()) || is_am_pm(&lower)
     });
     // A list: "one, two, three", "five, 10 years".
+    let listed = |p: usize| {
+        pieces
+            .get(p)
+            .is_some_and(|p| (p.kind.is_some() || p.is_numeric()) && p.trail == ",")
+    };
     let number = |p: usize| {
         pieces
             .get(p)
             .is_some_and(|p| p.kind.is_some() || p.is_numeric())
     };
-    let list = (k > 0 && number(k - 1) && pieces[k - 1].trail == ",")
-        || (number(k + 1) && piece.trail == ",");
-    label || unit || list
-}
-
-/// "a one", "an eight": never digits.
-fn after_article(pieces: &[Piece], k: usize) -> bool {
-    k > 0 && pieces[k - 1].is_bare() && ["a", "an"].contains(&pieces[k - 1].lower().as_str())
+    let list = (k > 0 && listed(k - 1)) || (number(k + 1) && piece.trail == ",");
+    // The last item after "and"/"or" once two items are listed: "one, two, and three".
+    let last_item = k >= 3
+        && previous
+            .is_some_and(|p| p.lead.is_empty() && ["and", "or"].contains(&p.lower().as_str()))
+        && listed(k - 2)
+        && listed(k - 3);
+    label || unit || list || last_item
 }
 
 // MARK: Suffixes
@@ -1008,7 +1009,7 @@ fn attach_cents(pieces: &mut Vec<Piece>) {
         let and = usize::from(
             pieces
                 .get(k + 1)
-                .is_some_and(|p| p.is_bare() && p.lower() == "and"),
+                .is_some_and(|p| p.is_bare() && p.lead.is_empty() && p.lower() == "and"),
         );
         let (cents, word) = (k + 1 + and, k + 2 + and);
         let attach = whole_dollars

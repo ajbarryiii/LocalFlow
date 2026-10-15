@@ -150,7 +150,10 @@ enum SpokenNumberFormatter {
 
     private static func singleDigit(_ word: String) -> Int? { unitValue(word).flatMap { $0 < 10 ? $0 : nil } }
 
-    private static func isASCIIDigit(_ character: Character) -> Bool { ("0"..."9").contains(character) }
+    /// One ASCII digit: "5️⃣" is a single `Character` that sorts between "5" and "6", but isn't a digit.
+    private static func isASCIIDigit(_ character: Character) -> Bool {
+        character.asciiValue.map { (48...57).contains($0) } ?? false
+    }
 
     private static func isDigits(_ text: Substring, maxCount: Int = .max) -> Bool {
         (1...maxCount).contains(text.count) && text.allSatisfy(isASCIIDigit)
@@ -526,7 +529,7 @@ enum SpokenNumberFormatter {
         var changed = true
         while changed {
             changed = false
-            for k in pieces.indices where pieces[k].kind == .small && !keep[k] && !afterArticle(pieces, k) {
+            for k in pieces.indices where pieces[k].kind == .small && !keep[k] {
                 if (k >= 2 && inRange(pieces, keep, k - 2, k)) || inRange(pieces, keep, k, k + 2) {
                     keep[k] = true
                     changed = true
@@ -567,7 +570,6 @@ enum SpokenNumberFormatter {
         case .other: return true
         case .small: break
         }
-        if afterArticle(pieces, k) { return false }
         let piece = pieces[k]
         let previous = k > 0 && pieces[k - 1].isBare ? pieces[k - 1] : nil
         let next = k + 1 < pieces.count && piece.isBare && pieces[k + 1].lead.isEmpty ? pieces[k + 1] : nil
@@ -577,13 +579,12 @@ enum SpokenNumberFormatter {
         let unit = next.map { unitWords.contains($0.lower) || isAmPm($0.lower) } ?? false
         // A list: "one, two, three", "five, 10 years".
         func number(_ p: Int) -> Bool { p < pieces.count && (pieces[p].kind != nil || pieces[p].isNumeric) }
-        let list = (k > 0 && number(k - 1) && pieces[k - 1].trail == ",") || (number(k + 1) && piece.trail == ",")
-        return label || unit || list
-    }
-
-    /// "a one", "an eight": never digits.
-    private static func afterArticle(_ pieces: [Piece], _ k: Int) -> Bool {
-        k > 0 && pieces[k - 1].isBare && ["a", "an"].contains(pieces[k - 1].lower)
+        func listed(_ p: Int) -> Bool { number(p) && pieces[p].trail == "," }
+        let list = (k > 0 && listed(k - 1)) || (number(k + 1) && piece.trail == ",")
+        // The last item after "and"/"or" once two items are listed: "one, two, and three".
+        let lastItem = k >= 3 && (previous.map { $0.lead.isEmpty && ["and", "or"].contains($0.lower) } ?? false)
+            && listed(k - 2) && listed(k - 3)
+        return label || unit || list || lastItem
     }
 
     // MARK: Suffixes
@@ -640,7 +641,8 @@ enum SpokenNumberFormatter {
         while k < pieces.count {
             let wholeDollars = pieces[k].isBare && pieces[k].value.hasPrefix("$")
                 && isDigits(pieces[k].value.dropFirst())
-            let and = k + 1 < pieces.count && pieces[k + 1].isBare && pieces[k + 1].lower == "and" ? 1 : 0
+            let and = k + 1 < pieces.count && pieces[k + 1].isBare && pieces[k + 1].lead.isEmpty
+                && pieces[k + 1].lower == "and" ? 1 : 0
             let cents = k + 1 + and
             let word = k + 2 + and
             if wholeDollars, word < pieces.count,
