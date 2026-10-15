@@ -51,6 +51,9 @@ enum HostSessionPolicy {
     /// After finish, how long to wait for the tail (frames captured before the finish but not yet
     /// delivered: up to one tap buffer plus the I/O buffer) before transcribing what has arrived.
     static let tailTimeout: TimeInterval = 1
+    /// How long after the lock notification a keyboard intent may still be written. iOS posts the
+    /// notification about 10 s before class A files become inaccessible; doubled for margin.
+    static let lockWriteWindow: TimeInterval = 20
 
     static func statusInterval(for dictation: DictationStatus?) -> TimeInterval {
         switch dictation?.phase {
@@ -110,6 +113,22 @@ enum HostSessionPolicy {
     static func isKeyboardConnected(presence: StoreRead<KeyboardPresence>, now: Date) -> Bool {
         guard let presence = presence.value else { return false }
         return DictationProtocol.isFresh(presence.seenAt, ttl: DictationProtocol.keyboardPresenceTimeout, now: now)
+    }
+
+    /// A record intent issued more than `lockWriteWindow` after the lock latch was set was written on an
+    /// unlocked iPhone: no keyboard runs on the lock screen, and the class A intent cannot be written once
+    /// the window has passed. The latch is then stale: an app suspended across the unlock can read protected
+    /// data as unavailable at its activation events and get the unlock notification only after them.
+    static func intentProvesUnlock(issuedAt: Date, lockedAt: Date?) -> Bool {
+        guard let lockedAt else { return false }
+        return issuedAt.timeIntervalSince(lockedAt) > lockWriteWindow
+    }
+
+    /// Whether the bounce screen stays up. It outlives the swipe back only while its dictation is in
+    /// progress; once that ends with the app in the background, the keyboard shows the outcome and the
+    /// bounce closes, so a later return to LocalFlow shows Home rather than an old outcome.
+    static func keepsBounce(isForeground: Bool, isDictationInProgress: Bool) -> Bool {
+        isForeground || isDictationInProgress
     }
 
     /// The reconciler's `cancel(R)`. For a `finish` that reached a request still starting nothing was

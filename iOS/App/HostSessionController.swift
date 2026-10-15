@@ -223,9 +223,14 @@ final class HostSessionController: ObservableObject {
         set(\.isDictationInProgress, core.isDictationInProgress)
         // A request admitted while the app is in front came from the bounce (the keyboard opened the
         // app), unless the keyboard is in "Try it", where a cover would hide the text field.
+        let isForeground = UIApplication.shared.applicationState != .background
         if let current = core.current, core.isDictationInProgress, current.requestID != lastAdmittedRequestID {
             lastAdmittedRequestID = current.requestID
-            if UIApplication.shared.applicationState != .background, !tryItVisible { bounceVisible = true }
+            if isForeground, !tryItVisible { bounceVisible = true }
+        }
+        if bounceVisible, !HostSessionPolicy.keepsBounce(isForeground: isForeground,
+                                                         isDictationInProgress: core.isDictationInProgress) {
+            bounceVisible = false
         }
         if let current = core.current, current.phase == .recording, current.requestID != hapticRequestID {
             hapticRequestID = current.requestID
@@ -250,10 +255,8 @@ final class HostSessionController: ObservableObject {
         on(UIApplication.willEnterForegroundNotification) { $0.core?.appWillEnterForeground() }
         // Arriving in the foreground reconciles; that is what admits a request after a URL open.
         on(UIApplication.didBecomeActiveNotification) { $0.core?.appDidBecomeActive() }
-        on(UIApplication.didEnterBackgroundNotification) {
-            $0.core?.foregroundChanged()
-            if $0.core?.isDictationInProgress != true { $0.bounceVisible = false }
-        }
+        // Also hides the bounce once nothing is in progress (`refresh`, `HostSessionPolicy.keepsBounce`).
+        on(UIApplication.didEnterBackgroundNotification) { $0.core?.foregroundChanged() }
         on(UIApplication.protectedDataWillBecomeUnavailableNotification) { $0.core?.deviceWillLock() }
         on(UIApplication.protectedDataDidBecomeAvailableNotification) { $0.core?.deviceDidUnlock() }
         on(UIApplication.didReceiveMemoryWarningNotification) { $0.core?.memoryWarning() }
