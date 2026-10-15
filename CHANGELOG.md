@@ -9,6 +9,26 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.3] - 2026-10-15
+
+Fifth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.2.
+
+### Added
+
+- Spoken numbers are written as digits ("twenty three percent" becomes
+  "23%", "fiscal twenty twenty one" becomes "Fiscal 2021"). Zero to nine stay
+  as words except in lists, labels, units and ranges ("1, 2, 3", "step 3",
+  "5 GB", "5 to 15"). Years, times, decimals, money, percentages, ordinals and
+  dates are handled. Turn it off in Settings → Clipboard → "Write spoken
+  numbers as digits".
+
+### Changed
+
+- Correction suggestions are on by default. Turning them off is remembered.
+  They still read only the pasted text and a little around it, for up to a
+  minute, never password fields, and keep that text in memory only.
+
 ## [2.1.2] - 2026-10-13
 
 Fourth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
