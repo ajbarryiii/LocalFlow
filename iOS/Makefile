@@ -97,9 +97,11 @@ HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
-# The Parakeet service refers to the custom-dictionary types (boosting and
-# correction). The iOS app compiles them but transcribes without a dictionary.
+# The custom dictionary (boosting, casing and "Find strength"), shared with the
+# macOS app. HostCore's DictionaryLibrary uses it, so the host tests compile it too.
 DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
+# The dictionary needs the Foundation-only Parakeet core (tokens, errors); the host tests compile both.
+DICTIONARY_TEST_SOURCES = $(DICTIONARY_SOURCES) ../Sources/Parakeet/LocalParakeetCore.swift
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenNumberFormatter.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
@@ -361,7 +363,7 @@ typecheck:
 	echo "Type-checking the keyboard"; \
 	xcrun --sdk iphonesimulator swiftc $$flags $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_SOURCES)
 
-# Shared, HostCore and KeyboardCore are Foundation-only, so their tests run on the Mac.
+# Shared, HostCore, KeyboardCore and the shared dictionary are Foundation-only, so their tests run on the Mac.
 test:
 ifeq ($(strip $(TEST_SOURCES)),)
 	@echo "No iOS host tests yet; skipping."
@@ -369,7 +371,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 

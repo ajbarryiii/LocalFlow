@@ -61,7 +61,13 @@ final class MicrophoneCapture: HostCapture {
         ]
     }
 
-    var permission: CapturePermission {
+    var permission: CapturePermission { Self.currentPermission }
+
+    func requestPermission() async -> Bool {
+        await Self.requestRecordPermission()
+    }
+
+    static var currentPermission: CapturePermission {
         switch AVAudioApplication.shared.recordPermission {
         case .granted: return .granted
         case .denied: return .denied
@@ -69,7 +75,7 @@ final class MicrophoneCapture: HostCapture {
         }
     }
 
-    func requestPermission() async -> Bool {
+    static func requestRecordPermission() async -> Bool {
         await AVAudioApplication.requestRecordPermission()
     }
 

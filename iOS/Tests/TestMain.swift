@@ -26,6 +26,7 @@ struct LocalFlowIOSTests {
             ("CapturePipeline", CapturePipelineTests.tests),
             ("CaptureTiming", CaptureTimingTests.tests),
             ("TranscriptionEngine", TranscriptionEngineTests.tests),
+            ("DictionaryLibrary", DictionaryLibraryTests.tests),
             ("MicrophoneRoute", MicrophoneRouteTests.tests),
             ("CursorMotion", CursorMotionTests.tests),
             ("TextNavigator", TextNavigatorTests.tests),

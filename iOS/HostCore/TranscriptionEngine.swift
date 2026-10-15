@@ -60,7 +60,7 @@ final class TranscriptionEngine: HostTranscriber {
     private(set) var preparationStartedAt: Date?
     /// A runtime exists (preparing, ready or transcribing).
     var isLoaded: Bool { loaded != nil }
-    /// Preparing, or a transcription is running or waiting.
+    /// Preparing, or a transcription or `withReadyRuntime` operation is running or waiting.
     var isBusy: Bool { loaded?.readiness == .preparing || activeTranscriptions > 0 }
 
     var onStateChange: (@MainActor () -> Void)?
@@ -120,15 +120,10 @@ final class TranscriptionEngine: HostTranscriber {
         }
         let waitStart = now()
         do {
-            try Task.checkCancellation()
-            if loaded == nil { prepare() }   // never prepared, released, or failed before
-            guard let handle = loaded else { throw TranscriptionFailure.modelFailed }
-            try await waitUntilReady(handle)
-            // Readiness and a cancellation can resume together: never start work for a cancelled request.
-            try Task.checkCancellation()
+            let runtime = try await readyRuntime()
             report.waitSeconds = now().timeIntervalSince(waitStart)
             let start = now()
-            let text = try await run(handle.runtime, audio)
+            let text = try await run(runtime, audio)
             report.transcriptionSeconds = now().timeIntervalSince(start)
             report.outcome = .transcribed
             return text
@@ -139,6 +134,23 @@ final class TranscriptionEngine: HostTranscriber {
             report.hint = ComputePolicy.failureHint(after: failure, inBackground: startedInBackground || isInBackground(),
                                                     osMajorVersion: osMajorVersion)
             throw failure
+        }
+    }
+
+    /// "Find strength": waits for readiness exactly as a transcription does, then runs `operation` on the
+    /// loaded runtime. The engine stays busy meanwhile, so the runtime is not released, but this is not a
+    /// dictation and no attempt is reported. Throws `TranscriptionFailure` or `CancellationError`.
+    func withReadyRuntime<T>(_ operation: (SpeechRuntime) async throws -> T) async throws -> T {
+        guard isAvailable else { throw TranscriptionFailure.modelUnavailable }
+        activeTranscriptions += 1
+        defer { activeTranscriptions -= 1 }
+        let runtime = try await readyRuntime()
+        do {
+            return try await operation(runtime)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw TranscriptionFailure.transcriptionFailed
         }
     }
 
@@ -172,6 +184,17 @@ final class TranscriptionEngine: HostTranscriber {
             loaded = nil   // the next prepare() or transcription retries
             setState(.failed)
         }
+    }
+
+    /// The loaded runtime once it is ready, preparing it first if needed.
+    private func readyRuntime() async throws -> SpeechRuntime {
+        try Task.checkCancellation()
+        if loaded == nil { prepare() }   // never prepared, released, or failed before
+        guard let handle = loaded else { throw TranscriptionFailure.modelFailed }
+        try await waitUntilReady(handle)
+        // Readiness and a cancellation can resume together: never start work for a cancelled request.
+        try Task.checkCancellation()
+        return handle.runtime
     }
 
     /// Cancellation resumes the wait at once instead of when preparation ends.

@@ -20,7 +20,7 @@ enum SelfTest {
     /// Screens `LOCALFLOW_SELFTEST_SCREEN` can open.
     enum Screen: String {
         case onboarding, onboardingMicrophone = "onboarding-microphone", onboardingKeyboard = "onboarding-keyboard",
-             onboardingModel = "onboarding-model", home, tryIt = "tryit", keyboardSetup = "keyboard-setup", diagnostics
+             onboardingModel = "onboarding-model", home, tryIt = "tryit", keyboardSetup = "keyboard-setup", dictionary, diagnostics
     }
 
     static var launchOptions: LaunchOptions {
@@ -35,6 +35,7 @@ enum SelfTest {
         case .home?: options.skipOnboarding = true
         case .tryIt?: options.skipOnboarding = true; options.homePath = [.tryIt]
         case .keyboardSetup?: options.skipOnboarding = true; options.homePath = [.keyboardSetup]
+        case .dictionary?: options.skipOnboarding = true; options.homePath = [.dictionary]
         case .diagnostics?: options.skipOnboarding = true; options.homePath = [.diagnostics]
         case nil: break
         }

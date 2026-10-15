@@ -30,6 +30,8 @@ final class HostSessionController: ObservableObject {
     let preferences = AppPreferences()
     let settings: SharedSettingsModel
     let transcriber: ParakeetTranscriber
+    /// The custom dictionary, in the app's own defaults (contract: "Custom dictionary").
+    let dictionary: DictionaryModel
     /// Nil when the build is misconfigured (missing identifiers or App Group).
     let core: HostSessionCore?
     private let store: SharedDictationStore?
@@ -42,6 +44,7 @@ final class HostSessionController: ObservableObject {
     private init() {
         configuration = LocalFlowConfiguration.main
         transcriber = ParakeetTranscriber(preferences: preferences)
+        dictionary = DictionaryModel(transcriber: transcriber)
         let store = configuration.flatMap(SharedDictationStore.init(configuration:))
         let sharedSettings = configuration.flatMap(LocalFlowSettings.init(configuration:))
         self.store = store

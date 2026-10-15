@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum HomeRoute: Hashable {
-    case tryIt, keyboardSetup, diagnostics, reportBug
+    case tryIt, keyboardSetup, dictionary, diagnostics, reportBug
 }
 
 struct HomeView: View {
@@ -35,6 +35,11 @@ struct HomeView: View {
                 }
 
                 Section {
+                    NavigationLink(value: HomeRoute.dictionary) {
+                        RowLabel(title: "Dictionary", detail: "Names and terms LocalFlow should recognize",
+                                 symbol: "character.book.closed")
+                    }
+                    .accessibilityIdentifier("home.dictionary")
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Session length").font(.body)
                         Picker("Session length", selection: $settings.sessionMinutes) {
@@ -98,6 +103,7 @@ struct HomeView: View {
                 switch route {
                 case .tryIt: TryItView()
                 case .keyboardSetup: KeyboardSetupScreen()
+                case .dictionary: DictionaryView(dictionary: host.dictionary)
                 case .diagnostics: DiagnosticsView(transcriber: transcriber)
                 case .reportBug: ReportBugView(recipient: "localflow@wildernesslabs.ai")
                 }

@@ -48,14 +48,16 @@ final class ParakeetTranscriber: ObservableObject {
     var onStateChange: (@MainActor () -> Void)?
 
     private let preferences: AppPreferences
+    private let dictionary = DictionarySnapshotBox()
 
     init(preferences: AppPreferences) {
         self.preferences = preferences
         let directory = LocalParakeetService.isAvailable ? LocalParakeetService.bundleDirectory : nil
+        let dictionary = self.dictionary
         engine = TranscriptionEngine(
             isAvailable: directory != nil, osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
             isInBackground: { UIApplication.shared.applicationState == .background },
-            makeRuntime: { ParakeetRuntime(units: ComputePolicy.units, directory: directory) })
+            makeRuntime: { ParakeetRuntime(units: ComputePolicy.units, directory: directory, dictionary: dictionary) })
         modelState = engine.modelState
         engine.onStateChange = { [weak self] in
             self?.sync()
@@ -67,6 +69,20 @@ final class ParakeetTranscriber: ObservableObject {
 
     /// Seconds the last successful preparation took on this device, for a progress estimate.
     var estimatedPreparationSeconds: Double? { preferences.lastPreparationSeconds }
+
+    /// The dictionary later transcriptions decode with; one already running keeps its snapshot.
+    func useDictionary(_ snapshot: DictionarySnapshot) {
+        dictionary.set(snapshot)
+    }
+
+    /// "Find strength" on the loaded model (contract: "Custom dictionary"). Not a dictation: no measurement.
+    func probeStrength(samples: [Float], word: String) async throws -> StrengthProbe.Result {
+        let snapshot = dictionary.current
+        return try await engine.withReadyRuntime { runtime in
+            guard let runtime = runtime as? ParakeetRuntime else { throw TranscriptionFailure.modelUnavailable }
+            return try await runtime.probeStrength(samples: samples, word: word, dictionary: snapshot)
+        }
+    }
 
     func prepare() {
         engine.prepare()
@@ -122,10 +138,12 @@ final class ParakeetTranscriber: ObservableObject {
 private final class ParakeetRuntime: SpeechRuntime {
     private let service: LocalParakeetService
     private let directory: URL?
+    private let dictionary: DictionarySnapshotBox
 
-    init(units: ComputePolicy.Units, directory: URL?) {
+    init(units: ComputePolicy.Units, directory: URL?, dictionary: DictionarySnapshotBox) {
         service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits)
         self.directory = directory
+        self.dictionary = dictionary
     }
 
     func prepare() async throws {
@@ -133,9 +151,35 @@ private final class ParakeetRuntime: SpeechRuntime {
         try await service.prepare(directory: directory)
     }
 
+    /// One snapshot per transcription, taken when it starts.
     func transcribe(_ samples: [Float]) async throws -> String {
         guard let directory else { throw TranscriptionFailure.modelUnavailable }
-        return try await service.transcribe(samples: samples, directory: directory)
+        let snapshot = dictionary.current
+        guard !snapshot.entries.isEmpty else { return try await service.transcribe(samples: samples, directory: directory) }
+        return try await service.transcribe(samples: samples, directory: directory, dictionary: snapshot)
+    }
+
+    func probeStrength(samples: [Float], word: String, dictionary: DictionarySnapshot) async throws -> StrengthProbe.Result {
+        guard let directory else { throw TranscriptionFailure.modelUnavailable }
+        return try await service.probeStrength(samples: samples, directory: directory, word: word, dictionary: dictionary)
+    }
+}
+
+/// The current dictionary snapshot, set on the main actor and read when a transcription starts.
+private final class DictionarySnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshot = DictionarySnapshot.empty
+
+    var current: DictionarySnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshot
+    }
+
+    func set(_ snapshot: DictionarySnapshot) {
+        lock.lock()
+        self.snapshot = snapshot
+        lock.unlock()
     }
 }
 
