@@ -601,7 +601,9 @@ No transcript history is stored.
 
   Support light and dark mode. Haptics play only with Full Access and the
   setting enabled: `hapticsEnabled` for dictation, `keyHapticsEnabled` for
-  keys.
+  keys. iOS mutes haptics while an app records, so the host's capture
+  session opts in with `setAllowHapticsAndSystemSoundsDuringRecording(true)`;
+  otherwise they'd be silent for the whole session.
 - The keyboard never links Parakeet, AVFoundation capture or
   LocalDictationCore. It has no network access and does not log content.
 
