@@ -1697,7 +1697,8 @@ enum HostSessionLockLatchTests {
             ("bounceWhileInactive", isolated(testBounceWhileInactive)),
             ("bounceAfterAMissedUnlock", isolated(testBounceAfterAMissedUnlock)),
             ("lateUnlockNotificationStillAdmits", isolated(testLateUnlockNotificationStillAdmits)),
-            ("activationWithDataUnavailableKeepsTheLatch", isolated(testActivationWithDataUnavailableKeepsTheLatch)),
+            ("bounceAfterTheSessionEndedWhileLocked", isolated(testBounceAfterTheSessionEndedWhileLocked)),
+            ("activationWithDataUnavailableKeepsTheLatch",isolated(testActivationWithDataUnavailableKeepsTheLatch)),
             ("permissionCompletionWhileLockedStartsNothing", isolated(testPermissionCompletionWhileLockedStartsNothing)),
             ("pendingStartWhileLockedStartsNothing", isolated(testPendingStartWhileLockedStartsNothing)),
             ("lockBeforeLaunchPublishesNothing", isolated(testLockBeforeLaunchPublishesNothing)),
@@ -1762,13 +1763,15 @@ enum HostSessionLockLatchTests {
         TestSupport.expectEqual(h.capture.startCount, 1)
     }
 
+    /// Polls and ticks never lift the latch: every intent issued within `lockWriteWindow` of the lock (all a
+    /// keyboard can still write around it) is refused.
     @MainActor
     private static func testLatchHoldsAcrossPollingAndTicks() {
         let h = CoreHarness()
         defer { h.cleanup() }
         lockedBackgroundSession(h)
         for step in 0 ..< 30 {
-            h.clock.now += 2
+            h.clock.now += HostSessionPolicy.lockWriteWindow / 40   // within the window
             h.keepCaptureFresh()
             try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
             let request = UUID(uuidString: String(format: "00000000-0000-4000-8000-0000000001%02d", step))!
@@ -1967,6 +1970,41 @@ enum HostSessionLockLatchTests {
         h.core.deviceDidUnlock()   // delivered late, on resume
         h.core.reconcile(.intentSignal)
         expectRecording(h, R, "late notification")
+    }
+
+    /// The session idles out while locked, so iOS suspends the app, which misses the unlock. On resume
+    /// UIKit still reports protected data as unavailable at both activation events and delivers the unlock
+    /// notification after them. The bounce's record intent, issued long after the lock, proves the unlock:
+    /// the first bounce starts a new session instead of being refused with `.deviceLocked`.
+    @MainActor
+    private static func testBounceAfterTheSessionEndedWhileLocked() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        lockedBackgroundSession(h)
+        h.clock.protectedDataAvailable = false
+        for _ in 0 ..< 10 where h.core.session == .active {
+            h.clock.now += 60
+            h.keepCaptureFresh()
+            h.core.tick()
+        }
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.capture.isRunning, false)
+        h.clock.now += 600   // unlocked while suspended
+        try! h.store.writePresence(Fixture.presence(seenAt: h.clock.now))
+        h.writeIntent(.record, R)
+        h.clock.now += 1
+        h.core.appWillEnterForeground()
+        h.clock.isForeground = true
+        h.core.reconcile(.urlOpen)
+        h.core.appDidBecomeActive()
+        TestSupport.expect(!h.core.isLocked, "the intent lifted the stale latch")
+        expectRecording(h, R, "first bounce")
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.capture.startCount, 2)
+        h.clock.protectedDataAvailable = true
+        h.core.deviceDidUnlock()   // the late notification changes nothing
+        TestSupport.expectEqual(h.core.current?.requestID, R)
+        TestSupport.expectEqual(h.core.current?.phase, .recording)
     }
 
     /// Arriving in front while protected data is unavailable keeps the latch.

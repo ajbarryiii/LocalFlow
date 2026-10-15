@@ -101,6 +101,17 @@ this change a lock ended the session.
   admission runs, because a suspended app can miss the unlock notification.
   It is never cleared by polling during the will-become-unavailable window,
   where UIKit still reports data as available.
+- **A late intent proves the unlock** (contract change, 2026-10-15). A record
+  intent issued more than `lockWriteWindow` (20 s) after the latch was set
+  lifts the latch and is admitted normally. No keyboard runs on the lock
+  screen, and the class A intent cannot be written about 10 s after the lock
+  notification, so such an intent was written on an unlocked iPhone. This
+  covers a session that idles out while locked: iOS then suspends the app,
+  which misses the unlock. On resume UIKit can still report protected data as
+  unavailable at `willEnterForeground` and `didBecomeActive` and post
+  `protectedDataDidBecomeAvailable` after them. Before this rule the bounce's
+  intent was refused with `deviceLocked`, so the user had to bounce twice.
+  Intents issued within the window are still refused for good.
 - **Unlock: dictation continues instantly.** Nothing about the session
   restarts. The next record intent from the keyboard in any app is admitted
   into the same session without opening LocalFlow.
@@ -541,7 +552,9 @@ No transcript history is stored.
   - "Try it": **two** text fields, for destination-binding tests.
   - Bounce screen: "Listening — swipe back to your app". It appears only
     once the dictation is `recording` (input buffers are flowing). Before
-    that it shows "Starting…".
+    that it shows "Starting…". With the app in the background it stays
+    only while its dictation is in progress; once that ends it closes, so a
+    later return to LocalFlow shows Home, not an old outcome.
 - **Self-test build** (`-D LOCALFLOW_SELFTEST`, never in normal builds):
   - `LOCALFLOW_SELFTEST_AUDIO=<path>` transcribes a synthetic file and prints
     only a pass/fail line and timings.

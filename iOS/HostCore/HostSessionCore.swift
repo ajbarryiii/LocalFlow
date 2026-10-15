@@ -50,10 +50,12 @@ final class HostSessionCore {
     /// The lock latch (ARCHITECTURE.md, "Device lock"), set by `deviceWillLock`. While set, no intent is
     /// admitted and no session, capture or dictation starts, even though iOS posts the lock notification
     /// before files become unreadable; a session already running goes on until idle expiry. Cleared by
-    /// `deviceDidUnlock` and by the `appWillEnterForeground` / `appDidBecomeActive` events with protected
-    /// data available (a suspended app can miss the unlock notification); never by polling or a derived
-    /// state.
+    /// `deviceDidUnlock`, by the `appWillEnterForeground` / `appDidBecomeActive` events with protected
+    /// data available (a suspended app can miss the unlock notification), and by a record intent issued
+    /// after `lockWriteWindow` (`HostSessionPolicy.intentProvesUnlock`); never by polling or a derived state.
     private(set) var isLocked = false
+    /// When the latch was last set.
+    private var lockedAt: Date?
 
     private var sessionGeneration: UInt64 = 0
     /// A session start waiting for the foreground (the permission prompt was answered elsewhere).
@@ -240,9 +242,10 @@ final class HostSessionCore {
     /// `protectedDataWillBecomeUnavailable`: latches the lock and cancels everything in flight, including
     /// a transcription that outlived its session. The session itself goes on until idle expiry.
     func deviceWillLock() {
-        isLocked = true
-        guard isLaunched else { return }   // locked at launch: latched; run recovery publishes first
         let now = environment.now()
+        isLocked = true
+        lockedAt = now
+        guard isLaunched else { return }   // locked at launch: latched; run recovery publishes first
         // Intents and results are class A and unreadable while locked, so the dictation is cancelled, but
         // capture goes on with buffers dropped, as between dictations.
         if let phase = slot.phase, slot.isInProgress,
@@ -334,6 +337,11 @@ final class HostSessionCore {
         case .none:
             break
         case .start(let requestID):
+            if isLocked, let issuedAt = intent.value?.issuedAt,
+               HostSessionPolicy.intentProvesUnlock(issuedAt: issuedAt, lockedAt: lockedAt) {
+                // The keyboard wrote it on an unlocked iPhone; the unlock signal was missed or is late.
+                isLocked = false
+            }
             if isLocked {
                 // Read while locked: refused for good, so it is never admitted after the unlock either.
                 knownRequestIDs.insert(requestID)

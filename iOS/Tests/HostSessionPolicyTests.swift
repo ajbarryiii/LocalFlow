@@ -14,6 +14,8 @@ enum HostSessionPolicyTests {
             ("watchdogOutcomes", testWatchdogOutcomes),
             ("sessionEndOutcomes", testSessionEndOutcomes),
             ("sessionErrors", testSessionErrors),
+            ("onlyALateIntentProvesAnUnlock", testOnlyALateIntentProvesAnUnlock),
+            ("bounceClosesInTheBackgroundOnceIdle", testBounceClosesInTheBackgroundOnceIdle),
             ("statusCaptureReadyAndLevel", testStatusCaptureReadyAndLevel),
         ]
     }
@@ -126,6 +128,28 @@ enum HostSessionPolicyTests {
         for phase in [DictationStatus.Phase.completed, .failed, .cancelled] {
             TestSupport.expectEqual(Policy.sessionEndOutcome(.deviceLocked, phase: phase), nil)
         }
+    }
+
+    /// iOS posts the lock notification about 10 s before class A files become inaccessible, and no keyboard
+    /// runs on the lock screen. So only an intent issued after the window was written on an unlocked iPhone.
+    private static func testOnlyALateIntentProvesAnUnlock() {
+        let window = HostSessionPolicy.lockWriteWindow
+        TestSupport.expect(window >= 10, "the window must cover the class A grace period")
+        TestSupport.expect(!HostSessionPolicy.intentProvesUnlock(issuedAt: now + 600, lockedAt: nil), "never latched")
+        TestSupport.expect(!HostSessionPolicy.intentProvesUnlock(issuedAt: now - 1, lockedAt: now), "issued before the lock")
+        TestSupport.expect(!HostSessionPolicy.intentProvesUnlock(issuedAt: now + window, lockedAt: now), "within the window")
+        TestSupport.expect(HostSessionPolicy.intentProvesUnlock(issuedAt: now + window + 0.001, lockedAt: now),
+                           "issued after the window")
+    }
+
+    /// The bounce outlives a swipe back only while its dictation runs, so returning to LocalFlow later never
+    /// shows an old outcome.
+    private static func testBounceClosesInTheBackgroundOnceIdle() {
+        TestSupport.expect(HostSessionPolicy.keepsBounce(isForeground: true, isDictationInProgress: false), "in front")
+        TestSupport.expect(HostSessionPolicy.keepsBounce(isForeground: true, isDictationInProgress: true), "in front, dictating")
+        TestSupport.expect(HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: true), "dictating elsewhere")
+        TestSupport.expect(!HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: false),
+                           "in the background once the dictation ended")
     }
 
     private static func testSessionErrors() {
