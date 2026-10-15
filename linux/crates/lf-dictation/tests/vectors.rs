@@ -51,6 +51,7 @@ fn process_vectors() {
         let options = Options {
             press_enter: flag(case, "press_enter_enabled"),
             spoken_delimiters: flag(case, "spoken_delimiters_enabled"),
+            spoken_numbers: flag(case, "spoken_numbers_enabled"),
         };
         let result = process(&input, &macros(case), options, None);
         let expected = case["expected"].as_object().expect("expected object");
@@ -89,7 +90,13 @@ fn spoken_delimiter_vectors() {
         let disabled = case
             .get("expected_disabled")
             .map_or(input.clone(), |d| d.as_str().expect("string").to_owned());
-        let on = process(&input, &[], Options::default(), None);
+        // Spoken numbers are pinned by number-vectors.json; these vectors
+        // test delimiters alone.
+        let delimiters_only = Options {
+            spoken_numbers: false,
+            ..Options::default()
+        };
+        let on = process(&input, &[], delimiters_only, None);
         if on.output != expected {
             failures.push(format!(
                 "delimiters[{i}] {input:?}: expected {expected:?}, got {:?}",
@@ -100,8 +107,8 @@ fn spoken_delimiter_vectors() {
             &input,
             &[],
             Options {
-                press_enter: true,
                 spoken_delimiters: false,
+                ..delimiters_only
             },
             None,
         );

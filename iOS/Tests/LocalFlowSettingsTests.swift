@@ -105,6 +105,7 @@ enum LocalFlowSettingsTests {
             TestSupport.expectEqual(settings.sessionMinutes, 5)
             TestSupport.expectEqual(settings.sessionDuration, 300)
             TestSupport.expect(settings.spokenDelimitersEnabled, "spoken delimiters default")
+            TestSupport.expect(settings.spokenNumbersEnabled, "spoken numbers default")
             TestSupport.expect(settings.pressEnterEnabled, "press enter default")
             TestSupport.expect(settings.hapticsEnabled, "haptics default")
             TestSupport.expect(settings.keyHapticsEnabled, "key haptics default")
@@ -115,12 +116,14 @@ enum LocalFlowSettingsTests {
         withSettings { settings, defaults in
             settings.sessionMinutes = 60
             settings.spokenDelimitersEnabled = false
+            settings.spokenNumbersEnabled = false
             settings.pressEnterEnabled = false
             settings.hapticsEnabled = false
             let reread = LocalFlowSettings(defaults: defaults)
             TestSupport.expectEqual(reread.sessionMinutes, 60)
             TestSupport.expectEqual(reread.sessionDuration, 3_600)
             TestSupport.expect(!reread.spokenDelimitersEnabled, "spoken delimiters stored")
+            TestSupport.expect(!reread.spokenNumbersEnabled, "spoken numbers stored")
             TestSupport.expect(!reread.pressEnterEnabled, "press enter stored")
             TestSupport.expect(!reread.hapticsEnabled, "haptics stored")
             settings.hapticsEnabled = true

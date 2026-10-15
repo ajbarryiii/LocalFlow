@@ -54,6 +54,8 @@ struct HomeView: View {
                     .padding(.vertical, 4)
                     SettingToggle(title: "Spoken punctuation", detail: "Say “open paren … close paren” or “quote … end quote”.",
                                   isOn: $settings.spokenDelimitersEnabled)
+                    SettingToggle(title: "Numbers as digits", detail: "“Twenty three percent” becomes “23%”.",
+                                  isOn: $settings.spokenNumbersEnabled)
                     SettingToggle(title: "Press enter", detail: "End a dictation with “press enter” to send it.",
                                   isOn: $settings.pressEnterEnabled)
                     SettingToggle(title: "Haptics", detail: "Feedback when recording starts and stops.",

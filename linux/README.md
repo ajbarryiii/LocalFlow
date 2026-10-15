@@ -39,6 +39,7 @@ invalid values stop the daemon with an error. Defaults:
   "cpus": "first 16 available CPUs",
   "press_enter": true,
   "spoken_delimiters": true,
+  "spoken_numbers": true,
   "voice_macros": [],
   "history": false,
   "min_recording_seconds": 0.3,
@@ -61,6 +62,9 @@ invalid values stop the daemon with an error. Defaults:
 - `cpus`: an array (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`).
 - `voice_macros`: `[{"command": "sign off", "payload": "Best regards,"}]`.
   Saying exactly the command (ignoring case and punctuation) types the payload.
+- `spoken_numbers`: write spoken numbers as digits ("twenty three percent"
+  types "23%"). Zero to nine stay as words except in lists, labels, units
+  and ranges ("step 3", "5 GB").
 - `history`: off by default (opt-in). With `true`, keeps the last 20 transcripts in
   `$XDG_DATA_HOME/localflow/history.json` (mode 0600). With `false` the file
   is neither read nor written; delete an old one by hand.
@@ -261,8 +265,8 @@ nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.t
 shell) with fake MPRIS players; it never uses your session bus. Set
 `LF_SKIP_DBUS_TESTS=1` to skip it where `dbus-daemon` is missing.
 
-The dictation rules are pinned by `testdata/dictation-vectors.json`, shared
-with the Swift app. Word boosting (BPE encoding, entry validation, the
+The dictation rules are pinned by `testdata/dictation-vectors.json` and
+`testdata/number-vectors.json`, shared with the Swift app. Word boosting (BPE encoding, entry validation, the
 bias graph and decision rule, casing restoration, correction candidates
 and their audio check) is pinned by `testdata/dictionary-vectors.json`,
 also shared with the Swift app. The rofi tests use fake rofi scripts; one

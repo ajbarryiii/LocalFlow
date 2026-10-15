@@ -30,7 +30,8 @@ enum LocalDictationCore {
     /// `promptTag` is placed before dictated output so an AI agent receiving it knows it came from
     /// speech-to-text. Macro payloads are the user's own saved text, so they are never tagged.
     static func process(_ transcript: String, macros: [VoiceMacro], pressEnterEnabled: Bool,
-                        spokenDelimitersEnabled: Bool, promptTag: String? = nil) -> LocalDictationResult {
+                        spokenDelimitersEnabled: Bool, spokenNumbersEnabled: Bool,
+                        promptTag: String? = nil) -> LocalDictationResult {
         var raw = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         var shouldPressEnter = false
         if pressEnterEnabled,
@@ -42,7 +43,8 @@ enum LocalDictationCore {
         }
         let normalized = normalize(raw)
         let macro = normalized.isEmpty ? nil : macros.first { normalize($0.command) == normalized }
-        let dictated = spokenDelimitersEnabled ? SpokenDelimiterFormatter.format(raw) : raw
+        let numbered = spokenNumbersEnabled ? SpokenNumberFormatter.format(raw) : raw
+        let dictated = spokenDelimitersEnabled ? SpokenDelimiterFormatter.format(numbered) : numbered
         let output = (macro?.payload ?? dictated).trimmingCharacters(in: .whitespacesAndNewlines)
         let tag = macro == nil && !output.isEmpty
             ? (promptTag ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""

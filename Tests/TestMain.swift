@@ -7,6 +7,7 @@ struct LocalFlowTests {
         LocalParakeetTests.run()
         PrivacyPermissionTests.run()
         LocalDictationTests.run()
+        SpokenNumberTests.run()
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
         DoubleTapPromptTests.run()

@@ -156,6 +156,7 @@ keyboard:
   audio is retained for correction.
 - `Sources/LocalDictationCore.swift`: deterministic "press enter" and spoken
   delimiter formatting.
+- `Sources/SpokenNumberFormatter.swift`: spoken numbers written as digits.
 
 `Shared/` and `HostCore/` may import only Foundation, plus CoreFoundation for
 Darwin notifications, so they compile for the macOS test runner. UIKit,
@@ -478,6 +479,7 @@ The keyboard can read these, so they live in App Group `UserDefaults`
 
 - `sessionMinutes`: 5, 15 or 60; default 5
 - `spokenDelimitersEnabled`: default true
+- `spokenNumbersEnabled`: default true
 - `pressEnterEnabled`: default true
 - `hapticsEnabled`: default true (dictation haptics and the trackpad-mode tap)
 - `keyHapticsEnabled`: default true (a light haptic on each key touch-down)
@@ -543,7 +545,7 @@ No transcript history is stored.
   releases the model runtime. Peak memory during cold preparation and
   maximum-length transcription must be measured on a device.
 - After transcription, the host calls
-  `LocalDictationCore.process(text, macros: [], pressEnterEnabled:, spokenDelimitersEnabled:)`.
+  `LocalDictationCore.process(text, macros: [], pressEnterEnabled:, spokenDelimitersEnabled:, spokenNumbersEnabled:)`.
 - **UI (SwiftUI)**:
   - Onboarding: microphone permission, steps to enable the keyboard (Settings
     → LocalFlow → Keyboards → enable, Allow Full Access), and one-time model
@@ -599,7 +601,9 @@ No transcript history is stored.
 
   Support light and dark mode. Haptics play only with Full Access and the
   setting enabled: `hapticsEnabled` for dictation, `keyHapticsEnabled` for
-  keys.
+  keys. iOS mutes haptics while an app records, so the host's capture
+  session opts in with `setAllowHapticsAndSystemSoundsDuringRecording(true)`;
+  otherwise they'd be silent for the whole session.
 - The keyboard never links Parakeet, AVFoundation capture or
   LocalDictationCore. It has no network access and does not log content.
 

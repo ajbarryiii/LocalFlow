@@ -42,6 +42,7 @@ final class SharedSettingsModel: ObservableObject {
 
     @Published var sessionMinutes: Int { didSet { settings?.sessionMinutes = sessionMinutes } }
     @Published var spokenDelimitersEnabled: Bool { didSet { settings?.spokenDelimitersEnabled = spokenDelimitersEnabled } }
+    @Published var spokenNumbersEnabled: Bool { didSet { settings?.spokenNumbersEnabled = spokenNumbersEnabled } }
     @Published var pressEnterEnabled: Bool { didSet { settings?.pressEnterEnabled = pressEnterEnabled } }
     @Published var hapticsEnabled: Bool { didSet { settings?.hapticsEnabled = hapticsEnabled } }
     @Published var keyHapticsEnabled: Bool { didSet { settings?.keyHapticsEnabled = keyHapticsEnabled } }
@@ -50,6 +51,7 @@ final class SharedSettingsModel: ObservableObject {
         self.settings = settings
         sessionMinutes = settings?.sessionMinutes ?? LocalFlowSettings.defaultSessionMinutes
         spokenDelimitersEnabled = settings?.spokenDelimitersEnabled ?? true
+        spokenNumbersEnabled = settings?.spokenNumbersEnabled ?? true
         pressEnterEnabled = settings?.pressEnterEnabled ?? true
         hapticsEnabled = settings?.hapticsEnabled ?? true
         keyHapticsEnabled = settings?.keyHapticsEnabled ?? true

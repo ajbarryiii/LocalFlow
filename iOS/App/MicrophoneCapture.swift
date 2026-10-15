@@ -88,6 +88,9 @@ final class MicrophoneCapture: HostCapture {
         let session = AVAudioSession.sharedInstance()
         try router.configureCategory(routeSession)
         requested = AudioSessionTuning.requestPreferences(on: session)
+        // iOS mutes haptics while an app records, which silenced the keyboard's haptics for the whole session.
+        // Failing only leaves them muted, so it doesn't stop capture.
+        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
         try session.setActive(true)
         activatedSession = true
         applyInputChoice()

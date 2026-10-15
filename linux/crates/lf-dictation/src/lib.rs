@@ -10,10 +10,12 @@
 
 pub mod correction;
 mod delimiters;
+mod numbers;
 mod press_enter;
 pub mod swift;
 
 pub use delimiters::format as format_spoken_delimiters;
+pub use numbers::format as format_spoken_numbers;
 
 /// A whole-phrase voice macro: dictating `command` (ignoring case,
 /// punctuation and surrounding whitespace) types `payload` instead.
@@ -29,6 +31,8 @@ pub struct Options {
     pub press_enter: bool,
     /// Convert "quote … end quote" style pairs into punctuation.
     pub spoken_delimiters: bool,
+    /// Write spoken numbers as digits ("twenty three" → "23").
+    pub spoken_numbers: bool,
 }
 
 impl Default for Options {
@@ -36,6 +40,7 @@ impl Default for Options {
         Options {
             press_enter: true,
             spoken_delimiters: true,
+            spoken_numbers: true,
         }
     }
 }
@@ -86,8 +91,18 @@ pub fn process(
     };
     let output = match used {
         Some(m) => swift::trim(&m.payload).to_owned(),
-        None if options.spoken_delimiters => swift::trim(&delimiters::format(raw)).to_owned(),
-        None => raw.to_owned(),
+        None => {
+            let dictated = if options.spoken_numbers {
+                numbers::format(raw)
+            } else {
+                raw.to_owned()
+            };
+            if options.spoken_delimiters {
+                swift::trim(&delimiters::format(&dictated)).to_owned()
+            } else {
+                dictated
+            }
+        }
     };
     let tag = match prompt_tag {
         Some(t) if used.is_none() && !output.is_empty() => swift::trim(t),
@@ -191,8 +206,8 @@ mod tests {
     fn prompt_tag_edge_cases() {
         // Without spoken delimiters the raw text is tagged the same way.
         let off = Options {
-            press_enter: true,
             spoken_delimiters: false,
+            ..Options::default()
         };
         let r = process("Synthetic words", &[], off, Some("[dictated]"));
         assert_eq!(r.output, "[dictated] Synthetic words");

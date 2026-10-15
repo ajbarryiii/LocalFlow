@@ -160,9 +160,11 @@ enum LocalDictationTests {
         TestSupport.expect(macroResult.usedMacro, "Voice macros must take priority over spoken delimiters")
     }
 
+    /// Spoken numbers are off: SpokenNumberTests covers them, and these cases test the other rules alone.
     private static func process(_ transcript: String, macros: [VoiceMacro] = [], pressEnterEnabled: Bool = true,
                                 spokenDelimitersEnabled: Bool = true, promptTag: String? = nil) -> LocalDictationResult {
         LocalDictationCore.process(transcript, macros: macros, pressEnterEnabled: pressEnterEnabled,
-                                   spokenDelimitersEnabled: spokenDelimitersEnabled, promptTag: promptTag)
+                                   spokenDelimitersEnabled: spokenDelimitersEnabled, spokenNumbersEnabled: false,
+                                   promptTag: promptTag)
     }
 }

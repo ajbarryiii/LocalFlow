@@ -60,6 +60,7 @@ pub struct Config {
     pub cpus: Option<Vec<usize>>,
     pub press_enter: bool,
     pub spoken_delimiters: bool,
+    pub spoken_numbers: bool,
     pub voice_macros: Vec<VoiceMacro>,
     pub history: bool,
     /// Shorter recordings are discarded without transcription.
@@ -99,6 +100,7 @@ impl Config {
             cpus: None,
             press_enter: true,
             spoken_delimiters: true,
+            spoken_numbers: true,
             voice_macros: Vec::new(),
             history: false,
             min_recording_seconds: 0.3,
@@ -163,6 +165,7 @@ impl Config {
                 "cpus" => c.cpus = Some(parse_cpus(v)?),
                 "press_enter" => c.press_enter = boolean(v, "press_enter")?,
                 "spoken_delimiters" => c.spoken_delimiters = boolean(v, "spoken_delimiters")?,
+                "spoken_numbers" => c.spoken_numbers = boolean(v, "spoken_numbers")?,
                 "voice_macros" => c.voice_macros = parse_macros(v)?,
                 "history" => c.history = boolean(v, "history")?,
                 "pause_media" => c.pause_media = boolean(v, "pause_media")?,
@@ -255,6 +258,7 @@ impl Config {
         lf_dictation::Options {
             press_enter: self.press_enter,
             spoken_delimiters: self.spoken_delimiters,
+            spoken_numbers: self.spoken_numbers,
         }
     }
 }
@@ -262,7 +266,7 @@ impl Config {
 /// Never names the key: a misplaced macro (user content) could be one.
 fn unknown_key(_key: &str) -> String {
     "unknown key; allowed keys are version, export_path, precision, cpus, press_enter, \
-     spoken_delimiters, voice_macros, history, min_recording_seconds, \
+     spoken_delimiters, spoken_numbers, voice_macros, history, min_recording_seconds, \
      max_recording_seconds, log_level, input_device, key_delay_ms, pause_media, \
      prompt_tag, double_tap_ms"
         .into()
@@ -425,7 +429,7 @@ mod tests {
         assert_eq!(c, Config::defaults(Path::new("/data/localflow")));
         assert_eq!(c.export_path, Path::new("/data/localflow/model"));
         assert_eq!(c.precision, Precision::Int8(2));
-        assert!(!c.history && c.press_enter && c.spoken_delimiters);
+        assert!(!c.history && c.press_enter && c.spoken_delimiters && c.spoken_numbers);
         assert_eq!(c.min_recording_seconds, 0.3);
     }
 
@@ -434,6 +438,7 @@ mod tests {
         let c = parse(
             r#"{"version": 1, "export_path": "/models/export", "precision": "i8x2",
                 "cpus": "0-3,8", "press_enter": false, "spoken_delimiters": false,
+                "spoken_numbers": false,
                 "voice_macros": [{"command": "Sign off", "payload": "Synthetic regards."}],
                 "history": false, "min_recording_seconds": 0.5, "max_recording_seconds": 120,
                 "log_level": "debug", "input_device": "alsa_input.usb-Synthetic_Mic-00.mono",
@@ -456,7 +461,8 @@ mod tests {
         assert_eq!(c.export_path, Path::new("/models/export"));
         assert_eq!(c.precision, Precision::Int8(2));
         assert_eq!(c.cpus, Some(vec![0, 1, 2, 3, 8]));
-        assert!(!c.press_enter && !c.spoken_delimiters && !c.history);
+        assert!(!c.press_enter && !c.spoken_delimiters && !c.spoken_numbers && !c.history);
+        assert!(!c.dictation_options().spoken_numbers);
         assert_eq!(c.voice_macros.len(), 1);
         assert_eq!(c.min_recording_seconds, 0.5);
         assert_eq!(c.max_recording_seconds, 120.0);
