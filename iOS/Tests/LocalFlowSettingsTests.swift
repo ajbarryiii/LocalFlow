@@ -5,6 +5,7 @@ enum LocalFlowSettingsTests {
         [
             ("defaults", testDefaults),
             ("storesValues", testStoresValues),
+            ("keyHapticsAreSeparateFromDictationHaptics", testKeyHapticsAreSeparateFromDictationHaptics),
             ("sessionMinutesAcceptsOnlyOptions", testSessionMinutesAcceptsOnlyOptions),
             ("cursorMultipliersDefaultToOne", testCursorMultipliersDefaultToOne),
             ("cursorMultipliersAcceptOnlyTheRange", testCursorMultipliersAcceptOnlyTheRange),
@@ -25,6 +26,7 @@ enum LocalFlowSettingsTests {
             // Independent of the other settings.
             TestSupport.expectEqual(reread.sessionMinutes, 5)
             TestSupport.expect(reread.hapticsEnabled, "haptics untouched")
+            TestSupport.expect(reread.keyHapticsEnabled, "key haptics untouched")
         }
     }
 
@@ -105,6 +107,7 @@ enum LocalFlowSettingsTests {
             TestSupport.expect(settings.spokenDelimitersEnabled, "spoken delimiters default")
             TestSupport.expect(settings.pressEnterEnabled, "press enter default")
             TestSupport.expect(settings.hapticsEnabled, "haptics default")
+            TestSupport.expect(settings.keyHapticsEnabled, "key haptics default")
         }
     }
 
@@ -122,6 +125,22 @@ enum LocalFlowSettingsTests {
             TestSupport.expect(!reread.hapticsEnabled, "haptics stored")
             settings.hapticsEnabled = true
             TestSupport.expect(reread.hapticsEnabled, "haptics restored")
+        }
+    }
+
+    private static func testKeyHapticsAreSeparateFromDictationHaptics() {
+        withSettings { settings, defaults in
+            settings.keyHapticsEnabled = false
+            let reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expect(!reread.keyHapticsEnabled, "key haptics stored")
+            TestSupport.expect(reread.hapticsEnabled, "dictation haptics untouched")
+            settings.hapticsEnabled = false
+            settings.keyHapticsEnabled = true
+            TestSupport.expect(reread.keyHapticsEnabled, "key haptics restored")
+            TestSupport.expect(!reread.hapticsEnabled, "dictation haptics stored")
+            // A stored value that is not a Bool reads as the default.
+            defaults.set("off", forKey: "keyHapticsEnabled")
+            TestSupport.expect(settings.keyHapticsEnabled, "key haptics invalid value")
         }
     }
 

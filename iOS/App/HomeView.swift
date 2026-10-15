@@ -63,6 +63,15 @@ struct HomeView: View {
                 .tint(Theme.violet)
 
                 Section {
+                    SettingToggle(title: "Typing haptics", detail: "A light tap as you press each key. Needs Full Access.",
+                                  isOn: $settings.keyHapticsEnabled)
+                        .accessibilityIdentifier("settings.keyHaptics")
+                } header: {
+                    Text("Keyboard")
+                }
+                .tint(Theme.violet)
+
+                Section {
                     NavigationLink(value: HomeRoute.diagnostics) {
                         RowLabel(title: "Diagnostics", detail: "Measurements and cursor tuning", symbol: "gauge.with.dots.needle.67percent")
                     }

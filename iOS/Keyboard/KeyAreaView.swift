@@ -29,6 +29,8 @@ final class KeyAreaView: UIView {
     weak var delegate: KeyAreaViewDelegate?
     /// The field the keyboard serves now, read at each touch-down so a key stays bound to it.
     var currentField: () -> UUID? = { nil }
+    /// Whether a key touch-down plays a light haptic (Full Access and the typing haptics setting).
+    var keyHapticsAllowed: () -> Bool = { false }
     /// The target of the globe key's `handleInputModeList(from:with:)`.
     weak var inputModeController: UIInputViewController? {
         didSet { wireGlobe() }
@@ -56,6 +58,7 @@ final class KeyAreaView: UIView {
     private var builtSize = CGSize.zero
     private let globeButton = UIButton(type: .system)
     private let callout = KeyCalloutView()
+    private var keyHaptics: UIImpactFeedbackGenerator?
     /// Stable small IDs for the model, one per live `UITouch`.
     private var touchIDs: [ObjectIdentifier: KeyTouchModel.TouchID] = [:]
     private var nextTouchID = 1
@@ -191,12 +194,21 @@ final class KeyAreaView: UIView {
         return id
     }
 
+    /// The click follows the system Keyboard Clicks setting; the haptic follows LocalFlow's.
+    private func keyTouchedDown() {
+        UIDevice.current.playInputClick()
+        guard keyHapticsAllowed() else { return }
+        let haptics = keyHaptics ?? UIImpactFeedbackGenerator(style: .light, view: self)
+        keyHaptics = haptics
+        haptics.impactOccurred()
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
             let touchID = id(for: touch)
             let effects = model.began(touchID, x: Double(point.x), y: Double(point.y), field: currentField())
-            if model.touches.last?.id == touchID { UIDevice.current.playInputClick() }
+            if model.touches.last?.id == touchID { keyTouchedDown() }
             perform(effects, timestamp: touch.timestamp)
         }
         refreshPressed()

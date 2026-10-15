@@ -265,7 +265,8 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
     dictation.
 - **Typing:** a basic QWERTY layer with `123` and `#+=`. It has Apple-style
   shift (double-tap for caps lock), auto-capitalization and the double-space
-  period. There is no autocorrect.
+  period. There is no autocorrect. Keys play a light haptic (Typing haptics,
+  on by default; needs Full Access).
 - **Trackpad:** touch and hold space (about 0.5 s) and the keys blank out.
   - Drag to move the cursor horizontally, by character, or vertically, by
     line, keeping the column.
@@ -318,5 +319,5 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Shift, caps lock, auto-capitalization, double-space period, `123`/`#+=`, emoji and accent deletion.
 - [ ] Two-thumb rollover, including space, keeps typing order.
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
-- [ ] Haptics only with Full Access; VoiceOver labels; dark mode; landscape; SE-size layout.
+- [ ] Haptics only with Full Access; Typing haptics on key-down, off when the setting is off; VoiceOver labels; dark mode; landscape; SE-size layout.
 - [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.

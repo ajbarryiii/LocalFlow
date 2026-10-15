@@ -38,6 +38,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         client.target = self
         keyArea.delegate = input
         keyArea.inputModeController = self
+        keyArea.keyHapticsAllowed = { [weak self] in self?.client.keyHapticsAllowed ?? false }
         input.onTrackpadChange = { [weak self] active in self?.trackpadChanged(active) }
         input.onUndoAvailabilityChanged = { [weak self] in self?.client.publishUndoState() }
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }

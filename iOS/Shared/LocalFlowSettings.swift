@@ -14,6 +14,7 @@ struct LocalFlowSettings {
         static let spokenDelimitersEnabled = "spokenDelimitersEnabled"
         static let pressEnterEnabled = "pressEnterEnabled"
         static let hapticsEnabled = "hapticsEnabled"
+        static let keyHapticsEnabled = "keyHapticsEnabled"
         static let cursorSensitivity = "cursorSensitivity"
         static let cursorAcceleration = "cursorAcceleration"
         static let cursorTouchRate = "cursorTouchRate"
@@ -66,9 +67,16 @@ struct LocalFlowSettings {
         nonmutating set { defaults.set(newValue, forKey: Key.pressEnterEnabled) }
     }
 
+    /// Dictation haptics: the mic button, recording start, insertion and errors, and trackpad mode.
     var hapticsEnabled: Bool {
         get { bool(Key.hapticsEnabled) }
         nonmutating set { defaults.set(newValue, forKey: Key.hapticsEnabled) }
+    }
+
+    /// A light haptic on every key touch-down, separate from the dictation haptics.
+    var keyHapticsEnabled: Bool {
+        get { bool(Key.keyHapticsEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.keyHapticsEnabled) }
     }
 
     /// Scales the keyboard's trackpad-mode gain at every speed. Default 1.
