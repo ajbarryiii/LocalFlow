@@ -1575,13 +1575,16 @@ their strength comes from the arrows or from one test recording.
 - **Strength arrows.** ▲ and ▼ step through `DictionaryValidation.presets`
   (×0.5 to ×8) and save at once. From a value between presets they move to
   the next preset in that direction; at either end the arrow is disabled.
-- **Decoding.** Each transcription takes one immutable `DictionarySnapshot`
-  (entries plus `revision`) when it starts. An edit during a dictation applies
-  from the next one. An empty dictionary takes the unbiased path unchanged;
+- **Decoding.** Each transcription decodes with one immutable
+  `DictionarySnapshot` (entries plus `revision`), taken when its decoding
+  starts, after any wait for the model. An edit made after that applies from
+  the next dictation. An empty dictionary takes the unbiased path unchanged;
   otherwise `LocalParakeetService.transcribe(samples:directory:dictionary:)`
   boosts and then restores casing, as on the Mac.
-- **Find strength** ("record a phrase and infer"). It runs in the foreground
-  only.
+- **Find strength** ("record a phrase and infer"). The recording runs in the
+  foreground only; leaving it discards the recording. A check that has already
+  started (after Done) uses no microphone and may finish in the background; its
+  result, or its failure, shows when the user returns.
   - The app records one sentence of at most 15 s with its own
     `MicrophoneCapture` and `DictationSampleBuffer`, in memory only.
   - A running Flow session is ended first and started again when the sheet
@@ -1594,13 +1597,18 @@ their strength comes from the arrows or from one test recording.
     - **already recognized:** the unboosted transcript contains the word;
     - **recognized at the first strength whose decode is accepted:** the
       decode contains the word, and every difference from the unboosted
-      transcript is a block whose new side is exactly the word;
+      transcript is a block whose new side is exactly the word and whose old
+      side has at most two words more than the word. The limit keeps a decode
+      that swallows neighbouring words from counting as a match;
     - **not recognized:** no strength produced the word that way.
   - Nothing changes until the user taps "Use ×n". Samples and texts are
     released when the sheet closes.
   - The probe goes through `TranscriptionEngine.withReadyRuntime`. It waits
     for readiness like a dictation and keeps the runtime from being released,
     but it is not reported as a dictation attempt.
+- **Tests.** The iOS host tests also compile `Sources/Dictionary` and the
+  Foundation-only `Sources/Parakeet/LocalParakeetCore.swift` it depends on.
+  The root `make check` covers `StrengthProbe`.
 - **Privacy.** Entries are user content:
   - they are never logged, never in a bug report and never in the App Group;
   - test recordings follow invariant 1;

@@ -100,6 +100,8 @@ PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
 # The custom dictionary (boosting, casing and "Find strength"), shared with the
 # macOS app. HostCore's DictionaryLibrary uses it, so the host tests compile it too.
 DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
+# The dictionary needs the Foundation-only Parakeet core (tokens, errors); the host tests compile both.
+DICTIONARY_TEST_SOURCES = $(DICTIONARY_SOURCES) ../Sources/Parakeet/LocalParakeetCore.swift
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
@@ -369,7 +371,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 
