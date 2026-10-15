@@ -14,8 +14,8 @@ struct HostEnvironment {
     /// closure ends the task, and the core calls it exactly once.
     var beginBackgroundTask: @MainActor (_ onExpiration: @escaping @MainActor () -> Void) -> (@MainActor () -> Void)
     /// `LocalDictationCore.process`, which is compiled into the app only.
-    var formatTranscript: @MainActor (_ text: String, _ pressEnterEnabled: Bool, _ spokenDelimitersEnabled: Bool)
-        -> (text: String, pressEnter: Bool)
+    var formatTranscript: @MainActor (_ text: String, _ pressEnterEnabled: Bool, _ spokenDelimitersEnabled: Bool,
+                                      _ spokenNumbersEnabled: Bool) -> (text: String, pressEnter: Bool)
 }
 
 /// The host side of the protocol: session lifecycle, idle expiry, reconciliation, run recovery,
@@ -572,7 +572,8 @@ final class HostSessionCore {
         let now = environment.now()
         switch outcome {
         case .success(let text):
-            let formatted = environment.formatTranscript(text, settings.pressEnterEnabled, settings.spokenDelimitersEnabled)
+            let formatted = environment.formatTranscript(text, settings.pressEnterEnabled, settings.spokenDelimitersEnabled,
+                                                         settings.spokenNumbersEnabled)
             let result = DictationResult(requestID: ticket.requestID, hostRunID: hostRunID, text: formatted.text,
                                          pressEnter: formatted.pressEnter, createdAt: now)
             do {

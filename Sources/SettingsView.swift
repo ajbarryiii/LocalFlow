@@ -129,6 +129,9 @@ struct GeneralSettingsView: View {
                     Toggle("Convert spoken quotes, brackets, code marks, and caps", isOn: $appState.isSpokenDelimitersEnabled)
                     Text("Say ‘quote … end quote’, ‘paren … close paren’, ‘open bracket/brace … close bracket/brace’, ‘backtick … end backtick’, ‘double asterisk … close double asterisk’, or ‘all caps on … all caps off’ / ‘all lowercase … end lowercase’. Start with ‘all caps’ or ‘all lowercase’ to change a whole dictation. Unpaired words stay as spoken.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Write spoken numbers as digits", isOn: $appState.isSpokenNumbersEnabled)
+                    Text("‘Twenty three percent’ becomes ‘23%’. Zero to nine stay as words, except in lists, labels, units, and ranges (‘step 3’, ‘5 GB’).")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionRow(.microphone, granted: micGranted) {

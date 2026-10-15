@@ -12,6 +12,7 @@ struct LocalFlowSettings {
     private enum Key {
         static let sessionMinutes = "sessionMinutes"
         static let spokenDelimitersEnabled = "spokenDelimitersEnabled"
+        static let spokenNumbersEnabled = "spokenNumbersEnabled"
         static let pressEnterEnabled = "pressEnterEnabled"
         static let hapticsEnabled = "hapticsEnabled"
         static let keyHapticsEnabled = "keyHapticsEnabled"
@@ -60,6 +61,11 @@ struct LocalFlowSettings {
     var spokenDelimitersEnabled: Bool {
         get { bool(Key.spokenDelimitersEnabled) }
         nonmutating set { defaults.set(newValue, forKey: Key.spokenDelimitersEnabled) }
+    }
+
+    var spokenNumbersEnabled: Bool {
+        get { bool(Key.spokenNumbersEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.spokenNumbersEnabled) }
     }
 
     var pressEnterEnabled: Bool {

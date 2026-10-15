@@ -21,6 +21,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
 	Sources/SetupFlowCore.swift \
+	Sources/SpokenNumberFormatter.swift \
 	Sources/Dictionary/BiasGraph.swift \
 	Sources/Dictionary/BPEEncoder.swift \
 	Sources/Dictionary/CasingRestorer.swift \

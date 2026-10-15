@@ -179,9 +179,10 @@ final class HostSessionController: ObservableObject {
                 }
                 return { task.end() }
             },
-            formatTranscript: { text, pressEnterEnabled, spokenDelimitersEnabled in
+            formatTranscript: { text, pressEnterEnabled, spokenDelimitersEnabled, spokenNumbersEnabled in
                 let processed = LocalDictationCore.process(text, macros: [], pressEnterEnabled: pressEnterEnabled,
-                                                           spokenDelimitersEnabled: spokenDelimitersEnabled)
+                                                           spokenDelimitersEnabled: spokenDelimitersEnabled,
+                                                           spokenNumbersEnabled: spokenNumbersEnabled)
                 return (processed.output, processed.shouldPressEnter)
             })
     }

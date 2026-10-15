@@ -47,6 +47,10 @@ Voice macros match complete phrases locally and paste predefined text. An
 optional trailing “press enter” command submits after pasting. Neither feature
 uses an LLM. Dictated instructions otherwise remain literal text.
 
+Spoken numbers are written as digits (“twenty three percent” becomes “23%”),
+by a small set of local rules. Zero to nine stay as words except in lists,
+labels, units and ranges (“step 3”, “5 GB”). Turn it off in Settings.
+
 The Dictionary (Settings → Dictionary) helps the recognizer with names and
 technical terms. Entries bias decoding toward their words, each entry has its
 own strength, and entries containing capitals are written exactly as entered.

@@ -1181,7 +1181,7 @@ private final class CoreHarness {
                 background.expirations.append(expiration)
                 return { background.ended += 1 }
             },
-            formatTranscript: { text, pressEnter, _ in ("<\(text)>", pressEnter) })
+            formatTranscript: { text, pressEnter, _, _ in ("<\(text)>", pressEnter) })
         core = HostSessionCore(hostRunID: Fixture.hostRunID, store: store, settings: settings, buffer: buffer,
                                capture: injected ?? fakeCapture!, transcriber: transcriber, notifier: nil,
                                environment: environment)

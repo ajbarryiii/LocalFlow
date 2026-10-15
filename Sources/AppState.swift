@@ -137,6 +137,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     private let pressEnterVoiceCommandStorageKey = "press_enter_voice_command_enabled"
     private let doubleTapPromptStorageKey = "double_tap_prompt_enabled"
     private let spokenDelimitersStorageKey = "spoken_delimiters_enabled"
+    private let spokenNumbersStorageKey = "spoken_numbers_enabled"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
     private let soundVolumeStorageKey = "sound_volume"
     private let voiceMacrosStorageKey = "voice_macros"
@@ -261,6 +262,12 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     @Published var isSpokenDelimitersEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isSpokenDelimitersEnabled, forKey: spokenDelimitersStorageKey)
+        }
+    }
+
+    @Published var isSpokenNumbersEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(isSpokenNumbersEnabled, forKey: spokenNumbersStorageKey)
         }
     }
 
@@ -429,6 +436,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         let isSpokenDelimitersEnabled = UserDefaults.standard.object(forKey: spokenDelimitersStorageKey) == nil
             ? true
             : UserDefaults.standard.bool(forKey: spokenDelimitersStorageKey)
+        let isSpokenNumbersEnabled = UserDefaults.standard.object(forKey: spokenNumbersStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: spokenNumbersStorageKey)
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
@@ -478,6 +488,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         self.isDoubleTapPromptEnabled = isDoubleTapPromptEnabled
         self.doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
         self.isSpokenDelimitersEnabled = isSpokenDelimitersEnabled
+        self.isSpokenNumbersEnabled = isSpokenNumbersEnabled
         self.alertSoundsEnabled = alertSoundsEnabled
         self.soundVolume = soundVolume
         self.voiceMacros = initialMacros
@@ -784,7 +795,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                                                                            retainForCorrection: false).text
                 let result = LocalDictationCore.process(raw, macros: voiceMacros,
                                                        pressEnterEnabled: isPressEnterVoiceCommandEnabled,
-                                                       spokenDelimitersEnabled: isSpokenDelimitersEnabled)
+                                                       spokenDelimitersEnabled: isSpokenDelimitersEnabled,
+                                                       spokenNumbersEnabled: isSpokenNumbersEnabled)
                 updated.rawTranscript = result.rawTranscript
                 updated.transcript = result.output
                 updated.status = "\(result.status) (retried)"
@@ -1709,6 +1721,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
                                                                pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
                                                                spokenDelimitersEnabled: self.isSpokenDelimitersEnabled,
+                                                               spokenNumbersEnabled: self.isSpokenNumbersEnabled,
                                                                promptTag: appliedPromptTag)
                         self.lastRawTranscript = result.rawTranscript
                         self.lastOutputTranscript = result.output
