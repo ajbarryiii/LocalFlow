@@ -11,6 +11,9 @@ enum TranscriptionEngineTests {
             ("backgroundFailureFailsWithHint", isolated(testBackgroundFailureFailsWithHint)),
             ("releaseOnlyWhenIdleAndOneRuntimeAlive", isolated(testReleaseOnlyWhenIdleAndOneRuntimeAlive)),
             ("unavailableModel", isolated(testUnavailableModel)),
+            ("readyRuntimeWaitsAndIsNotADictation", isolated(testReadyRuntimeWaitsAndIsNotADictation)),
+            ("readyRuntimeFailures", isolated(testReadyRuntimeFailures)),
+            ("readyRuntimeCancelledWhileWaiting", isolated(testReadyRuntimeCancelledWhileWaiting)),
         ]
     }
 
@@ -160,6 +163,104 @@ enum TranscriptionEngineTests {
         let result = h.transcribe(audio())
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { result.error != nil }, "no failure")
         TestSupport.expectEqual(result.error as? TranscriptionFailure, .modelUnavailable)
+    }
+
+    // MARK: withReadyRuntime ("Find strength")
+
+    @MainActor
+    private final class ProbeOutcome {
+        var task: Task<Void, Never>?
+        var value: Result<Int, Error>?
+        var ran = false
+        var release: CheckedContinuation<Void, Never>?
+        var error: Error? {
+            if case .failure(let error)? = value { return error }
+            return nil
+        }
+    }
+
+    /// Runs an operation that holds the runtime until `release` is resumed, then returns 7 or throws `failure`.
+    @MainActor
+    private static func probe(_ h: EngineHarness, failure: Error? = nil) -> ProbeOutcome {
+        let outcome = ProbeOutcome()
+        let engine = h.engine!
+        outcome.task = Task {
+            do {
+                let value = try await engine.withReadyRuntime { runtime -> Int in
+                    outcome.ran = runtime is FakeRuntime
+                    await withCheckedContinuation { outcome.release = $0 }
+                    if let failure { throw failure }
+                    return 7
+                }
+                outcome.value = .success(value)
+            } catch {
+                outcome.value = .failure(error)
+            }
+        }
+        return outcome
+    }
+
+    /// The operation waits for readiness like a dictation, holds the runtime while it runs, and is not
+    /// reported as a dictation attempt.
+    @MainActor
+    private static func testReadyRuntimeWaitsAndIsNotADictation() {
+        let h = EngineHarness()
+        let outcome = probe(h)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 1 }, "not preparing")
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expect(!outcome.ran, "ran before the model was ready")
+        h.runtime(0)!.finishPreparing()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { outcome.release != nil }, "never ran")
+        TestSupport.expect(outcome.ran, "not given the loaded runtime")
+        TestSupport.expect(h.engine.isBusy, "idle while the operation runs")
+        TestSupport.expect(!h.engine.releaseIfIdle(), "released while the operation runs")
+        outcome.release?.resume()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { outcome.value != nil }, "no result")
+        TestSupport.expectEqual(try? outcome.value?.get(), 7)
+        TestSupport.expect(!h.engine.isBusy, "busy afterwards")
+        TestSupport.expect(h.attempts.isEmpty, "reported as a dictation")
+        TestSupport.expectEqual(h.runtime(0)?.transcribeCalls, 0)
+    }
+
+    @MainActor
+    private static func testReadyRuntimeFailures() {
+        let h = EngineHarness()
+        h.engine.prepare()
+        h.runtime(0)!.finishPreparing()
+        _ = TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .ready }
+        let failing = probe(h, failure: FakeRuntime.Failure())
+        _ = TestSupport.waitUntil(timeout: 2) { failing.release != nil }
+        failing.release?.resume()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { failing.error != nil }, "no failure")
+        TestSupport.expectEqual(failing.error as? TranscriptionFailure, .transcriptionFailed)
+
+        let cancelled = probe(h, failure: CancellationError())
+        _ = TestSupport.waitUntil(timeout: 2) { cancelled.release != nil }
+        cancelled.release?.resume()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { cancelled.error != nil }, "no failure")
+        TestSupport.expect(cancelled.error is CancellationError, "not a cancellation")
+        TestSupport.expect(h.attempts.isEmpty, "reported as a dictation")
+
+        let unavailableHarness = EngineHarness(isAvailable: false)
+        let unavailable = probe(unavailableHarness)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { unavailable.error != nil }, "no failure")
+        TestSupport.expectEqual(unavailable.error as? TranscriptionFailure, .modelUnavailable)
+        TestSupport.expect(!unavailable.ran && unavailable.release == nil, "ran without a model")
+    }
+
+    /// Cancelled while the model prepares: returns at once and never runs.
+    @MainActor
+    private static func testReadyRuntimeCancelledWhileWaiting() {
+        let h = EngineHarness()
+        let outcome = probe(h)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 1 }, "not preparing")
+        outcome.task?.cancel()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { outcome.error != nil }, "the wait ignored cancellation")
+        TestSupport.expect(outcome.error is CancellationError, "not a cancellation")
+        h.runtime(0)!.finishPreparing()
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expect(outcome.release == nil, "ran after cancellation")
+        TestSupport.expect(!h.engine.isBusy, "still busy")
     }
 }
 

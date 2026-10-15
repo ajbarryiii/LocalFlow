@@ -1549,3 +1549,67 @@ hit boundary.
 **Torture-test contract:** "release order" now means the order keys act:
 characters at touch-down, space and Return at release or rollover. Each edit
 is asserted right after the event that typed it.
+
+## Custom dictionary (contract, 2026-10-15)
+
+The macOS custom dictionary (`Sources/Dictionary`, the fixed bonus with a
+per-entry strength) now decodes iPhone dictations too. There is no correction
+detection on iOS. Only our own keyboard could see later edits, and reading
+the field for that would break invariant 5. So entries are added by hand, and
+their strength comes from the arrows or from one test recording.
+
+- **Storage.** The host app's own `UserDefaults.standard`, never the App
+  Group: the keyboard never transcribes, so it never sees the words. The keys
+  and payloads are the macOS ones (`custom_dictionary` and
+  `custom_dictionary_ignore`, `DictionaryStorage` JSON version 1). The iOS UI
+  shows no ignore list but keeps whatever is stored.
+- **`DictionaryLibrary`** (HostCore, `@MainActor`, pure, tested) owns
+  loading, edits and persistence over an injected `UserDefaults` and
+  `BPEEncoder?`. It reuses `DictionaryEditor` and `DictionaryStorage`, and
+  follows the macOS rules:
+  - every edit is validated, persisted, then published, and raises `revision`;
+  - without a vocabulary nothing can be edited;
+  - saved data that fails validation makes the dictionary empty for decoding
+    and refuses edits. The data is never overwritten; only an explicit reset
+    removes it.
+- **Strength arrows.** ▲ and ▼ step through `DictionaryValidation.presets`
+  (×0.5 to ×8) and save at once. From a value between presets they move to
+  the next preset in that direction; at either end the arrow is disabled.
+- **Decoding.** Each transcription decodes with one immutable
+  `DictionarySnapshot` (entries plus `revision`), taken when its decoding
+  starts, after any wait for the model. An edit made after that applies from
+  the next dictation. An empty dictionary takes the unbiased path unchanged;
+  otherwise `LocalParakeetService.transcribe(samples:directory:dictionary:)`
+  boosts and then restores casing, as on the Mac.
+- **Find strength** ("record a phrase and infer"). The recording runs in the
+  foreground only; leaving it discards the recording. A check that has already
+  started (after Done) uses no microphone and may finish in the background; its
+  result, or its failure, shows when the user returns.
+  - The app records one sentence of at most 15 s with its own
+    `MicrophoneCapture` and `DictationSampleBuffer`, in memory only.
+  - A running Flow session is ended first and started again when the sheet
+    closes, if the app is still in front. It is not offered while a dictation
+    is in progress.
+  - `LocalParakeetService.probeStrength` transcribes the samples with the
+    dictionary minus the word. It then re-decodes the same encoder output with
+    the word at each of `VerifyDecision.strengths` (×1 to ×8), in order.
+  - `StrengthProbe` (pure, `Sources/Dictionary`) decides:
+    - **already recognized:** the unboosted transcript contains the word;
+    - **recognized at the first strength whose decode is accepted:** the
+      decode contains the word, and every difference from the unboosted
+      transcript is a block whose new side is exactly the word and whose old
+      side has at most two words more than the word. The limit keeps a decode
+      that swallows neighbouring words from counting as a match;
+    - **not recognized:** no strength produced the word that way.
+  - Nothing changes until the user taps "Use ×n". Samples and texts are
+    released when the sheet closes.
+  - The probe goes through `TranscriptionEngine.withReadyRuntime`. It waits
+    for readiness like a dictation and keeps the runtime from being released,
+    but it is not reported as a dictation attempt.
+- **Tests.** The iOS host tests also compile `Sources/Dictionary` and the
+  Foundation-only `Sources/Parakeet/LocalParakeetCore.swift` it depends on.
+  The root `make check` covers `StrengthProbe`.
+- **Privacy.** Entries are user content:
+  - they are never logged, never in a bug report and never in the App Group;
+  - test recordings follow invariant 1;
+  - the transcripts shown in the sheet are never stored.
