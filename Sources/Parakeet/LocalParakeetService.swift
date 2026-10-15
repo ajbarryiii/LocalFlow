@@ -117,6 +117,41 @@ final class LocalParakeetService: @unchecked Sendable {
         }
     }
 
+    /// In-memory samples with an immutable dictionary snapshot (iOS): boosting,
+    /// then casing restoration. An empty dictionary takes the unbiased path.
+    func transcribe(samples: [Float], directory: URL, dictionary: DictionarySnapshot) async throws -> String {
+        try await transcribe(directory: directory) { runtime, check in
+            let bias = runtime.graph(for: dictionary)
+            let text = try runtime.transcribe(samples: samples, bias: bias, retain: false, check: check).text
+            return CasingRestorer.apply(text, entries: dictionary.entries)
+        }
+    }
+
+    /// "Find strength" (iOS, `StrengthProbe`): transcribes `samples` with the
+    /// dictionary minus `word`, then re-decodes the same encoder output with
+    /// `word` added at increasing strengths. Audio and text stay in memory and
+    /// are released when this returns. `word` must be a validated entry text.
+    func probeStrength(samples: [Float], directory: URL, word: String,
+                       dictionary: DictionarySnapshot) async throws -> StrengthProbe.Result {
+        try await transcribe(directory: directory) { runtime, check in
+            let key = DictionaryKey(word)
+            let others = dictionary.entries.filter { $0.key != key }
+            let bias = others.isEmpty ? nil : BiasGraph.build(entries: others, encoder: runtime.encoder)
+            let decoded = try runtime.transcribe(samples: samples, bias: bias, retain: true, check: check)
+            guard let retained = decoded.retained else {
+                throw LocalParakeetError.invalid("The recording is too long to test.")
+            }
+            let base = CasingRestorer.apply(decoded.text, entries: others)
+            return try StrengthProbe.find(word: word, base: base) { strength in
+                let entries = others + [DictionaryEntry(text: word, strength: strength)]
+                guard let graph = BiasGraph.build(entries: entries, encoder: runtime.encoder) else {
+                    throw LocalParakeetError.invalid("This word can't be tested with the speech model.")
+                }
+                return CasingRestorer.apply(try runtime.decode(retained.chunks, bias: graph, check: check), entries: entries)
+            }
+        }
+    }
+
     /// Dictation with an immutable dictionary snapshot: boosting, then casing
     /// restoration on the raw text. With `retainForCorrection`, the audio
     /// projections are kept in memory for later verification (DESIGN §3.4) and
@@ -403,15 +438,20 @@ private final class LocalParakeetRuntime {
     }
 
     func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
+        try transcribe(samples: samples, bias: nil, retain: false, check: check).text
+    }
+
+    func transcribe(samples: [Float], bias: BiasGraph?, retain: Bool,
+                    check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
         var chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
-        var retained: RetainedAudio?
+        var retained: RetainedAudio? = retain ? RetainedAudio() : nil
         try chunker.append(samples) {
-            transcript.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check), covering: $0.range)
+            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
         }
         try chunker.finish {
-            transcript.append(try transcribeChunk($0, bias: nil, retained: &retained, check: check), covering: $0.range)
+            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
         }
-        return transcript.text
+        return (transcript.text, retained)
     }
 
     /// Re-decodes retained chunks exactly as transcribed, with a new bias.

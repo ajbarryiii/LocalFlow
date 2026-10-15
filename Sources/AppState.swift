@@ -299,7 +299,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     /// Saved data failed validation. It stays untouched, the dictionary is
     /// empty in memory, and editing waits for an explicit reset.
     @Published private(set) var dictionaryLoadFailed = false
-    /// Opt-in, off by default: watch pasted dictations for corrections.
+    /// Watch pasted dictations for corrections. On by default; turning it off is remembered.
     @Published var isCorrectionSuggestionsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isCorrectionSuggestionsEnabled, forKey: Self.correctionSuggestionsStorageKey)
@@ -444,7 +444,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         }
 
         let dictionaryLoad = Self.loadCustomDictionary()
-        let isCorrectionSuggestionsEnabled = UserDefaults.standard.bool(forKey: Self.correctionSuggestionsStorageKey)
+        // On unless the user turned it off.
+        let isCorrectionSuggestionsEnabled = UserDefaults.standard.object(forKey: Self.correctionSuggestionsStorageKey) as? Bool ?? true
 
         let initialAccessibility = AXIsProcessTrusted()
         var removedAudioFileNames: [String] = []
