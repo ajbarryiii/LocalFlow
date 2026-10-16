@@ -2,11 +2,14 @@ import UIKit
 
 @MainActor
 protocol KeyAreaViewDelegate: AnyObject {
-    /// A key touched down (any key but the globe), before anything it does: trackpad settlement ends.
+    /// A key touched down (any key but the globe), before anything it does: trackpad settlement ends. The
+    /// click, the haptic and a character's callout come with it; a character types only later.
     func keyAreaTouchedDownKey(_ keyArea: KeyAreaView, timestamp: TimeInterval)
-    /// A key acted: characters, shift and layer keys on touch-down; space and return on touch-up or
-    /// rollover; delete here only from VoiceOver (a held delete uses the begin and end calls).
-    /// `field`: the field the keyboard served when the finger touched down (`currentField`).
+    /// A key acted (ARCHITECTURE.md, "Typing model v4 and swipe typing"): characters on touch-up or
+    /// rollover (the key under the touch-down point); shift and layer keys on touch-down; space and return
+    /// on touch-up or rollover; delete here only from VoiceOver (a held delete uses the begin and end
+    /// calls). A cancelled touch types nothing. `field`: the field the keyboard served when the finger
+    /// touched down (`currentField`).
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, field: UUID?, timestamp: TimeInterval)
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval)
     /// `cancelled`: the system cancelled the touch, or the key area dropped it (the menu opening, the
@@ -18,13 +21,22 @@ protocol KeyAreaViewDelegate: AnyObject {
     func keyArea(_ keyArea: KeyAreaView, movedTrackpadBy dx: Double, dy: Double, timestamp: TimeInterval)
     /// `cancelled`: the system cancelled the touch, which is not a lift.
     func keyAreaEndedTrackpad(_ keyArea: KeyAreaView, timestamp: TimeInterval, cancelled: Bool)
+    /// A swipe was released (only while `swipeEnabled`): its samples in key-area points with touch
+    /// timestamps, from the touch-down point through the lift, and the field it touched down in. A
+    /// cancelled swipe never arrives.
+    func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval)
+}
+
+extension KeyAreaViewDelegate {
+    func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
 }
 
 /// The key area: one view that tracks every touch itself, with nearest-key hit testing so gaps are
 /// never dead. The decisions live in `KeyTouchModel`; this view feeds it touches, applies its
 /// effects, and draws pressed keys and callouts from its state, so only the keys involved redraw.
 /// Touch and hold the space bar for trackpad mode: the caps go blank and the whole area moves the
-/// cursor.
+/// cursor. With `swipeEnabled`, a drag across the letters is a swipe, delivered with its samples at the
+/// lift.
 final class KeyAreaView: UIView {
     weak var delegate: KeyAreaViewDelegate?
     /// The field the keyboard serves now, read at each touch-down so a key stays bound to it.
@@ -38,6 +50,12 @@ final class KeyAreaView: UIView {
     var trackpadParameters: TrackpadParameters {
         get { model.parameters }
         set { model.parameters = newValue }
+    }
+    /// Whether a drag on a letter may become a swipe (`KeyTouchModel.swipeEnabled`): only while the swipe
+    /// engine is loaded and the field is not secure text entry. A swipe already running goes on.
+    var swipeEnabled: Bool {
+        get { model.swipeEnabled }
+        set { model.swipeEnabled = newValue }
     }
     /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
     var spaceTitle = "LocalFlow" {
@@ -65,10 +83,11 @@ final class KeyAreaView: UIView {
     private var holdTimers: [KeyTouchModel.TouchID: Timer] = [:]
     private var trackpadLast: CGPoint?
     private var shownPressed: Set<KeyAction> = []
-    private var shownCallout: KeyAction?
-    /// The last character typed and its caption then: typing it may turn the shift off before the callout
-    /// is drawn.
-    private var typedCallout: (action: KeyAction, title: String)?
+    private var shownCallout: (touch: KeyTouchModel.TouchID, action: KeyAction)?
+    /// Each held character's callout caption, fixed when its key is first shown (at touch-down, with the
+    /// shift it will type with): committing it (or another finger's character) may turn the shift off
+    /// while it is still shown. A slide's caption follows its key.
+    private var calloutTitles: [KeyTouchModel.TouchID: (action: KeyAction, title: String)] = [:]
     private var isBlank = false
 
     private var placedKeys: [PlacedKey] { model.keys }
@@ -207,7 +226,8 @@ final class KeyAreaView: UIView {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
             let touchID = id(for: touch)
-            let effects = model.began(touchID, x: Double(point.x), y: Double(point.y), field: currentField())
+            let effects = model.began(touchID, x: Double(point.x), y: Double(point.y), t: touch.timestamp,
+                                      field: currentField())
             if model.touches.last?.id == touchID { keyTouchedDown() }
             perform(effects, timestamp: touch.timestamp)
         }
@@ -227,18 +247,31 @@ final class KeyAreaView: UIView {
                 continue
             }
             let point = touch.location(in: self)
-            let effects = model.moved(id, x: Double(point.x), y: Double(point.y))
+            // A swipe, or a letter that may become one, keeps every coalesced sample of the move, in order
+            // (ARCHITECTURE.md, "Typing model v4 and swipe typing"); other touches only where they are now.
+            let samples = model.collectsSamples(id) ? swipeSamples(of: touch, with: event) : []
+            let effects = model.moved(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp, coalesced: samples)
             if id == model.trackpadTouch { trackpadLast = point }
             perform(effects, timestamp: touch.timestamp)
         }
         refreshPressed()
     }
 
+    /// Every coalesced touch of this move, in order, in key-area points with its timestamp; the touch
+    /// itself when the event has none.
+    private func swipeSamples(of touch: UITouch, with event: UIEvent?) -> [SwipeSample] {
+        let coalesced = event?.coalescedTouches(for: touch) ?? []
+        return (coalesced.isEmpty ? [touch] : coalesced).map { sample in
+            let point = sample.location(in: self)
+            return SwipeSample(x: Double(point.x), y: Double(point.y), t: sample.timestamp)
+        }
+    }
+
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
             let point = touch.location(in: self)
-            perform(model.ended(id, x: Double(point.x), y: Double(point.y)), timestamp: touch.timestamp)
+            perform(model.ended(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp), timestamp: touch.timestamp)
         }
         refreshPressed()
     }
@@ -259,7 +292,8 @@ final class KeyAreaView: UIView {
     }
 
     /// Another field became current: fingers that touched down before any identity bind to it, those
-    /// bound to a different identified field end without typing, the rest go on.
+    /// bound to a different identified field end without typing (held characters and a swipe included),
+    /// the rest go on.
     func fieldChanged(to field: UUID?) {
         perform(model.fieldChanged(to: field), timestamp: CACurrentMediaTime())
         refreshPressed()
@@ -271,7 +305,6 @@ final class KeyAreaView: UIView {
             case .keyDown:
                 delegate?.keyAreaTouchedDownKey(self, timestamp: timestamp)
             case .type(let action, let field):
-                if case .character(let character) = action { typedCallout = (action, displayed(character)) }
                 delegate?.keyArea(self, typed: action, field: field, timestamp: timestamp)
             case .beginDelete:
                 delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
@@ -288,6 +321,8 @@ final class KeyAreaView: UIView {
                 trackpadLast = nil
                 setBlank(false)
                 delegate?.keyAreaEndedTrackpad(self, timestamp: timestamp, cancelled: cancelled)
+            case .swipe(let samples, let field):
+                delegate?.keyArea(self, swiped: samples, field: field, timestamp: timestamp)
             }
         }
     }
@@ -301,13 +336,20 @@ final class KeyAreaView: UIView {
             }
             shownPressed = pressed
         }
-        let callout = isBlank ? nil : model.calloutAction
-        guard callout != shownCallout else { return }
+        if !calloutTitles.isEmpty {
+            calloutTitles = calloutTitles.filter { entry in model.touches.contains { $0.id == entry.key } }
+        }
+        // A swipe has no callout: the model no longer counts it as a held character.
+        let target = isBlank ? nil : model.calloutTouch
+        let callout = target.flatMap { touch in touch.action.map { (touch: touch.id, action: $0) } }
+        guard callout?.touch != shownCallout?.touch || callout?.action != shownCallout?.action else { return }
         shownCallout = callout
-        if let callout, case .character(let character) = callout,
-           let index = placedKeys.firstIndex(where: { $0.action == callout }), keyViews.indices.contains(index) {
-            let title = typedCallout?.action == callout ? typedCallout?.title : nil
-            self.callout.show(title ?? displayed(character), over: keyViews[index].frame, within: bounds, compact: isCompact)
+        if let callout, case .character(let character) = callout.action,
+           let index = placedKeys.firstIndex(where: { $0.action == callout.action }), keyViews.indices.contains(index) {
+            let title = calloutTitles[callout.touch].flatMap { $0.action == callout.action ? $0.title : nil }
+                ?? displayed(character)
+            calloutTitles[callout.touch] = (callout.action, title)
+            self.callout.show(title, over: keyViews[index].frame, within: bounds, compact: isCompact)
         } else {
             self.callout.hide()
         }

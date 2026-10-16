@@ -37,6 +37,9 @@ struct TypingState: Equatable, Sendable {
     /// What the text last called for (`updateAutomaticShift`); nil after an edit or a field change.
     private var lastAutomaticDecision: Bool?
 
+    /// The text called for an automatic shift and the user turned it off.
+    var automaticShiftDeclined: Bool { shift == .off && lastAutomaticDecision == true }
+
     init(parameters: TypingParameters = .standard) {
         self.parameters = parameters
     }

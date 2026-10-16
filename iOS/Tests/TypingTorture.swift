@@ -1,9 +1,11 @@
 import Foundation
 
-/// The typing torture test (ARCHITECTURE.md, "Typing model v2: immediate execution"): a seeded script of
-/// touches (taps, holds, rollover; shift, caps lock, layers; space, double space, return, delete),
-/// trackpad gestures (keys at the lift, letters while a probe is out, Shift and layer keys among them,
-/// outside changes and hiding while one settles), focus changes between two fields (keys typed before
+/// The typing torture test (ARCHITECTURE.md, "Typing model v2: immediate execution", with the timing of
+/// "Typing model v4 and swipe typing": characters act at release or rollover; space and Return at release
+/// or rollover; each edit asserted right after the event that typed it): a seeded script of touches
+/// (taps, holds, rollover; shift, caps lock, layers; space, double space, return, delete), trackpad
+/// gestures (keys at the lift, letters while a probe is out, Shift and layer keys among them, outside
+/// changes and hiding while one settles), focus changes between two fields (keys typed before
 /// the new field's first callback, fingers held across), fields without an identity (fingers held
 /// through nil → A → B), hiding, the host app's own edits, caret moves and selections, against hosts with
 /// lagging adjustments, short, long or missing callbacks, WebKit's double reports and proxy contexts that
@@ -505,8 +507,6 @@ private final class TortureWorld {
         var role: Role
         var field: UUID?
         var committed = false
-        var x: Double
-        var y: Double
     }
 
     private var bindings: [KeyTouchModel.TouchID: Held] = [:]
@@ -516,28 +516,24 @@ private final class TortureWorld {
     private var layoutLayer = KeyboardLayer.letters
 
     private func touchDown(_ action: KeyAction) -> KeyTouchModel.TouchID {
-        guard let point = harness.center(action) else { preconditionFailure("the script pressed \(action), not shown") }
-        // A new finger commits every earlier one still held: space and return (characters type at once).
+        guard harness.center(action) != nil else { preconditionFailure("the script pressed \(action), not shown") }
+        let field = current
+        let id = harness.touchDown(action)
+        // Typing model v4: a touch-down types nothing itself; it first commits every earlier finger still
+        // held, in press order: characters, space and return. Modeled once the keyboard has typed them: on a
+        // slow host a letter's case may come from the host.
         var committed = false
-        for (id, held) in bindings.sorted(by: { $0.key < $1.key }) where !held.committed {
+        for (earlier, held) in bindings.sorted(by: { $0.key < $1.key }) where !held.committed {
             switch (held.role, held.action) {
             case (.character, .character?), (.space, .space?), (.returnKey, .returnKey?):
-                bindings[id]?.committed = true
+                bindings[earlier]?.committed = true
                 type(held.action!, binding: held.field, verifying: false)
                 committed = true
             default:
                 break
             }
         }
-        let field = current
-        let id = harness.touchDown(action)
-        // Typing model v3: a character types at its touch-down, after the rollover. Modeled once the keyboard
-        // has typed it: on a slow host its case may come from the host.
-        if case .character = action {
-            type(action, binding: field, verifying: false)
-            committed = true
-        }
-        if committed { verify(after: "touch-down") }
+        if committed { verify(after: "rollover") }
         let role: Role
         switch action {
         case .character: role = .character
@@ -545,7 +541,7 @@ private final class TortureWorld {
         case .returnKey: role = .returnKey
         default: role = .other
         }
-        bindings[id] = Held(action: action, role: role, field: field, committed: role == .character, x: point.x, y: point.y)
+        bindings[id] = Held(action: action, role: role, field: field)
         switch action {
         case .shift:
             note("key down shift (keyboard: \(harness.editor.typing.shift), oracle before: \(typing.shift))")
@@ -563,7 +559,8 @@ private final class TortureWorld {
         return id
     }
 
-    /// A layer change re-lays the keys out: a held character finger now presses the key under it.
+    /// A layer change re-lays the keys out: a held function key whose key is gone is dropped. A held
+    /// character keeps the key it touched down on (typing model v4: never hit-tested again).
     private func remapHeldKeys() {
         guard typing.layer != layoutLayer else { return }
         layoutLayer = typing.layer
@@ -571,7 +568,7 @@ private final class TortureWorld {
         for (id, held) in bindings where !held.committed {
             switch held.role {
             case .character:
-                bindings[id]?.action = KeyboardLayout.nearestKey(toX: held.x, y: held.y, in: keys).map { keys[$0].action }
+                break
             case .space, .returnKey, .other:
                 if let action = held.action, !keys.contains(where: { $0.action == action }) { bindings[id]?.action = nil }
             }

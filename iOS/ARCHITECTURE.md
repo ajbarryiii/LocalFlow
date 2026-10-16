@@ -1616,7 +1616,8 @@ from it):
    the duration exceeds 1 ms, keep the last sample per timestamp and
    interpolate at `n60 = max(2, floor(duration × 60 / 1000 + 0.5) + 1)`
    evenly spaced times (60 Hz); otherwise keep the samples. Then interpolate
-   by index to 64 points. Float64 throughout.
+   by index to 64 points. The arithmetic is Float64 and the output is
+   rounded to Float32, as in the reference.
 3. **Encoder** (Core ML `SwipeEncoder.mlmodelc`, CPU only): input `traj`
    Float32 [1, 64, 2] and `keys` Float32 [1, 26, 2] (the 26 letter centers in
    a–z order, in the same frame); output `log_probs` Float32 [1, 32, 27].

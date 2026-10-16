@@ -38,9 +38,11 @@ struct LocalFlowIOSTests {
             ("UndoTracker", UndoTrackerTests.tests),
             ("EditingCore", EditingCoreTests.tests),
             ("KeyboardEditor", KeyboardEditorTests.tests),
+            ("SwipeEditor", SwipeEditorTests.tests),
             ("TouchRate", TouchRateTests.tests),
             ("FieldProfile", FieldProfileTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
+            ("SwipeCore", SwipeCoreTests.tests),
             ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
         ]

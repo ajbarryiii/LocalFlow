@@ -1,5 +1,17 @@
 import Foundation
 
+/// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"): up to three
+/// candidates, cased as the inserted word was, best first, and which one is in the field now. In memory
+/// only; never logged or stored.
+struct SwipeStrip: Equatable, Sendable {
+    var candidates: [String]
+    var inserted: Int
+
+    static let limit = 3
+
+    var insertedWord: String { candidates[inserted] }
+}
+
 /// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model v2: immediate
 /// execution"): keys, the held delete key's deletions, dictated text and its undo, the trackpad and
 /// host callbacks. `KeyboardInput` adapts it to the key area, the text proxy and timers; tests drive it
@@ -24,7 +36,10 @@ import Foundation
 /// - **The text before the caret** is the proxy's, or the typing tail's while the proxy has not shown
 ///   our edits or the gesture's landing yet (`ContextTail`). The proxy can show an own edit late and
 ///   with no callback, so for `contextWatch` after each one the shift follows it every frame.
-/// Context is read in memory only; the typing tail is dropped on hiding.
+/// - **Swiped words** (`insertSwipe`) go in like a key, with a leading space and the shift's case; the
+///   candidate strip that follows (`swipeStrip`) can replace the word only while nothing else has
+///   edited the field (`EditingCore.generation`) and the text before the caret still ends with it.
+/// Context is read in memory only; the typing tail and the strip are dropped on hiding.
 final class KeyboardEditor {
     /// How long after an own edit the shift keeps following the proxy, which may show the edit late and
     /// with no callback.
@@ -53,6 +68,16 @@ final class KeyboardEditor {
     /// Another field (its identity, nil if none) became current, by a callback or adopted for a key: held
     /// keys bind to it or end (`KeyTouchModel.fieldChanged`, `HeldDeleteKey.fieldChanged`).
     var onFieldChanged: ((UUID?) -> Void)?
+    /// The candidate strip opened, changed or closed. Never called while it stays closed, so ordinary
+    /// typing re-renders nothing.
+    var onSwipeStripChanged: (() -> Void)?
+
+    /// The strip shown after a swipe, nil when closed.
+    var swipeStrip: SwipeStrip? { swipe?.strip }
+    /// The strip, and the field and edit generation its word was inserted at.
+    private var swipe: (strip: SwipeStrip, documentID: UUID?, generation: Int)? {
+        didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }
+    }
 
     init(document: TextDocument, trackpad: TrackpadController) {
         core = EditingCore(document: document)
@@ -85,6 +110,7 @@ final class KeyboardEditor {
         // from before ends here.
         trackpad.appeared()
         core.reset()
+        swipe = nil
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -99,6 +125,7 @@ final class KeyboardEditor {
     func hide(now: TimeInterval) {
         trackpad.hide(at: now)
         core.hide()
+        swipe = nil
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -124,7 +151,9 @@ final class KeyboardEditor {
             break
         case .outside:
             // The field changed under the keyboard (a caret tap, the host app's own edit, or a report
-            // nothing explains): the gesture ends, and the space and shift timing starts over.
+            // nothing explains): the gesture ends, the strip closes, and the space and shift timing
+            // starts over.
+            swipe = nil
             trackpad.abort()
             typing.resetTiming()
             tail.forget()
@@ -143,6 +172,7 @@ final class KeyboardEditor {
     /// Another field (or none): nothing from the old one applies here.
     private func fieldChanged() {
         trackpad.fieldChanged()
+        swipe = nil
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -163,6 +193,10 @@ final class KeyboardEditor {
     /// rollover; delete only from VoiceOver (the held delete key uses `heldDelete`). `field` is the
     /// field identified when the key was pressed (nil if none was).
     func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
+        // VoiceOver's delete is the strip's first deletion like the held delete key's.
+        if action == .delete, deleteSwipedWord(field: field, now: now) { return }
+        // Any other key action closes the strip, typed or refused.
+        swipe = nil
         switch action {
         case .shift:
             trackpad.interrupt(at: now)
@@ -180,7 +214,11 @@ final class KeyboardEditor {
     }
 
     /// One deletion of the held delete key, pressed in `field` (nil if none was identified).
+    /// While the strip shows, the first deletion (a tap, or a held delete's first) removes the whole
+    /// swiped word instead; the strip closes, so repeats are the usual ones.
     func heldDelete(_ unit: DeleteRepeat.Unit, field: UUID?, now: TimeInterval) {
+        if deleteSwipedWord(field: field, now: now) { return }
+        swipe = nil
         type(field: field, now: now) { [self] before in
             var deleted = 0
             var text = before ?? ""
@@ -204,6 +242,7 @@ final class KeyboardEditor {
     /// the result to it, and claims it only for this). Ends any gesture on the spot, like a key.
     func insertDictation(_ text: String, now: TimeInterval) {
         guard !text.isEmpty else { return }
+        swipe = nil
         adoptCurrentField()
         trackpad.interrupt(at: now)
         tail.forget()
@@ -227,17 +266,131 @@ final class KeyboardEditor {
     }
 
     /// A key's edit, now: refused only when it was pressed in another identified field; any gesture
-    /// ends first, so the key reads where the caret lands.
-    private func type(field: UUID?, now: TimeInterval, resolve: (String?) -> (deletes: Int, text: String)) {
-        if let field, let current = document.documentID, field != current { return }
+    /// ends first, so the key reads where the caret lands. False if refused. `recordEachDeletion`: every
+    /// deletion is recorded as an own edit, for a host that reports each one (a whole word goes at once).
+    @discardableResult
+    private func type(field: UUID?, now: TimeInterval, recordEachDeletion: Bool = false,
+                      resolve: (String?) -> (deletes: Int, text: String)) -> Bool {
+        if let field, let current = document.documentID, field != current { return false }
         adoptCurrentField()
         trackpad.interrupt(at: now)
         let edit = resolve(currentBefore)
         userEdit()
-        if edit.deletes > 0 { deleteGraphemes(edit.deletes, now: now) }
+        if edit.deletes > 0 { deleteGraphemes(edit.deletes, now: now, recordEach: recordEachDeletion) }
         if !edit.text.isEmpty { insert(edit.text, now: now) }
         contextWatchUntil = now + Self.contextWatch
         updateAutomaticShift()
+        return true
+    }
+
+    // MARK: Swipe typing
+
+    /// Characters after which a swiped word gets no leading space (besides whitespace and the start).
+    private static let swipeSpaceOpeners: Set<Character> = ["(", "[", "{", "\"", "'", "\u{201C}", "\u{2018}", "/", "-", "@", "#"]
+
+    /// Inserts the best of a swipe's decoded candidates (best first) like a key pressed in `field`:
+    /// refused in another identified field, nothing at all without a candidate. A space goes before it
+    /// unless the text before the caret is empty or ends with whitespace or an opener; none after. Caps
+    /// lock uppercases it, a one-shot or automatic shift its first letter (and is consumed); case only
+    /// rises. The strip then shows up to three candidates cased the same way.
+    func insertSwipe(_ candidates: [SwipeCandidate], field: UUID?, now: TimeInterval) {
+        let words = candidates.map(\.word).filter { !$0.isEmpty }
+        guard !words.isEmpty else { return }
+        var strip: SwipeStrip?
+        let typed = type(field: field, now: now) { [self] before in
+            let space = Self.swipeNeedsSpace(before: before) ? " " : ""
+            let shift = swipeShift(after: (before ?? "") + space)
+            var cased: [String] = []
+            for word in words where cased.count < SwipeStrip.limit {
+                let candidate = Self.swipeCased(word, shift: shift)
+                if !cased.contains(candidate) { cased.append(candidate) }
+            }
+            // A one-shot shift is consumed as by a typed letter.
+            typing.didTypeCharacter(cased[0])
+            strip = SwipeStrip(candidates: cased, inserted: 0)
+            return (0, space + cased[0])
+        }
+        guard typed, let strip else {
+            // A refused swipe is still a key action: the strip closes.
+            swipe = nil
+            return
+        }
+        swipe = (strip, document.documentID, core.generation)
+    }
+
+    /// A tap on the strip's candidate `index`: it replaces the inserted word, but only while nothing else
+    /// has edited the field and the text before the caret still ends with the word. Otherwise the tap
+    /// does nothing and the strip closes.
+    func chooseSwipeCandidate(at index: Int, now: TimeInterval) {
+        guard let shown = swipe else { return }
+        guard let strip = currentSwipe() else {
+            swipe = nil
+            return
+        }
+        guard strip.candidates.indices.contains(index), index != strip.inserted else { return }
+        let old = strip.insertedWord.count
+        let new = strip.candidates[index]
+        guard type(field: shown.documentID, now: now, recordEachDeletion: true, resolve: { _ in (old, new) }) else {
+            swipe = nil
+            return
+        }
+        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), document.documentID, core.generation)
+    }
+
+    /// Closes the strip (the trackpad began without a gesture, or the UI asked).
+    func closeSwipeStrip() {
+        swipe = nil
+    }
+
+    /// The strip, while its word can still be replaced or deleted whole: the same field, no edit by
+    /// anything else since (an own edit's report never counts), nothing selected, and the text before
+    /// the caret still ending with the word.
+    private func currentSwipe() -> SwipeStrip? {
+        guard let swipe, document.documentID == swipe.documentID, core.documentID == swipe.documentID,
+              core.generation == swipe.generation, !document.hasSelection,
+              currentBefore?.hasSuffix(swipe.strip.insertedWord) == true else { return nil }
+        return swipe.strip
+    }
+
+    /// The strip's first deletion: the whole swiped word, not the space before it. False (nothing
+    /// deleted) when the word can no longer be deleted whole or the press is refused.
+    private func deleteSwipedWord(field: UUID?, now: TimeInterval) -> Bool {
+        guard let strip = currentSwipe() else { return false }
+        let count = strip.insertedWord.count
+        let deleted = type(field: field, now: now, recordEachDeletion: true) { [self] _ in
+            typing.didDelete()
+            return (count, "")
+        }
+        guard deleted else { return false }
+        swipe = nil
+        return true
+    }
+
+    /// How a swiped word is cased when it lands after `text` (the text before the caret with the leading
+    /// space it brings). A shift the user set (caps lock, a one-shot shift, or an automatic shift turned
+    /// off) decides as before. Otherwise automatic capitalization decides for that text, as for a letter
+    /// typed there: all characters uppercases the whole word, like caps lock.
+    private func swipeShift(after text: String) -> ShiftMode {
+        if typing.shift == .capsLock || (typing.shift == .once && !typing.shiftIsAutomatic) { return typing.shift }
+        if typing.automaticShiftDeclined { return .off }
+        let mode = autocapitalization()
+        guard AutoCapitalization.shouldCapitalize(before: text, mode: mode) else { return .off }
+        return mode == .allCharacters ? .capsLock : .once
+    }
+
+    static func swipeCased(_ word: String, shift: ShiftMode) -> String {
+        switch shift {
+        case .off: return word
+        case .capsLock: return word.uppercased()
+        case .once:
+            guard let first = word.first else { return word }
+            return first.uppercased() + word.dropFirst()
+        }
+    }
+
+    static func swipeNeedsSpace(before: String?) -> Bool {
+        guard let last = before?.last else { return false }
+        return !last.isWhitespace && !swipeSpaceOpeners.contains(last)
     }
 
     /// A field the proxy serves before its first callback is the current one: what the old one left
@@ -291,6 +444,7 @@ final class KeyboardEditor {
     @discardableResult
     func beginTrackpad(layout: any LineLayout, linePitch: Double, layoutWidth: Double) -> Bool {
         if trackpad.isActive { trackpad.stop() }
+        swipe = nil
         userEdit()
         tail.forget()
         untrustedReading = nil
@@ -346,12 +500,15 @@ final class KeyboardEditor {
         tail.acknowledge(proxyBefore: document.contextBefore)
     }
 
-    private func deleteGraphemes(_ count: Int, now: TimeInterval) {
+    private func deleteGraphemes(_ count: Int, now: TimeInterval, recordEach: Bool = false) {
         let before = document.contextBefore
         // With text selected, the first deletion removes only the selection: the text before stays.
         let deleted = document.hasSelection ? count - 1 : count
-        for _ in 0 ..< count { document.deleteBackward() }
-        core.recordOwnEdit(now: now)
+        for _ in 0 ..< count {
+            document.deleteBackward()
+            if recordEach { core.recordOwnEdit(now: now) }
+        }
+        if !recordEach { core.recordOwnEdit(now: now) }
         if untrusts(before), tail.known == nil {
             // Deleted into a start whose text is unknown: the proxy answers.
             tail.forget()
