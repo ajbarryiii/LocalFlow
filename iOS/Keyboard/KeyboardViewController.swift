@@ -14,6 +14,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private let keyArea = KeyAreaView()
     private lazy var input = KeyboardInput(controller: self, keyArea: keyArea)
     private let chrome = KeyboardChrome()
+    private let swipeStrip = SwipeStripModel()
     private var bar: UIHostingController<DictationBarView>?
     private var menuPanel: UIHostingController<MenuPanelView>?
     private var barHeight: NSLayoutConstraint?
@@ -44,11 +45,18 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
         input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
+        input.onSwipeStripChanged = { [weak self] in
+            guard let self else { return }
+            swipeStrip.show(input.swipeStrip)
+        }
+        // Swipe typing comes on once its bundle has loaded off the main thread.
+        input.loadSwipeEngine()
 
         let bar = UIHostingController(rootView: DictationBarView(
-            client: client, chrome: chrome,
+            client: client, chrome: chrome, swipe: swipeStrip,
             onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
-            onAction: { [weak self] in self?.setMenu(visible: false) }))
+            onAction: { [weak self] in self?.setMenu(visible: false) },
+            onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) }))
         bar.view.backgroundColor = .clear
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false

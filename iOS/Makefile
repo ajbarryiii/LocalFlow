@@ -40,6 +40,9 @@ URL_SCHEME ?= localflow-dev
 DISPLAY_NAME ?= LocalFlow Dev
 DEPLOYMENT_TARGET ?= 26.0
 PARAKEET_BUNDLE_DIR ?=
+# Optional swipe typing bundle (SwipeEncoder.mlmodelc, lexicon.bin, bundle.json);
+# empty builds a keyboard without swipe typing.
+SWIPE_BUNDLE_DIR ?=
 TEAM_ID ?=
 APP_PROFILE ?=
 KEYBOARD_PROFILE ?=
@@ -96,6 +99,8 @@ SHARED_SOURCES ?= $(call swift_sources,Shared)
 HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
+# The swipe engine is Foundation and Core ML only; the host tests drive it with a fake encoder.
+KEYBOARD_TEST_SOURCES ?= Keyboard/SwipeEngine.swift
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
 # The custom dictionary (boosting, casing and "Find strength"), shared with the
 # macOS app. HostCore's DictionaryLibrary uses it, so the host tests compile it too.
@@ -118,6 +123,7 @@ ICON_CATALOG = $(OBJ_DIR)/Assets.xcassets
 IPA = $(BUILD_DIR)/LocalFlow.ipa
 CONFIG_STAMP = $(OBJ_DIR)/configuration
 PARAKEET_STAMP = $(OBJ_DIR)/parakeet-selection
+SWIPE_STAMP = $(OBJ_DIR)/swipe-selection
 PARAKEET_INSTALL_KEY = $(OBJ_DIR)/parakeet-installed
 HOST_BUILD_DIR ?= build/host
 HOST_TARGET ?= $(shell uname -m)-apple-macosx13.0
@@ -166,7 +172,7 @@ info_plist = cp "$(1)" "$(2)" && \
 	plutil -replace LocalFlowAppGroupIdentifier -string "$(APP_GROUP)" "$(2)" && \
 	plutil -replace LocalFlowURLScheme -string "$(URL_SCHEME)" "$(2)"
 
-.PHONY: all binaries check typecheck test lint install-sim run-sim smoke-sim clean configuration parakeet-selection signing-requirements
+.PHONY: all binaries check typecheck test lint install-sim run-sim smoke-sim clean configuration parakeet-selection swipe-selection signing-requirements FORCE
 
 all: signing-requirements $(APP_SIGNATURE)
 
@@ -192,6 +198,22 @@ endif
 	@if cmp -s "$(PARAKEET_STAMP).tmp" "$(PARAKEET_STAMP)"; then rm -f "$(PARAKEET_STAMP).tmp"; else mv "$(PARAKEET_STAMP).tmp" "$(PARAKEET_STAMP)"; fi
 
 $(PARAKEET_STAMP): parakeet-selection
+
+# The swipe bundle stays outside Git too; bundle.json lists every file's SHA-256,
+# so its hash stands for the whole bundle. The stamp has its own recipe, run every
+# time, so make sees its new time when the selection changes and repackages.
+swipe-selection: $(SWIPE_STAMP)
+
+$(SWIPE_STAMP): FORCE
+	@mkdir -p "$(OBJ_DIR)"
+	@printf '%s\n' "$(SWIPE_BUNDLE_DIR)" > "$(SWIPE_STAMP).tmp"
+ifneq ($(strip $(SWIPE_BUNDLE_DIR)),)
+	@test -f "$(SWIPE_BUNDLE_DIR)/bundle.json" || { rm -f "$(SWIPE_STAMP).tmp"; echo "SWIPE_BUNDLE_DIR has no bundle.json." >&2; exit 1; }
+	@shasum -a 256 "$(SWIPE_BUNDLE_DIR)/bundle.json" >> "$(SWIPE_STAMP).tmp"
+endif
+	@if cmp -s "$(SWIPE_STAMP).tmp" "$(SWIPE_STAMP)"; then rm -f "$(SWIPE_STAMP).tmp"; else mv "$(SWIPE_STAMP).tmp" "$(SWIPE_STAMP)"; fi
+
+FORCE:
 
 signing-requirements:
 ifeq ($(PLATFORM),device)
@@ -265,7 +287,8 @@ $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITL
 $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS) Makefile \
 		Config/LocalFlow-Info.plist Config/LocalFlowKeyboard-Info.plist $(ICON_SOURCE) $(PARAKEET_STAMP) \
 		Config/LocalFlow-PrivacyInfo.xcprivacy Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy \
-		$(wildcard ../Resources/Parakeet/*) ../scripts/label-localflow-model.py
+		$(wildcard ../Resources/Parakeet/*) ../scripts/label-localflow-model.py \
+		$(SWIPE_STAMP) $(wildcard ../Resources/Swipe/*)
 	@rm -rf "$(APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision"
 	@mkdir -p "$(APPEX_BUNDLE)"
 	@cp "$(APP_BINARY)" "$(APP_BUNDLE)/LocalFlow"
@@ -312,6 +335,34 @@ ifneq ($(strip $(PARAKEET_BUNDLE_DIR)),)
 	@rm -f "$(PARAKEET_INSTALL_KEY).tmp"
 else
 	@rm -rf "$(APP_BUNDLE)/Parakeet" "$(PARAKEET_INSTALL_KEY)"
+endif
+ifneq ($(strip $(SWIPE_BUNDLE_DIR)),)
+	@# Swipe typing: exactly the files bundle.json lists, each checked against its
+	@# SHA-256 as copied, then bundle.json and the licenses. Without it the
+	@# keyboard has no Swipe directory and no swipe typing.
+	@set -e; src="$(SWIPE_BUNDLE_DIR)"; dest="$(APPEX_BUNDLE)/Swipe"; list="$(OBJ_DIR)/swipe-files"; tab=$$(printf '\t'); \
+	fail() { echo "SWIPE_BUNDLE_DIR: $$1" >&2; rm -rf "$$dest" "$$list"; exit 1; }; \
+	[ "$$(plutil -extract format raw -o - "$$src/bundle.json" 2>/dev/null)" = 1 ] || fail "bundle.json is not format 1"; \
+	for key in beam top_k length_power freq_weight length_bonus; do \
+		plutil -extract "decode.$$key" raw -o - "$$src/bundle.json" >/dev/null 2>&1 || fail "bundle.json has no decode.$$key"; \
+	done; \
+	plutil -extract files xml1 -o - "$$src/bundle.json" 2>/dev/null \
+		| sed -n -E 's,^[[:space:]]*<(key|string)>(.*)</(key|string)>[[:space:]]*$$,\2,p' | paste - - > "$$list" || fail "bundle.json has no files"; \
+	cut -f1 "$$list" | grep -qx 'lexicon\.bin' || fail "bundle.json does not list lexicon.bin"; \
+	cut -f1 "$$list" | grep -q '^SwipeEncoder\.mlmodelc/' || fail "bundle.json does not list SwipeEncoder.mlmodelc"; \
+	rm -rf "$$dest"; mkdir -p "$$dest"; \
+	while IFS="$$tab" read -r path digest; do \
+		case "$$path" in ""|/*|../*|*/../*|*/..|..|bundle.json|*"&"*) fail "bundle.json lists an invalid path" ;; esac; \
+		case "$$digest" in *[!0-9a-f]*|"") fail "bundle.json has an invalid SHA-256 for $$path" ;; esac; \
+		[ $${#digest} -eq 64 ] || fail "bundle.json has an invalid SHA-256 for $$path"; \
+		[ -f "$$src/$$path" ] || fail "$$path is missing"; \
+		mkdir -p "$$(dirname "$$dest/$$path")"; \
+		cp -X "$$src/$$path" "$$dest/$$path"; \
+		[ "$$(shasum -a 256 "$$dest/$$path" | awk '{ print $$1 }')" = "$$digest" ] || fail "$$path does not match its SHA-256 in bundle.json"; \
+	done < "$$list"; \
+	cp -X "$$src/bundle.json" ../Resources/Swipe/* "$$dest/"; \
+	count=$$(wc -l < "$$list" | tr -d ' '); rm -f "$$list"; \
+	echo "Copied the swipe bundle ($$count files verified)"
 endif
 ifeq ($(PLATFORM),device)
 	@cp "$(APP_PROFILE)" "$(APP_BUNDLE)/embedded.mobileprovision"
@@ -371,7 +422,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 

@@ -11,16 +11,32 @@ final class KeyboardChrome: ObservableObject {
     @Published var fieldSummary = ""
 }
 
+/// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"), published
+/// only when it opens, changes or closes, so ordinary typing never re-renders the bar. Its words stay
+/// in memory and go when the strip closes.
+@MainActor
+final class SwipeStripModel: ObservableObject {
+    @Published private(set) var strip: SwipeStrip?
+
+    func show(_ strip: SwipeStrip?) {
+        if self.strip != strip { self.strip = strip }
+    }
+}
+
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
-/// the left, Undo / "Insert last dictation" chips or a one-line status in the middle, and the
-/// Start capsule on the right, which becomes a red Stop capsule with live level bars while
-/// recording. It renders `KeyboardDictationClient.state` only, so typing never re-renders it.
+/// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
+/// candidate strip instead while it shows), and the Start capsule on the right, which becomes a red
+/// Stop capsule with live level bars while recording. It renders `KeyboardDictationClient.state` and
+/// the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
+    @ObservedObject var swipe: SwipeStripModel
     var onMenu: () -> Void
     /// Any other bar action also closes the menu.
     var onAction: () -> Void
+    /// A candidate of the strip was tapped.
+    var onCandidate: (Int) -> Void
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
@@ -40,8 +56,17 @@ struct DictationBarView: View {
             .accessibilityLabel(chrome.isMenuOpen ? "Close menu" : "LocalFlow menu")
             .accessibilityIdentifier("lf.menu")
 
-            Middle(client: client, state: state, height: height - 8, onAction: onAction)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if let strip = swipe.strip {
+                    CandidateStrip(strip: strip, height: height - 8) { index in
+                        onAction()
+                        onCandidate(index)
+                    }
+                } else {
+                    Middle(client: client, state: state, height: height - 8, onAction: onAction)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if state.mode.isInProgress {
                 Button {
@@ -119,6 +144,44 @@ private struct Middle: View {
         switch state.mode {
         case .ready: return state.hint
         default: return state.title.isEmpty ? nil : state.title
+        }
+    }
+}
+
+/// Up to three swipe candidates side by side, as on Apple's predictive bar; the one in the field now is
+/// emphasized. A tap replaces the inserted word (the editor decides whether it still can).
+private struct CandidateStrip: View {
+    let strip: SwipeStrip
+    let height: CGFloat
+    let onCandidate: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(strip.candidates.enumerated()), id: \.offset) { index, word in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.35))
+                        .frame(width: 1, height: height * 0.6)
+                        .accessibilityHidden(true)
+                }
+                Button {
+                    onCandidate(index)
+                } label: {
+                    Text(word)
+                        .font(.subheadline.weight(index == strip.inserted ? .semibold : .regular))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
+                        .background(Capsule().fill(index == strip.inserted ? Color(uiColor: KeyPalette.fill) : .clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityLabel(word)
+                .accessibilityAddTraits(index == strip.inserted ? .isSelected : [])
+                .accessibilityIdentifier("lf.swipe.candidate.\(index)")
+            }
         }
     }
 }

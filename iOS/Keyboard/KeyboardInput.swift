@@ -63,6 +63,13 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// A trackpad gesture ended with this measured touch rate and step scale (numbers only), for
     /// Diagnostics. Called at most once per gesture.
     var onTouchRateMeasured: ((Double, Double) -> Void)?
+    /// The candidate strip opened, changed or closed (`swipeStrip`). Never called while it stays closed.
+    var onSwipeStripChanged: (() -> Void)?
+    /// The swipe engine, once loaded (`loadSwipeEngine`); nil keeps swipe typing off.
+    private var swipeEngine: SwipeEngine? {
+        didSet { updateSwipeEnabled() }
+    }
+    private var swipeEngineLoading = false
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -76,6 +83,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.onUndoChanged = { [weak self] in self?.undoChanged() }
         editor.onTrackpadFinished = { [weak self] _ in self?.trackpadFinished() }
         editor.onFieldChanged = { [weak self] field in self?.fieldChanged(to: field) }
+        editor.onSwipeStripChanged = { [weak self] in self?.onSwipeStripChanged?() }
         keyArea.currentField = { [weak controller] in controller?.textDocumentProxy.documentIdentifierIfAvailable }
     }
 
@@ -104,6 +112,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         let numeric: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
         editor.reset(numeric: numeric.contains(proxy?.keyboardType ?? .default))
         stopUndoTimers()
+        updateSwipeEnabled()
     }
 
     /// The keyboard is hiding: end every gesture and held key and, synchronously, drop every copy of
@@ -123,6 +132,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// A `textDidChange` (`textChanged`) or `selectionDidChange` callback.
     func hostChanged(textChanged: Bool) {
         editor.hostChanged(textChanged: textChanged, now: now)
+        // The field's traits may have changed with it (secure text entry).
+        updateSwipeEnabled()
     }
 
     /// Another field became current (a callback, or adopted for a key typed before it): held keys and a
@@ -131,6 +142,36 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private func fieldChanged(to field: UUID?) {
         if deleteKey.fieldChanged(to: field) { endDeleteRepeat() }
         keyArea?.fieldChanged(to: field)
+        updateSwipeEnabled()
+    }
+
+    // MARK: Swipe typing
+
+    /// Loads the swipe bundle from the keyboard extension off the main thread, once. Until it has loaded,
+    /// and for good if it is missing or invalid, swipe typing stays off and long drags are taps.
+    func loadSwipeEngine() {
+        guard swipeEngine == nil, !swipeEngineLoading, let directory = SwipeEngine.bundledDirectory else { return }
+        swipeEngineLoading = true
+        Task { [weak self] in
+            let engine = await Task.detached(priority: .userInitiated) { try? SwipeEngine.load(from: directory) }.value
+            guard let self else { return }
+            self.swipeEngineLoading = false
+            self.swipeEngine = engine
+        }
+    }
+
+    /// Swipe typing is on only with the engine loaded and outside secure text entry.
+    private func updateSwipeEnabled() {
+        let enabled = swipeEngine != nil && proxy?.isSecureTextEntry != true
+        if keyArea?.swipeEnabled != enabled { keyArea?.swipeEnabled = enabled }
+    }
+
+    /// The candidate strip after a swipe, nil when closed.
+    var swipeStrip: SwipeStrip? { editor.swipeStrip }
+
+    /// A tap on the strip's candidate `index`.
+    func chooseSwipeCandidate(at index: Int) {
+        editor.chooseSwipeCandidate(at: index, now: now)
     }
 
     /// Ends every held key (characters, space, delete) without typing, and a pending delete without
@@ -311,7 +352,18 @@ final class KeyboardInput: KeyAreaViewDelegate {
         deleteTimer = nil
     }
 
+    /// A swipe was released: decoded on the spot, on the main thread, and its best word typed in the
+    /// field it touched down in. Samples and words are never logged or kept beyond the strip.
+    func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {
+        guard let swipeEngine, proxy?.isSecureTextEntry != true else { return }
+        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
+        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
+        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keys), field: field, now: now)
+    }
+
     func keyAreaBeganTrackpad(_ keyArea: KeyAreaView) {
+        // The strip closes even if the gesture cannot start here.
+        editor.closeSwipeStrip()
         // A delete still held stops repeating (what it already did stands).
         deleteKey.cancel()
         endDeleteRepeat()

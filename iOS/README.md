@@ -11,6 +11,8 @@ and `make` only, with no Xcode project and no Swift Package Manager.
 - `python3` (Xcode provides `/usr/bin/python3`), used to relabel the model.
 - A Parakeet model bundle (`PARAKEET_BUNDLE_DIR`) to transcribe. Weights stay
   outside Git and are copied only into the local build.
+- Optionally, a swipe typing bundle (`SWIPE_BUNDLE_DIR`). Without it the
+  keyboard has no swipe typing and long drags across the letters are taps.
 
 ## Build and check
 
@@ -19,6 +21,7 @@ Run from the repository root (or `make <target>` inside `iOS/`):
 ```bash
 make -C iOS                      # build/simulator/LocalFlow.app, no model
 make -C iOS PARAKEET_BUNDLE_DIR=/path/to/bundle   # with the model in LocalFlow.app/Parakeet/
+make -C iOS SWIPE_BUNDLE_DIR=/path/to/swipe-bundle  # with swipe typing in LocalFlowKeyboard.appex/Swipe/
 make -C iOS check                # simulator type-check, host tests, plutil -lint
 ```
 
@@ -35,14 +38,32 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `DISPLAY_NAME` | `LocalFlow Dev` | home screen and keyboard list name |
 | `DEPLOYMENT_TARGET` | `26.0` | the encoder uses the `ios19` Core ML opset |
 | `PARAKEET_BUNDLE_DIR` | empty | model bundle to embed |
+| `SWIPE_BUNDLE_DIR` | empty | swipe typing bundle to embed in the keyboard (see [Swipe typing bundle](#swipe-typing-bundle)) |
 | `BUILD_DIR` | `build/$(PLATFORM)` | output directory |
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
 | `BUILD_NUMBER` | empty | `CFBundleVersion` for both bundles; empty keeps the template's `1` |
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
 Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
-`HOSTCORE_SOURCES`, `TEST_SOURCES`, `PARAKEET_SOURCES`, `DICTIONARY_SOURCES`) can be overridden, for
-example `make -C iOS check SHARED_SOURCES= HOSTCORE_SOURCES=`.
+`HOSTCORE_SOURCES`, `TEST_SOURCES`, `KEYBOARD_TEST_SOURCES`, `PARAKEET_SOURCES`, `DICTIONARY_SOURCES`) can be
+overridden, for example `make -C iOS check SHARED_SOURCES= HOSTCORE_SOURCES=`.
+
+## Swipe typing bundle
+
+`SWIPE_BUNDLE_DIR` holds the keyboard's swipe model, built outside this
+repository: `SwipeEncoder.mlmodelc/` (the compiled Core ML encoder),
+`lexicon.bin` (the word list) and `bundle.json`, which has `"format": 1`, the
+decoder settings under `"decode"` (`beam`, `top_k`, `length_power`,
+`freq_weight`, `length_bonus`) and a SHA-256 for every other file under
+`"files"` (relative paths, the model directory's files listed one by one). The
+build copies exactly the listed files into `LocalFlowKeyboard.appex/Swipe/`,
+checks each copy against its hash and stops on any mismatch, missing file or
+invalid path, then adds `bundle.json` and the licenses in
+`../Resources/Swipe/`. A changed `bundle.json` or `SWIPE_BUNDLE_DIR` rebuilds
+the app. The keyboard loads the bundle off the main thread when it starts (the
+encoder on the CPU only); a missing or invalid bundle leaves swipe typing off.
+Swipes, candidates and decoder state stay in memory and are never logged,
+stored or sent.
 
 ## Simulator
 

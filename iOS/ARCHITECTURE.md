@@ -909,10 +909,12 @@ after moving the cursor. Dictation stays primary.
     `autocapitalizationType`.
   - Double-space inserts ". ", as on Apple's keyboard.
   - Key callouts on press.
-  - No autocorrect, predictions or learned words.
+  - No autocorrect, predictions or learned words. The one exception is swipe
+    typing's candidate strip ("Typing model v4 and swipe typing").
 - **Touch handling:** the key area is one UIKit touch-tracking view with
-  nearest-key hit testing (no dead gaps). Characters insert on touch-down;
-  space and Return insert on touch-up ("Typing model v3"). The
+  nearest-key hit testing (no dead gaps). Characters insert on release or
+  rollover, typing the key nearest the touch-down point; space and Return
+  insert on touch-up ("Typing model v4 and swipe typing"). The
   same view runs trackpad mode: touch and hold the space bar, and the letters
   blank out, as on Apple's keyboard.
 - **Key feedback:** every key touch-down plays the system click, which follows
@@ -1553,6 +1555,148 @@ hit boundary.
 **Torture-test contract:** "release order" now means the order keys act:
 characters at touch-down, space and Return at release or rollover. Each edit
 is asserted right after the event that typed it.
+
+### Typing model v4 and swipe typing (contract change, 2026-10-15)
+
+This supersedes the character timing of "Typing model v3". Everything else in
+v3 stands.
+
+**Why.** Swipe typing needs to tell a tap from a swipe before anything is
+typed. Typing a letter at touch-down and deleting it when the touch turns out
+to be a swipe would flash a letter on screen, and the user rejected that.
+v3's real fix stays: the key is chosen from the touch-down point, so a tap
+that drifts onto space, delete or Shift still types its own key.
+
+**Characters (v4):**
+
+- Touch-down on a character key emits `.keyDown` (click, haptic, callout)
+  but types nothing. The key is the one nearest the touch-down point and never
+  changes afterwards.
+- The character types at release, or at rollover when another finger touches
+  down (earlier fingers commit in press order, as before). A system-cancelled
+  touch types nothing.
+- **Field binding:** the character carries the field current at touch-down.
+  A field change drops held, uncommitted characters (as `fieldChanged`
+  already drops held fingers).
+- Unchanged: space, Return, slides from layer keys, Shift and layer keys on
+  touch-down, delete repeating from touch-down, the trackpad hold, rollover
+  order, and keys ignored while the trackpad runs.
+
+**Swipe gesture:**
+
+- A touch becomes a swipe when all of these hold: swipe typing is enabled
+  (`KeyTouchModel.swipeEnabled`), the layer is letters, the touch started on
+  a character key, it is not committed, no other finger is held, and the
+  finger has moved at least `swipeThreshold` from its touch-down point. The
+  threshold is half a letter-key pitch (`(letterWidth + keyGap) / 2`, about
+  20 pt in portrait).
+- Once a swipe, the touch types nothing, its callout ends, and new touches are
+  ignored until it ends (as during the trackpad).
+- Samples are `SwipeSample(x:y:t:)`: key-area points and `UITouch`
+  timestamps in seconds. They start with the touch-down point and include
+  every coalesced touch of each move, in order.
+- At release the model emits `.swipe([SwipeSample], field: UUID?)`. A
+  system-cancelled swipe emits nothing and types nothing.
+- `swipeEnabled` is true only when the swipe engine has loaded and the field
+  is not secure text entry.
+
+**Decoding pipeline** (reference implementation and the authority for every
+detail: the private repository `ajbarryiii/localflow-swipe`; its module
+docstrings are the contract, and `iOS/Tests/SwipeFixtures.swift` is generated
+from it):
+
+1. **Frame.** From the letters layer's key centers: `W` = (largest minus
+   smallest top-row center x) / 0.9; `ox` = smallest top-row center x −
+   0.05 W; `R` = (bottom-row center y − top-row center y) / 2; `oy` = top-row
+   center y − R / 2. A point maps to ((x − ox) / W, (y − oy) / W). On the
+   portrait iPhone layout this puts q at x 0.05 and p at 0.95, matching the
+   training data.
+2. **Resample** (`swipe/features.py`): timestamps in milliseconds (t × 1000),
+   made non-decreasing with a running maximum and shifted to start at 0. If
+   the duration exceeds 1 ms, keep the last sample per timestamp and
+   interpolate at `n60 = max(2, floor(duration × 60 / 1000 + 0.5) + 1)`
+   evenly spaced times (60 Hz); otherwise keep the samples. Then interpolate
+   by index to 64 points. The arithmetic is Float64 and the output is
+   rounded to Float32, as in the reference.
+3. **Encoder** (Core ML `SwipeEncoder.mlmodelc`, CPU only): input `traj`
+   Float32 [1, 64, 2] and `keys` Float32 [1, 26, 2] (the 26 letter centers in
+   a–z order, in the same frame); output `log_probs` Float32 [1, 32, 27].
+   Column 0 is the blank; column 1 + i is letter i of a–z.
+4. **Lexicon** (`swipe/lexicon_bin.py`): the binary "LFLX" version 1 trie,
+   read in place from a memory-mapped `Data`. Keys are words lowercased,
+   apostrophes removed, and repeated letters collapsed.
+5. **Decoder** (`swipe/decode.py`): CTC prefix beam search over the trie in
+   Float64, with `logaddexp(a, b) = max + log1p(exp(−|a − b|))`. Each frame
+   keeps the `beam` best prefixes (ties: the smaller key). Final score =
+   ctc / len(key)^length_power + freq_weight × freq + length_bonus × len(key).
+   Words are unique ignoring case, best first, and ties order by Unicode
+   scalar values (not Swift's `String` comparison).
+
+**Bundle.** `SWIPE_BUNDLE_DIR` (Makefile, like `PARAKEET_BUNDLE_DIR`) holds
+`SwipeEncoder.mlmodelc/`, `lexicon.bin` and `bundle.json`. `bundle.json` has
+`format` 1, the decode settings (`beam`, `top_k`, `length_power`,
+`freq_weight`, `length_bonus`) and a SHA-256 for every file. The build checks
+the hashes and copies the bundle into `LocalFlowKeyboard.appex/Swipe/`, with
+`Resources/Swipe/` (licenses: the AOSP word list is Apache-2.0; the training
+data is MIT). Without `SWIPE_BUNDLE_DIR`, the build has no swipe typing and
+long drags are taps. The keyboard loads the bundle off the main thread when
+it starts; any missing or invalid file disables swipe typing.
+
+**Inserting a swiped word** (`KeyboardEditor`):
+
+- The best candidate is inserted. If no candidate exists, nothing happens.
+- A space goes before the word unless the text before the cursor is empty or
+  ends with whitespace or one of `( [ { " ' “ ‘ / - @ #`. No space goes
+  after it; the next swipe adds its own.
+- **Space before a tapped word (2026-10-16, from device testing).** After a
+  swiped word, the next tapped character that is a letter or digit gets a
+  space inserted before it, in the same edit ("have" swiped, then "a"
+  tapped, gives "have a"). Punctuation and symbols attach directly
+  ("have."). This pending space survives Shift and layer keys (so Shift+"i"
+  and digits from the 123 layer get it), and also a candidate replacement.
+  It ends on any other key action (space, Return, delete, any character), a
+  dictation insert, a field change, the trackpad, an outside text change,
+  and when the text before the cursor no longer ends with the swiped word.
+  The tapped letter's case is decided after the space, as if the space had
+  been typed.
+- Case: caps lock uppercases the word; a one-shot or automatic shift
+  uppercases its first letter and is consumed, as a typed letter would. Case
+  only ever rises: "I" and proper nouns keep their capitals.
+- The word is refused in another identified field, as typed keys are.
+
+**Candidate strip:** after a swipe, the middle of the dictation bar shows up
+to three candidates, cased the same way, inserted word first. It replaces the
+Undo and "Insert last" chips while it shows.
+
+- Tapping another candidate replaces the inserted word, but only while the
+  text before the cursor still ends with it and nothing else has edited the
+  field. Otherwise the tap does nothing and the strip closes.
+- The strip closes on any other key action, a dictation insert, a field
+  change, the trackpad, or an outside text change.
+- **Delete after a swipe:** while the strip shows, the first deletion (a tap
+  or a held delete's touch-down deletion) removes the whole swiped word,
+  leaving the space before it. Repeats continue as usual.
+
+**Swipe trace (2026-10-16, from device testing):** while a touch is a swipe,
+the key area draws a short trail behind the finger so the user can see the
+swipe is recognized. It is not the full path.
+
+- It covers only the last 0.15 s of samples (at least the last two), as a
+  round-capped stroke that tapers from about 8 pt at the finger to nothing
+  and fades from about 45% opacity to transparent. It uses the tint color.
+- It appears when the touch becomes a swipe and follows every move. When the
+  swipe ends or is cancelled, it fades out over about 0.15 s.
+- It draws above the keys, takes no touches, and does not change key callouts
+  (a swipe has none). It is drawn from the samples in memory only.
+- With Reduce Motion on, the trail still shows but disappears at once
+  instead of fading.
+
+**Privacy:** swipe samples, candidates and decoder state stay in memory. They
+are never logged, stored or sent, and nothing is learned from them.
+
+**Torture-test contract:** characters act at release or rollover; space and
+Return at release or rollover. Each edit is asserted right after the event
+that typed it.
 
 ## Custom dictionary (contract, 2026-10-15)
 
