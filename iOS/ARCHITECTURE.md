@@ -1648,6 +1648,17 @@ it starts; any missing or invalid file disables swipe typing.
 - A space goes before the word unless the text before the cursor is empty or
   ends with whitespace or one of `( [ { " ' “ ‘ / - @ #`. No space goes
   after it; the next swipe adds its own.
+- **Space before a tapped word (2026-10-16, from device testing).** After a
+  swiped word, the next tapped character that is a letter or digit gets a
+  space inserted before it, in the same edit ("have" swiped, then "a"
+  tapped, gives "have a"). Punctuation and symbols attach directly
+  ("have."). This pending space survives Shift and layer keys (so Shift+"i"
+  and digits from the 123 layer get it), and also a candidate replacement.
+  It ends on any other key action (space, Return, delete, any character), a
+  dictation insert, a field change, the trackpad, an outside text change,
+  and when the text before the cursor no longer ends with the swiped word.
+  The tapped letter's case is decided after the space, as if the space had
+  been typed.
 - Case: caps lock uppercases the word; a one-shot or automatic shift
   uppercases its first letter and is consumed, as a typed letter would. Case
   only ever rises: "I" and proper nouns keep their capitals.
@@ -1665,6 +1676,20 @@ Undo and "Insert last" chips while it shows.
 - **Delete after a swipe:** while the strip shows, the first deletion (a tap
   or a held delete's touch-down deletion) removes the whole swiped word,
   leaving the space before it. Repeats continue as usual.
+
+**Swipe trace (2026-10-16, from device testing):** while a touch is a swipe,
+the key area draws a short trail behind the finger so the user can see the
+swipe is recognized. It is not the full path.
+
+- It covers only the last 0.15 s of samples (at least the last two), as a
+  round-capped stroke that tapers from about 8 pt at the finger to nothing
+  and fades from about 45% opacity to transparent. It uses the tint color.
+- It appears when the touch becomes a swipe and follows every move. When the
+  swipe ends or is cancelled, it fades out over about 0.15 s.
+- It draws above the keys, takes no touches, and does not change key callouts
+  (a swipe has none). It is drawn from the samples in memory only.
+- With Reduce Motion on, the trail still shows but disappears at once
+  instead of fading.
 
 **Privacy:** swipe samples, candidates and decoder state stay in memory. They
 are never logged, stored or sent, and nothing is learned from them.
