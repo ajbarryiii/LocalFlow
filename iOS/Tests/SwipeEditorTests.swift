@@ -20,6 +20,14 @@ enum SwipeEditorTests {
             ("allCharactersUppercasesTheWholeWord", testAllCharactersUppercasesTheWholeWord),
             ("wordsCapitalizesEveryWord", testWordsCapitalizesEveryWord),
             ("refusedInAnotherIdentifiedField", testRefusedInAnotherIdentifiedField),
+            ("tappedLetterAfterASwipeGetsASpace", testTappedLetterAfterASwipeGetsASpace),
+            ("pendingSpaceSurvivesShiftLayersAndReplacement", testPendingSpaceSurvivesShiftLayersAndReplacement),
+            ("punctuationAfterASwipeAttachesAndEndsThePendingSpace", testPunctuationAfterASwipeAttachesAndEndsThePendingSpace),
+            ("otherKeysEndThePendingSpace", testOtherKeysEndThePendingSpace),
+            ("pendingSpaceEndsWhenTheFieldMovesOn", testPendingSpaceEndsWhenTheFieldMovesOn),
+            ("pendingSpaceSurvivesALaggingProxy", testPendingSpaceSurvivesALaggingProxy),
+            ("unreportedHostEditBackToThePreviousTextEndsTheSwipe", testUnreportedHostEditBackToThePreviousTextEndsTheSwipe),
+            ("tappedLetterIsCasedAfterTheSpace", testTappedLetterIsCasedAfterTheSpace),
             ("stripShowsUpToThreeInsertedFirst", testStripShowsUpToThreeInsertedFirst),
             ("tapReplacesTheInsertedWord", testTapReplacesTheInsertedWord),
             ("tapAfterAnOutsideEditDoesNothing", testTapAfterAnOutsideEditDoesNothing),
@@ -235,6 +243,265 @@ enum SwipeEditorTests {
         TestSupport.expectEqual(rig.text, "Hi there")
     }
 
+    // MARK: Space before a tapped word
+
+    private static func testTappedLetterAfterASwipeGetsASpace() {
+        let rig = SwipeRig("")
+        rig.swipe(["have"])
+        rig.press(.character("a"))
+        TestSupport.expectEqual(rig.text, "have a")
+        // Only the first tapped character: the next one types on.
+        rig.press(.character("n"))
+        TestSupport.expectEqual(rig.text, "have an")
+        // In the same edit as the letter: one deletion takes the letter only.
+        let undo = SwipeRig("")
+        undo.swipe(["have"])
+        undo.press(.character("a"))
+        undo.heldDelete()
+        TestSupport.expectEqual(undo.text, "have ")
+        // Digits too.
+        let digit = SwipeRig("x")
+        digit.swipe(["word"])
+        digit.press(.character("4"))
+        TestSupport.expectEqual(digit.text, "x word 4")
+    }
+
+    private static func testPendingSpaceSurvivesShiftLayersAndReplacement() {
+        let shifted = SwipeRig("so")
+        shifted.swipe(["word"])
+        shifted.press(.shift)
+        shifted.press(.character("i"))
+        TestSupport.expectEqual(shifted.text, "so word I")
+        let numbers = SwipeRig("")
+        numbers.swipe(["word"])
+        numbers.press(.layer(.numbers))
+        numbers.press(.character("4"))
+        TestSupport.expectEqual(numbers.text, "word 4")
+        let caps = SwipeRig("")
+        caps.swipe(["word"])
+        caps.press(.shift)
+        caps.press(.shift)
+        caps.press(.character("a"))
+        TestSupport.expectEqual(caps.text, "word A")
+        let replaced = SwipeRig("x")
+        replaced.swipe(["word", "ward"])
+        replaced.choose(1)
+        replaced.press(.character("a"))
+        TestSupport.expectEqual(replaced.text, "x ward a")
+        // A second swipe brings its own space and a new pending one.
+        let again = SwipeRig("")
+        again.swipe(["one"])
+        again.swipe(["two"])
+        again.press(.character("a"))
+        TestSupport.expectEqual(again.text, "one two a")
+    }
+
+    private static func testPunctuationAfterASwipeAttachesAndEndsThePendingSpace() {
+        let period = SwipeRig("")
+        period.swipe(["word"])
+        period.press(.character("."))
+        TestSupport.expectEqual(period.text, "word.")
+        let comma = SwipeRig("")
+        comma.swipe(["word"])
+        comma.press(.character(","))
+        comma.press(.character("a"))
+        TestSupport.expectEqual(comma.text, "word,a")
+        let apostrophe = SwipeRig("")
+        apostrophe.swipe(["word"])
+        apostrophe.press(.character("'"))
+        apostrophe.press(.character("s"))
+        TestSupport.expectEqual(apostrophe.text, "word's")
+    }
+
+    private static func testOtherKeysEndThePendingSpace() {
+        let space = SwipeRig("")
+        space.swipe(["word"])
+        space.press(.space)
+        space.press(.character("a"))
+        TestSupport.expectEqual(space.text, "word a")
+        let returned = SwipeRig("")
+        returned.swipe(["word"])
+        returned.press(.returnKey)
+        returned.press(.character("a"))
+        TestSupport.expectEqual(returned.text, "word\na")
+        // The strip's whole-word delete, then a letter: no space logic is left.
+        let deleted = SwipeRig("x")
+        deleted.swipe(["word"])
+        deleted.heldDelete()
+        TestSupport.expectEqual(deleted.text, "x ")
+        deleted.press(.character("a"))
+        TestSupport.expectEqual(deleted.text, "x a")
+        // An ordinary deletion (the strip already closed by a layer key) ends it too.
+        let single = SwipeRig("x")
+        single.swipe(["word"])
+        single.press(.layer(.numbers))
+        single.press(.layer(.letters))
+        single.heldDelete()
+        single.press(.character("s"))
+        TestSupport.expectEqual(single.text, "x wors")
+        let dictated = SwipeRig("")
+        dictated.swipe(["word"])
+        dictated.editor.insertDictation("!", now: dictated.time)
+        dictated.press(.character("a"))
+        TestSupport.expectEqual(dictated.text, "word!a")
+        let trackpad = SwipeRig("")
+        trackpad.swipe(["word"])
+        trackpad.editor.closeSwipeStrip()
+        trackpad.press(.character("a"))
+        TestSupport.expectEqual(trackpad.text, "worda")
+        let gesture = SwipeRig("")
+        gesture.swipe(["word"])
+        gesture.editor.beginTrackpad(layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+        gesture.press(.character("a"))
+        TestSupport.expectEqual(gesture.text, "worda")
+        // A refused swipe is a key action as well.
+        let refused = SwipeRig("")
+        refused.swipe(["word"])
+        refused.swipe(["other"], field: .some(UUID()))
+        refused.press(.character("a"))
+        TestSupport.expectEqual(refused.text, "worda")
+    }
+
+    private static func testPendingSpaceEndsWhenTheFieldMovesOn() {
+        // The caret moved and the host has not reported it yet.
+        let moved = SwipeRig("x")
+        moved.swipe(["word"])
+        moved.document.moveCaret(to: 1)
+        moved.press(.character("a"))
+        TestSupport.expectEqual(moved.text, "xa word")
+        // ...even to just after another copy of the word.
+        let copy = SwipeRig("word ")
+        copy.swipe(["word"])
+        copy.document.moveCaret(to: 4)
+        copy.press(.character("a"))
+        TestSupport.expectEqual(copy.text, "worda word")
+        // An outside edit, reported.
+        let outside = SwipeRig("x")
+        outside.swipe(["word"])
+        outside.document.hostInserts("Q", at: 0)
+        outside.pump()
+        outside.press(.character("a"))
+        TestSupport.expectEqual(outside.text, "Qx worda")
+        // Another field.
+        let field = SwipeRig("x")
+        field.swipe(["word"])
+        field.document.focus(FakeTextHost(text: "other"), id: UUID())
+        field.pump()
+        field.press(.character("a"))
+        TestSupport.expectEqual(field.text, "othera")
+        // Hiding.
+        let hidden = SwipeRig("x")
+        hidden.swipe(["word"])
+        hidden.editor.hide(now: hidden.time)
+        hidden.editor.reset(numeric: false)
+        hidden.press(.character("a"))
+        TestSupport.expectEqual(hidden.text, "x worda")
+        // Reports of our own edits do not end it.
+        let echoed = SwipeRig("x", editCallbackDelay: 1)
+        echoed.swipe(["word"])
+        echoed.pump()
+        echoed.pump()
+        echoed.press(.character("a"))
+        TestSupport.expectEqual(echoed.text, "x word a")
+    }
+
+    private static func testPendingSpaceSurvivesALaggingProxy() {
+        // The proxy shows our edits only a few frames later, with no callback.
+        func lagging(_ text: String, caret: Int? = nil) -> SwipeRig {
+            let rig = SwipeRig(text, caret: caret)
+            rig.document.host.editContextLagFrames = 3
+            return rig
+        }
+        // Tapped once the proxy has caught up.
+        let caughtUp = lagging("")
+        caughtUp.swipe(["have"])
+        TestSupport.expect(caughtUp.document.host.isContextStale, "the proxy showed the swipe at once")
+        for _ in 0 ..< 3 { caughtUp.document.host.advanceFrame() }
+        TestSupport.expect(!caughtUp.document.host.isContextStale, "the proxy never caught up")
+        caughtUp.press(.character("a"))
+        TestSupport.expectEqual(caughtUp.text, "have a")
+        // Tapped while it still shows the field as it was, with text around the caret.
+        let stale = lagging("x  end", caret: 2)
+        stale.swipe(["have"])
+        stale.press(.character("a"))
+        TestSupport.expectEqual(stale.text, "x have a end")
+        // After a candidate replacement, once the proxy shows it.
+        let replaced = lagging("x")
+        replaced.swipe(["word", "ward"])
+        for _ in 0 ..< 3 { replaced.document.host.advanceFrame() }
+        replaced.choose(1)
+        for _ in 0 ..< 3 { replaced.document.host.advanceFrame() }
+        replaced.press(.character("a"))
+        TestSupport.expectEqual(replaced.text, "x ward a")
+        // A caret moved to another copy of the word still gets no space.
+        let moved = lagging("word ")
+        moved.swipe(["word"])
+        for _ in 0 ..< 3 { moved.document.host.advanceFrame() }
+        moved.document.moveCaret(to: 4)
+        moved.press(.character("a"))
+        TestSupport.expectEqual(moved.text, "worda word")
+    }
+
+    private static func testUnreportedHostEditBackToThePreviousTextEndsTheSwipe() {
+        // The proxy shows the swipe at once; then the host deletes it before reporting that. The field reads
+        // exactly as it did before the swipe and still ends with the word, but that is an older copy of it.
+        let strip = SwipeRig("a word")
+        strip.swipe(["word", "ward"])
+        TestSupport.expectEqual(strip.text, "a word word")
+        strip.document.hostDeletes(6 ..< 11)
+        strip.choose(1)
+        TestSupport.expectEqual(strip.text, "a word")
+        TestSupport.expect(strip.editor.swipeStrip == nil, "the strip stayed after a refused tap")
+        let pending = SwipeRig("a word")
+        pending.swipe(["word", "ward"])
+        pending.document.hostDeletes(6 ..< 11)
+        pending.press(.character("a"))
+        TestSupport.expectEqual(pending.text, "a worda")
+        let deleted = SwipeRig("a word")
+        deleted.swipe(["word", "ward"])
+        deleted.document.hostDeletes(6 ..< 11)
+        deleted.heldDelete()
+        TestSupport.expectEqual(deleted.text, "a wor")
+        // The proxy shows the swipe late, with no callback, and a layer key or Shift is pressed once it does:
+        // that key sees the swipe shown, so the host's later deletion of it is not taken for a lag.
+        for key: KeyAction in [.layer(.numbers), .shift] {
+            let lagging = SwipeRig("a word")
+            lagging.document.host.editContextLagFrames = 3
+            lagging.swipe(["word", "ward"])
+            TestSupport.expect(lagging.document.host.isContextStale, "the proxy showed the swipe at once")
+            for _ in 0 ..< 3 { lagging.document.host.advanceFrame() }
+            lagging.press(key)
+            lagging.document.hostDeletes(6 ..< 11)
+            lagging.press(.character("a"))
+            TestSupport.expectEqual(lagging.text, key == .shift ? "a wordA" : "a worda")
+        }
+    }
+
+    private static func testTappedLetterIsCasedAfterTheSpace() {
+        // After a sentence's first word, the next letter is lowercase.
+        let sentence = SwipeRig("Done.", autocapitalization: .sentences)
+        sentence.swipe(["next"])
+        TestSupport.expectEqual(sentence.text, "Done. Next")
+        sentence.press(.character("a"))
+        TestSupport.expectEqual(sentence.text, "Done. Next a")
+        // A field that capitalizes words capitalizes the tapped word after the space.
+        let words = SwipeRig("", autocapitalization: .words)
+        words.swipe(["new"])
+        words.press(.character("y"))
+        TestSupport.expectEqual(words.text, "New Y")
+        let all = SwipeRig("", autocapitalization: .allCharacters)
+        all.swipe(["new"])
+        all.press(.character("y"))
+        TestSupport.expectEqual(all.text, "NEW Y")
+        // Punctuation after the word, then a space, then a letter: ordinary typing.
+        let period = SwipeRig("", autocapitalization: .sentences)
+        period.swipe(["hello"])
+        period.press(.character("."))
+        period.press(.space)
+        period.press(.character("i"))
+        TestSupport.expectEqual(period.text, "Hello. I")
+    }
+
     // MARK: Candidate strip
 
     private static func testStripShowsUpToThreeInsertedFirst() {
@@ -265,10 +532,10 @@ enum SwipeEditorTests {
         // Out of range: nothing.
         rig.choose(7)
         TestSupport.expectEqual(rig.text, "x word")
-        // The next key types after the replacement, which ended where the word did.
+        // The next key types after the replacement, which ended where the word did (punctuation attaches).
         rig.choose(1)
-        rig.press(.character("s"))
-        TestSupport.expectEqual(rig.text, "x wards")
+        rig.press(.character("."))
+        TestSupport.expectEqual(rig.text, "x ward.")
     }
 
     private static func testTapAfterAnOutsideEditDoesNothing() {
@@ -497,7 +764,7 @@ enum SwipeEditorTests {
     private static func testDeleteAfterTheStripClosedDeletesOneCharacter() {
         let rig = SwipeRig("a")
         rig.swipe(["cat"])
-        rig.press(.character("s"))
+        rig.press(.character("."))
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "a cat")
         rig.heldDelete()

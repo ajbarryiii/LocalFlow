@@ -34,6 +34,10 @@ enum KeyTouchModelTests {
             ("touchesAreIgnoredDuringASwipe", testTouchesAreIgnoredDuringASwipe),
             ("swipeKeepsTheFieldOfItsPress", testSwipeKeepsTheFieldOfItsPress),
             ("withoutSwipeTypingALongDragTypesTheTouchDownLetter", testWithoutSwipeTypingALongDragTypesTheTouchDownLetter),
+            ("swipeTrailKeepsTheLastWindowOfSamples", testSwipeTrailKeepsTheLastWindowOfSamples),
+            ("swipeTrailKeepsAtLeastTwoPoints", testSwipeTrailKeepsAtLeastTwoPoints),
+            ("swipeTrailToleratesDisorderedTimestamps", testSwipeTrailToleratesDisorderedTimestamps),
+            ("swipeTrailTapersAndFadesTowardsItsTail", testSwipeTrailTapersAndFadesTowardsItsTail),
         ]
     }
 
@@ -707,5 +711,74 @@ extension KeyTouchModelTests {
         _ = committed.began(2, x: s.x, y: s.y, t: 1)
         _ = committed.ended(2, x: s.x, y: s.y, t: 1.005)
         TestSupport.expectEqual(committed.ended(1, x: d.x + far, y: d.y, t: 1.01), [])
+    }
+}
+
+// MARK: Swipe trace (ARCHITECTURE.md, "Typing model v4 and swipe typing", "Swipe trace")
+
+extension KeyTouchModelTests {
+    private static func samples(_ times: [TimeInterval]) -> [SwipeSample] {
+        times.enumerated().map { SwipeSample(x: Double($0.offset) * 10, y: 50, t: $0.element) }
+    }
+
+    private static func close(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
+
+    fileprivate static func testSwipeTrailKeepsTheLastWindowOfSamples() {
+        // Only the last 0.15 s before the newest sample (the finger), oldest first, the finger last.
+        TestSupport.expect(close(SwipeTrail.duration, 0.15), "trail duration \(SwipeTrail.duration)")
+        let path = samples([1.0, 1.05, 1.1, 1.16, 1.2, 1.25, 1.3])
+        let trail = SwipeTrail.points(from: path)
+        TestSupport.expectEqual(trail.map(\.x), [30, 40, 50, 60])
+        TestSupport.expectEqual(trail.last?.y, 50)
+        // The boundary is inclusive: a sample exactly 0.15 s old stays (binary-exact times).
+        let exact = SwipeTrail.points(from: samples([0, 0.125, 0.25, 0.375]), window: 0.25)
+        TestSupport.expectEqual(exact.map(\.x), [10, 20, 30])
+        TestSupport.expectEqual(SwipeTrail.points(from: []), [])
+        // A single sample (a swipe promoted on its first move has two): nothing to draw yet.
+        TestSupport.expectEqual(SwipeTrail.points(from: samples([1])), [])
+    }
+
+    fileprivate static func testSwipeTrailKeepsAtLeastTwoPoints() {
+        // A slow finger whose previous sample is older than the window still draws a stroke to it.
+        let slow = SwipeTrail.points(from: samples([1, 2, 3]))
+        TestSupport.expectEqual(slow.map(\.x), [10, 20])
+        // Equal timestamps all fall inside the window.
+        let equal = SwipeTrail.points(from: samples([5, 5, 5, 5]))
+        TestSupport.expectEqual(equal.map(\.x), [0, 10, 20, 30])
+    }
+
+    fileprivate static func testSwipeTrailToleratesDisorderedTimestamps() {
+        // A sample stamped later than the one after it counts as no newer than that one, so an
+        // out-of-order timestamp never cuts the trail short or pulls in older samples.
+        let disordered = SwipeTrail.points(from: samples([1.0, 1.2, 1.25, 1.3, 1.28]))
+        TestSupport.expectEqual(disordered.map(\.x), [10, 20, 30, 40])
+        // The walk stops at the first sample past the window: an older sample with a stray recent
+        // timestamp before it is not drawn.
+        let stray = SwipeTrail.points(from: samples([1.29, 1.0, 1.2, 1.3]))
+        TestSupport.expectEqual(stray.map(\.x), [20, 30])
+        // Widths and opacities stay ordered: never wider or stronger towards the tail.
+        for trail in [disordered, stray] {
+            for (older, newer) in zip(trail, trail.dropFirst()) {
+                TestSupport.expect(older.width <= newer.width && older.alpha <= newer.alpha, "trail not tapering: \(trail)")
+            }
+        }
+    }
+
+    fileprivate static func testSwipeTrailTapersAndFadesTowardsItsTail() {
+        // About 8 pt and 45% opacity at the finger, nothing at the oldest point, in proportion to age between.
+        TestSupport.expect(close(SwipeTrail.maximumWidth, 8) && close(SwipeTrail.maximumAlpha, 0.45),
+                           "trail \(SwipeTrail.maximumWidth) pt, \(SwipeTrail.maximumAlpha)")
+        let trail = SwipeTrail.points(from: samples([0, 0.125, 0.25]), window: 0.25)
+        TestSupport.expectEqual(trail.count, 3)
+        TestSupport.expect(close(trail[2].width, 8) && close(trail[2].alpha, 0.45), "finger \(trail[2])")
+        TestSupport.expect(close(trail[1].width, 4) && close(trail[1].alpha, 0.225), "middle \(trail[1])")
+        TestSupport.expect(close(trail[0].width, 0) && close(trail[0].alpha, 0), "tail \(trail[0])")
+        // The same at a slow finger's two points (the tail older than the window).
+        let slow = SwipeTrail.points(from: samples([1, 2]))
+        TestSupport.expect(close(slow[0].width, 0) && close(slow[1].width, 8), "slow \(slow)")
+        // Equal timestamps taper by position along the trail instead.
+        let equal = SwipeTrail.points(from: samples([5, 5, 5]))
+        TestSupport.expectEqual(equal.map(\.width), [0, 4, 8])
+        TestSupport.expect(close(equal[1].alpha, 0.225), "equal \(equal)")
     }
 }

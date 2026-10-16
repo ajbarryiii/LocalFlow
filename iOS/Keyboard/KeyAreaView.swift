@@ -89,6 +89,10 @@ final class KeyAreaView: UIView {
     /// while it is still shown. A slide's caption follows its key.
     private var calloutTitles: [KeyTouchModel.TouchID: (action: KeyAction, title: String)] = [:]
     private var isBlank = false
+    /// The running swipe's trace, above the keys and below the callout (a swipe has none).
+    private let trail = SwipeTrailView()
+    /// How many of the running swipe's samples the trace shows; nil while it shows no swipe.
+    private var trailSampleCount: Int?
 
     private var placedKeys: [PlacedKey] { model.keys }
 
@@ -102,6 +106,7 @@ final class KeyAreaView: UIView {
         globeButton.tintColor = .label
         globeButton.accessibilityLabel = "Next keyboard"
         globeButton.accessibilityIdentifier = "lf.globe"
+        addSubview(trail)
         addSubview(callout)
     }
 
@@ -126,6 +131,7 @@ final class KeyAreaView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        trail.frame = bounds
         if bounds.size != builtSize { rebuildKeys() }
     }
 
@@ -138,7 +144,7 @@ final class KeyAreaView: UIView {
         let effects = model.keysChanged(keys, layer: keyLayer)
         while keyViews.count < keys.count {
             let view = KeyCapView()
-            insertSubview(view, belowSubview: callout)
+            insertSubview(view, belowSubview: trail)
             keyViews.append(view)
         }
         while keyViews.count > keys.count { keyViews.removeLast().removeFromSuperview() }
@@ -149,7 +155,7 @@ final class KeyAreaView: UIView {
         }
         if let globe = keys.firstIndex(where: { $0.action == .nextKeyboard }) {
             globeButton.frame = keyViews[globe].frame
-            if globeButton.superview == nil { insertSubview(globeButton, belowSubview: callout) }
+            if globeButton.superview == nil { insertSubview(globeButton, belowSubview: trail) }
         } else {
             globeButton.removeFromSuperview()
         }
@@ -329,6 +335,7 @@ final class KeyAreaView: UIView {
 
     /// Draws pressed keys and the callout from the model, touching only keys that changed.
     private func refreshPressed() {
+        refreshTrail()
         let pressed = model.pressedActions
         if pressed != shownPressed {
             for (view, key) in zip(keyViews, placedKeys) where pressed.contains(key.action) != shownPressed.contains(key.action) {
@@ -352,6 +359,37 @@ final class KeyAreaView: UIView {
             self.callout.show(title, over: keyViews[index].frame, within: bounds, compact: isCompact)
         } else {
             self.callout.hide()
+        }
+    }
+
+    // MARK: Swipe trace
+
+    /// Follows the running swipe: the trace appears when a touch becomes one and updates on every move;
+    /// when the swipe ends or is cancelled it fades out (or, with Reduce Motion, disappears at once)
+    /// (ARCHITECTURE.md, "Swipe trace").
+    private func refreshTrail() {
+        if model.isSwipeActive {
+            let samples = model.swipeSamples
+            guard samples.count != trailSampleCount else { return }
+            if trailSampleCount == nil {
+                trail.layer.removeAllAnimations()
+                trail.alpha = 1
+            }
+            trailSampleCount = samples.count
+            trail.points = SwipeTrail.points(from: samples)
+        } else if trailSampleCount != nil {
+            trailSampleCount = nil
+            if UIAccessibility.isReduceMotionEnabled {
+                trail.points = []
+                return
+            }
+            UIView.animate(withDuration: SwipeTrail.duration, delay: 0, options: [.beginFromCurrentState]) {
+                self.trail.alpha = 0
+            } completion: { [weak self] finished in
+                guard finished, let self, self.trailSampleCount == nil else { return }
+                self.trail.points = []
+                self.trail.alpha = 1
+            }
         }
     }
 
@@ -469,4 +507,96 @@ extension UIReturnKeyType {
 
     /// Action keys are tinted like the system keyboard's.
     var isProminent: Bool { self != .default && self != .next && self != .continue }
+}
+
+/// Draws a `SwipeTrail`: a stroke through its points whose width and opacity follow each point, round at
+/// the finger, in the tint color. It takes no touches.
+private final class SwipeTrailView: UIView {
+    var points: [SwipeTrail.Point] = [] {
+        didSet {
+            guard points != oldValue else { return }
+            // Only where the trace was and is now: a full redraw per move would cost the whole key area.
+            let dirty = Self.bounds(of: oldValue).union(Self.bounds(of: points))
+            if !dirty.isNull { setNeedsDisplay(dirty) }
+        }
+    }
+
+    /// The area a trail covers, with room for its widest point and antialiasing.
+    private static func bounds(of points: [SwipeTrail.Point]) -> CGRect {
+        guard let first = points.first else { return .null }
+        var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y, width = 0.0
+        for point in points {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+            width = max(width, point.width)
+        }
+        let margin = width / 2 + 2
+        return CGRect(x: minX - margin, y: minY - margin, width: maxX - minX + 2 * margin, height: maxY - minY + 2 * margin)
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isOpaque = false
+        backgroundColor = .clear
+        contentMode = .redraw
+        isAccessibilityElement = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        setNeedsDisplay()
+    }
+
+    /// Each segment is a quadrilateral between its ends' widths, edged along the normals shared with the
+    /// next segment so neighbors meet without gaps or overlaps; a disc rounds the finger's end.
+    override func draw(_ rect: CGRect) {
+        guard points.count >= 2, let context = UIGraphicsGetCurrentContext() else { return }
+        let normals = points.indices.map(normal(at:))
+        for index in points.indices.dropLast() {
+            let a = points[index], b = points[index + 1]
+            let alpha = (a.alpha + b.alpha) / 2
+            guard alpha > 0, a.width + b.width > 0 else { continue }
+            let na = normals[index], nb = normals[index + 1]
+            let ha = a.width / 2, hb = b.width / 2
+            context.beginPath()
+            context.move(to: CGPoint(x: a.x + na.x * ha, y: a.y + na.y * ha))
+            context.addLine(to: CGPoint(x: b.x + nb.x * hb, y: b.y + nb.y * hb))
+            context.addLine(to: CGPoint(x: b.x - nb.x * hb, y: b.y - nb.y * hb))
+            context.addLine(to: CGPoint(x: a.x - na.x * ha, y: a.y - na.y * ha))
+            context.closePath()
+            context.setFillColor(tintColor.withAlphaComponent(alpha).cgColor)
+            context.fillPath()
+        }
+        if let finger = points.last, finger.width > 0, finger.alpha > 0 {
+            let radius = finger.width / 2
+            context.setFillColor(tintColor.withAlphaComponent(finger.alpha).cgColor)
+            context.fillEllipse(in: CGRect(x: finger.x - radius, y: finger.y - radius, width: finger.width, height: finger.width))
+        }
+    }
+
+    /// The unit normal at a point: perpendicular to the average direction of its segments.
+    private func normal(at index: Int) -> (x: Double, y: Double) {
+        func direction(_ from: Int, _ to: Int) -> (x: Double, y: Double) {
+            guard points.indices.contains(from), points.indices.contains(to) else { return (0, 0) }
+            let dx = points[to].x - points[from].x, dy = points[to].y - points[from].y
+            let length = (dx * dx + dy * dy).squareRoot()
+            return length > 0 ? (dx / length, dy / length) : (0, 0)
+        }
+        let before = direction(index - 1, index), after = direction(index, index + 1)
+        var dx = before.x + after.x, dy = before.y + after.y
+        var length = (dx * dx + dy * dy).squareRoot()
+        if length == 0 {
+            let fallback = after.x != 0 || after.y != 0 ? after : before
+            dx = fallback.x
+            dy = fallback.y
+            length = (dx * dx + dy * dy).squareRoot()
+        }
+        return length > 0 ? (-dy / length, dx / length) : (0, 0)
+    }
 }
