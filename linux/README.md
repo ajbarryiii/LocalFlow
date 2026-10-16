@@ -125,7 +125,8 @@ localflowctl watch --waybar   # the same as Waybar JSON (see below)
 Exit codes: 0 ok, 1 daemon error, 2 usage, 3 daemon not running (or, for
 `watch`, the connection was lost), 4 timeout, 5 protocol error, 6 the
 dictionary file cannot be read (`dict list`/`ignored`), 7 rofi failed
-(`correct`). `watch` exits 0 when its reader goes away.
+(`correct`, `dict review`), 8 the T3 token file is missing or unsafe
+(`agents t3`). `watch` exits 0 when its reader goes away.
 
 `watch` lines also carry microphone presence (`mic=present|absent|unknown`,
 from the PipeWire node list) and, about 15 times a second while recording,
@@ -254,6 +255,37 @@ does, every 200 ms for up to 5 s).
 
 Hyprland binds and a systemd user unit are in `packaging/`. Neither is
 installed automatically.
+
+### Coding agents
+
+Agents can help LocalFlow hear a project's terms, and the Waybar indicator
+can show T3 Code threads that need you. The full contract is in
+[`AGENT-LINK.md`](AGENT-LINK.md).
+
+```bash
+localflowctl words set myproject Hyprland PipeWire   # project words, boosted for 8 hours
+localflowctl words clear myproject
+localflowctl dict suggest Hyprland                   # an agent suggests a word…
+localflowctl dict review                             # …and you approve it in rofi
+localflowctl agents t3                               # T3 Code bridge (runs until killed)
+```
+
+- **Agent skill:** give agents `skills/localflow-dictation/SKILL.md`, e.g.
+  link it into `~/.claude/skills/`, so they know what to do with
+  `[dictated]` prompts.
+- **Bridge:** it needs a T3 token in `~/.config/localflow/t3-token` with
+  mode 0600. A systemd user unit for it is in
+  `packaging/localflow-t3-bridge.service`.
+- **Waybar:**
+  - Bind the module's `on-click` to `localflowctl dict review` to approve
+    suggestions with a click.
+  - Style the new classes:
+
+    ```css
+    #custom-localflow.agent-approval { color: #fab387; }
+    #custom-localflow.agent-input { color: #a6e3a1; }
+    #custom-localflow.suggestion { font-weight: bold; }
+    ```
 
 ## Tests
 

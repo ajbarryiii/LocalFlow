@@ -1,0 +1,38 @@
+# LocalFlow's T3 Code bridge, as a systemd user unit: reports how many T3
+# Code threads need approval, wait for input, work or are done, so the Waybar
+# indicator can show it. See linux/AGENT-LINK.md.
+#
+# Not installed automatically. It needs a T3 token in
+# ~/.config/localflow/t3-token (mode 0600):
+#   (umask 077; t3 auth session issue --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
+# Then:
+#   cp linux/packaging/localflow-t3-bridge.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user start localflow-t3-bridge
+
+[Unit]
+Description=LocalFlow T3 Code bridge
+PartOf=graphical-session.target
+After=graphical-session.target localflowd.service
+
+[Service]
+Type=simple
+# Adjust to where localflowctl is installed.
+ExecStart=%h/.local/bin/localflowctl agents t3
+Restart=on-failure
+RestartSec=10
+# Exit 8: the token file is missing or unsafe; restarting will not help.
+RestartPreventExitStatus=8
+
+# The control socket (Unix) and T3 Code's local server (TCP). Unlike the
+# daemon, the bridge needs IP sockets; it only connects to the host in T3's
+# server-runtime.json (loopback for a server listening on all addresses).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target
