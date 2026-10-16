@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "export_sha256": "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503",
+  "hardware": "Apple M1 Pro",
+  "macOS": "27.0",
+  "date": "2026-10-15",
+  "limit": null,
+  "normalization": "lowercase, punctuation removed, digits/currency/percent/Mr/Mrs/Dr spelled out, British spellings mapped to American (Whisper english.json)",
+  "results": {
+    "test-clean": {
+      "localflow": {
+        "utterances": 2620,
+        "reference_words": 52576,
+        "substitutions": 873,
+        "deletions": 103,
+        "insertions": 107,
+        "wer": 0.020598752282410225,
+        "wer_95ci": [
+          0.018941818866503483,
+          0.022308883408843263
+        ],
+        "wer_without_spelling_map": 0.022139379184418745,
+        "plain_wer": 0.02217741935483871,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.008763507448397729,
+        "median_seconds": 0.044618083,
+        "p95_seconds": 0.202019833
+      },
+      "speech-transcriber": {
+        "utterances": 2620,
+        "reference_words": 52576,
+        "substitutions": 764,
+        "deletions": 95,
+        "insertions": 125,
+        "wer": 0.018715763846622033,
+        "wer_95ci": [
+          0.017112884662553538,
+          0.02027639329406434
+        ],
+        "wer_without_spelling_map": 0.019952069385270846,
+        "plain_wer": 0.023318624467437613,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.030373211116872658,
+        "median_seconds": 0.1727575415,
+        "p95_seconds": 0.519724208
+      },
+      "sf-speech-recognizer": {
+        "utterances": 2620,
+        "reference_words": 52576,
+        "substitutions": 3201,
+        "deletions": 934,
+        "insertions": 413,
+        "wer": 0.08650334753499696,
+        "wer_95ci": [
+          0.08048507391873684,
+          0.0925729129767387
+        ],
+        "wer_without_spelling_map": 0.08779671332927572,
+        "plain_wer": 0.09220937309799147,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.05216645727701374,
+        "median_seconds": 0.2927601455,
+        "p95_seconds": 0.959700083
+      }
+    },
+    "test-other": {
+      "localflow": {
+        "utterances": 2939,
+        "reference_words": 52343,
+        "substitutions": 1843,
+        "deletions": 178,
+        "insertions": 239,
+        "wer": 0.043176738054754214,
+        "wer_95ci": [
+          0.0407351160153021,
+          0.04569423368740516
+        ],
+        "wer_without_spelling_map": 0.04420839462774392,
+        "plain_wer": 0.04422749937909558,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.008525931257654676,
+        "median_seconds": 0.040600083,
+        "p95_seconds": 0.183808375
+      },
+      "speech-transcriber": {
+        "utterances": 2939,
+        "reference_words": 52343,
+        "substitutions": 1810,
+        "deletions": 229,
+        "insertions": 243,
+        "wer": 0.043597042584490764,
+        "wer_95ci": [
+          0.04108189899754114,
+          0.04609361766200523
+        ],
+        "wer_without_spelling_map": 0.04472422291423877,
+        "plain_wer": 0.04894637296295589,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.030532918129338584,
+        "median_seconds": 0.158304,
+        "p95_seconds": 0.437642834
+      },
+      "sf-speech-recognizer": {
+        "utterances": 2939,
+        "reference_words": 52343,
+        "substitutions": 5932,
+        "deletions": 1854,
+        "insertions": 681,
+        "wer": 0.16175992969451503,
+        "wer_95ci": [
+          0.1543115928579383,
+          0.1691096844059406
+        ],
+        "wer_without_spelling_map": 0.1625623292512848,
+        "plain_wer": 0.1685994306784097,
+        "empty_hypotheses": 0,
+        "real_time_factor": 0.06431518415074296,
+        "median_seconds": 0.304935542,
+        "p95_seconds": 1.137848583
+      }
+    }
+  },
+  "paired_vs_localflow": {
+    "test-clean": {
+      "sf-speech-recognizer": {
+        "wer_delta": 0.06590459525258673,
+        "wer_delta_95ci": [
+          0.06044071755403672,
+          0.07132686575664951
+        ]
+      },
+      "speech-transcriber": {
+        "wer_delta": -0.0018829884357881924,
+        "wer_delta_95ci": [
+          -0.0031746031746031746,
+          -0.0005583992554676594
+        ]
+      }
+    },
+    "test-other": {
+      "sf-speech-recognizer": {
+        "wer_delta": 0.1185831916397608,
+        "wer_delta_95ci": [
+          0.11161748953159996,
+          0.12538757518024582
+        ]
+      },
+      "speech-transcriber": {
+        "wer_delta": 0.00042030452973654546,
+        "wer_delta_95ci": [
+          -0.0015792615989060725,
+          0.002204945921800452
+        ]
+      }
+    }
+  }
+}

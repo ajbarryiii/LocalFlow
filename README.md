@@ -66,6 +66,25 @@ and local retry. Clear or delete them from Run Log. Existing history and
 shortcut preferences remain compatible; old provider preferences and
 credentials are ignored and are not read or automatically erased.
 
+## Accuracy compared with Apple
+
+Word error rate on the public LibriSpeech test sets (lower is better), measured
+on an M1 Pro with macOS 27. All three recognizers run on the Mac:
+
+| Recognizer | test-clean | test-other | Model size |
+| --- | ---: | ---: | ---: |
+| LocalFlow | 2.06% | 4.32% | 367 MB, in the app |
+| Apple SpeechTranscriber (macOS 26+) | 1.87% | 4.36% | about 200 MB, system asset |
+| Apple SFSpeechRecognizer, on-device | 8.65% | 16.18% | system asset |
+
+LocalFlow matches Apple's current recognizer on accented and noisier speech and
+is slightly behind on clean speech. On the shared test machine it transcribed
+about 3.5× faster. Each is far more accurate than the older on-device
+recognizer. LibriSpeech is read speech, not dictation, and is part of
+LocalFlow's base-model training data. See
+[the benchmark notes](Benchmarks/AppleSpeech.md) for method, intervals and
+reproduction.
+
 ## Build locally
 
 LocalFlow uses `swiftc` and Make, without Swift Package Manager or an Xcode
