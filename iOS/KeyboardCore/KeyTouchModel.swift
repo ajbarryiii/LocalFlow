@@ -15,9 +15,9 @@ import Foundation
 ///   v4 and swipe typing", amending "Typing model v3"). Every key's touch-down first ends trackpad
 ///   settlement (`keyDown`).
 /// - Swipe: with `swipeEnabled`, on the letters layer, an uncommitted character touch that is the only
-///   finger and moves `swipeThreshold` from its touch-down point becomes a swipe. It types nothing, its
-///   callout ends, other touches are ignored until it ends, and its release emits its samples (`swipe`);
-///   a cancelled swipe emits nothing.
+///   finger becomes a swipe once any sample of its path (a coalesced move or the lift) is `swipeThreshold`
+///   from its touch-down point. It types nothing, its callout ends, other touches are ignored until it
+///   ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
@@ -180,9 +180,10 @@ struct KeyTouchModel: Equatable, Sendable {
             // The key stays the one touched down on; the path counts only towards a swipe.
             guard !touch.samples.isEmpty else { break }
             touches[index].samples += samples
-            let dx = x - touch.startX, dy = y - touch.startY
-            if swipeEnabled, layer == .letters, touches.count == 1, trackpadTouch == nil,
-               (dx * dx + dy * dy).squareRoot() >= swipeThreshold {
+            // Any sample of the move counts: a finger that went past the threshold and came back within one
+            // event still swiped.
+            if mayBecomeSwipe(touch), reachesSwipeThreshold(touch, x: x, y: y)
+                || samples.contains(where: { reachesSwipeThreshold(touch, x: $0.x, y: $0.y) }) {
                 beginSwipe(index)
             }
         case .slide, .layer:
@@ -212,6 +213,11 @@ struct KeyTouchModel: Equatable, Sendable {
             return [.swipe(samples, field: field)]
         }
         guard let index = touches.firstIndex(where: { $0.id == id }) else { return [] }
+        // A flick whose first position past the threshold is the lift is a swipe too.
+        if mayBecomeSwipe(touches[index]), reachesSwipeThreshold(touches[index], x: x, y: y) {
+            beginSwipe(index)
+            return ended(id, x: x, y: y, t: t)
+        }
         let touch = touches.remove(at: index)
         var effects: [Effect] = []
         switch touch.role {
@@ -340,6 +346,19 @@ struct KeyTouchModel: Equatable, Sendable {
 
     private func nearestAction(x: Double, y: Double) -> KeyAction? {
         KeyboardLayout.nearestKey(toX: x, y: y, in: keys).map { keys[$0].action }
+    }
+
+    /// A letter touch that may still become a swipe: swipe typing on, the letters layer, uncommitted, with
+    /// its path from touch-down, and the only finger held.
+    private func mayBecomeSwipe(_ touch: Touch) -> Bool {
+        touch.role == .character && !touch.committed && !touch.samples.isEmpty && swipeEnabled && layer == .letters
+            && touches.count == 1 && touches.first?.id == touch.id && trackpadTouch == nil && swipeTouch == nil
+    }
+
+    /// The point is at least `swipeThreshold` (straight line) from the touch-down point.
+    private func reachesSwipeThreshold(_ touch: Touch, x: Double, y: Double) -> Bool {
+        let dx = x - touch.startX, dy = y - touch.startY
+        return (dx * dx + dy * dy).squareRoot() >= swipeThreshold
     }
 
     /// Half the pitch of the top row's letter keys, or nil without two of them.

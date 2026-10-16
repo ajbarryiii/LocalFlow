@@ -9,6 +9,8 @@ enum SwipeCoreTests {
             ("decodeMatchesReference", testDecodeMatchesReference),
             ("decodeWithoutFramesFindsNothing", testDecodeWithoutFramesFindsNothing),
             ("decodeRefusesAnInvalidConfig", testDecodeRefusesAnInvalidConfig),
+            ("decodeSurvivesUnboundedSettings", testDecodeSurvivesUnboundedSettings),
+            ("bundleRejectsOutOfRangeSettings", testBundleRejectsOutOfRangeSettings),
             ("lexiconReadsADataSlice", testLexiconReadsADataSlice),
             ("lexiconRejectsHeaderAndSizeCorruption", testLexiconRejectsHeaderAndSizeCorruption),
             ("lexiconRejectsBadEdges", testLexiconRejectsBadEdges),
@@ -73,6 +75,52 @@ enum SwipeCoreTests {
         let lexicon = try! SwipeLexicon(data: lexiconBytes)
         TestSupport.expectEqual(SwipeDecoder.decode(logProbs: [], frames: 0, lexicon: lexicon, config: SwipeDecodeConfig()),
                                 [])
+    }
+
+    /// A beam or result count far past the lexicon's size neither traps nor changes the result.
+    private static func testDecodeSurvivesUnboundedSettings() {
+        let lexicon = try! SwipeLexicon(data: lexiconBytes)
+        for fixture in SwipeFixtures.decode {
+            var wide = config(fixture)
+            wide.beam = 4096
+            wide.topK = 4096
+            var unbounded = wide
+            unbounded.beam = .max
+            unbounded.topK = .max
+            let expected = SwipeDecoder.decode(logProbs: fixture.logProbs, frames: SwipeFixtures.frames, lexicon: lexicon,
+                                               config: wide)
+            TestSupport.expect(!expected.isEmpty, "a wide beam found nothing")
+            TestSupport.expectEqual(SwipeDecoder.decode(logProbs: fixture.logProbs, frames: SwipeFixtures.frames,
+                                                        lexicon: lexicon, config: unbounded), expected)
+        }
+    }
+
+    private static func bundleManifest(beam: String = "32", topK: String = "5") -> Data {
+        Data("""
+        {"format": 1, "decode": {"beam": \(beam), "top_k": \(topK), "length_power": 0.0, "freq_weight": 0.02,
+         "length_bonus": 0.0}, "files": {}}
+        """.utf8)
+    }
+
+    /// `bundle.json` decode settings outside 1...1024 (beam) and 1...64 (top_k) reject the bundle.
+    private static func testBundleRejectsOutOfRangeSettings() {
+        for (beam, topK) in [("1", "1"), ("1024", "64"), ("32", "5")] {
+            let config = try? SwipeBundleManifest.decodeConfig(from: bundleManifest(beam: beam, topK: topK))
+            TestSupport.expectEqual(config, SwipeDecodeConfig(beam: Int(beam)!, topK: Int(topK)!))
+        }
+        let rejected = [("0", "5"), ("1025", "5"), ("\(Int.max)", "5"), ("-1", "5"),
+                        ("32", "0"), ("32", "65"), ("32", "\(Int.max)")]
+        for (beam, topK) in rejected {
+            do {
+                _ = try SwipeBundleManifest.decodeConfig(from: bundleManifest(beam: beam, topK: topK))
+                TestSupport.expect(false, "beam \(beam), top_k \(topK) accepted")
+            } catch {
+                TestSupport.expectEqual(error as? SwipeEngineError, .invalidSettings)
+            }
+        }
+        // A beam too large for an Int is not a number the manifest can hold.
+        TestSupport.expect((try? SwipeBundleManifest.decodeConfig(from: bundleManifest(beam: "1e300"))) == nil,
+                           "a huge beam accepted")
     }
 
     private static func testDecodeRefusesAnInvalidConfig() {

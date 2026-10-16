@@ -25,6 +25,10 @@ enum SwipeEditorTests {
             ("tapAfterAnOutsideEditDoesNothing", testTapAfterAnOutsideEditDoesNothing),
             ("tapWhenTheTextNoLongerEndsWithTheWordDoesNothing", testTapWhenTheTextNoLongerEndsWithTheWordDoesNothing),
             ("tapAfterAFieldChangeDoesNothing", testTapAfterAFieldChangeDoesNothing),
+            ("tapAfterAnUnreportedCaretMoveToTheSameWordDoesNothing", testTapAfterAnUnreportedCaretMoveToTheSameWordDoesNothing),
+            ("deleteAfterAnUnreportedCaretMoveToTheSameWordDeletesOneCharacter",
+             testDeleteAfterAnUnreportedCaretMoveToTheSameWordDeletesOneCharacter),
+            ("replacementsAndDeleteFollowTheirOwnEdits", testReplacementsAndDeleteFollowTheirOwnEdits),
             ("reportsOfOurOwnEditsKeepTheStrip", testReportsOfOurOwnEditsKeepTheStrip),
             ("stripClosesOnAnyOtherKey", testStripClosesOnAnyOtherKey),
             ("stripClosesOnDictationTrackpadFieldChangeAndHiding", testStripClosesOnDictationTrackpadFieldChangeAndHiding),
@@ -296,6 +300,48 @@ enum SwipeEditorTests {
         rig.choose(1)
         TestSupport.expectEqual(rig.text, "my word")
         TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed in another field")
+    }
+
+    private static func testTapAfterAnUnreportedCaretMoveToTheSameWordDoesNothing() {
+        // The caret moves to just after an earlier copy of the same word before the host reports it: the
+        // text before the caret still ends with the word, but it is not the swiped one. The tap does nothing.
+        let rig = SwipeRig("word ")
+        rig.swipe(["word", "ward"])
+        TestSupport.expectEqual(rig.text, "word word")
+        rig.document.moveCaret(to: 4)
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "word word")
+        TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed after a refused tap")
+    }
+
+    private static func testDeleteAfterAnUnreportedCaretMoveToTheSameWordDeletesOneCharacter() {
+        let rig = SwipeRig("word ")
+        rig.swipe(["word", "ward"])
+        rig.document.moveCaret(to: 4)
+        rig.heldDelete()
+        TestSupport.expectEqual(rig.text, "wor word")
+        TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed after the deletion")
+        // VoiceOver's delete key too.
+        let voiceOver = SwipeRig("word ")
+        voiceOver.swipe(["word", "ward"])
+        voiceOver.document.moveCaret(to: 4)
+        voiceOver.press(.delete)
+        TestSupport.expectEqual(voiceOver.text, "wor word")
+    }
+
+    private static func testReplacementsAndDeleteFollowTheirOwnEdits() {
+        // Each replacement leaves the field as the strip expects it, so the next tap and the whole-word
+        // delete still act, with text after the caret too.
+        let rig = SwipeRig("word  end", caret: 5)
+        rig.swipe(["word", "ward", "wired"])
+        TestSupport.expectEqual(rig.text, "word word end")
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "word ward end")
+        rig.choose(2)
+        TestSupport.expectEqual(rig.text, "word wired end")
+        rig.heldDelete()
+        TestSupport.expectEqual(rig.text, "word  end")
+        TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed after the deletion")
     }
 
     private static func testReportsOfOurOwnEditsKeepTheStrip() {

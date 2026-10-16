@@ -27,6 +27,8 @@ enum KeyTouchModelTests {
             ("dragPastTheThresholdBecomesASwipe", testDragPastTheThresholdBecomesASwipe),
             ("swipeNeedsEveryCondition", testSwipeNeedsEveryCondition),
             ("swipeThresholdBoundary", testSwipeThresholdBoundary),
+            ("anyCoalescedSamplePastTheThresholdSwipes", testAnyCoalescedSamplePastTheThresholdSwipes),
+            ("flickPastTheThresholdAtTheLiftSwipes", testFlickPastTheThresholdAtTheLiftSwipes),
             ("swipeSamplesStartAtTouchDownAndKeepEveryCoalescedTouch", testSwipeSamplesStartAtTouchDownAndKeepEveryCoalescedTouch),
             ("cancelledSwipeEmitsNothing", testCancelledSwipeEmitsNothing),
             ("touchesAreIgnoredDuringASwipe", testTouchesAreIgnoredDuringASwipe),
@@ -635,5 +637,75 @@ extension KeyTouchModelTests {
         TestSupport.expectEqual(model.moved(1, x: m.x, y: m.y, t: 1.4), [])
         TestSupport.expectEqual(model.calloutAction, .character("q"))
         TestSupport.expectEqual(model.ended(1, x: m.x, y: m.y), [.type(.character("q"))])
+    }
+}
+
+// MARK: Threshold crossings between reported positions (code review, 2026-10-15)
+
+extension KeyTouchModelTests {
+    fileprivate static func testAnyCoalescedSamplePastTheThresholdSwipes() {
+        // Regression: promotion looked only at the event's last position, so a move whose coalesced touches
+        // went 25 pt out and came back to 5 pt stayed a tap.
+        let d = center(.character("d"))
+        var model = model(swipe: true)
+        _ = model.began(1, x: d.x, y: d.y, t: 1)
+        let outAndBack = [SwipeSample(x: d.x + 10, y: d.y, t: 1.004), SwipeSample(x: d.x + 25, y: d.y, t: 1.008),
+                          SwipeSample(x: d.x + 5, y: d.y, t: 1.012)]
+        TestSupport.expectEqual(model.moved(1, x: d.x + 5, y: d.y, t: 1.012, coalesced: outAndBack), [])
+        TestSupport.expect(model.isSwipeActive, "a coalesced touch past the threshold did not make a swipe")
+        TestSupport.expectEqual(model.ended(1, x: d.x + 5, y: d.y, t: 1.012),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1)] + outAndBack, field: nil)])
+        // Ineligible touches are unaffected: with another finger held, the same move stays a tap.
+        var held = self.model(swipe: true)
+        let s = center(.character("s"))
+        _ = held.began(1, x: s.x, y: s.y, t: 1)
+        _ = held.began(2, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(held.moved(2, x: d.x + 5, y: d.y, t: 1.012, coalesced: outAndBack), [])
+        TestSupport.expect(!held.isSwipeActive, "a swipe beside another finger")
+        TestSupport.expectEqual(held.ended(2, x: d.x + 5, y: d.y, t: 1.012), [.type(.character("d"))])
+    }
+
+    fileprivate static func testFlickPastTheThresholdAtTheLiftSwipes() {
+        // Regression: a quick flick first reported past the threshold at its release typed the touch-down
+        // letter. The lift counts as a sample of the path: the touch swipes, through the lift.
+        let d = center(.character("d")), far = 2 * threshold
+        let field = UUID()
+        var flick = model(swipe: true)
+        _ = flick.began(1, x: d.x, y: d.y, t: 1, field: field)
+        TestSupport.expectEqual(flick.moved(1, x: d.x + 5, y: d.y, t: 1.008), [])
+        TestSupport.expect(!flick.isSwipeActive, "a swipe short of the threshold")
+        TestSupport.expectEqual(flick.ended(1, x: d.x + far, y: d.y, t: 1.016),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1), SwipeSample(x: d.x + 5, y: d.y, t: 1.008),
+                                         SwipeSample(x: d.x + far, y: d.y, t: 1.016)], field: field)])
+        TestSupport.expect(!flick.isSwipeActive && flick.touches.isEmpty, "the flick outlived its lift")
+        // With no move at all.
+        var bare = model(swipe: true)
+        _ = bare.began(1, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(bare.ended(1, x: d.x + far, y: d.y, t: 1.01),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1), SwipeSample(x: d.x + far, y: d.y, t: 1.01)], field: nil)])
+        // A lift within the threshold is still a tap.
+        var tap = model(swipe: true)
+        _ = tap.began(1, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(tap.ended(1, x: d.x + threshold - 0.01, y: d.y, t: 1.01), [.type(.character("d"))])
+        // Ineligible touches type at a far lift as before: swipe typing off, another layer, another finger
+        // held (Shift), and a letter committed by rollover.
+        var off = model(swipe: false)
+        _ = off.began(1, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(off.ended(1, x: d.x + far, y: d.y, t: 1.01), [.type(.character("d"))])
+        var numbers = model(.numbers, swipe: true)
+        let five = center(.character("5"), .numbers)
+        _ = numbers.began(1, x: five.x, y: five.y, t: 1)
+        TestSupport.expectEqual(numbers.ended(1, x: five.x + far, y: five.y, t: 1.01), [.type(.character("5"))])
+        var shifted = model(swipe: true)
+        let shift = center(.shift)
+        _ = shifted.began(1, x: shift.x, y: shift.y, t: 1)
+        _ = shifted.began(2, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(shifted.ended(2, x: d.x + far, y: d.y, t: 1.01), [.type(.character("d"))])
+        var committed = model(swipe: true)
+        let s = center(.character("s"))
+        _ = committed.began(1, x: d.x, y: d.y, t: 1)
+        _ = committed.began(2, x: s.x, y: s.y, t: 1)
+        _ = committed.ended(2, x: s.x, y: s.y, t: 1.005)
+        TestSupport.expectEqual(committed.ended(1, x: d.x + far, y: d.y, t: 1.01), [])
     }
 }

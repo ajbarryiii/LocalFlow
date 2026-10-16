@@ -74,8 +74,9 @@ final class KeyboardEditor {
 
     /// The strip shown after a swipe, nil when closed.
     var swipeStrip: SwipeStrip? { swipe?.strip }
-    /// The strip, and the field and edit generation its word was inserted at.
-    private var swipe: (strip: SwipeStrip, documentID: UUID?, generation: Int)? {
+    /// The strip, and the field, edit generation and proxy context (before and after the caret) its word
+    /// left. The context is held in memory only while the strip shows.
+    private var swipe: (strip: SwipeStrip, documentID: UUID?, generation: Int, before: String?, after: String?)? {
         didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }
     }
 
@@ -315,7 +316,7 @@ final class KeyboardEditor {
             swipe = nil
             return
         }
-        swipe = (strip, document.documentID, core.generation)
+        swipe = (strip, document.documentID, core.generation, document.contextBefore, document.contextAfter)
     }
 
     /// A tap on the strip's candidate `index`: it replaces the inserted word, but only while nothing else
@@ -334,7 +335,8 @@ final class KeyboardEditor {
             swipe = nil
             return
         }
-        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), document.documentID, core.generation)
+        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), document.documentID, core.generation,
+                 document.contextBefore, document.contextAfter)
     }
 
     /// Closes the strip (the trackpad began without a gesture, or the UI asked).
@@ -343,11 +345,13 @@ final class KeyboardEditor {
     }
 
     /// The strip, while its word can still be replaced or deleted whole: the same field, no edit by
-    /// anything else since (an own edit's report never counts), nothing selected, and the text before
-    /// the caret still ending with the word.
+    /// anything else since (an own edit's report never counts), nothing selected, the proxy still showing
+    /// exactly the context the word left (a caret moved without a report yet may land after another copy
+    /// of the word), and the text before the caret still ending with the word.
     private func currentSwipe() -> SwipeStrip? {
         guard let swipe, document.documentID == swipe.documentID, core.documentID == swipe.documentID,
               core.generation == swipe.generation, !document.hasSelection,
+              document.contextBefore == swipe.before, document.contextAfter == swipe.after,
               currentBefore?.hasSuffix(swipe.strip.insertedWord) == true else { return nil }
         return swipe.strip
     }

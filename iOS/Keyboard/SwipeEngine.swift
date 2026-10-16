@@ -22,6 +22,9 @@ enum SwipeEngineError: Error, Equatable {
 /// decoder settings.
 struct SwipeBundleManifest: Decodable {
     static let format = 1
+    /// Accepted decode settings; anything else rejects the bundle.
+    static let beamRange = 1 ... 1024
+    static let topKRange = 1 ... 64
 
     struct Decode: Decodable {
         var beam: Int
@@ -47,7 +50,8 @@ struct SwipeBundleManifest: Decodable {
         let manifest = try JSONDecoder().decode(SwipeBundleManifest.self, from: data)
         guard manifest.format == format else { throw SwipeEngineError.unsupportedFormat }
         let d = manifest.decode
-        guard d.beam >= 1, d.topK >= 1, d.lengthPower.isFinite, d.freqWeight.isFinite, d.lengthBonus.isFinite else {
+        guard beamRange.contains(d.beam), topKRange.contains(d.topK), d.lengthPower.isFinite, d.freqWeight.isFinite,
+              d.lengthBonus.isFinite else {
             throw SwipeEngineError.invalidSettings
         }
         return SwipeDecodeConfig(beam: d.beam, topK: d.topK, lengthPower: d.lengthPower, freqWeight: d.freqWeight,

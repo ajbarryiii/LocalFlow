@@ -17,9 +17,12 @@ enum SwipeDecoder {
     static func decode(logProbs: [Double], frames: Int, lexicon: SwipeLexicon, config: SwipeDecodeConfig) -> [SwipeCandidate] {
         precondition(frames >= 0 && logProbs.count == frames * columns, "logProbs must be frames × 27")
         guard config.beam >= 1, config.topK >= 1 else { return [] }
+        // The beam holds distinct nodes, so a wider beam than the lexicon has nodes changes nothing;
+        // bounding it keeps every allocation sized by the lexicon, not by the settings.
+        let beam = min(config.beam, lexicon.nodeCount)
         return lexicon.withView { view, rank in
             logProbs.withUnsafeBufferPointer { lp -> [SwipeCandidate] in
-                let beams = search(lp, frames: frames, view: view, rank: rank, beam: config.beam)
+                let beams = search(lp, frames: frames, view: view, rank: rank, beam: beam)
                 return rankWords(beams, view: view, config: config)
             }
         }
