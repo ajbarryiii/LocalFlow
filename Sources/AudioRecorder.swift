@@ -104,8 +104,10 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
     /// what the model reads back from the file. Memory only.
     typealias SampleSink = @Sendable ([Float]) -> Void
     /// One capture's sink, set when it is admitted and cleared once its
-    /// buffers have drained, so a stale capture never feeds a newer sink.
-    private let sampleSink = OSAllocatedUnfairLock<(capture: UInt64, sink: SampleSink)?>(initialState: nil)
+    /// buffers have drained, so a stale capture never feeds a newer sink. Boxed:
+    /// a closure kept directly in the lock's generic state is re-wrapped in
+    /// reabstraction thunks on every `withLock`, until calling it overflows the stack.
+    private let sampleSink = OSAllocatedUnfairLock<CaptureSampleSink?>(initialState: nil)
     private let recordingConverterLock = OSAllocatedUnfairLock<AVAudioConverter?>(initialState: nil)
     private let recordingTargetFormat: AVAudioFormat = {
         AVAudioFormat(
@@ -415,8 +417,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
     /// The written buffer, as the model will read it back from the file, to the
     /// capture's sink. Sample-buffer queue only, so samples arrive in file order.
     private func forwardWrittenSamples(_ buffer: AVAudioPCMBuffer, capture: UInt64) {
-        guard let sink = sampleSink.withLock({ $0?.capture == capture ? $0?.sink : nil }) else { return }
-        sink(ParakeetAudioReader.samples(int16: buffer))
+        guard let sink = sampleSink.withLock({ $0 }), sink.capture == capture else { return }
+        sink.send(ParakeetAudioReader.samples(int16: buffer))
     }
 
     private func validatedPCMBufferFormat(
@@ -664,7 +666,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             try self.lifecycle.start(ticket: ticket, at: t0, setup: { capture in
                 self._bufferCount.withLock { $0 = 0 }
                 self.liveLevelNormalizerLock.withLock { $0.reset() }
-                self.sampleSink.withLock { $0 = sink.map { (capture: capture, sink: $0) } }
+                self.sampleSink.withLock { $0 = sink.map { CaptureSampleSink(capture: capture, send: $0) } }
                 try self.makeSession(deviceUID: deviceUID, outputURL: outputURL, capture: capture)
                 self._recording.withLock { $0 = true }
                 self.startBufferWatchdog(capture: capture)
@@ -857,5 +859,16 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
                 self.onRecordingReady?()
             }
         }
+    }
+}
+
+/// One capture's sample sink. Immutable, so the lock holds only a reference.
+private final class CaptureSampleSink: Sendable {
+    let capture: UInt64
+    let send: AudioRecorder.SampleSink
+
+    init(capture: UInt64, send: @escaping AudioRecorder.SampleSink) {
+        self.capture = capture
+        self.send = send
     }
 }
