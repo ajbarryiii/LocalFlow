@@ -166,10 +166,11 @@ private final class ParakeetRuntime: SpeechRuntime {
 
     /// The snapshot is taken now; `finish` fails, so the recording is transcribed as before, if the
     /// dictionary changed meanwhile.
-    func beginStream() -> SpeechStream? {
+    func beginStream(onEnd: @escaping @Sendable () -> Void) -> SpeechStream? {
         guard let directory else { return nil }
         let snapshot = dictionary.current
-        let session = service.beginStreamingTranscription(directory: directory, dictionary: snapshot, retainForCorrection: false)
+        let session = service.beginStreamingTranscription(directory: directory, dictionary: snapshot, retainForCorrection: false,
+                                                          onEnd: onEnd)
         return ParakeetStream(session: session, revision: snapshot.revision, dictionary: dictionary)
     }
 }

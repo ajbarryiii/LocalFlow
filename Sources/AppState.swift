@@ -2197,11 +2197,13 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
 
     /// Discards any watched paste, running verification and retained audio
     /// without finalizing: new dictation, cancel, setting off, dictionary
-    /// change, quit.
+    /// change, quit. A recording's streaming transcription holds audio
+    /// retained under the old state, so it goes too; stop transcribes the file.
     func stopCorrectionSuggestions() {
         correctionWatcher.cancel()
         correctionSuggestionTask?.cancel()
         correctionSuggestionTask = nil
+        cancelStreamingDictation()
         LocalParakeetService.shared.discardCorrectionSession()
     }
 

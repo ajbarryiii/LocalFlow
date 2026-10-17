@@ -202,8 +202,9 @@ struct ParakeetChunkedTranscription {
 /// chunk is transcribed at once, in order, so `finish` is left with the final
 /// partial chunk. The stage is built on `queue` when the session begins, which
 /// fixes readiness for the recording as a batch call fixes it for its own.
-/// Audio stays in memory: the session holds only samples not yet chunked and
-/// the chunker's pending window.
+/// Audio stays in memory. The session holds the audio `queue` has not yet
+/// processed (normally a moment's worth; all of it if `queue` is blocked), the
+/// chunker's pending window, and whatever the stage retains.
 final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendable {
     struct Stage {
         var transcription: ParakeetChunkedTranscription
@@ -211,9 +212,12 @@ final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendabl
         let transcribe: (ParakeetChunk, _ check: () throws -> Void) throws -> [ParakeetWord]
         /// The joined text to the result, after the last chunk.
         let complete: (String, _ check: () throws -> Void) throws -> Output
+        /// Undoes what `complete` published when a cancel landed during it.
+        var abandon: (Output) -> Void = { _ in }
     }
 
     private let queue: DispatchQueue
+    private let onEnd: (@Sendable () -> Void)?
     // Shared with the capture thread; every access holds lock.
     private let lock = NSLock()
     private var inbox: [Float] = []
@@ -224,9 +228,13 @@ final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendabl
     private var transcription: ParakeetChunkedTranscription?
     private var stage: Stage?
     private var failure: Error?
+    private var ended = false
 
-    init(queue: DispatchQueue, begin: @escaping @Sendable () throws -> Stage) {
+    /// `onEnd` runs once, on `queue`, when the session's model work has drained
+    /// after `finish` or `cancel`, so its owner can tell when nothing uses the model.
+    init(queue: DispatchQueue, onEnd: (@Sendable () -> Void)? = nil, begin: @escaping @Sendable () throws -> Stage) {
         self.queue = queue
+        self.onEnd = onEnd
         queue.async {
             guard !self.isCancelled else { return }
             do {
@@ -254,26 +262,25 @@ final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendabl
     /// Transcribes what is left and returns the result, which equals a batch
     /// transcription of every appended sample. An error from any chunk, with
     /// the batch path's content-free mapping, is thrown here. Call it once;
-    /// after `cancel`, or cancelling the calling task, it throws `CancellationError`.
+    /// after `cancel`, or cancelling the calling task, it throws `CancellationError`
+    /// and what completion published is abandoned. A cancel after the result
+    /// is returned leaves it to the caller.
     func finish() async throws -> Output {
         guard beginFinishing() else { throw CancellationError() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     self.drain()
+                    let result: Result<Output, Error>
                     do {
-                        try self.check()
-                        if let failure = self.failure { throw failure }
-                        guard var transcription = self.transcription, let stage = self.stage else { throw CancellationError() }
-                        self.transcription = nil
-                        let text = try transcription.finish { try stage.transcribe($0, self.check) }
-                        let output = try stage.complete(text, self.check)
-                        try self.check()
-                        continuation.resume(returning: output)
+                        result = .success(try self.complete())
                     } catch {
-                        continuation.resume(throwing: LocalParakeetError.contentFree(error))
+                        result = .failure(LocalParakeetError.contentFree(error))
                     }
+                    self.transcription = nil
                     self.stage = nil
+                    self.end()
+                    continuation.resume(with: result)
                 }
             }
         } onCancel: { self.cancel() }
@@ -290,6 +297,7 @@ final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendabl
             queue.async {
                 self.transcription = nil
                 self.stage = nil
+                self.end()
             }
         }
     }
@@ -307,6 +315,29 @@ final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendabl
 
     private func check() throws {
         if isCancelled { throw CancellationError() }
+    }
+
+    // Queue only: the tail, then the result. A cancel that landed during
+    // completion abandons what it published.
+    private func complete() throws -> Output {
+        try check()
+        if let failure { throw failure }
+        guard var transcription, let stage else { throw CancellationError() }
+        self.transcription = nil
+        let text = try transcription.finish { try stage.transcribe($0, check) }
+        let output = try stage.complete(text, check)
+        if isCancelled {
+            stage.abandon(output)
+            throw CancellationError()
+        }
+        return output
+    }
+
+    // Queue only.
+    private func end() {
+        guard !ended else { return }
+        ended = true
+        onEnd?()
     }
 
     // Queue only. After a failure no chunk work runs and samples are dropped.

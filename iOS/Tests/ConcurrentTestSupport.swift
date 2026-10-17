@@ -54,7 +54,8 @@ final class Locked<Value>: @unchecked Sendable {
 }
 
 /// A `SpeechStream` that records what it is fed and finishes when told to. The sample buffer feeds it
-/// from the capture thread. Like the app's stream, cancelling it ends a waiting `finish`.
+/// from the capture thread. Like the app's stream, cancelling it ends a waiting `finish`, and `onEnd`
+/// runs once it is finished or cancelled and its model work (`holdsWork`, a running chunk) has drained.
 final class FakeSpeechStream: SpeechStream, @unchecked Sendable {
     private struct State {
         var samples: [Float] = []
@@ -62,20 +63,35 @@ final class FakeSpeechStream: SpeechStream, @unchecked Sendable {
         var finishes = 0
         var result: Result<String, Error>?
         var waiting: CheckedContinuation<String, Error>?
+        var done = false
+        var holdsWork = false
+        var ended = false
     }
 
     private let state = Locked(State())
+    private let onEnd: (@Sendable () -> Void)?
+
+    init(onEnd: (@Sendable () -> Void)? = nil) {
+        self.onEnd = onEnd
+    }
 
     var samples: [Float] { state.current.samples }
     var isCancelled: Bool { state.current.cancelled }
     var finishCount: Int { state.current.finishes }
+
+    /// A chunk is running: the end waits for `finishWork()`.
+    var holdsWork: Bool {
+        get { state.current.holdsWork }
+        set { state.update { $0.holdsWork = newValue } }
+    }
 
     func append(_ samples: [Float]) {
         state.update { $0.samples += samples }
     }
 
     func finish() async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+        defer { markDone() }
+        return try await withCheckedThrowingContinuation { continuation in
             let ready: Result<String, Error>? = state.update { state in
                 state.finishes += 1
                 if state.cancelled { return .failure(CancellationError()) }
@@ -104,5 +120,26 @@ final class FakeSpeechStream: SpeechStream, @unchecked Sendable {
             return state.waiting
         }
         waiting?.resume(throwing: CancellationError())
+        markDone()
+    }
+
+    /// The running chunk returns.
+    func finishWork() {
+        holdsWork = false
+        endIfDrained()
+    }
+
+    private func markDone() {
+        state.update { $0.done = true }
+        endIfDrained()
+    }
+
+    private func endIfDrained() {
+        let end = state.update { state -> Bool in
+            guard state.done, !state.holdsWork, !state.ended else { return false }
+            state.ended = true
+            return true
+        }
+        if end { onEnd?() }
     }
 }

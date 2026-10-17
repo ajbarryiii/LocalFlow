@@ -12,6 +12,9 @@ enum ParakeetStreamingTests {
         testCancelDuringChunk()
         testTaskCancellation()
         testServiceWithoutModel()
+        testCancelDuringCompletionRetainsNothing()
+        testCancelReleasesRetainedWorkWhenDrained()
+        testEndsOnceAfterItsWorkDrains()
     }
 
     private static let size = 40, overlap = 8
@@ -47,8 +50,9 @@ enum ParakeetStreamingTests {
 
     private static func session(_ queue: DispatchQueue, _ log: ChunkLog, size: Int = size,
                                 transcribe: @escaping @Sendable (ParakeetChunk) throws -> [ParakeetWord] = { words($0) },
-                                complete: @escaping @Sendable (String) -> String = { $0 }) -> ParakeetStreamingTranscription<String> {
-        ParakeetStreamingTranscription(queue: queue) {
+                                complete: @escaping @Sendable (String) -> String = { $0 },
+                                onEnd: (@Sendable () -> Void)? = nil) -> ParakeetStreamingTranscription<String> {
+        ParakeetStreamingTranscription(queue: queue, onEnd: onEnd) {
             dispatchPrecondition(condition: .onQueue(queue))
             log.began()
             return .init(transcription: ParakeetChunkedTranscription(size: size, overlap: overlap), transcribe: { chunk, check in
@@ -258,6 +262,97 @@ enum ParakeetStreamingTests {
         cancelled.append([0.25])
         cancelled.cancel()
         TestSupport.expect(isCancellation(wait { try await cancelled.finish() }), "A cancelled session must throw CancellationError")
+    }
+
+
+    // A cancel that lands while the result is being completed (after its last
+    // check, as during casing restoration) leaves nothing retained: whatever
+    // completion published is abandoned, and finish throws CancellationError.
+    private static func testCancelDuringCompletionRetainsNothing() {
+        final class Store: @unchecked Sendable {
+            let lock = NSLock()
+            var retained: Set<Int> = [], abandoned: [Int] = []
+            var streaming: ParakeetStreamingTranscription<Int>?
+        }
+        let queue = DispatchQueue(label: "localflow.tests.streaming"), store = Store()
+        let streaming = ParakeetStreamingTranscription<Int>(queue: queue) {
+            .init(transcription: ParakeetChunkedTranscription(size: size, overlap: overlap),
+                  transcribe: { chunk, check in try check(); return words(chunk) },
+                  complete: { _, check in
+                      try check()
+                      store.streaming?.cancel()   // lands after the check
+                      store.lock.lock(); store.retained.insert(7); store.lock.unlock()
+                      return 7
+                  },
+                  abandon: { id in
+                      store.lock.lock(); store.retained.remove(id); store.abandoned.append(id); store.lock.unlock()
+                  })
+        }
+        store.streaming = streaming
+        streaming.append(samples(100, seed: 23))
+        TestSupport.expect(isCancellation(wait { try await streaming.finish() }), "A cancelled completion must throw CancellationError")
+        queue.sync {}
+        TestSupport.expectEqual(store.retained, [])
+        TestSupport.expectEqual(store.abandoned, [7])
+        store.streaming = nil
+    }
+
+    // Cancelling while recording drops the session's retained work (its stage,
+    // which owns any correction projections) once queued work has drained, and
+    // completes nothing, so nothing is published.
+    private static func testCancelReleasesRetainedWorkWhenDrained() {
+        final class Projections: @unchecked Sendable {}
+        let queue = DispatchQueue(label: "localflow.tests.streaming"), log = ChunkLog()
+        weak var held: Projections?
+        let streaming: ParakeetStreamingTranscription<String> = {
+            let projections = Projections()
+            held = projections
+            return ParakeetStreamingTranscription(queue: queue) {
+                .init(transcription: ParakeetChunkedTranscription(size: size, overlap: overlap), transcribe: { chunk, _ in
+                    withExtendedLifetime(projections) { log.add(chunk) }
+                    return words(chunk)
+                }, complete: { text, _ in log.completed(); return text })
+            }
+        }()
+        streaming.append(samples(100, seed: 24))
+        queue.sync {}
+        TestSupport.expect(held != nil, "Retained work must live while recording")
+        streaming.cancel()
+        queue.sync {}
+        TestSupport.expect(held == nil, "A cancelled session must release its retained work")
+        TestSupport.expect(isCancellation(wait { try await streaming.finish() }), "Finish after cancel must throw CancellationError")
+        TestSupport.expectEqual(log.completions, 0)
+    }
+
+    // The end is reported once, only after all of the session's model work has
+    // drained: a cancel during a running chunk ends when that chunk returns.
+    private static func testEndsOnceAfterItsWorkDrains() {
+        let ends = ChunkLog()
+        let queue = DispatchQueue(label: "localflow.tests.streaming"), log = ChunkLog()
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let blocked = session(queue, log, transcribe: { chunk in
+            if chunk.start == 0 { entered.signal(); release.wait() }
+            return words(chunk)
+        }, onEnd: { ends.completed() })
+        blocked.append(samples(200, seed: 25))
+        entered.wait()
+        blocked.cancel()
+        blocked.cancel()
+        Thread.sleep(forTimeInterval: 0.05)
+        TestSupport.expectEqual(ends.completions, 0)
+        release.signal()
+        queue.sync {}
+        TestSupport.expectEqual(ends.completions, 1)
+
+        // Finished: ends once, and a later cancel does not end it again.
+        let finishedEnds = ChunkLog()
+        let finished = session(DispatchQueue(label: "localflow.tests.streaming"), ChunkLog(), onEnd: { finishedEnds.completed() })
+        finished.append(samples(50, seed: 26))
+        TestSupport.expect((try? wait { try await finished.finish() }.get()) != nil, "Finish must succeed")
+        TestSupport.expectEqual(finishedEnds.completions, 1)
+        finished.cancel()
+        Thread.sleep(forTimeInterval: 0.05)
+        TestSupport.expectEqual(finishedEnds.completions, 1)
     }
 
     private static func failureMessage<T>(_ result: Result<T, Error>) -> String? {

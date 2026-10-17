@@ -1737,7 +1737,10 @@ their strength comes from the arrows or from one test recording.
   batch transcription of the same samples. Its snapshot is taken at admission;
   if the dictionary changed before the end, or the session fails, the drained
   samples are transcribed as above. Cancel, supersession, lock, session end
-  and background-time expiry cancel the session; audio stays in memory.
+  and background-time expiry cancel the session; audio stays in memory. The
+  session holds the audio the model queue has not processed yet plus one
+  chunk window. Until its model work has drained after finish or cancel, the
+  engine counts it as busy, so the runtime is neither released nor replaced.
 - **Find strength** ("record a phrase and infer"). The recording runs in the
   foreground only; leaving it discards the recording. A check that has already
   started (after Done) uses no microphone and may finish in the background; its

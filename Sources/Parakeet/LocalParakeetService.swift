@@ -165,7 +165,8 @@ final class LocalParakeetService: @unchecked Sendable {
             self.corrections.discard()
             let bias = runtime.graph(for: dictionary)
             let decoded = try runtime.transcribe(fileURL: fileURL, bias: bias, retain: retainForCorrection, check: check)
-            return self.dictationResult(decoded.text, retained: decoded.retained, runtime: runtime, dictionary: dictionary)
+            return try self.dictationResult(decoded.text, retained: decoded.retained, runtime: runtime, dictionary: dictionary,
+                                            check: check)
         }
     }
 
@@ -178,9 +179,10 @@ final class LocalParakeetService: @unchecked Sendable {
         return beginStreamingTranscription(directory: directory, dictionary: dictionary, retainForCorrection: retainForCorrection)
     }
 
-    func beginStreamingTranscription(directory: URL, dictionary: DictionarySnapshot,
-                                     retainForCorrection: Bool) -> ParakeetStreamingSession {
-        let transcription = ParakeetStreamingTranscription<TranscriptionResult>(queue: queue) {
+    /// `onEnd` runs once all of the session's model work has drained.
+    func beginStreamingTranscription(directory: URL, dictionary: DictionarySnapshot, retainForCorrection: Bool,
+                                     onEnd: (@Sendable () -> Void)? = nil) -> ParakeetStreamingSession {
+        let transcription = ParakeetStreamingTranscription<TranscriptionResult>(queue: queue, onEnd: onEnd) {
             let runtime = try self.runtime(for: directory)
             let bias = runtime.graph(for: dictionary)
             var retained: RetainedAudio? = retainForCorrection ? RetainedAudio() : nil
@@ -190,17 +192,22 @@ final class LocalParakeetService: @unchecked Sendable {
                 try check()
                 // What the batch call drops when it starts.
                 self.corrections.discard()
-                return self.dictationResult(text, retained: retained, runtime: runtime, dictionary: dictionary)
+                return try self.dictationResult(text, retained: retained, runtime: runtime, dictionary: dictionary, check: check)
+            }, abandon: { result in
+                // Cancelled after retaining: nobody will ever see this dictation.
+                if let id = result.dictationID { self.corrections.expire(id: id) }
             })
         }
         return ParakeetStreamingSession(transcription: transcription, willFinish: { [weak self] in self?.cancelVerification() })
     }
 
-    /// Casing restoration, then retention for correction when `retained` is set. Queue only.
+    /// Casing restoration, then retention for correction when `retained` is set,
+    /// unless cancelled by then. Queue only.
     private func dictationResult(_ raw: String, retained: RetainedAudio?, runtime: LocalParakeetRuntime,
-                                 dictionary: DictionarySnapshot) -> TranscriptionResult {
+                                 dictionary: DictionarySnapshot, check: () throws -> Void) throws -> TranscriptionResult {
         let text = CasingRestorer.apply(raw, entries: dictionary.entries)
         guard let retained else { return TranscriptionResult(text: text, dictationID: nil) }
+        try check()
         let session = RetainedCorrection(runtime: runtime, chunks: retained.chunks, dictionary: dictionary, base: text)
         let id = corrections.retain(session, bytes: retained.bytes, now: ProcessInfo.processInfo.systemUptime)
         if let id { scheduleExpiry(id: id) }

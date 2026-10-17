@@ -18,6 +18,7 @@ enum TranscriptionEngineTests {
             ("streamedRecordingIsNotTranscribedAgain", isolated(testStreamedRecordingIsNotTranscribedAgain)),
             ("failedStreamFallsBackToTheRecording", isolated(testFailedStreamFallsBackToTheRecording)),
             ("cancellationCancelsTheStream", isolated(testCancellationCancelsTheStream)),
+            ("streamKeepsTheRuntimeUntilItsWorkDrains", isolated(testStreamKeepsTheRuntimeUntilItsWorkDrains)),
         ]
     }
 
@@ -212,7 +213,7 @@ enum TranscriptionEngineTests {
         TestSupport.expectEqual(stream.finishCount, 1)
         TestSupport.expect(!stream.isCancelled, "a finished stream was cancelled")
         TestSupport.expectEqual(h.attempts.last?.outcome, .transcribed)
-        TestSupport.expect(!h.engine.isBusy, "idle engine is busy")
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { !h.engine.isBusy }, "busy after the stream drained")
     }
 
     /// A stream that fails for any reason but cancellation falls back to transcribing the recording.
@@ -243,6 +244,30 @@ enum TranscriptionEngineTests {
         _ = TestSupport.waitUntil(timeout: 0.1) { false }
         TestSupport.expectEqual(h.runtime(0)!.transcribeCalls, 0)
         TestSupport.expectEqual(h.attempts.last?.outcome, .cancelled)
+    }
+
+    /// A stream is runtime work from `beginStream` until its model work has drained: a memory warning
+    /// during a blocked chunk, then a cancel, releases nothing and prepares no second runtime until the
+    /// chunk returns.
+    @MainActor
+    private static func testStreamKeepsTheRuntimeUntilItsWorkDrains() {
+        let h = readyHarness()
+        let stream = h.engine.beginStream() as! FakeSpeechStream
+        stream.holdsWork = true   // a chunk is being encoded
+        TestSupport.expect(h.engine.isBusy, "an open stream is not busy")
+        TestSupport.expect(!h.engine.releaseIfIdle(), "released under a recording's stream")   // memory warning
+        stream.cancel()
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expect(!h.engine.releaseIfIdle(), "released while the cancelled stream's chunk runs")
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 1)
+        TestSupport.expectEqual(h.engine.modelState, .ready)
+        stream.finishWork()   // the chunk returns; the cancel's cleanup drains
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.releaseIfIdle() }, "never released after the stream drained")
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.live.current == 0 }, "released runtime kept")
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 2)
+        TestSupport.expectEqual(h.liveWhenMade, [0, 0])
     }
 
     // MARK: withReadyRuntime ("Find strength")
@@ -426,8 +451,8 @@ private final class FakeRuntime: SpeechRuntime {
         return try await withCheckedThrowingContinuation { transcription = $0 }
     }
 
-    func beginStream() -> SpeechStream? {
-        let stream = FakeSpeechStream()
+    func beginStream(onEnd: @escaping @Sendable () -> Void) -> SpeechStream? {
+        let stream = FakeSpeechStream(onEnd: onEnd)
         streams.append(stream)
         return stream
     }

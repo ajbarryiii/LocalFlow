@@ -39,8 +39,9 @@ protocol SpeechRuntime: AnyObject, Sendable {
     func prepare() async throws
     func transcribe(_ samples: [Float]) async throws -> String
     /// A transcription fed while recording, whose `finish` returns what `transcribe` returns for the
-    /// samples appended; nil when it cannot stream. Only on a prepared runtime.
-    @MainActor func beginStream() -> SpeechStream?
+    /// samples appended; nil when it cannot stream. Only on a prepared runtime. `onEnd` runs once, on
+    /// any thread, when the stream is finished or cancelled and its model work has fully drained.
+    @MainActor func beginStream(onEnd: @escaping @Sendable () -> Void) -> SpeechStream?
 }
 
 /// A recording transcribed while it is recorded (`LocalParakeetService`'s streaming session in the app).
@@ -80,8 +81,9 @@ final class TranscriptionEngine: HostTranscriber {
     private(set) var preparationStartedAt: Date?
     /// A runtime exists (preparing, ready or transcribing).
     var isLoaded: Bool { loaded != nil }
-    /// Preparing, or a transcription or `withReadyRuntime` operation is running or waiting.
-    var isBusy: Bool { loaded?.readiness == .preparing || activeTranscriptions > 0 }
+    /// Preparing, a transcription or `withReadyRuntime` operation is running or waiting, or a stream's
+    /// model work has not drained.
+    var isBusy: Bool { loaded?.readiness == .preparing || activeTranscriptions > 0 || activeStreams > 0 }
 
     var onStateChange: (@MainActor () -> Void)?
     var onPreparation: (@MainActor (PreparationReport) -> Void)?
@@ -94,6 +96,8 @@ final class TranscriptionEngine: HostTranscriber {
     private let makeRuntime: @MainActor () -> SpeechRuntime
     private var loaded: LoadedRuntime?
     private var activeTranscriptions = 0
+    /// Streams begun whose model work has not drained: the runtime is neither released nor replaced.
+    private var activeStreams = 0
 
     init(isAvailable: Bool, osMajorVersion: Int, isInBackground: @escaping @MainActor () -> Bool,
          now: @escaping @MainActor () -> Date = { Date() }, makeRuntime: @escaping @MainActor () -> SpeechRuntime) {
@@ -129,11 +133,16 @@ final class TranscriptionEngine: HostTranscriber {
         }
     }
 
-    /// Only on a ready runtime, so its audio never waits behind preparation. The session core keeps the
-    /// dictation in progress while the stream is open, so the runtime is not released under it.
+    /// Only on a ready runtime, so its audio never waits behind preparation. The engine is busy until the
+    /// stream's model work has drained after its finish or cancellation, so the runtime it uses is not
+    /// released, and no second one prepared, under it.
     func beginStream() -> SpeechStream? {
         guard isAvailable, let loaded, loaded.readiness == .ready else { return nil }
-        return loaded.runtime.beginStream()
+        guard let stream = loaded.runtime.beginStream(onEnd: { [weak self] in
+            Task { @MainActor in self?.activeStreams -= 1 }
+        }) else { return nil }
+        activeStreams += 1
+        return stream
     }
 
     /// With a stream, its result; after any stream failure but cancellation, `audio` as without one.
