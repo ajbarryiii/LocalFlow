@@ -106,6 +106,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         client.start()
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Our Start button is the dictation key, so iOS drops its own microphone from
+        // the bar under the keyboard on Face ID iPhones. iOS ignores this until the
+        // keyboard is connected to the text field, so it is set here, not in viewDidLoad.
+        hasDictationKey = true
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         client.stop()
