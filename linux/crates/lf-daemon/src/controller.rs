@@ -77,6 +77,11 @@
 //!   window ends, so a double tap does not make the music stutter; every
 //!   recording start still sends a (harmless, repeated) pause, so a player
 //!   started during the window is paused too.
+//! - **Agent link** (`crate::link`): suggestions, project words and the
+//!   agent report expire by the timer. Dictation boosts the dictionary plus
+//!   the project words (the dictionary's strength wins); resolving a
+//!   suggestion with add or ignore is a dictionary change and ends the
+//!   correction session, project words never do.
 
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -101,15 +106,17 @@ pub fn boottime() -> Duration {
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
-use lf_asr::dictionary::DEFAULT_STRENGTH;
+use lf_asr::dictionary::{self as rules, DEFAULT_STRENGTH};
 use lf_dictation::correction::correction_candidates;
 use lf_io_api::{AudioCapture, SAMPLE_RATE};
 
 use crate::dictionary::{ChangeError, Snapshot, Store};
 use crate::history::{Entry, History};
+use crate::link::{self, AgentReport, ProjectWords, Suggestions};
 use crate::media::{MediaSink, NoMedia};
 use crate::protocol::{
-    Args, Command, CorrectionResult, ErrorCode, Extra, Note, Reply, Request, State, Status,
+    AGENTS_DEFAULT_TTL, Activity, AgentCounts, Args, Command, CorrectionResult, ErrorCode, Extra,
+    Note, Reply, Request, Resolve, State, Status, SuggestOutcome, WORDS_DEFAULT_TTL,
 };
 use crate::session::{Action, Event, Mode, SessionController};
 use crate::worker::{
@@ -185,7 +192,20 @@ enum Phase {
         cancel: Arc<CancelToken>,
         typing: bool,
         prompt: bool,
+        /// The revision of the dictionary (without project words) when the
+        /// job was submitted.
+        base: u64,
     },
+}
+
+/// The dictionary merged with the project words, for transcription; reused
+/// while neither changed, so the recognizer's graph cache stays valid.
+struct Merged {
+    /// The dictionary's revision.
+    base: u64,
+    /// [`ProjectWords::generation`].
+    generation: u64,
+    snapshot: Arc<Snapshot>,
 }
 
 pub struct Controller {
@@ -232,6 +252,13 @@ pub struct Controller {
     check: Option<Check>,
     /// Set when the daemon cannot go on (see [`Controller::take_fatal`]).
     fatal: Option<String>,
+    /// Dictionary suggestions from agents (see `crate::link`).
+    suggestions: Suggestions,
+    /// Project words, boosted with the dictionary.
+    words: ProjectWords,
+    merged: Option<Merged>,
+    /// The live agent status report.
+    agents: Option<AgentReport>,
 }
 
 /// A hold too short to dictate; a quick second press makes a prompt.
@@ -309,6 +336,10 @@ impl Controller {
             next_session: 1,
             check: None,
             fatal: None,
+            suggestions: Suggestions::default(),
+            words: ProjectWords::default(),
+            merged: None,
+            agents: None,
         }
     }
 
@@ -331,6 +362,57 @@ impl Controller {
         self.dictionary
             .as_ref()
             .map_or_else(|| Arc::clone(&self.empty_dictionary), Store::snapshot)
+    }
+
+    /// What dictation boosts: the dictionary plus the project words. The
+    /// same snapshot while neither changed, a new revision when the merged
+    /// words do; the dictionary's own snapshot without project words.
+    fn transcription_snapshot(&mut self) -> Arc<Snapshot> {
+        let base = self.dictionary_snapshot();
+        if self.words.is_empty() {
+            return base;
+        }
+        let generation = self.words.generation();
+        if let Some(m) = &self.merged
+            && m.base == base.revision
+            && m.generation == generation
+        {
+            return Arc::clone(&m.snapshot);
+        }
+        let dictionary = self.words.merge(&base.dictionary);
+        let snapshot = match &self.merged {
+            // The same words loaded again: keep the revision.
+            Some(m) if m.snapshot.dictionary == dictionary => Arc::clone(&m.snapshot),
+            _ => Arc::new(Snapshot {
+                revision: crate::dictionary::next_revision(),
+                dictionary,
+            }),
+        };
+        self.merged = Some(Merged {
+            base: base.revision,
+            generation,
+            snapshot: Arc::clone(&snapshot),
+        });
+        snapshot
+    }
+
+    /// The agent link's counts, for watch lines.
+    pub fn activity(&self) -> Activity {
+        Activity {
+            suggestions: u32::try_from(self.suggestions.len()).unwrap_or(u32::MAX),
+            words: u32::try_from(self.words.count()).unwrap_or(u32::MAX),
+            agents: self.agents.map_or_else(AgentCounts::default, |a| a.counts),
+        }
+    }
+
+    /// Drops suggestions, project word sets and an agent report whose time
+    /// is up.
+    fn expire_link(&mut self, now: Instant) {
+        self.suggestions.expire(now);
+        self.words.expire(now);
+        if self.agents.is_some_and(|a| now >= a.expires) {
+            self.agents = None;
+        }
     }
 
     /// Drops the correction session and stops (or makes stale) its check:
@@ -363,6 +445,7 @@ impl Controller {
     /// recording or a pending double tap.
     fn text_command(&mut self, command: Command, args: Args, now: Instant) -> Reply {
         self.expire_correction(now);
+        self.expire_link(now);
         let result = match command {
             Command::CorrectBegin => match &self.correction {
                 Some(s) => Ok(Some(Extra::Correction {
@@ -377,6 +460,35 @@ impl Controller {
             | Command::DictRemove
             | Command::DictIgnore
             | Command::DictUnignore => self.change_dictionary(command, args).map(|()| None),
+            Command::SuggestAdd => self.suggest_add(args, now).map(Some),
+            Command::SuggestNext => self.suggest_next().map(Some),
+            Command::SuggestResolve => self.suggest_resolve(args).map(|()| None),
+            Command::WordsSet => self.words_set(args, now).map(Some),
+            Command::WordsClear => match args.set {
+                Some(set) if self.words.clear(&set) => {
+                    crate::info!("project words cleared");
+                    Ok(None)
+                }
+                Some(_) => Err(ErrorCode::NotFound),
+                None => Err(ErrorCode::BadRequest),
+            },
+            Command::AgentsSet => {
+                let ttl = args.ttl.unwrap_or(AGENTS_DEFAULT_TTL);
+                self.agents = Some(AgentReport {
+                    counts: AgentCounts {
+                        approval: args.approval.unwrap_or(0),
+                        input: args.input.unwrap_or(0),
+                        working: args.working.unwrap_or(0),
+                        done: args.done.unwrap_or(0),
+                    },
+                    expires: now + Duration::from_secs(ttl),
+                });
+                Ok(None)
+            }
+            Command::AgentsClear => {
+                self.agents = None;
+                Ok(None)
+            }
             _ => Err(ErrorCode::UnknownCommand),
         };
         match result {
@@ -457,12 +569,11 @@ impl Controller {
     }
 
     fn change_dictionary(&mut self, command: Command, args: Args) -> Result<(), ErrorCode> {
-        let Some(store) = &mut self.dictionary else {
+        if self.dictionary.is_none() {
             return Err(ErrorCode::Unavailable);
-        };
+        }
         let word = args.word.ok_or(ErrorCode::BadRequest)?;
-        let before = store.snapshot().revision;
-        let changed = match command {
+        self.apply_change(command.name(), |store| match command {
             Command::DictAdd => store.add(
                 &word,
                 args.strength
@@ -471,7 +582,21 @@ impl Controller {
             Command::DictRemove => store.remove(&word),
             Command::DictIgnore => store.ignore(&word),
             _ => store.unignore(&word),
+        })
+    }
+
+    /// Applies one dictionary change (`what` names it in the log): any
+    /// published change ends the correction session; errors map to codes.
+    fn apply_change(
+        &mut self,
+        what: &str,
+        change: impl FnOnce(&mut Store) -> Result<(), ChangeError>,
+    ) -> Result<(), ErrorCode> {
+        let Some(store) = &mut self.dictionary else {
+            return Err(ErrorCode::Unavailable);
         };
+        let before = store.snapshot().revision;
+        let changed = change(store);
         // Any published change (also one recovered from disk after a failed
         // save) makes the session's frozen dictionary out of date.
         if store.snapshot().revision != before {
@@ -479,7 +604,7 @@ impl Controller {
         }
         match changed {
             Ok(()) => {
-                crate::info!("dictionary changed ({})", command.name());
+                crate::info!("dictionary changed ({what})");
                 Ok(())
             }
             Err(ChangeError::InvalidEntry(e)) => {
@@ -497,6 +622,99 @@ impl Controller {
                 Err(ErrorCode::Storage)
             }
         }
+    }
+
+    /// `suggest-add`: queues a word for review unless the dictionary or the
+    /// ignore list already has it.
+    fn suggest_add(&mut self, args: Args, now: Instant) -> Result<Extra, ErrorCode> {
+        let Some(store) = &self.dictionary else {
+            return Err(ErrorCode::Unavailable);
+        };
+        let word = args.word.ok_or(ErrorCode::BadRequest)?;
+        let entry = rules::validate(&word, DEFAULT_STRENGTH, store.tokenizer()).map_err(|e| {
+            crate::info!("suggestion refused: {}", e.name());
+            ErrorCode::InvalidEntry
+        })?;
+        drop(word);
+        let key = entry.key();
+        let snap = store.snapshot();
+        if snap.dictionary.entries.iter().any(|e| e.key() == key) {
+            return Ok(Extra::Outcome(SuggestOutcome::Present));
+        }
+        if snap.dictionary.ignore.contains(&key) {
+            return Ok(Extra::Outcome(SuggestOutcome::Ignored));
+        }
+        let before = self.suggestions.len();
+        self.suggestions
+            .add(entry, now)
+            .map_err(|link::Full| ErrorCode::Full)?;
+        if self.suggestions.len() != before {
+            crate::info!("dictionary suggestion queued");
+        }
+        Ok(Extra::Outcome(SuggestOutcome::Queued))
+    }
+
+    /// `suggest-next`: the oldest pending suggestion, once those added to
+    /// the dictionary or the ignore list since are dropped.
+    fn suggest_next(&mut self) -> Result<Extra, ErrorCode> {
+        let Some(store) = &self.dictionary else {
+            return Err(ErrorCode::Unavailable);
+        };
+        let snap = store.snapshot();
+        self.suggestions.drop_keys(|key| {
+            snap.dictionary.entries.iter().any(|e| e.key() == key)
+                || snap.dictionary.ignore.iter().any(|k| k == key)
+        });
+        let p = self.suggestions.oldest().ok_or(ErrorCode::NotFound)?;
+        Ok(Extra::Suggestion {
+            id: p.id,
+            word: p.entry.text.clone(),
+        })
+    }
+
+    /// `suggest-resolve`: adds, ignores or dismisses a pending suggestion.
+    /// It stays pending when the change fails.
+    fn suggest_resolve(&mut self, args: Args) -> Result<(), ErrorCode> {
+        if self.dictionary.is_none() {
+            return Err(ErrorCode::Unavailable);
+        }
+        let (Some(id), Some(action)) = (args.id, args.action) else {
+            return Err(ErrorCode::BadRequest);
+        };
+        let word = match self.suggestions.get(id) {
+            Some(p) => p.entry.text.clone(),
+            None => return Err(ErrorCode::Stale),
+        };
+        match action {
+            Resolve::Add => {
+                self.apply_change("suggestion added", |s| s.add(&word, DEFAULT_STRENGTH))?;
+            }
+            Resolve::Ignore => self.apply_change("suggestion ignored", |s| s.ignore(&word))?,
+            Resolve::Dismiss => crate::info!("dictionary suggestion dismissed"),
+        }
+        self.suggestions.remove(id);
+        Ok(())
+    }
+
+    /// `words-set`: loads (or replaces, or with nothing loaded removes) a
+    /// project word set. Never a dictionary change: the correction session
+    /// stays.
+    fn words_set(&mut self, args: Args, now: Instant) -> Result<Extra, ErrorCode> {
+        let Some(store) = &self.dictionary else {
+            return Err(ErrorCode::Unavailable);
+        };
+        let (Some(set), Some(words)) = (args.set, args.words) else {
+            return Err(ErrorCode::BadRequest);
+        };
+        let (entries, skipped) = link::parse_words(&words, store.tokenizer());
+        drop(words);
+        let loaded = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+        let ttl = Duration::from_secs(args.ttl.unwrap_or(WORDS_DEFAULT_TTL));
+        self.words
+            .set(&set, entries, now + ttl)
+            .map_err(|link::Full| ErrorCode::Full)?;
+        crate::info!("project words set ({loaded} loaded, {skipped} skipped)");
+        Ok(Extra::Loaded { loaded, skipped })
     }
 
     /// Replaces the clock anchor (tests use synthetic times).
@@ -666,7 +884,14 @@ impl Controller {
             | Command::DictAdd
             | Command::DictRemove
             | Command::DictIgnore
-            | Command::DictUnignore => Ok(None),
+            | Command::DictUnignore
+            | Command::SuggestAdd
+            | Command::SuggestNext
+            | Command::SuggestResolve
+            | Command::WordsSet
+            | Command::WordsClear
+            | Command::AgentsSet
+            | Command::AgentsClear => Ok(None),
             Command::Press => {
                 let overtaken = match (self.orphan_release_at, at) {
                     (Some(release), Some(press)) => press <= release,
@@ -876,7 +1101,9 @@ impl Controller {
         let id = self.next_id;
         self.next_id += 1;
         let cancel = Arc::new(CancelToken::default());
-        let dictionary = self.dictionary_snapshot();
+        self.expire_link(now);
+        let base = self.dictionary_snapshot().revision;
+        let dictionary = self.transcription_snapshot();
         self.jobs.submit(Job {
             id,
             cancel: Arc::clone(&cancel),
@@ -891,6 +1118,7 @@ impl Controller {
             cancel,
             typing: false,
             prompt,
+            base,
         };
         if !self.model_ready {
             crate::info!("transcription waits for the model to finish loading");
@@ -940,6 +1168,7 @@ impl Controller {
             cancel,
             typing: true,
             prompt: false,
+            base: self.dictionary_snapshot().revision,
         };
         None
     }
@@ -967,9 +1196,12 @@ impl Controller {
                     crate::debug!("an abandoned dictation finished");
                     return Ok(());
                 }
-                let prompt = matches!(self.phase, Phase::Busy { prompt: true, .. });
+                let (prompt, base) = match self.phase {
+                    Phase::Busy { prompt, base, .. } => (prompt, base),
+                    _ => (false, 0),
+                };
                 self.phase = Phase::Idle;
-                self.finish(outcome, prompt);
+                self.finish(outcome, prompt, base);
                 Ok(())
             }
             WorkerEvent::Verified(job, found) => {
@@ -992,7 +1224,8 @@ impl Controller {
         }
     }
 
-    fn finish(&mut self, outcome: Outcome, prompt: bool) {
+    /// `base`: the dictionary's revision when the job was submitted.
+    fn finish(&mut self, outcome: Outcome, prompt: bool, base: u64) {
         match outcome {
             Outcome::Typed {
                 raw,
@@ -1003,10 +1236,11 @@ impl Controller {
             } => {
                 // A dictionary change after this job was submitted leaves its
                 // snapshot out of date: such a dictation is not kept, as a
-                // change ends any session (DESIGN §2.4).
+                // change ends any session (DESIGN §2.4). Project words are no
+                // dictionary change: they never end a session.
                 let current = self.dictionary_snapshot().revision;
-                let retained = retained.filter(|r| {
-                    let fresh = r.dictionary.revision == current;
+                let retained = retained.filter(|_| {
+                    let fresh = base == current;
                     if !fresh {
                         crate::debug!("dictionary changed during the dictation; not kept");
                     }
@@ -1070,10 +1304,17 @@ impl Controller {
             .correction
             .as_ref()
             .map(|s| s.created + CORRECTION_WINDOW);
-        [max, self.media_resume_at, correction]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            max,
+            self.media_resume_at,
+            correction,
+            self.suggestions.next_expiry(),
+            self.words.next_expiry(),
+            self.agents.map(|a| a.expires),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Stops a recording that reached the maximum length, and resumes media
@@ -1093,6 +1334,8 @@ impl Controller {
         }
         // Enforced by this timer, not only when the session is next used.
         self.expire_correction(now);
+        // Likewise suggestions, project words and the agent report.
+        self.expire_link(now);
         // An expired tap goes (a press would find it expired anyway).
         if let Some(t) = self.tap
             && (self.boot)().saturating_sub(t.received) > self.limits.double_tap
@@ -2434,11 +2677,11 @@ mod tests {
         use crate::worker::{Retained, Suggestion};
         use lf_asr::Projection;
 
-        const TYPED: &str = "we deployed it on cooper netties yesterday";
-        const EDITED: &str = "we deployed it on Kubernetes yesterday";
+        pub(super) const TYPED: &str = "we deployed it on cooper netties yesterday";
+        pub(super) const EDITED: &str = "we deployed it on Kubernetes yesterday";
 
         /// A rig with a dictionary in `dir`.
-        fn dict_rig(dir: &TempDir) -> Rig {
+        pub(super) fn dict_rig(dir: &TempDir) -> Rig {
             let mut r = rig();
             let store = Store::open(&Setting {
                 dir: dir.path().join("data"),
@@ -2449,7 +2692,7 @@ mod tests {
             r
         }
 
-        fn send(r: &mut Rig, command: Command, f: impl FnOnce(&mut Args)) -> Reply {
+        pub(super) fn send(r: &mut Rig, command: Command, f: impl FnOnce(&mut Args)) -> Reply {
             r.t += Duration::from_millis(10);
             let mut args = Args::default();
             f(&mut args);
@@ -2470,14 +2713,14 @@ mod tests {
         }
 
         /// Starts and stops a dictation: its queued job.
-        fn record(r: &mut Rig) -> Job {
+        pub(super) fn record(r: &mut Rig) -> Job {
             r.note(Command::Toggle);
             r.note(Command::Toggle);
             r.jobs.take().pop().unwrap()
         }
 
         /// Finishes `job` as typed `output`; the worker keeps it if `keep`.
-        fn finish(r: &mut Rig, job: Job, output: &str, keep: bool) {
+        pub(super) fn finish(r: &mut Rig, job: Job, output: &str, keep: bool) {
             let JobKind::Transcribe { dictionary, .. } = job.kind else {
                 panic!("not a transcription");
             };
@@ -2496,7 +2739,7 @@ mod tests {
         }
 
         /// Dictates `output` to completion; the worker keeps it if `keep`.
-        fn dictate(r: &mut Rig, output: &str, keep: bool) {
+        pub(super) fn dictate(r: &mut Rig, output: &str, keep: bool) {
             let job = record(r);
             finish(r, job, output, keep);
         }
@@ -2530,7 +2773,7 @@ mod tests {
         }
 
         /// `correct-begin`: the session id and text.
-        fn begin(r: &mut Rig) -> Result<(u64, String), ErrorCode> {
+        pub(super) fn begin(r: &mut Rig) -> Result<(u64, String), ErrorCode> {
             match send(r, Command::CorrectBegin, |_| {}) {
                 Reply::With(_, Extra::Correction { id, text }) => Ok((id, text)),
                 Reply::Error(e) => Err(e),
@@ -2538,7 +2781,7 @@ mod tests {
             }
         }
 
-        fn submit(r: &mut Rig, id: u64, text: &str) -> Result<u64, ErrorCode> {
+        pub(super) fn submit(r: &mut Rig, id: u64, text: &str) -> Result<u64, ErrorCode> {
             match send(r, Command::CorrectSubmit, |a| {
                 a.id = Some(id);
                 a.text = Some(text.into());
@@ -2549,7 +2792,7 @@ mod tests {
             }
         }
 
-        fn result(r: &mut Rig, job: u64) -> Result<CorrectionResult, ErrorCode> {
+        pub(super) fn result(r: &mut Rig, job: u64) -> Result<CorrectionResult, ErrorCode> {
             match send(r, Command::CorrectResult, |a| a.job = Some(job)) {
                 Reply::With(_, Extra::Result(res)) => Ok(res),
                 Reply::Error(e) => Err(e),
@@ -2557,7 +2800,7 @@ mod tests {
             }
         }
 
-        fn dict(r: &mut Rig, command: Command, word: &str) -> Result<(), ErrorCode> {
+        pub(super) fn dict(r: &mut Rig, command: Command, word: &str) -> Result<(), ErrorCode> {
             match send(r, command, |a| a.word = Some(word.into())) {
                 Reply::Ok(_, None) => Ok(()),
                 Reply::Error(e) => Err(e),
@@ -2566,7 +2809,7 @@ mod tests {
         }
 
         /// The queued verification job, if any.
-        fn verify_job(r: &Rig) -> Option<Job> {
+        pub(super) fn verify_job(r: &Rig) -> Option<Job> {
             let mut jobs = r.jobs.take();
             assert!(jobs.len() <= 1);
             jobs.pop().filter(|j| matches!(j.kind, JobKind::Verify(_)))
@@ -2803,6 +3046,498 @@ mod tests {
             let _ = begin(&mut r);
             let _ = dict(&mut r, Command::DictRemove, "absent");
             assert!(r.c.tap.is_some());
+        }
+    }
+
+    /// The agent link: dictionary suggestions, project words and agent
+    /// reports (linux/AGENT-LINK.md).
+    mod agent_link {
+        use super::correction::{
+            EDITED, TYPED, begin, dict, dict_rig, dictate, finish, record, result, send, submit,
+            verify_job,
+        };
+        use super::*;
+        use crate::link::{MAX_SET_WORDS, MAX_SUGGESTIONS, SUGGESTION_TTL};
+        use crate::protocol::{Activity, AgentCounts, Extra, Resolve, SuggestOutcome};
+
+        fn suggest(r: &mut Rig, word: &str) -> Result<SuggestOutcome, ErrorCode> {
+            match send(r, Command::SuggestAdd, |a| a.word = Some(word.into())) {
+                Reply::With(_, Extra::Outcome(o)) => Ok(o),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn next(r: &mut Rig) -> Result<(u64, String), ErrorCode> {
+            match send(r, Command::SuggestNext, |_| {}) {
+                Reply::With(_, Extra::Suggestion { id, word }) => Ok((id, word)),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn resolve(r: &mut Rig, id: u64, action: Resolve) -> Result<(), ErrorCode> {
+            match send(r, Command::SuggestResolve, |a| {
+                a.id = Some(id);
+                a.action = Some(action);
+            }) {
+                Reply::Ok(_, None) => Ok(()),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn words(
+            r: &mut Rig,
+            set: &str,
+            w: &str,
+            ttl: Option<u64>,
+        ) -> Result<(u32, u32), ErrorCode> {
+            match send(r, Command::WordsSet, |a| {
+                a.set = Some(set.into());
+                a.words = Some(w.into());
+                a.ttl = ttl;
+            }) {
+                Reply::With(_, Extra::Loaded { loaded, skipped }) => Ok((loaded, skipped)),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn clear(r: &mut Rig, set: &str) -> Result<(), ErrorCode> {
+            match send(r, Command::WordsClear, |a| a.set = Some(set.into())) {
+                Reply::Ok(_, None) => Ok(()),
+                Reply::Error(e) => Err(e),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        fn agents(r: &mut Rig, f: impl FnOnce(&mut Args)) -> Reply {
+            send(r, Command::AgentsSet, f)
+        }
+
+        fn pending(r: &Rig) -> u32 {
+            r.c.activity().suggestions
+        }
+
+        /// The dictionary a dictation is transcribed with.
+        fn transcribed(r: &mut Rig) -> Arc<Snapshot> {
+            let job = record(r);
+            r.c.handle_worker(WorkerEvent::Done(job.id, Outcome::Nothing))
+                .unwrap();
+            match job.kind {
+                JobKind::Transcribe { dictionary, .. } => dictionary,
+                _ => panic!("not a transcription"),
+            }
+        }
+
+        fn boosted(s: &Snapshot) -> Vec<(String, f32)> {
+            s.dictionary
+                .entries
+                .iter()
+                .map(|e| (e.text.clone(), e.strength))
+                .collect()
+        }
+
+        /// An invented word for each `i`: "Zq" and two letters.
+        fn word(i: usize) -> String {
+            let l = |n: usize| (b'a' + (n % 26) as u8) as char;
+            format!("Zq{}{}", l(i / 26), l(i))
+        }
+
+        #[test]
+        fn suggestions_are_queued_once_and_reviewed_oldest_first() {
+            let dir = TempDir::new("link-queue");
+            let mut r = dict_rig(&dir);
+            assert_eq!(next(&mut r), Err(ErrorCode::NotFound));
+            assert_eq!(suggest(&mut r, "Zorblax"), Ok(SuggestOutcome::Queued));
+            assert_eq!(suggest(&mut r, "Quuxwell"), Ok(SuggestOutcome::Queued));
+            // Its key is pending: not queued twice, and it keeps its place.
+            assert_eq!(suggest(&mut r, " zorblax "), Ok(SuggestOutcome::Queued));
+            assert_eq!(pending(&r), 2);
+            // In the dictionary or on the ignore list: never queued.
+            dict(&mut r, Command::DictAdd, "Blorft").unwrap();
+            dict(&mut r, Command::DictIgnore, "Glimmux").unwrap();
+            assert_eq!(suggest(&mut r, "BLORFT"), Ok(SuggestOutcome::Present));
+            assert_eq!(suggest(&mut r, "glimmux"), Ok(SuggestOutcome::Ignored));
+            // Validated like dict-add.
+            assert_eq!(suggest(&mut r, "1234"), Err(ErrorCode::InvalidEntry));
+            assert_eq!(suggest(&mut r, "caf\u{e9}"), Err(ErrorCode::InvalidEntry));
+            assert_eq!(pending(&r), 2);
+
+            let (first, w) = next(&mut r).unwrap();
+            assert_eq!(w, "Zorblax");
+            // `suggest-next` only reads.
+            assert_eq!(next(&mut r).unwrap(), (first, "Zorblax".into()));
+            resolve(&mut r, first, Resolve::Dismiss).unwrap();
+            assert_eq!(
+                resolve(&mut r, first, Resolve::Dismiss),
+                Err(ErrorCode::Stale)
+            );
+            let (second, w) = next(&mut r).unwrap();
+            assert_eq!(w, "Quuxwell");
+            assert_ne!(second, first);
+            resolve(&mut r, second, Resolve::Add).unwrap();
+            assert_eq!(next(&mut r), Err(ErrorCode::NotFound));
+            assert_eq!(pending(&r), 0);
+            let added = r.c.dictionary_snapshot();
+            assert!(
+                added
+                    .dictionary
+                    .entries
+                    .iter()
+                    .any(|e| e.text == "Quuxwell" && e.strength == 1.0)
+            );
+            assert_eq!(suggest(&mut r, "quuxwell"), Ok(SuggestOutcome::Present));
+
+            // Dismissed words may be suggested again; ignored ones not.
+            assert_eq!(suggest(&mut r, "Zorblax"), Ok(SuggestOutcome::Queued));
+            let (third, _) = next(&mut r).unwrap();
+            assert!(third > second);
+            resolve(&mut r, third, Resolve::Ignore).unwrap();
+            assert!(
+                r.c.dictionary_snapshot()
+                    .dictionary
+                    .ignore
+                    .contains(&"zorblax".to_string())
+            );
+            assert_eq!(suggest(&mut r, "Zorblax"), Ok(SuggestOutcome::Ignored));
+            assert_eq!(resolve(&mut r, 999, Resolve::Add), Err(ErrorCode::Stale));
+        }
+
+        #[test]
+        fn at_most_sixteen_suggestions_each_for_a_day() {
+            let dir = TempDir::new("link-cap");
+            let mut r = dict_rig(&dir);
+            dict(&mut r, Command::DictAdd, "Blorft").unwrap();
+            let first_at = r.t + Duration::from_millis(10);
+            for i in 0..MAX_SUGGESTIONS {
+                assert_eq!(suggest(&mut r, &word(i)), Ok(SuggestOutcome::Queued));
+            }
+            let last_at = r.t;
+            assert_eq!(pending(&r), 16);
+            assert_eq!(suggest(&mut r, "Zorblax"), Err(ErrorCode::Full));
+            // A pending or present word is no growth.
+            assert_eq!(suggest(&mut r, &word(3)), Ok(SuggestOutcome::Queued));
+            assert_eq!(suggest(&mut r, "Blorft"), Ok(SuggestOutcome::Present));
+            let (first, _) = next(&mut r).unwrap();
+
+            // Each expires a day after it was queued, by the timer.
+            assert_eq!(r.c.next_deadline(), Some(first_at + SUGGESTION_TTL));
+            r.c.tick(first_at + SUGGESTION_TTL - Duration::from_millis(1));
+            assert_eq!(pending(&r), 16);
+            r.c.tick(first_at + SUGGESTION_TTL);
+            assert_eq!(pending(&r), 15);
+            assert_eq!(resolve(&mut r, first, Resolve::Add), Err(ErrorCode::Stale));
+            assert_eq!(next(&mut r).unwrap().1, word(1));
+            assert_eq!(suggest(&mut r, "Zorblax"), Ok(SuggestOutcome::Queued));
+            r.c.tick(last_at + SUGGESTION_TTL);
+            assert_eq!(pending(&r), 1);
+            assert_eq!(next(&mut r).unwrap().1, "Zorblax");
+        }
+
+        #[test]
+        fn suggest_next_drops_words_added_or_ignored_since() {
+            let dir = TempDir::new("link-since");
+            let mut r = dict_rig(&dir);
+            for w in ["Zorblax", "Quuxwell", "Glimmux"] {
+                suggest(&mut r, w).unwrap();
+            }
+            dict(&mut r, Command::DictAdd, "zorblax").unwrap();
+            dict(&mut r, Command::DictIgnore, "QUUXWELL").unwrap();
+            assert_eq!(next(&mut r).unwrap().1, "Glimmux");
+            assert_eq!(pending(&r), 1);
+        }
+
+        #[test]
+        fn resolving_with_add_or_ignore_ends_the_correction_session() {
+            let dir = TempDir::new("link-session");
+            for (action, ends) in [
+                (Resolve::Add, true),
+                (Resolve::Ignore, true),
+                (Resolve::Dismiss, false),
+            ] {
+                let mut r = dict_rig(&dir);
+                dictate(&mut r, TYPED, true);
+                let (id, _) = begin(&mut r).unwrap();
+                let job = submit(&mut r, id, EDITED).unwrap();
+                let check = verify_job(&r).unwrap();
+                suggest(&mut r, "Zorblax").unwrap();
+                let (s, _) = next(&mut r).unwrap();
+                resolve(&mut r, s, action).unwrap();
+                assert_eq!(check.cancel.is_cancelled(), ends, "{action:?}");
+                if ends {
+                    assert_eq!(begin(&mut r), Err(ErrorCode::NoRecent), "{action:?}");
+                    assert_eq!(result(&mut r, job), Err(ErrorCode::Stale));
+                } else {
+                    assert_eq!(begin(&mut r).unwrap().0, id);
+                    assert!(result(&mut r, job).unwrap() == CorrectionResult::Pending);
+                }
+                drop(r);
+                std::fs::remove_dir_all(dir.path().join("data")).unwrap();
+            }
+        }
+
+        #[test]
+        fn a_failed_resolution_keeps_the_suggestion_pending() {
+            let dir = TempDir::new("link-fail");
+            let mut r = dict_rig(&dir);
+            dict(&mut r, Command::DictAdd, "Blorft").unwrap();
+            suggest(&mut r, "Zorblax").unwrap();
+            let (id, _) = next(&mut r).unwrap();
+            dictate(&mut r, TYPED, true);
+            let data = dir.path().join("data");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o500)).unwrap();
+            assert_eq!(resolve(&mut r, id, Resolve::Add), Err(ErrorCode::Storage));
+            assert_eq!(
+                resolve(&mut r, id, Resolve::Ignore),
+                Err(ErrorCode::Storage)
+            );
+            std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(pending(&r), 1);
+            assert_eq!(next(&mut r).unwrap(), (id, "Zorblax".into()));
+            // Nothing changed, so the session survived too.
+            assert!(begin(&mut r).is_ok());
+            resolve(&mut r, id, Resolve::Add).unwrap();
+            assert_eq!(pending(&r), 0);
+        }
+
+        #[test]
+        fn without_a_dictionary_only_agent_reports_work() {
+            let mut r = rig();
+            assert_eq!(suggest(&mut r, "Zorblax"), Err(ErrorCode::Unavailable));
+            assert_eq!(next(&mut r), Err(ErrorCode::Unavailable));
+            assert_eq!(
+                resolve(&mut r, 1, Resolve::Dismiss),
+                Err(ErrorCode::Unavailable)
+            );
+            assert_eq!(
+                words(&mut r, "repo", "Zorblax", None),
+                Err(ErrorCode::Unavailable)
+            );
+            assert_eq!(clear(&mut r, "repo"), Err(ErrorCode::NotFound));
+            assert_eq!(agents(&mut r, |a| a.approval = Some(1)), r.c.ok(None));
+            assert_eq!(r.c.activity().agents.approval, 1);
+        }
+
+        #[test]
+        fn project_words_are_counted_capped_and_replaced() {
+            let dir = TempDir::new("link-words");
+            let mut r = dict_rig(&dir);
+            // Empty pieces, repeats, invalid entries are skipped.
+            assert_eq!(
+                words(
+                    &mut r,
+                    "repo",
+                    "Zorblax, Quuxwell ,,zorblax,1234,caf\u{e9},  New   Thing  ",
+                    None
+                ),
+                Ok((3, 4))
+            );
+            assert_eq!(r.c.activity().words, 3);
+            // At most 64 per set.
+            let many: Vec<String> = (0..MAX_SET_WORDS + 2).map(word).collect();
+            assert_eq!(words(&mut r, "big", &many.join(","), None), Ok((64, 2)));
+            assert_eq!(r.c.activity().words, 67);
+            // The same name replaces the set.
+            assert_eq!(words(&mut r, "repo", "Glimmux", None), Ok((1, 0)));
+            assert_eq!(r.c.activity().words, 65);
+            // At most four sets; replacing one of them is still fine.
+            assert_eq!(words(&mut r, "c", "Blorft", None), Ok((1, 0)));
+            assert_eq!(words(&mut r, "d", "Blorft", None), Ok((1, 0)));
+            assert_eq!(words(&mut r, "e", "Blorft", None), Err(ErrorCode::Full));
+            assert_eq!(words(&mut r, "c", "Blorft,Quuxwell", None), Ok((2, 0)));
+            assert_eq!(r.c.activity().words, 68);
+            // Nothing loaded removes the set.
+            assert_eq!(words(&mut r, "c", "1234, ,", None), Ok((0, 3)));
+            assert_eq!(r.c.activity().words, 66);
+            assert_eq!(words(&mut r, "e", "Blorft", None), Ok((1, 0)));
+            assert_eq!(words(&mut r, "never", "1234", None), Ok((0, 1)));
+            assert_eq!(clear(&mut r, "never"), Err(ErrorCode::NotFound));
+            clear(&mut r, "big").unwrap();
+            assert_eq!(clear(&mut r, "big"), Err(ErrorCode::NotFound));
+            assert_eq!(r.c.activity().words, 3);
+            // Project words never touch the dictionary.
+            assert!(r.c.dictionary_snapshot().dictionary.entries.is_empty());
+            assert!(
+                !dir.path()
+                    .join("data")
+                    .join(crate::dictionary::FILE_NAME)
+                    .exists()
+            );
+        }
+
+        #[test]
+        fn project_words_expire_by_the_timer() {
+            let dir = TempDir::new("link-expiry");
+            let mut r = dict_rig(&dir);
+            assert_eq!(r.c.next_deadline(), None);
+            words(&mut r, "a", "Zorblax", None).unwrap();
+            let a_at = r.t;
+            words(&mut r, "b", "Quuxwell,Glimmux", Some(60)).unwrap();
+            let b_at = r.t;
+            assert_eq!(r.c.next_deadline(), Some(b_at + Duration::from_secs(60)));
+            r.c.tick(b_at + Duration::from_secs(60) - Duration::from_millis(1));
+            assert_eq!(r.c.activity().words, 3);
+            r.c.tick(b_at + Duration::from_secs(60));
+            assert_eq!(r.c.activity().words, 1);
+            let default = Duration::from_secs(crate::protocol::WORDS_DEFAULT_TTL);
+            assert_eq!(r.c.next_deadline(), Some(a_at + default));
+            // Setting it again restarts its time.
+            words(&mut r, "a", "Zorblax", Some(120)).unwrap();
+            let again = r.t;
+            assert_eq!(r.c.next_deadline(), Some(again + Duration::from_secs(120)));
+            r.c.tick(again + Duration::from_secs(120));
+            assert_eq!(r.c.activity().words, 0);
+            assert_eq!(r.c.next_deadline(), None);
+            assert_eq!(clear(&mut r, "a"), Err(ErrorCode::NotFound));
+        }
+
+        #[test]
+        fn dictation_boosts_project_words_at_strength_one() {
+            let dir = TempDir::new("link-boost");
+            let mut r = dict_rig(&dir);
+            send(&mut r, Command::DictAdd, |a| {
+                a.word = Some("Zorblax".into());
+                a.strength = Some(2000);
+            });
+            let plain = transcribed(&mut r);
+            assert!(Arc::ptr_eq(&plain, &r.c.dictionary_snapshot()));
+            words(&mut r, "repo", "zorblax, Quuxwell, New Thing", None).unwrap();
+            let one = transcribed(&mut r);
+            // The dictionary's strength wins for a word in both.
+            assert_eq!(
+                boosted(&one),
+                [
+                    ("Zorblax".to_string(), 2.0),
+                    ("Quuxwell".into(), 1.0),
+                    ("New Thing".into(), 1.0)
+                ]
+            );
+            assert_ne!(one.revision, plain.revision);
+            // Unchanged: the same snapshot, so the graph cache stays valid.
+            assert!(Arc::ptr_eq(&one, &transcribed(&mut r)));
+            // A set loaded again with the same words changes nothing either.
+            words(&mut r, "repo", "zorblax, Quuxwell, New Thing", Some(600)).unwrap();
+            assert!(Arc::ptr_eq(&one, &transcribed(&mut r)));
+            // A second set; a word in both sets is boosted once.
+            words(&mut r, "other", "quuxwell, Glimmux", None).unwrap();
+            let two = transcribed(&mut r);
+            assert_eq!(boosted(&two).len(), 4);
+            assert!(two.revision != one.revision);
+            // A dictionary change gives a new revision too.
+            dict(&mut r, Command::DictAdd, "Blorft").unwrap();
+            let three = transcribed(&mut r);
+            assert_eq!(boosted(&three).len(), 5);
+            assert!(three.revision != two.revision);
+            assert!(Arc::ptr_eq(&three, &transcribed(&mut r)));
+            clear(&mut r, "other").unwrap();
+            let four = transcribed(&mut r);
+            assert_eq!(boosted(&four).len(), 4);
+            assert!(four.revision != three.revision);
+            // Without sets, the dictionary itself.
+            clear(&mut r, "repo").unwrap();
+            let five = transcribed(&mut r);
+            assert!(Arc::ptr_eq(&five, &r.c.dictionary_snapshot()));
+            assert_eq!(boosted(&five).len(), 2);
+            // The revisions seen so far are all distinct but for reuse.
+            let revs = [
+                plain.revision,
+                one.revision,
+                two.revision,
+                three.revision,
+                four.revision,
+            ];
+            for (i, a) in revs.iter().enumerate() {
+                assert!(!revs[i + 1..].contains(a));
+            }
+            assert!(five.revision != plain.revision);
+        }
+
+        #[test]
+        fn project_words_never_end_a_correction_session() {
+            let dir = TempDir::new("link-keep");
+            let mut r = dict_rig(&dir);
+            dictate(&mut r, TYPED, true);
+            let (id, _) = begin(&mut r).unwrap();
+            let job = submit(&mut r, id, EDITED).unwrap();
+            let check = verify_job(&r).unwrap();
+            words(&mut r, "repo", "Zorblax", None).unwrap();
+            words(&mut r, "repo", "Quuxwell", None).unwrap();
+            clear(&mut r, "repo").unwrap();
+            words(&mut r, "repo", "Glimmux", Some(60)).unwrap();
+            r.c.tick(r.t + Duration::from_secs(60));
+            assert_eq!(r.c.activity().words, 0);
+            assert!(!check.cancel.is_cancelled());
+            assert_eq!(begin(&mut r).unwrap().0, id);
+            assert!(result(&mut r, job).unwrap() == CorrectionResult::Pending);
+
+            // A dictation finishing after project words changed is kept.
+            let job = record(&mut r);
+            words(&mut r, "repo", "Zorblax", None).unwrap();
+            finish(&mut r, job, "kept synthetic", true);
+            assert_eq!(begin(&mut r).unwrap().1, "kept synthetic");
+
+            // Correction suggestions see the dictionary only: a project word
+            // is still a candidate.
+            words(&mut r, "k8s", "Kubernetes", None).unwrap();
+            dictate(&mut r, TYPED, true);
+            let (id, _) = begin(&mut r).unwrap();
+            submit(&mut r, id, EDITED).unwrap();
+            let JobKind::Verify(v) = verify_job(&r).unwrap().kind else {
+                unreachable!()
+            };
+            assert_eq!(v.candidates.len(), 1);
+            assert_eq!(v.candidates[0].surface, "Kubernetes");
+        }
+
+        #[test]
+        fn agent_reports_replace_each_other_and_expire() {
+            let mut r = rig();
+            assert_eq!(r.c.activity(), Activity::default());
+            agents(&mut r, |a| {
+                a.approval = Some(1);
+                a.input = Some(2);
+            });
+            let at = r.t;
+            assert_eq!(
+                r.c.activity().agents,
+                AgentCounts {
+                    approval: 1,
+                    input: 2,
+                    working: 0,
+                    done: 0
+                }
+            );
+            let default = Duration::from_secs(crate::protocol::AGENTS_DEFAULT_TTL);
+            assert_eq!(r.c.next_deadline(), Some(at + default));
+            // A new report replaces it, counts missing from it are zero.
+            agents(&mut r, |a| {
+                a.working = Some(3);
+                a.ttl = Some(5);
+            });
+            let at = r.t;
+            assert_eq!(
+                r.c.activity().agents,
+                AgentCounts {
+                    working: 3,
+                    ..AgentCounts::default()
+                }
+            );
+            assert_eq!(r.c.next_deadline(), Some(at + Duration::from_secs(5)));
+            r.c.tick(at + Duration::from_secs(5) - Duration::from_millis(1));
+            assert_eq!(r.c.activity().agents.working, 3);
+            r.c.tick(at + Duration::from_secs(5));
+            assert_eq!(r.c.activity().agents, AgentCounts::default());
+            assert_eq!(r.c.next_deadline(), None);
+            agents(&mut r, |a| a.done = Some(4));
+            assert_eq!(r.c.activity().agents.done, 4);
+            assert_eq!(send(&mut r, Command::AgentsClear, |_| {}), r.c.ok(None));
+            assert_eq!(r.c.activity(), Activity::default());
+            assert_eq!(r.c.next_deadline(), None);
+            // Clearing nothing is fine.
+            assert_eq!(send(&mut r, Command::AgentsClear, |_| {}), r.c.ok(None));
         }
     }
 }

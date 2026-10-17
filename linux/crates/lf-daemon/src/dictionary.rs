@@ -108,7 +108,9 @@ pub struct Store {
 
 static REVISION: AtomicU64 = AtomicU64::new(1);
 
-fn next_revision() -> u64 {
+/// A revision no snapshot has had yet (also for snapshots merged with
+/// project words, see `crate::link`).
+pub(crate) fn next_revision() -> u64 {
     REVISION.fetch_add(1, Ordering::Relaxed)
 }
 

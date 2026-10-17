@@ -210,6 +210,7 @@ fn snapshot(controller: &Controller) -> Snapshot {
         status: controller.status(),
         mic: controller.input_available(),
         level: controller.input_level(),
+        activity: controller.activity(),
     }
 }
 

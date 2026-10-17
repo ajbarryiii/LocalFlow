@@ -6,6 +6,7 @@ struct LocalFlowTests {
         AppNameTests.run()
         LocalParakeetTests.run()
         ParakeetStreamingTests.run()
+        ParakeetModelStoreTests.run()
         PrivacyPermissionTests.run()
         LocalDictationTests.run()
         SpokenNumberTests.run()
