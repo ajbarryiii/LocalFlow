@@ -23,12 +23,19 @@
 //!
 //! ```text
 //! localflow/1 ok state=<state> [mode=<mode>] [tag=prompt] model=<model> mic=<mic> [level=<0-100>]
+//!                [suggestions=<n>] [words=<n>] [agent-approval=<n>] [agent-input=<n>]
+//!                [agent-working=<n>] [agent-done=<n>]
 //! localflow/1 error busy      (too many watchers; the connection closes)
 //! ```
 //!
 //! Mics: present, absent, unknown. `level` (the input level, RMS x 100) is
-//! sent only while recording. Watch lines carry no note and nothing derived
-//! from dictated text. A watcher that does not keep up is disconnected.
+//! sent only while recording. The counts that follow, in this order, are
+//! sent only when above zero: `suggestions` pending dictionary suggestions,
+//! `words` project words loaded over all live sets, and `agent-*` the live
+//! agent report (see the agent link below). A change in any of them sends a
+//! line; status replies to other commands never carry them. Watch lines
+//! carry no note and nothing derived from dictated text, words or set
+//! names. A watcher that does not keep up is disconnected.
 //! A watcher sends nothing after its request; it may shut down its writing
 //! side. Shutting down its reading side (or closing) ends the subscription,
 //! and the daemon reclaims the place when it next needs one.
@@ -64,8 +71,39 @@
 //!   [`MAX_TEXT_LINE`] bytes encoded, and a decoded value at most
 //!   [`MAX_TEXT_BYTES`]; every other frame stays within [`MAX_LINE`].
 //!
-//! Text, encoded or not, never appears in logs, watch lines, `Debug` output
-//! or error codes.
+//! # Agent link (suggestions, project words, agent status)
+//!
+//! Text commands too (the same field rules). `unavailable` means the daemon
+//! runs without a dictionary.
+//!
+//! ```text
+//! suggest-add word=<pct>                 ok <status> outcome=queued|present|ignored
+//!                                        errors: invalid-entry, full, unavailable
+//! suggest-next                           ok <status> id=<u64> word=<pct>
+//!                                        errors: not-found, unavailable
+//! suggest-resolve id=<u64> action=add|dismiss|ignore
+//!                                        ok <status>
+//!                                        errors: stale, invalid-entry, full, storage, unavailable
+//! words-set set=<name> words=<pct> [ttl=<u64>]
+//!                                        ok <status> loaded=<n> skipped=<n>
+//!                                        errors: full, unavailable
+//! words-clear set=<name>                 ok <status>; errors: not-found
+//! agents-set [approval=<n>] [input=<n>] [working=<n>] [done=<n>] [ttl=<u64>]
+//!                                        ok <status>
+//! agents-clear                           ok <status>
+//! ```
+//!
+//! - `<name>`: 1 to [`MAX_SET_NAME`] characters of `A-Z a-z 0-9 . _ -`
+//!   (see [`valid_set_name`]).
+//! - `words`: entries separated by `,` (not empty).
+//! - `ttl`: seconds; [`WORDS_TTL`] for `words-set` (default
+//!   [`WORDS_DEFAULT_TTL`]), [`AGENTS_TTL`] for `agents-set` (default
+//!   [`AGENTS_DEFAULT_TTL`]).
+//! - `<n>` agent counts: `<u64>` up to [`MAX_AGENT_COUNT`]; a missing one is
+//!   0.
+//!
+//! Text and set names, encoded or not, never appear in logs, watch lines,
+//! `Debug` output or error codes.
 
 pub const VERSION: &str = "localflow/1";
 pub const MAX_LINE: usize = 256;
@@ -99,10 +137,22 @@ pub enum Command {
     DictRemove,
     DictIgnore,
     DictUnignore,
+    /// Queue a dictionary suggestion for review.
+    SuggestAdd,
+    /// The oldest pending suggestion.
+    SuggestNext,
+    /// Add, ignore or dismiss a pending suggestion.
+    SuggestResolve,
+    /// Load (or replace) a set of project words.
+    WordsSet,
+    WordsClear,
+    /// Report agent status counts.
+    AgentsSet,
+    AgentsClear,
 }
 
 impl Command {
-    pub const ALL: [Command; 14] = [
+    pub const ALL: [Command; 21] = [
         Command::Press,
         Command::Release,
         Command::Toggle,
@@ -117,6 +167,13 @@ impl Command {
         Command::DictRemove,
         Command::DictIgnore,
         Command::DictUnignore,
+        Command::SuggestAdd,
+        Command::SuggestNext,
+        Command::SuggestResolve,
+        Command::WordsSet,
+        Command::WordsClear,
+        Command::AgentsSet,
+        Command::AgentsClear,
     ];
 
     pub fn name(self) -> &'static str {
@@ -135,6 +192,13 @@ impl Command {
             Command::DictRemove => "dict-remove",
             Command::DictIgnore => "dict-ignore",
             Command::DictUnignore => "dict-unignore",
+            Command::SuggestAdd => "suggest-add",
+            Command::SuggestNext => "suggest-next",
+            Command::SuggestResolve => "suggest-resolve",
+            Command::WordsSet => "words-set",
+            Command::WordsClear => "words-clear",
+            Command::AgentsSet => "agents-set",
+            Command::AgentsClear => "agents-clear",
         }
     }
 
@@ -163,9 +227,117 @@ impl Command {
             Command::CorrectResult => &[("job", true)],
             Command::DictAdd => &[("word", true), ("strength", false)],
             Command::DictRemove | Command::DictIgnore | Command::DictUnignore => &[("word", true)],
+            Command::SuggestAdd => &[("word", true)],
+            Command::SuggestResolve => &[("id", true), ("action", true)],
+            Command::WordsSet => &[("set", true), ("words", true), ("ttl", false)],
+            Command::WordsClear => &[("set", true)],
+            Command::AgentsSet => &[
+                ("approval", false),
+                ("input", false),
+                ("working", false),
+                ("done", false),
+                ("ttl", false),
+            ],
             _ => &[],
         }
     }
+
+    /// The `ttl` a command accepts, in seconds.
+    fn ttl_range(self) -> Option<std::ops::RangeInclusive<u64>> {
+        match self {
+            Command::WordsSet => Some(WORDS_TTL),
+            Command::AgentsSet => Some(AGENTS_TTL),
+            _ => None,
+        }
+    }
+}
+
+/// Longest project word set name.
+pub const MAX_SET_NAME: usize = 64;
+/// `words-set` lifetimes, in seconds.
+pub const WORDS_TTL: std::ops::RangeInclusive<u64> = 60..=86_400;
+pub const WORDS_DEFAULT_TTL: u64 = 8 * 3600;
+/// `agents-set` lifetimes, in seconds.
+pub const AGENTS_TTL: std::ops::RangeInclusive<u64> = 5..=600;
+pub const AGENTS_DEFAULT_TTL: u64 = 30;
+/// Largest agent count.
+pub const MAX_AGENT_COUNT: u32 = 999;
+
+/// A project word set name: 1 to [`MAX_SET_NAME`] characters of
+/// `A-Z a-z 0-9 . _ -`.
+pub fn valid_set_name(s: &str) -> bool {
+    (1..=MAX_SET_NAME).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// What `suggest-resolve` does with a suggestion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolve {
+    /// Add it to the dictionary at strength 1.
+    Add,
+    /// Drop it.
+    Dismiss,
+    /// Put it on the ignore list.
+    Ignore,
+}
+
+impl Resolve {
+    pub fn name(self) -> &'static str {
+        match self {
+            Resolve::Add => "add",
+            Resolve::Dismiss => "dismiss",
+            Resolve::Ignore => "ignore",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Resolve> {
+        [Resolve::Add, Resolve::Dismiss, Resolve::Ignore]
+            .into_iter()
+            .find(|r| r.name() == s)
+    }
+}
+
+/// What `suggest-add` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuggestOutcome {
+    Queued,
+    /// Already in the dictionary; not queued.
+    Present,
+    /// On the ignore list; not queued.
+    Ignored,
+}
+
+impl SuggestOutcome {
+    pub fn name(self) -> &'static str {
+        match self {
+            SuggestOutcome::Queued => "queued",
+            SuggestOutcome::Present => "present",
+            SuggestOutcome::Ignored => "ignored",
+        }
+    }
+}
+
+/// Agent status counts (`agents-set`, watch lines).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AgentCounts {
+    /// Waiting for an approval.
+    pub approval: u32,
+    /// Waiting for user input.
+    pub input: u32,
+    pub working: u32,
+    pub done: u32,
+}
+
+/// The agent link's counts on watch lines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// Pending dictionary suggestions.
+    pub suggestions: u32,
+    /// Project words loaded, over all live sets.
+    pub words: u32,
+    /// The live agent report (zero without one).
+    pub agents: AgentCounts,
 }
 
 /// Why a request was rejected. Sent back as the `error` code.
@@ -314,6 +486,12 @@ pub enum Extra {
     Job(u64),
     /// `correct-result`.
     Result(CorrectionResult),
+    /// `suggest-add`.
+    Outcome(SuggestOutcome),
+    /// `suggest-next`.
+    Suggestion { id: u64, word: String },
+    /// `words-set`.
+    Loaded { loaded: u32, skipped: u32 },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -338,6 +516,11 @@ impl std::fmt::Debug for Reply {
                         strength, casing, ..
                     }) => {
                         format!("Suggest(strength {strength}, casing {casing})")
+                    }
+                    Extra::Outcome(o) => format!("Outcome({})", o.name()),
+                    Extra::Suggestion { id, .. } => format!("Suggestion(id {id})"),
+                    Extra::Loaded { loaded, skipped } => {
+                        format!("Loaded({loaded}, skipped {skipped})")
                     }
                 };
                 f.debug_tuple("With").field(s).field(&what).finish()
@@ -394,6 +577,13 @@ impl Reply {
                             if *casing { "casing" } else { "replace" }
                         );
                     }
+                    Extra::Outcome(o) => line += &format!(" outcome={}", o.name()),
+                    Extra::Suggestion { id, word } => {
+                        line += &format!(" id={id} word={}", encode_pct(word));
+                    }
+                    Extra::Loaded { loaded, skipped } => {
+                        line += &format!(" loaded={loaded} skipped={skipped}");
+                    }
                 }
                 line + "\n"
             }
@@ -402,8 +592,8 @@ impl Reply {
     }
 }
 
-/// One `watch` line: the status, microphone presence and, while recording,
-/// the input level.
+/// One `watch` line: the status, microphone presence, while recording the
+/// input level, and the agent link's counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WatchStatus {
     pub status: Status,
@@ -411,6 +601,8 @@ pub struct WatchStatus {
     pub mic: Option<bool>,
     /// Input level, 0..=100.
     pub level: Option<u8>,
+    /// Each count is sent only when above zero.
+    pub activity: Activity,
 }
 
 impl WatchStatus {
@@ -424,6 +616,19 @@ impl WatchStatus {
         };
         if let Some(level) = self.level {
             line += &format!(" level={level}");
+        }
+        let a = self.activity;
+        for (key, n) in [
+            ("suggestions", a.suggestions),
+            ("words", a.words),
+            ("agent-approval", a.agents.approval),
+            ("agent-input", a.agents.input),
+            ("agent-working", a.agents.working),
+            ("agent-done", a.agents.done),
+        ] {
+            if n > 0 {
+                line += &format!(" {key}={n}");
+            }
         }
         line + "\n"
     }
@@ -447,9 +652,21 @@ pub struct Args {
     pub word: Option<String>,
     /// Thousandths.
     pub strength: Option<u32>,
+    /// A project word set name ([`valid_set_name`]).
+    pub set: Option<String>,
+    /// Project words, separated by `,`.
+    pub words: Option<String>,
+    /// Seconds, within the command's range.
+    pub ttl: Option<u64>,
+    pub action: Option<Resolve>,
+    /// Agent counts, each up to [`MAX_AGENT_COUNT`].
+    pub approval: Option<u32>,
+    pub input: Option<u32>,
+    pub working: Option<u32>,
+    pub done: Option<u32>,
 }
 
-/// Shows which fields are present, never their text.
+/// Shows which fields are present, never their text or set names.
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Args")
@@ -458,6 +675,14 @@ impl std::fmt::Debug for Args {
             .field("text", &self.text.as_ref().map(|_| ".."))
             .field("word", &self.word.as_ref().map(|_| ".."))
             .field("strength", &self.strength)
+            .field("set", &self.set.as_ref().map(|_| ".."))
+            .field("words", &self.words.as_ref().map(|_| ".."))
+            .field("ttl", &self.ttl)
+            .field("action", &self.action)
+            .field("approval", &self.approval)
+            .field("input", &self.input)
+            .field("working", &self.working)
+            .field("done", &self.done)
             .finish()
     }
 }
@@ -511,6 +736,29 @@ pub fn request_line(req: &Request) -> String {
     }
     if let Some(s) = a.strength {
         line += &format!(" strength={}", format_dec(s));
+    }
+    if let Some(set) = &a.set {
+        // A valid name encodes as itself.
+        line += &format!(" set={}", encode_pct(set));
+    }
+    if let Some(words) = &a.words {
+        line += &format!(" words={}", encode_pct(words));
+    }
+    if let Some(ttl) = a.ttl {
+        line += &format!(" ttl={ttl}");
+    }
+    if let Some(action) = a.action {
+        line += &format!(" action={}", action.name());
+    }
+    for (key, n) in [
+        ("approval", a.approval),
+        ("input", a.input),
+        ("working", a.working),
+        ("done", a.done),
+    ] {
+        if let Some(n) = n {
+            line += &format!(" {key}={n}");
+        }
     }
     line + "\n"
 }
@@ -694,12 +942,35 @@ pub fn parse_request(line: &[u8]) -> Result<Request, ErrorCode> {
             }
             Ok(t)
         };
+        let count = |v: &str| {
+            parse_u64(v)
+                .filter(|&n| n <= u64::from(MAX_AGENT_COUNT))
+                .map(|n| n as u32)
+                .ok_or(ErrorCode::BadRequest)
+        };
         match key {
             "id" => args.id = Some(parse_u64(value).ok_or(ErrorCode::BadRequest)?),
             "job" => args.job = Some(parse_u64(value).ok_or(ErrorCode::BadRequest)?),
             "text" => args.text = Some(text(value, true)?),
             "word" => args.word = Some(text(value, false)?),
             "strength" => args.strength = Some(parse_dec(value).ok_or(ErrorCode::BadRequest)?),
+            // Name characters are all literal in `<pct>`, so the value is
+            // checked as it stands: an escape is never a valid name.
+            "set" if valid_set_name(value) => args.set = Some(value.to_owned()),
+            "words" => args.words = Some(text(value, false)?),
+            "ttl" => {
+                let range = command.ttl_range().ok_or(ErrorCode::BadRequest)?;
+                args.ttl = Some(
+                    parse_u64(value)
+                        .filter(|t| range.contains(t))
+                        .ok_or(ErrorCode::BadRequest)?,
+                );
+            }
+            "action" => args.action = Some(Resolve::parse(value).ok_or(ErrorCode::BadRequest)?),
+            "approval" => args.approval = Some(count(value)?),
+            "input" => args.input = Some(count(value)?),
+            "working" => args.working = Some(count(value)?),
+            "done" => args.done = Some(count(value)?),
             _ => return Err(ErrorCode::BadRequest),
         }
     }
@@ -860,6 +1131,7 @@ mod tests {
                     status: idle,
                     mic: None,
                     level: None,
+                    activity: Activity::default(),
                 },
                 "localflow/1 ok state=idle model=ready mic=unknown\n",
             ),
@@ -871,6 +1143,7 @@ mod tests {
                     },
                     mic: Some(false),
                     level: None,
+                    activity: Activity::default(),
                 },
                 "localflow/1 ok state=idle model=loading mic=absent\n",
             ),
@@ -884,6 +1157,7 @@ mod tests {
                     },
                     mic: Some(true),
                     level: Some(100),
+                    activity: Activity::default(),
                 },
                 "localflow/1 ok state=recording mode=toggle model=ready mic=present level=100\n",
             ),
@@ -897,6 +1171,7 @@ mod tests {
                     },
                     mic: Some(true),
                     level: Some(7),
+                    activity: Activity::default(),
                 },
                 "localflow/1 ok state=recording mode=hold tag=prompt model=ready mic=present level=7\n",
             ),
@@ -909,6 +1184,7 @@ mod tests {
                     },
                     mic: None,
                     level: None,
+                    activity: Activity::default(),
                 },
                 "localflow/1 ok state=typing tag=prompt model=ready mic=unknown\n",
             ),
@@ -1359,5 +1635,339 @@ mod tests {
                 Some(ClientReply::Error(code.name().into()))
             );
         }
+    }
+
+    const ALL_COUNTS: AgentCounts = AgentCounts {
+        approval: 999,
+        input: 999,
+        working: 999,
+        done: 999,
+    };
+
+    #[test]
+    fn agent_link_requests_round_trip() {
+        for c in Command::ALL {
+            assert_eq!(Command::parse(c.name()), Some(c));
+        }
+        for c in [
+            Command::SuggestAdd,
+            Command::SuggestNext,
+            Command::SuggestResolve,
+            Command::WordsSet,
+            Command::WordsClear,
+            Command::AgentsSet,
+            Command::AgentsClear,
+        ] {
+            assert!(c.is_text(), "{c:?}");
+        }
+        let mut cases = vec![
+            Request::with_args(
+                Command::SuggestAdd,
+                args(|a| a.word = Some("Zorblax".into())),
+            ),
+            Request::with_args(
+                Command::SuggestAdd,
+                args(|a| a.word = Some("Quux Well, 100%".into())),
+            ),
+            Request::new(Command::SuggestNext),
+            Request::with_args(
+                Command::WordsSet,
+                args(|a| {
+                    a.set = Some("my-repo_1.x".into());
+                    a.words = Some("Zorblax, Quuxwell,New Thing".into());
+                }),
+            ),
+            Request::with_args(
+                Command::WordsClear,
+                args(|a| a.set = Some("Z".repeat(MAX_SET_NAME))),
+            ),
+            Request::new(Command::AgentsSet),
+            Request::new(Command::AgentsClear),
+        ];
+        for action in [Resolve::Add, Resolve::Dismiss, Resolve::Ignore] {
+            cases.push(Request::with_args(
+                Command::SuggestResolve,
+                args(|a| {
+                    a.id = Some(u64::MAX);
+                    a.action = Some(action);
+                }),
+            ));
+        }
+        for ttl in [60, 28800, 86400] {
+            cases.push(Request::with_args(
+                Command::WordsSet,
+                args(|a| {
+                    a.set = Some("x".into());
+                    a.words = Some("Zorblax".into());
+                    a.ttl = Some(ttl);
+                }),
+            ));
+        }
+        for (n, ttl) in [(0, 5), (999, 600), (7, 30)] {
+            cases.push(Request::with_args(
+                Command::AgentsSet,
+                args(|a| {
+                    a.approval = Some(n);
+                    a.input = Some(n);
+                    a.working = Some(n);
+                    a.done = Some(n);
+                    a.ttl = Some(ttl);
+                }),
+            ));
+        }
+        cases.push(Request::with_args(
+            Command::AgentsSet,
+            args(|a| a.input = Some(2)),
+        ));
+        for req in cases {
+            let line = request_line(&req);
+            assert!(line.len() <= MAX_TEXT_LINE);
+            assert_eq!(
+                parse_request(line.trim_end_matches('\n').as_bytes()),
+                Ok(req.clone()),
+                "{:?}",
+                req.command
+            );
+        }
+        assert_eq!(
+            parse_request(b"localflow/1 suggest-resolve action=ignore id=4"),
+            Ok(Request::with_args(
+                Command::SuggestResolve,
+                args(|a| {
+                    a.id = Some(4);
+                    a.action = Some(Resolve::Ignore);
+                })
+            ))
+        );
+        assert_eq!(
+            parse_request(b"localflow/1 agents-set done=3 approval=1"),
+            Ok(Request::with_args(
+                Command::AgentsSet,
+                args(|a| {
+                    a.approval = Some(1);
+                    a.done = Some(3);
+                })
+            ))
+        );
+        assert_eq!(
+            request_line(&Request::with_args(
+                Command::WordsSet,
+                args(|a| {
+                    a.set = Some("repo".into());
+                    a.words = Some("A b,C".into());
+                    a.ttl = Some(60);
+                })
+            )),
+            "localflow/1 words-set set=repo words=A%20b%2CC ttl=60\n"
+        );
+        // Set names and words never show in Debug output.
+        let a = args(|a| {
+            a.set = Some("SecretRepo".into());
+            a.words = Some("Zorblax".into());
+        });
+        let d = format!("{a:?}");
+        assert!(!d.contains("SecretRepo") && !d.contains("Zorblax"), "{d}");
+    }
+
+    #[test]
+    fn agent_link_requests_are_strict() {
+        let long_name = "n".repeat(MAX_SET_NAME + 1);
+        let cases: Vec<String> = [
+            "suggest-add",
+            "suggest-add word=",
+            "suggest-add word=a word=b",
+            "suggest-add word=a strength=1",
+            "suggest-add word=a%0A",
+            "suggest-next id=1",
+            "suggest-next at=1",
+            "suggest-resolve id=1",
+            "suggest-resolve action=add",
+            "suggest-resolve id=1 action=keep",
+            "suggest-resolve id=1 action=ADD",
+            "suggest-resolve id=1 action=",
+            "suggest-resolve id=x action=add",
+            "suggest-resolve id=1 action=add action=add",
+            "suggest-resolve id=1 id=1 action=add",
+            "words-set words=a",
+            "words-set set=a",
+            "words-set set= words=a",
+            "words-set set=a%20b words=a",
+            "words-set set=a~b words=a",
+            "words-set set=a%2Fb words=a",
+            "words-set set=a words=",
+            "words-set set=a words=a ttl=59",
+            "words-set set=a words=a ttl=86401",
+            "words-set set=a words=a ttl=",
+            "words-set set=a words=a ttl=x",
+            "words-set set=a words=a ttl=-1",
+            "words-set set=a words=a ttl=60 ttl=60",
+            "words-set set=a words=a set=b",
+            "words-set set=a words=a extra=1",
+            "words-set set=a words=a word=b",
+            "words-clear",
+            "words-clear set=a set=b",
+            "words-clear set=a words=x",
+            "words-clear set=a ttl=60",
+            "agents-set approval=1000",
+            "agents-set input=-1",
+            "agents-set working=x",
+            "agents-set done=",
+            "agents-set ttl=4",
+            "agents-set ttl=601",
+            "agents-set ttl=0",
+            "agents-set approval=1 approval=1",
+            "agents-set word=a",
+            "agents-set at=1",
+            "agents-set busy=1",
+            "agents-clear ttl=5",
+            "agents-clear approval=1",
+        ]
+        .iter()
+        .map(|s| format!("localflow/1 {s}"))
+        .chain([format!("localflow/1 words-set set={long_name} words=a")])
+        .collect();
+        for line in &cases {
+            assert_eq!(
+                parse_request(line.as_bytes()),
+                Err(ErrorCode::BadRequest),
+                "{line}"
+            );
+        }
+        let too_long = format!(
+            "localflow/1 words-set set=a words={}",
+            "w".repeat(MAX_TEXT_BYTES + 1)
+        );
+        assert_eq!(parse_request(too_long.as_bytes()), Err(ErrorCode::TooLong));
+        for name in ["a", "A-Z.a_z-0.9", &"x".repeat(MAX_SET_NAME)] {
+            assert!(valid_set_name(name), "{name}");
+        }
+        for name in ["", "a b", "a/b", "a~b", "caf\u{e9}", "a,b", &long_name] {
+            assert!(!valid_set_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn agent_link_replies_round_trip_and_print_no_words() {
+        let cases = [
+            (
+                Reply::With(IDLE, Extra::Outcome(SuggestOutcome::Queued)),
+                "localflow/1 ok state=idle model=ready outcome=queued\n",
+            ),
+            (
+                Reply::With(IDLE, Extra::Outcome(SuggestOutcome::Present)),
+                "localflow/1 ok state=idle model=ready outcome=present\n",
+            ),
+            (
+                Reply::With(IDLE, Extra::Outcome(SuggestOutcome::Ignored)),
+                "localflow/1 ok state=idle model=ready outcome=ignored\n",
+            ),
+            (
+                Reply::With(
+                    IDLE,
+                    Extra::Suggestion {
+                        id: 7,
+                        word: "Zorblax Quux".into(),
+                    },
+                ),
+                "localflow/1 ok state=idle model=ready id=7 word=Zorblax%20Quux\n",
+            ),
+            (
+                Reply::With(
+                    IDLE,
+                    Extra::Loaded {
+                        loaded: 3,
+                        skipped: 0,
+                    },
+                ),
+                "localflow/1 ok state=idle model=ready loaded=3 skipped=0\n",
+            ),
+        ];
+        for (reply, want) in cases {
+            let line = reply.to_line();
+            assert_eq!(line, want);
+            let Some(ClientReply::Ok(fields)) = parse_reply(line.trim_end().as_bytes()) else {
+                panic!("{reply:?}");
+            };
+            assert!(!printable_fields(&fields).contains("Zorblax"));
+            let d = format!("{reply:?}");
+            assert!(!d.contains("Zorblax"), "{d}");
+        }
+    }
+
+    #[test]
+    fn watch_lines_carry_activity_counts_in_order() {
+        let idle = WatchStatus {
+            status: IDLE,
+            mic: Some(true),
+            level: None,
+            activity: Activity {
+                suggestions: 2,
+                words: 5,
+                agents: AgentCounts {
+                    approval: 1,
+                    input: 2,
+                    working: 3,
+                    done: 4,
+                },
+            },
+        };
+        assert_eq!(
+            idle.to_line(),
+            "localflow/1 ok state=idle model=ready mic=present suggestions=2 words=5 \
+             agent-approval=1 agent-input=2 agent-working=3 agent-done=4\n"
+        );
+        // Each only when above zero, after the level.
+        let rec = WatchStatus {
+            status: Status {
+                state: State::Recording,
+                mode: Some(Mode::Hold),
+                prompt: false,
+                model_ready: true,
+            },
+            mic: None,
+            level: Some(9),
+            activity: Activity {
+                suggestions: 0,
+                words: 3,
+                agents: AgentCounts {
+                    working: 1,
+                    ..AgentCounts::default()
+                },
+            },
+        };
+        assert_eq!(
+            rec.to_line(),
+            "localflow/1 ok state=recording mode=hold model=ready mic=unknown level=9 words=3 agent-working=1\n"
+        );
+        let none = WatchStatus {
+            activity: Activity::default(),
+            ..idle
+        };
+        assert_eq!(
+            none.to_line(),
+            "localflow/1 ok state=idle model=ready mic=present\n"
+        );
+        // The longest watch line still fits.
+        let worst = WatchStatus {
+            status: Status {
+                state: State::Transcribing,
+                mode: Some(Mode::Toggle),
+                prompt: true,
+                model_ready: false,
+            },
+            mic: None,
+            level: Some(100),
+            activity: Activity {
+                suggestions: u32::MAX,
+                words: u32::MAX,
+                agents: ALL_COUNTS,
+            },
+        }
+        .to_line();
+        assert!(worst.len() <= MAX_LINE, "{}", worst.len());
+        assert!(matches!(
+            parse_reply(worst.trim_end().as_bytes()),
+            Some(ClientReply::Ok(_))
+        ));
     }
 }

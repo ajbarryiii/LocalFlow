@@ -11,7 +11,8 @@
 //!   watch line at once.
 //! - After every event and timer the control loop calls
 //!   [`Watchers::publish`], which sends a line to every watcher when the
-//!   state, mode, model readiness or microphone presence changed, and every
+//!   state, mode, model readiness, microphone presence or an agent link
+//!   count (suggestions, project words, agents) changed, and every
 //!   [`LEVEL_INTERVAL`] while recording (the level meter).
 //! - Sends never block: `MSG_DONTWAIT`, and a small send buffer per watcher.
 //!   A watcher whose buffer is full, that closed, or that failed is dropped,
@@ -26,8 +27,8 @@
 //!   counted and the socket thread reports the count at most once every
 //!   [`REFUSAL_REPORT_INTERVAL`], so a client cannot flood the log.
 //!
-//! Watch lines carry state names, microphone presence and a level number
-//! only: never text, notes or player names.
+//! Watch lines carry state names, microphone presence, a level number and
+//! counts only: never text, words, set names, notes or player names.
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -35,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::protocol::{ErrorCode, Reply, State, Status, WatchStatus, level_percent};
+use crate::protocol::{Activity, ErrorCode, Reply, State, Status, WatchStatus, level_percent};
 
 pub const MAX_WATCHERS: usize = 8;
 
@@ -175,15 +176,20 @@ pub struct Snapshot {
     pub mic: Option<bool>,
     /// Input level in [0, 1]; sent only while recording.
     pub level: f32,
+    /// Suggestions, project words and agent counts.
+    pub activity: Activity,
 }
+
+/// What a watch line reports, except the level.
+type Key = (Status, Option<bool>, Activity);
 
 impl Snapshot {
     fn recording(&self) -> bool {
         self.status.state == State::Recording
     }
 
-    fn key(&self) -> (Status, Option<bool>) {
-        (self.status, self.mic)
+    fn key(&self) -> Key {
+        (self.status, self.mic, self.activity)
     }
 
     fn line(&self) -> String {
@@ -191,6 +197,7 @@ impl Snapshot {
             status: self.status,
             mic: self.mic,
             level: self.recording().then(|| level_percent(self.level)),
+            activity: self.activity,
         }
         .to_line()
     }
@@ -200,8 +207,8 @@ pub struct Watchers {
     admission: Arc<Admission>,
     watchers: Vec<Watcher>,
     send_buffer: usize,
-    /// Status and presence last published (sent or not).
-    last: Option<(Status, Option<bool>)>,
+    /// Status, presence and counts last published (sent or not).
+    last: Option<Key>,
     /// When the next level line is due; set only while recording with
     /// watchers connected.
     next_level: Option<Instant>,
@@ -271,8 +278,8 @@ impl Watchers {
         }
     }
 
-    /// Sends the watch line when the status or presence changed, or when a
-    /// level line is due. Watchers that cannot take it are dropped.
+    /// Sends the watch line when the status, presence or a count changed, or
+    /// when a level line is due. Watchers that cannot take it are dropped.
     pub fn publish(&mut self, snap: Snapshot, now: Instant) {
         let changed = self.last != Some(snap.key());
         self.last = Some(snap.key());
@@ -370,6 +377,7 @@ fn set_send_buffer(stream: &UnixStream, bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::AgentCounts;
     use crate::session::Mode;
     use std::io::{ErrorKind, Read};
     use std::net::Shutdown;
@@ -384,6 +392,7 @@ mod tests {
             },
             mic,
             level,
+            activity: Activity::default(),
         }
     }
 
@@ -452,6 +461,49 @@ mod tests {
             "localflow/1 ok state=idle model=ready mic=absent\n\
              localflow/1 ok state=transcribing model=ready mic=absent\n"
         );
+    }
+
+    #[test]
+    fn agent_link_counts_are_sent_and_their_changes_published() {
+        let t = Instant::now();
+        let mut w = watchers(MAX_WATCHERS);
+        let idle = snap(State::Idle, Some(true), 0.0);
+        let mut c = watcher(&mut w, idle, t);
+        assert_eq!(
+            received(&mut c),
+            "localflow/1 ok state=idle model=ready mic=present\n"
+        );
+        let with = |suggestions, words, approval| Snapshot {
+            activity: Activity {
+                suggestions,
+                words,
+                agents: AgentCounts {
+                    approval,
+                    ..AgentCounts::default()
+                },
+            },
+            ..idle
+        };
+        w.publish(with(1, 0, 0), t);
+        w.publish(with(1, 0, 0), t);
+        w.publish(with(1, 12, 0), t);
+        w.publish(with(1, 12, 2), t);
+        w.publish(with(0, 0, 0), t);
+        assert_eq!(
+            received(&mut c),
+            "localflow/1 ok state=idle model=ready mic=present suggestions=1\n\
+             localflow/1 ok state=idle model=ready mic=present suggestions=1 words=12\n\
+             localflow/1 ok state=idle model=ready mic=present suggestions=1 words=12 agent-approval=2\n\
+             localflow/1 ok state=idle model=ready mic=present\n"
+        );
+        // A new watcher gets the counts in its first line.
+        w.publish(with(3, 0, 0), t);
+        let mut d = watcher(&mut w, with(3, 0, 0), t);
+        assert_eq!(
+            received(&mut d),
+            "localflow/1 ok state=idle model=ready mic=present suggestions=3\n"
+        );
+        assert_eq!(w.next_deadline(), None, "no wakeups while idle");
     }
 
     #[test]

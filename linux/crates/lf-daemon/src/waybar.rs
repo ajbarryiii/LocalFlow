@@ -12,6 +12,18 @@
 //! and hold) while recording, transcribing or typing has two classes, e.g.
 //! `"class": ["recording", "prompt"]`, the state's alt, and a tooltip such
 //! as "LocalFlow: recording (prompt)".
+//!
+//! The agent link's counts on watch lines (see `crate::protocol`):
+//!
+//! - While idle, loading or without a microphone, an agent needing approval
+//!   adds the class `agent-approval`, else one waiting for input
+//!   `agent-input`, and pending suggestions `suggestion` (in that order,
+//!   after the state's class: `class` is then an array). The text gets a
+//!   space and the number of agents needing approval or input, when any.
+//! - While recording, transcribing or typing, classes and text are as
+//!   without them.
+//! - In every state but offline, the tooltip gets a line each for agents,
+//!   suggestions and project words, when there are any.
 
 use std::collections::VecDeque;
 
@@ -116,33 +128,97 @@ fn json_string(s: &str) -> String {
     out
 }
 
-/// The Waybar object for `class` showing `text`, without a newline.
-pub fn object(class: Class, text: &str) -> String {
+/// A Waybar object: `class` is a string for one class, an array for more.
+fn render(alt: Class, classes: &[&str], text: &str, tooltip: &str) -> String {
+    let class = match classes {
+        [one] => json_string(one),
+        many => format!(
+            "[{}]",
+            many.iter()
+                .map(|c| json_string(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
     format!(
         "{{\"text\": {}, \"alt\": {}, \"class\": {}, \"tooltip\": {}}}",
         json_string(text),
-        json_string(class.name()),
-        json_string(class.name()),
-        json_string(class.tooltip())
+        json_string(alt.name()),
+        class,
+        json_string(tooltip)
     )
+}
+
+/// The Waybar object for `class` showing `text`, without a newline.
+pub fn object(class: Class, text: &str) -> String {
+    render(class, &[class.name()], text, class.tooltip())
 }
 
 /// The object for a prompt dictation (double-tap and hold) in `class`
 /// (recording, transcribing or typing): classes `[<class>, "prompt"]`, so a
 /// bar style can tell it apart, and the alt of `class`.
 pub fn prompt_object(class: Class, text: &str) -> String {
-    format!(
-        "{{\"text\": {}, \"alt\": {}, \"class\": [{}, {}], \"tooltip\": {}}}",
-        json_string(text),
-        json_string(class.name()),
-        json_string(class.name()),
-        json_string(PROMPT_CLASS),
-        json_string(&format!("{} (prompt)", class.tooltip()))
+    render(
+        class,
+        &[class.name(), PROMPT_CLASS],
+        text,
+        &format!("{} (prompt)", class.tooltip()),
     )
 }
 
 /// The extra class of prompt dictations.
 pub const PROMPT_CLASS: &str = "prompt";
+/// Extra classes while idle, loading or without a microphone: an agent
+/// needs approval, or (with none needing approval) waits for input.
+pub const AGENT_APPROVAL_CLASS: &str = "agent-approval";
+pub const AGENT_INPUT_CLASS: &str = "agent-input";
+/// Extra class while dictionary suggestions are pending.
+pub const SUGGESTION_CLASS: &str = "suggestion";
+
+/// The agent link's counts from a watch line.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    suggestions: u32,
+    words: u32,
+    approval: u32,
+    input: u32,
+    working: u32,
+    done: u32,
+}
+
+impl Counts {
+    /// The tooltip lines after the state's, each only when it applies.
+    fn tooltip_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        let agents: Vec<String> = [
+            (self.approval, "needs approval", "need approval"),
+            (self.input, "waiting for input", "waiting for input"),
+            (self.working, "working", "working"),
+            (self.done, "done", "done"),
+        ]
+        .into_iter()
+        .filter(|(n, ..)| *n > 0)
+        .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+        .collect();
+        if !agents.is_empty() {
+            lines.push(format!("Agents: {}", agents.join(", ")));
+        }
+        match self.suggestions {
+            0 => {}
+            1 => lines
+                .push("1 dictionary suggestion from an agent (localflowctl dict review)".into()),
+            n => lines.push(format!(
+                "{n} dictionary suggestions from agents (localflowctl dict review)"
+            )),
+        }
+        match self.words {
+            0 => {}
+            1 => lines.push("1 project word boosted".into()),
+            n => lines.push(format!("{n} project words boosted")),
+        }
+        lines
+    }
+}
 
 /// Turns a stream of watch lines into Waybar objects.
 #[derive(Debug, Default)]
@@ -158,13 +234,21 @@ impl Indicator {
     pub fn update(&mut self, fields: &str) -> Option<String> {
         let (mut state, mut model, mut mic, mut level) = (None, None, None, None);
         let mut prompt = false;
+        let mut n = Counts::default();
         for (k, v) in fields.split(' ').filter_map(|f| f.split_once('=')) {
+            let count = || v.parse::<u32>().unwrap_or(0);
             match k {
                 "state" => state = Some(v),
                 "model" => model = Some(v),
                 "mic" => mic = Some(v),
                 "level" => level = v.parse::<u8>().ok(),
                 "tag" => prompt = v == "prompt",
+                "suggestions" => n.suggestions = count(),
+                "words" => n.words = count(),
+                "agent-approval" => n.approval = count(),
+                "agent-input" => n.input = count(),
+                "agent-working" => n.working = count(),
+                "agent-done" => n.done = count(),
                 _ => {}
             }
         }
@@ -189,7 +273,7 @@ impl Indicator {
             }
         }
         self.recording = class == Class::Recording;
-        let text = match class {
+        let mut text = match class {
             Class::Recording => self.graph(),
             _ => class.glyph().to_owned(),
         };
@@ -197,11 +281,31 @@ impl Indicator {
             class,
             Class::Recording | Class::Transcribing | Class::Typing
         );
-        Some(if prompt && busy {
-            prompt_object(class, &text)
-        } else {
-            object(class, &text)
-        })
+        let mut classes = vec![class.name()];
+        let mut tooltip = class.tooltip().to_owned();
+        if prompt && busy {
+            classes.push(PROMPT_CLASS);
+            tooltip += " (prompt)";
+        }
+        if !busy {
+            if n.approval > 0 {
+                classes.push(AGENT_APPROVAL_CLASS);
+            } else if n.input > 0 {
+                classes.push(AGENT_INPUT_CLASS);
+            }
+            if n.suggestions > 0 {
+                classes.push(SUGGESTION_CLASS);
+            }
+            let waiting = n.approval.saturating_add(n.input);
+            if waiting > 0 {
+                text = format!("{text} {waiting}");
+            }
+        }
+        for line in n.tooltip_lines() {
+            tooltip.push('\n');
+            tooltip += &line;
+        }
+        Some(render(class, &classes, &text, &tooltip))
     }
 
     /// The object shown while the daemon is unreachable.
@@ -310,6 +414,63 @@ mod tests {
             ind.update("state=idle tag=prompt model=ready mic=present")
                 .unwrap(),
             "{\"text\": \"\u{f130}\", \"alt\": \"idle\", \"class\": \"idle\", \"tooltip\": \"LocalFlow: idle\"}"
+        );
+    }
+
+    #[test]
+    fn agent_link_counts_add_classes_a_count_and_tooltip_lines() {
+        let mut ind = Indicator::default();
+        let cases = [
+            (
+                "state=idle model=ready mic=present suggestions=3 words=12 agent-approval=2 agent-input=1 agent-working=1 agent-done=4",
+                "{\"text\": \"\u{f130} 3\", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\", \"suggestion\"], \"tooltip\": \"LocalFlow: idle\\nAgents: 2 need approval, 1 waiting for input, 1 working, 4 done\\n3 dictionary suggestions from agents (localflowctl dict review)\\n12 project words boosted\"}",
+            ),
+            (
+                "state=idle model=loading mic=unknown agent-input=1",
+                "{\"text\": \"\u{f130} 1\", \"alt\": \"loading\", \"class\": [\"loading\", \"agent-input\"], \"tooltip\": \"LocalFlow: loading model\\nAgents: 1 waiting for input\"}",
+            ),
+            (
+                "state=idle model=ready mic=absent suggestions=1",
+                "{\"text\": \"\u{f00d}\", \"alt\": \"nomic\", \"class\": [\"nomic\", \"suggestion\"], \"tooltip\": \"LocalFlow: no microphone\\n1 dictionary suggestion from an agent (localflowctl dict review)\"}",
+            ),
+            (
+                "state=idle model=ready mic=present agent-approval=1",
+                "{\"text\": \"\u{f130} 1\", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\"], \"tooltip\": \"LocalFlow: idle\\nAgents: 1 needs approval\"}",
+            ),
+            // Working and done alone add no class and no count.
+            (
+                "state=idle model=ready mic=present agent-working=1 agent-done=1 words=1",
+                "{\"text\": \"\u{f130}\", \"alt\": \"idle\", \"class\": \"idle\", \"tooltip\": \"LocalFlow: idle\\nAgents: 1 working, 1 done\\n1 project word boosted\"}",
+            ),
+            // Busy states keep their classes and text; only the tooltip grows.
+            (
+                "state=recording mode=hold model=ready mic=present level=100 agent-approval=1 suggestions=2",
+                "{\"text\": \"▁▁▁▁▁▁▁█\", \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: recording\\nAgents: 1 needs approval\\n2 dictionary suggestions from agents (localflowctl dict review)\"}",
+            ),
+            (
+                "state=transcribing model=ready mic=present agent-input=3 words=2",
+                "{\"text\": \"\u{f252}\", \"alt\": \"transcribing\", \"class\": \"transcribing\", \"tooltip\": \"LocalFlow: transcribing\\nAgents: 3 waiting for input\\n2 project words boosted\"}",
+            ),
+            (
+                "state=typing tag=prompt model=ready mic=present agent-input=2 suggestions=1",
+                "{\"text\": \"\u{f252}\", \"alt\": \"typing\", \"class\": [\"typing\", \"prompt\"], \"tooltip\": \"LocalFlow: typing (prompt)\\nAgents: 2 waiting for input\\n1 dictionary suggestion from an agent (localflowctl dict review)\"}",
+            ),
+        ];
+        for (fields, want) in cases {
+            let got = ind.update(fields).unwrap();
+            assert_eq!(got, want, "{fields}");
+            let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+            assert!(v["tooltip"].as_str().unwrap().starts_with("LocalFlow: "));
+        }
+        // Back to no counts: exactly the plain object again.
+        assert_eq!(
+            ind.update("state=idle model=ready mic=present").unwrap(),
+            "{\"text\": \"\u{f130}\", \"alt\": \"idle\", \"class\": \"idle\", \"tooltip\": \"LocalFlow: idle\"}"
+        );
+        // Offline shows none of it.
+        assert_eq!(
+            ind.offline(),
+            "{\"text\": \"\u{f131}\", \"alt\": \"offline\", \"class\": \"offline\", \"tooltip\": \"LocalFlow: offline\"}"
         );
     }
 
