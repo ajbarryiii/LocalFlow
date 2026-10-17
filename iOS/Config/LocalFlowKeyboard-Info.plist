@@ -45,7 +45,7 @@
             <key>PrefersRightToLeft</key>
             <false/>
             <key>PrimaryLanguage</key>
-            <string>en</string>
+            <string>en-US</string>
             <key>RequestsOpenAccess</key>
             <true/>
         </dict>
