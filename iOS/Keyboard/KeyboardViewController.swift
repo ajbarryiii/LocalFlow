@@ -36,6 +36,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Our Start button is the dictation key, so iOS drops its own microphone
+        // from the bar under the keyboard on Face ID iPhones.
+        hasDictationKey = true
         client.target = self
         keyArea.delegate = input
         keyArea.inputModeController = self
