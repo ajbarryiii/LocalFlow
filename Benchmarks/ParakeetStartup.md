@@ -161,7 +161,13 @@ It stayed warm after `touch` of any file or replacing `model.mil` or
 `coremldata.bin`.
 
 `ParakeetModelStore` therefore loads the model from
-`<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`.
+`<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`
+on macOS, and from `Library/Application Support/Models/<SHA-256>/` in the App
+Group container on iOS. iOS moves an app's own data container on every
+update: on TestFlight 18 → 19 the copy in Application Support survived, but
+Core ML computed a new cache key for it and compiled again. The App Group
+container keeps its path. On macOS, a rebuilt executable or the same
+executable at a new path stayed warm.
 It installs that directory once, by an APFS clone into a staging directory
 and a rename, and never rewrites it. A copy is used only if its `bundle.json`
 still hashes to the directory name, so the integrity check never trusts a

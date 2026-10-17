@@ -531,9 +531,11 @@ No transcript history is stored.
   - Transcription uses a host-owned
     `LocalParakeetService(startupStrategy: .fifteenSecondsFirst)`, which loads
     one encoder function to bound memory. Its compute units are
-    `.cpuAndNeuralEngine`. It loads the model from a stable copy in
-    Application Support (`ParakeetModelStore`), so an update that keeps the
-    model can keep Core ML's on-device compilation.
+    `.cpuAndNeuralEngine`. It loads the model from a stable copy in the App
+    Group container (`ParakeetModelStore`), so an update that keeps the model
+    can keep Core ML's on-device compilation. Not Application Support: iOS
+    moves the app's data container on each update, which changes the copy's
+    path and so the cache key.
   - If a background transcription fails in a way that indicates the Neural
     Engine is unavailable, the host retries once on a lazily created `.cpuOnly`
     service, then releases it.
