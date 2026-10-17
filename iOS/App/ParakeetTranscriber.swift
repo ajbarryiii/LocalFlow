@@ -163,7 +163,42 @@ private final class ParakeetRuntime: SpeechRuntime {
         guard let directory else { throw TranscriptionFailure.modelUnavailable }
         return try await service.probeStrength(samples: samples, directory: directory, word: word, dictionary: dictionary)
     }
+
+    /// The snapshot is taken now; `finish` fails, so the recording is transcribed as before, if the
+    /// dictionary changed meanwhile.
+    func beginStream() -> SpeechStream? {
+        guard let directory else { return nil }
+        let snapshot = dictionary.current
+        let session = service.beginStreamingTranscription(directory: directory, dictionary: snapshot, retainForCorrection: false)
+        return ParakeetStream(session: session, revision: snapshot.revision, dictionary: dictionary)
+    }
 }
+
+/// `ParakeetStreamingSession` as a `SpeechStream`. Audio stays in memory.
+private final class ParakeetStream: SpeechStream {
+    private let session: ParakeetStreamingSession
+    private let revision: UInt64
+    private let dictionary: DictionarySnapshotBox
+
+    init(session: ParakeetStreamingSession, revision: UInt64, dictionary: DictionarySnapshotBox) {
+        self.session = session
+        self.revision = revision
+        self.dictionary = dictionary
+    }
+
+    func append(_ samples: [Float]) { session.append(samples) }
+
+    func finish() async throws -> String {
+        guard dictionary.current.revision == revision else {
+            session.cancel()
+            throw TranscriptionFailure.transcriptionFailed
+        }
+        return try await session.finish().text
+    }
+
+    func cancel() { session.cancel() }
+}
+
 
 /// The current dictionary snapshot, set on the main actor and read when a transcription starts.
 private final class DictionarySnapshotBox: @unchecked Sendable {

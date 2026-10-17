@@ -14,6 +14,10 @@ enum TranscriptionEngineTests {
             ("readyRuntimeWaitsAndIsNotADictation", isolated(testReadyRuntimeWaitsAndIsNotADictation)),
             ("readyRuntimeFailures", isolated(testReadyRuntimeFailures)),
             ("readyRuntimeCancelledWhileWaiting", isolated(testReadyRuntimeCancelledWhileWaiting)),
+            ("streamOnlyFromAReadyModel", isolated(testStreamOnlyFromAReadyModel)),
+            ("streamedRecordingIsNotTranscribedAgain", isolated(testStreamedRecordingIsNotTranscribedAgain)),
+            ("failedStreamFallsBackToTheRecording", isolated(testFailedStreamFallsBackToTheRecording)),
+            ("cancellationCancelsTheStream", isolated(testCancellationCancelsTheStream)),
         ]
     }
 
@@ -163,6 +167,82 @@ enum TranscriptionEngineTests {
         let result = h.transcribe(audio())
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { result.error != nil }, "no failure")
         TestSupport.expectEqual(result.error as? TranscriptionFailure, .modelUnavailable)
+    }
+
+    // MARK: Streams (transcription while recording)
+
+    @MainActor
+    private static func readyHarness() -> EngineHarness {
+        let h = EngineHarness()
+        h.engine.prepare()
+        h.runtime(0)!.finishPreparing()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .ready }, "not ready")
+        return h
+    }
+
+    /// Only a ready model streams, so a recording's audio never waits behind preparation.
+    @MainActor
+    private static func testStreamOnlyFromAReadyModel() {
+        TestSupport.expect(EngineHarness(isAvailable: false).engine.beginStream() == nil, "a stream without a model")
+        let h = EngineHarness()
+        TestSupport.expect(h.engine.beginStream() == nil, "a stream before preparation")
+        h.engine.prepare()
+        TestSupport.expect(h.engine.beginStream() == nil, "a stream while preparing")
+        h.runtime(0)!.finishPreparing()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .ready }, "not ready")
+        let stream = h.engine.beginStream()
+        TestSupport.expect(stream != nil && stream === h.runtime(0)!.streams.first, "no stream from a ready model")
+        let failed = EngineHarness()
+        failed.engine.prepare()
+        failed.runtime(0)!.finishPreparing(succeeded: false)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { failed.engine.modelState == .failed }, "not failed")
+        TestSupport.expect(failed.engine.beginStream() == nil, "a stream from a failed model")
+    }
+
+    /// A streamed recording returns the stream's result; the runtime does not transcribe it again.
+    @MainActor
+    private static func testStreamedRecordingIsNotTranscribedAgain() {
+        let h = readyHarness()
+        let stream = h.engine.beginStream() as! FakeSpeechStream
+        let result = h.transcribe(RecordedAudio(samples: [0.1, 0.2], stream: stream))
+        stream.complete(.success("streamed words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { result.value != nil }, "no result")
+        TestSupport.expectEqual(result.text, "streamed words")
+        TestSupport.expectEqual(h.runtime(0)!.transcribeCalls, 0)
+        TestSupport.expectEqual(stream.finishCount, 1)
+        TestSupport.expect(!stream.isCancelled, "a finished stream was cancelled")
+        TestSupport.expectEqual(h.attempts.last?.outcome, .transcribed)
+        TestSupport.expect(!h.engine.isBusy, "idle engine is busy")
+    }
+
+    /// A stream that fails for any reason but cancellation falls back to transcribing the recording.
+    @MainActor
+    private static func testFailedStreamFallsBackToTheRecording() {
+        let h = readyHarness()
+        let stream = h.engine.beginStream() as! FakeSpeechStream
+        let result = h.transcribe(RecordedAudio(samples: [0.1], stream: stream))
+        stream.complete(.failure(FakeRuntime.Failure()))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.runtime(0)!.transcribeCalls == 1 }, "no fallback")
+        h.runtime(0)!.finishTranscribing(.success("recorded words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { result.value != nil }, "no result")
+        TestSupport.expectEqual(result.text, "recorded words")
+        TestSupport.expectEqual(h.attempts.last?.outcome, .transcribed)
+    }
+
+    /// Cancelling the transcription cancels its stream and never falls back.
+    @MainActor
+    private static func testCancellationCancelsTheStream() {
+        let h = readyHarness()
+        let stream = h.engine.beginStream() as! FakeSpeechStream
+        let result = h.transcribe(RecordedAudio(samples: [0.1], stream: stream))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { stream.finishCount == 1 }, "stream not finishing")
+        result.task?.cancel()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { result.error != nil }, "cancellation ignored")
+        TestSupport.expect(result.error is CancellationError, "not a cancellation: \(String(describing: result.error))")
+        TestSupport.expect(stream.isCancelled, "the stream outlived its transcription")
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.runtime(0)!.transcribeCalls, 0)
+        TestSupport.expectEqual(h.attempts.last?.outcome, .cancelled)
     }
 
     // MARK: withReadyRuntime ("Find strength")
@@ -327,6 +407,7 @@ private final class FakeRuntime: SpeechRuntime {
     private var transcription: CheckedContinuation<String, Error>?
     private var pendingPreparation: Result<Void, Error>?
     private(set) var transcribeCalls = 0
+    private(set) var streams: [FakeSpeechStream] = []
 
     init(live: Locked<Int>) {
         self.live = live
@@ -343,6 +424,12 @@ private final class FakeRuntime: SpeechRuntime {
     func transcribe(_ samples: [Float]) async throws -> String {
         transcribeCalls += 1
         return try await withCheckedThrowingContinuation { transcription = $0 }
+    }
+
+    func beginStream() -> SpeechStream? {
+        let stream = FakeSpeechStream()
+        streams.append(stream)
+        return stream
     }
 
     func finishPreparing(succeeded: Bool = true) {

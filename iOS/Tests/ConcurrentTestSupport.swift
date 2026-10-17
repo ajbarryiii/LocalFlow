@@ -52,3 +52,57 @@ final class Locked<Value>: @unchecked Sendable {
         return body(&value)
     }
 }
+
+/// A `SpeechStream` that records what it is fed and finishes when told to. The sample buffer feeds it
+/// from the capture thread. Like the app's stream, cancelling it ends a waiting `finish`.
+final class FakeSpeechStream: SpeechStream, @unchecked Sendable {
+    private struct State {
+        var samples: [Float] = []
+        var cancelled = false
+        var finishes = 0
+        var result: Result<String, Error>?
+        var waiting: CheckedContinuation<String, Error>?
+    }
+
+    private let state = Locked(State())
+
+    var samples: [Float] { state.current.samples }
+    var isCancelled: Bool { state.current.cancelled }
+    var finishCount: Int { state.current.finishes }
+
+    func append(_ samples: [Float]) {
+        state.update { $0.samples += samples }
+    }
+
+    func finish() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let ready: Result<String, Error>? = state.update { state in
+                state.finishes += 1
+                if state.cancelled { return .failure(CancellationError()) }
+                if let result = state.result { return result }
+                state.waiting = continuation
+                return nil
+            }
+            if let ready { continuation.resume(with: ready) }
+        }
+    }
+
+    /// Completes a waiting `finish`, or the next one.
+    func complete(_ result: Result<String, Error>) {
+        let waiting = state.update { state -> CheckedContinuation<String, Error>? in
+            state.result = result
+            defer { state.waiting = nil }
+            return state.waiting
+        }
+        waiting?.resume(with: result)
+    }
+
+    func cancel() {
+        let waiting = state.update { state -> CheckedContinuation<String, Error>? in
+            state.cancelled = true
+            defer { state.waiting = nil }
+            return state.waiting
+        }
+        waiting?.resume(throwing: CancellationError())
+    }
+}

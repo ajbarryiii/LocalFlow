@@ -12,6 +12,10 @@ enum DictationSampleBufferTests {
             ("defaultCapIsFiveMinutes", testDefaultCapIsFiveMinutes),
             ("levelTracksSpeechAndStaysInRange", testLevelTracksSpeechAndStaysInRange),
             ("finishDrainsAtomicallyUnderConcurrentAppends", testFinishDrainsAtomicallyUnderConcurrentAppends),
+            ("streamReceivesExactlyTheRecording", testStreamReceivesExactlyTheRecording),
+            ("staleRecordingNeverFeedsANewerStream", testStaleRecordingNeverFeedsANewerStream),
+            ("discardedRecordingCancelsItsStream", testDiscardedRecordingCancelsItsStream),
+            ("streamMatchesTheDrainUnderConcurrentAppends", testStreamMatchesTheDrainUnderConcurrentAppends),
         ]
     }
 
@@ -106,6 +110,96 @@ enum DictationSampleBufferTests {
         buffer.begin(requestID: Fixture.otherRequestID)
         TestSupport.expectEqual(buffer.append([Float](repeating: 0.1, count: 20)), .reachedLimit(generation: 2))
         TestSupport.expectEqual(buffer.finish(requestID: Fixture.otherRequestID)?.count, 10)
+    }
+
+    /// The stream is fed exactly what the drain returns, cap included, and is handed over with it.
+    private static func testStreamReceivesExactlyTheRecording() {
+        let buffer = DictationSampleBuffer(maxDuration: 10 / DictationSampleBuffer.sampleRate)
+        let stream = FakeSpeechStream()
+        buffer.append([0.9])   // idle: dropped
+        let generation = buffer.begin(requestID: Fixture.requestID, stream: stream)
+        buffer.append([0.1, 0.2, 0.3])
+        buffer.append([], token: generation)
+        buffer.append([0.4, 0.5], token: generation)
+        TestSupport.expectEqual(buffer.append([Float](repeating: 0.6, count: 8)), .reachedLimit(generation: generation))
+        buffer.append([0.7])   // past the cap: dropped
+        let audio = buffer.finishRecording(requestID: Fixture.requestID)
+        TestSupport.expectEqual(audio?.samples, [0.1, 0.2, 0.3, 0.4, 0.5] + [Float](repeating: 0.6, count: 5))
+        TestSupport.expect(audio?.stream === stream, "stream not handed over")
+        TestSupport.expectEqual(stream.samples, audio?.samples)
+        TestSupport.expect(!stream.isCancelled, "a finished recording cancelled its stream")
+        buffer.append([0.8], token: generation)
+        TestSupport.expectEqual(stream.samples.count, 10)
+        TestSupport.expect(buffer.finishRecording(requestID: Fixture.requestID) == nil, "finished twice")
+        TestSupport.expect(!stream.isCancelled, "a later boundary cancelled a handed-over stream")
+
+        // Without a stream nothing changes.
+        buffer.begin(requestID: Fixture.otherRequestID)
+        buffer.append([0.1])
+        let plain = buffer.finishRecording(requestID: Fixture.otherRequestID)
+        TestSupport.expectEqual(plain?.samples, [0.1])
+        TestSupport.expect(plain?.stream == nil, "a stream appeared")
+    }
+
+    /// Audio converted for an earlier recording is dropped before any stream sees it.
+    private static func testStaleRecordingNeverFeedsANewerStream() {
+        let buffer = DictationSampleBuffer()
+        let first = FakeSpeechStream(), second = FakeSpeechStream()
+        let stale = buffer.begin(requestID: Fixture.requestID, stream: first)
+        buffer.append([0.1], token: stale)
+        let current = buffer.begin(requestID: Fixture.otherRequestID, stream: second)
+        TestSupport.expect(first.isCancelled, "a superseded recording kept its stream")
+        buffer.append([0.2], token: stale)
+        buffer.append([0.3], token: current)
+        TestSupport.expectEqual(first.samples, [0.1])
+        TestSupport.expectEqual(second.samples, [0.3])
+        TestSupport.expect(buffer.finishRecording(requestID: Fixture.requestID) == nil, "stale request finished")
+        let audio = buffer.finishRecording(requestID: Fixture.otherRequestID)
+        TestSupport.expect(audio?.stream === second, "wrong stream handed over")
+        TestSupport.expectEqual(audio?.samples, [0.3])
+        TestSupport.expect(!second.isCancelled, "current stream cancelled")
+    }
+
+    /// Every way a recording is discarded cancels its stream; `finish` without a taker does too.
+    private static func testDiscardedRecordingCancelsItsStream() {
+        let buffer = DictationSampleBuffer()
+        let cancelled = FakeSpeechStream(), other = FakeSpeechStream()
+        buffer.begin(requestID: Fixture.requestID, stream: cancelled)
+        TestSupport.expect(!buffer.cancel(requestID: Fixture.otherRequestID), "cancelled another request")
+        TestSupport.expect(!cancelled.isCancelled, "another request's cancel reached the stream")
+        buffer.cancel(requestID: Fixture.requestID)
+        TestSupport.expect(cancelled.isCancelled, "cancel kept the stream")
+
+        let ended = FakeSpeechStream()
+        buffer.begin(requestID: Fixture.requestID, stream: ended)
+        buffer.cancelAll()
+        TestSupport.expect(ended.isCancelled, "cancelAll kept the stream")
+
+        let drained = FakeSpeechStream()
+        buffer.begin(requestID: Fixture.requestID, stream: drained)
+        buffer.append([0.1])
+        TestSupport.expectEqual(buffer.finish(requestID: Fixture.requestID), [0.1])
+        TestSupport.expect(drained.isCancelled, "an unclaimed stream outlived its recording")
+        TestSupport.expect(!other.isCancelled, "an unrelated stream was cancelled")
+    }
+
+    /// Appends racing the drain: the stream holds exactly the drained samples, in order.
+    private static func testStreamMatchesTheDrainUnderConcurrentAppends() {
+        let buffer = DictationSampleBuffer()
+        let stream = FakeSpeechStream()
+        let generation = buffer.begin(requestID: Fixture.requestID, stream: stream)
+        let drained = Locked<RecordedAudio?>(nil)
+        Concurrently.run(4) { index in
+            if index == 0 {
+                Thread.sleep(forTimeInterval: 0.002)
+                drained.update { $0 = buffer.finishRecording(requestID: Fixture.requestID) }
+            } else {
+                for step in 0..<500 { buffer.append([Float(index * 1_000 + step)], token: generation) }
+            }
+        }
+        let audio = drained.current
+        TestSupport.expect(audio != nil, "not drained")
+        TestSupport.expectEqual(stream.samples, audio?.samples)
     }
 
     private static func testDefaultCapIsFiveMinutes() {

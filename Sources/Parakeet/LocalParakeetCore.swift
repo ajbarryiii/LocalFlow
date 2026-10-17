@@ -6,6 +6,13 @@ enum LocalParakeetError: LocalizedError {
     var errorDescription: String? {
         switch self { case .invalid(let message): return message }
     }
+
+    /// Core ML exceptions may carry input details; expose only our
+    /// content-free errors or cancellation.
+    static func contentFree(_ error: Error) -> Error {
+        if error is CancellationError || error is LocalParakeetError { return error }
+        return LocalParakeetError.invalid("Local transcription failed while loading the model or processing audio.")
+    }
 }
 
 enum LocalParakeetCore {
@@ -154,6 +161,169 @@ struct ParakeetChunker {
         pending = []
         carried = 0
         if fresh { try emit(chunk) }
+    }
+}
+
+/// One recording split into chunks, each transcribed as soon as it is complete,
+/// and joined. Batch and streaming transcription both run it, so however the
+/// samples arrive they give the same chunks, seams and text.
+struct ParakeetChunkedTranscription {
+    private var chunker: ParakeetChunker
+    private var transcript = ParakeetTranscriptAssembler()
+
+    init(size: Int, overlap: Int) {
+        chunker = ParakeetChunker(size: size, overlap: overlap)
+    }
+
+    mutating func append(_ samples: [Float], transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
+        try Self.append(samples, &chunker, &transcript, transcribe)
+    }
+
+    /// Transcribes the remaining partial chunk, if it holds new audio, and returns the text.
+    mutating func finish(transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows -> String {
+        try Self.finish(&chunker, &transcript, transcribe)
+        return transcript.text
+    }
+
+    // Separate inout properties: a closure capturing self would overlap the chunker's access.
+    private static func append(_ samples: [Float], _ chunker: inout ParakeetChunker, _ transcript: inout ParakeetTranscriptAssembler,
+                               _ transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
+        try chunker.append(samples) { transcript.append(try transcribe($0), covering: $0.range) }
+    }
+
+    private static func finish(_ chunker: inout ParakeetChunker, _ transcript: inout ParakeetTranscriptAssembler,
+                               _ transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
+        try chunker.finish { transcript.append(try transcribe($0), covering: $0.range) }
+    }
+}
+
+/// A transcription fed while the user is still speaking. `append` only hands
+/// samples over (it never waits for model work); on `queue` each completed
+/// chunk is transcribed at once, in order, so `finish` is left with the final
+/// partial chunk. The stage is built on `queue` when the session begins, which
+/// fixes readiness for the recording as a batch call fixes it for its own.
+/// Audio stays in memory: the session holds only samples not yet chunked and
+/// the chunker's pending window.
+final class ParakeetStreamingTranscription<Output: Sendable>: @unchecked Sendable {
+    struct Stage {
+        var transcription: ParakeetChunkedTranscription
+        /// One chunk's words. `check` throws `CancellationError` once cancelled.
+        let transcribe: (ParakeetChunk, _ check: () throws -> Void) throws -> [ParakeetWord]
+        /// The joined text to the result, after the last chunk.
+        let complete: (String, _ check: () throws -> Void) throws -> Output
+    }
+
+    private let queue: DispatchQueue
+    // Shared with the capture thread; every access holds lock.
+    private let lock = NSLock()
+    private var inbox: [Float] = []
+    private var drainScheduled = false
+    private var cancelled = false
+    private var finishing = false
+    // Queue only.
+    private var transcription: ParakeetChunkedTranscription?
+    private var stage: Stage?
+    private var failure: Error?
+
+    init(queue: DispatchQueue, begin: @escaping @Sendable () throws -> Stage) {
+        self.queue = queue
+        queue.async {
+            guard !self.isCancelled else { return }
+            do {
+                let stage = try begin()
+                self.transcription = stage.transcription
+                self.stage = stage
+            } catch {
+                self.failure = error
+            }
+        }
+    }
+
+    /// Any thread, in recording order. Ignored after `finish` or `cancel`.
+    func append(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        lock.lock()
+        guard !cancelled, !finishing else { lock.unlock(); return }
+        inbox.append(contentsOf: samples)
+        let schedule = !drainScheduled
+        drainScheduled = true
+        lock.unlock()
+        if schedule { queue.async { self.drain() } }
+    }
+
+    /// Transcribes what is left and returns the result, which equals a batch
+    /// transcription of every appended sample. An error from any chunk, with
+    /// the batch path's content-free mapping, is thrown here. Call it once;
+    /// after `cancel`, or cancelling the calling task, it throws `CancellationError`.
+    func finish() async throws -> Output {
+        guard beginFinishing() else { throw CancellationError() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    self.drain()
+                    do {
+                        try self.check()
+                        if let failure = self.failure { throw failure }
+                        guard var transcription = self.transcription, let stage = self.stage else { throw CancellationError() }
+                        self.transcription = nil
+                        let text = try transcription.finish { try stage.transcribe($0, self.check) }
+                        let output = try stage.complete(text, self.check)
+                        try self.check()
+                        continuation.resume(returning: output)
+                    } catch {
+                        continuation.resume(throwing: LocalParakeetError.contentFree(error))
+                    }
+                    self.stage = nil
+                }
+            }
+        } onCancel: { self.cancel() }
+    }
+
+    /// Stops further work and drops pending audio and partial results. Idempotent.
+    func cancel() {
+        lock.lock()
+        let first = !cancelled
+        cancelled = true
+        inbox = []
+        lock.unlock()
+        if first {
+            queue.async {
+                self.transcription = nil
+                self.stage = nil
+            }
+        }
+    }
+
+    private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+
+    /// True for the first finish of a session that was not cancelled.
+    private func beginFinishing() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let accepted = !cancelled && !finishing
+        finishing = true
+        return accepted
+    }
+
+    private func check() throws {
+        if isCancelled { throw CancellationError() }
+    }
+
+    // Queue only. After a failure no chunk work runs and samples are dropped.
+    private func drain() {
+        lock.lock()
+        let samples = inbox
+        inbox = []
+        drainScheduled = false
+        lock.unlock()
+        guard !samples.isEmpty, failure == nil, let stage, transcription != nil else { return }
+        do {
+            try check()
+            try transcription!.append(samples) { try stage.transcribe($0, check) }
+        } catch {
+            failure = error
+            transcription = nil
+        }
     }
 }
 
