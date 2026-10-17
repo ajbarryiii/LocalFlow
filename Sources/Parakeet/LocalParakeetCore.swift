@@ -103,7 +103,8 @@ struct ParakeetToken: Equatable {
 
 struct ParakeetWord: Equatable {
     let text: String
-    /// Recording sample where the word's first token was emitted.
+    /// Sample of the model input (the recording with silence compacted)
+    /// where the word's first token was emitted.
     let start: Int
 }
 

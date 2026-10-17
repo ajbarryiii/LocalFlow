@@ -347,6 +347,8 @@ private struct RetainedCorrection {
 }
 
 private final class LocalParakeetRuntime {
+    private enum Audio { case file(URL), samples([Float]) }
+
     let directory: URL
     let frontend: VDSPFrontEnd
     let math: NativeMath
@@ -424,17 +426,7 @@ private final class LocalParakeetRuntime {
 
     func transcribe(fileURL: URL, bias: BiasGraph?, retain: Bool,
                     check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        var chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
-        var retained: RetainedAudio? = retain ? RetainedAudio() : nil
-        try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
-            try chunker.append(samples) {
-                transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
-            }
-        }
-        try chunker.finish {
-            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
-        }
-        return (transcript.text, retained)
+        try transcribe(.file(fileURL), bias: bias, retain: retain, check: check)
     }
 
     func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
@@ -443,14 +435,25 @@ private final class LocalParakeetRuntime {
 
     func transcribe(samples: [Float], bias: BiasGraph?, retain: Bool,
                     check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        var chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
+        try transcribe(.samples(samples), bias: bias, retain: retain, check: check)
+    }
+
+    /// Silence is compacted before chunking, so chunk ranges and word starts
+    /// are positions in the compacted model input, not in the recording.
+    private func transcribe(_ audio: Audio, bias: BiasGraph?, retain: Bool,
+                            check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
+        var compactor = ParakeetSilenceCompactor(), chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
         var retained: RetainedAudio? = retain ? RetainedAudio() : nil
-        try chunker.append(samples) {
-            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
+        func assemble(_ chunk: ParakeetChunk) throws {
+            transcript.append(try transcribeChunk(chunk, bias: bias, retained: &retained, check: check), covering: chunk.range)
         }
-        try chunker.finish {
-            transcript.append(try transcribeChunk($0, bias: bias, retained: &retained, check: check), covering: $0.range)
+        func feed(_ samples: [Float]) throws { try chunker.append(samples, emit: assemble) }
+        switch audio {
+        case .file(let url): try ParakeetAudioReader.read(fileURL: url, check: check) { try compactor.append($0, emit: feed) }
+        case .samples(let samples): try compactor.append(samples, emit: feed)
         }
+        try compactor.finish(emit: feed)
+        try chunker.finish(emit: assemble)
         return (transcript.text, retained)
     }
 
