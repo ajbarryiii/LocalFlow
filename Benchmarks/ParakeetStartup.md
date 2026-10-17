@@ -142,6 +142,49 @@ and 340 MiB for same-path reuse. The compiled encoder grew from 299 MB to
 332 MB because the shared position tables cover 30 seconds. The b30 function
 has no upstream accuracy gate; these checks are synthetic smoke results only.
 
+## Stable model location
+
+Core ML's on-device specialization cache (per app, per OS build, per
+function) is keyed by `Encoder.mlmodelc/weights/weight.bin`'s path and inode,
+not its content or timestamps. On the shared M1 Pro (macOS 27.0, 2026-10-17),
+b4 loaded in about 100–117 s cold and 0.4–4 s warm. The load was cold after
+any of these:
+
+- replacing the files in place with an identical copy (an app update)
+- `cp -Rp`, which keeps timestamps
+- an APFS clone to a new path
+- `mv`
+- re-creating a previously warm path
+- replacing only `weight.bin`
+
+It stayed warm after `touch` of any file or replacing `model.mil` or
+`coremldata.bin`.
+
+`ParakeetModelStore` therefore loads the model from
+`<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`
+on macOS. There, a rebuilt executable or the same executable at a new path
+also stayed warm. iOS keeps loading from the bundle, because a stable copy
+does not survive its updates. On TestFlight 18 → 19, a copy in Application
+Support survived the update, but Core ML computed a new cache key and
+compiled again (iOS moves the app's data container). On TestFlight 20 → 21,
+a copy in the App Group container kept its model cache entry, yet the Neural
+Engine program was compiled again for the new build. Both measurements used
+an iPhone 15 Pro on iOS 26.
+It installs that directory once, by an APFS clone into a staging directory
+and a rename, and never rewrites it. A copy is used only if its `bundle.json`
+still hashes to the directory name, so the integrity check never trusts a
+manifest that differs from the bundle's. Other entries under `Models` are
+removed. Any failure falls back to the bundle, including a store copy that
+fails the integrity check or Core ML's first load. The clone shares the
+bundle's blocks until an update replaces the bundle; then the store costs
+about 370 MB.
+
+In a synthetic smoke run of the real service with a temporary store, b15
+preparation took 216.96 s on the first process (install plus cold, on a busy
+machine) and 2.14 s on the second. After the source bundle was replaced at the
+same path by a fresh `cp -R` copy, the third process took 2.88 s; the store's
+`weight.bin` kept its inode.
+
 ## Validation limits
 
 New-path loads are not proven cold device-cache loads: no cache deletion or
