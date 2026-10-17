@@ -110,7 +110,8 @@ struct ParakeetToken: Equatable {
 
 struct ParakeetWord: Equatable {
     let text: String
-    /// Recording sample where the word's first token was emitted.
+    /// Sample of the model input (the recording with silence compacted)
+    /// where the word's first token was emitted.
     let start: Int
 }
 
@@ -166,34 +167,47 @@ struct ParakeetChunker {
 
 /// One recording split into chunks, each transcribed as soon as it is complete,
 /// and joined. Batch and streaming transcription both run it, so however the
-/// samples arrive they give the same chunks, seams and text.
+/// samples arrive they give the same chunks, seams and text. With a compactor,
+/// silence is shortened before chunking, so chunk ranges are positions in the
+/// compacted audio.
 struct ParakeetChunkedTranscription {
+    private var compactor: ParakeetSilenceCompactor?
     private var chunker: ParakeetChunker
     private var transcript = ParakeetTranscriptAssembler()
 
-    init(size: Int, overlap: Int) {
+    init(size: Int, overlap: Int, compactor: ParakeetSilenceCompactor? = nil) {
+        self.compactor = compactor
         chunker = ParakeetChunker(size: size, overlap: overlap)
     }
 
     mutating func append(_ samples: [Float], transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
-        try Self.append(samples, &chunker, &transcript, transcribe)
+        try Self.append(samples, &compactor, &chunker, &transcript, transcribe)
     }
 
     /// Transcribes the remaining partial chunk, if it holds new audio, and returns the text.
     mutating func finish(transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows -> String {
-        try Self.finish(&chunker, &transcript, transcribe)
+        try Self.finish(&compactor, &chunker, &transcript, transcribe)
         return transcript.text
     }
 
     // Separate inout properties: a closure capturing self would overlap the chunker's access.
-    private static func append(_ samples: [Float], _ chunker: inout ParakeetChunker, _ transcript: inout ParakeetTranscriptAssembler,
+    private static func append(_ samples: [Float], _ compactor: inout ParakeetSilenceCompactor?, _ chunker: inout ParakeetChunker,
+                               _ transcript: inout ParakeetTranscriptAssembler,
                                _ transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
-        try chunker.append(samples) { transcript.append(try transcribe($0), covering: $0.range) }
+        guard compactor != nil else { return try chunk(samples, &chunker, &transcript, transcribe) }
+        try compactor!.append(samples) { try chunk($0, &chunker, &transcript, transcribe) }
     }
 
-    private static func finish(_ chunker: inout ParakeetChunker, _ transcript: inout ParakeetTranscriptAssembler,
+    private static func finish(_ compactor: inout ParakeetSilenceCompactor?, _ chunker: inout ParakeetChunker,
+                               _ transcript: inout ParakeetTranscriptAssembler,
                                _ transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
+        if compactor != nil { try compactor!.finish { try chunk($0, &chunker, &transcript, transcribe) } }
         try chunker.finish { transcript.append(try transcribe($0), covering: $0.range) }
+    }
+
+    private static func chunk(_ samples: [Float], _ chunker: inout ParakeetChunker, _ transcript: inout ParakeetTranscriptAssembler,
+                              _ transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
+        try chunker.append(samples) { transcript.append(try transcribe($0), covering: $0.range) }
     }
 }
 

@@ -541,8 +541,11 @@ private final class LocalParakeetRuntime {
     }
 
     // Installs also run on this queue, so readiness is fixed for the recording.
+    // Silence is compacted before chunking, so chunk ranges and word starts
+    // are positions in the compacted model input, not in the recording.
     func makeTranscription() -> ParakeetChunkedTranscription {
-        ParakeetChunkedTranscription(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples)
+        ParakeetChunkedTranscription(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples,
+                                     compactor: ParakeetSilenceCompactor())
     }
 
     func transcribeChunk(_ chunk: ParakeetChunk, bias: BiasGraph?, retained: inout RetainedAudio?,

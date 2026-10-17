@@ -105,8 +105,9 @@ PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
 # The custom dictionary (boosting, casing and "Find strength"), shared with the
 # macOS app. HostCore's DictionaryLibrary uses it, so the host tests compile it too.
 DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
-# The dictionary needs the Foundation-only Parakeet core (tokens, errors); the host tests compile both.
-DICTIONARY_TEST_SOURCES = $(DICTIONARY_SOURCES) ../Sources/Parakeet/LocalParakeetCore.swift
+# The dictionary needs the Foundation-only Parakeet core (tokens, errors), which uses the
+# silence compactor; the host tests compile all three.
+DICTIONARY_TEST_SOURCES = $(DICTIONARY_SOURCES) ../Sources/Parakeet/LocalParakeetCore.swift ../Sources/Parakeet/ParakeetSilenceCompactor.swift
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenNumberFormatter.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)

@@ -5,8 +5,9 @@ struct LocalFlowTests {
     static func main() {
         AppNameTests.run()
         LocalParakeetTests.run()
-        ParakeetStreamingTests.run()
         ParakeetModelStoreTests.run()
+        ParakeetStreamingTests.run()
+        ParakeetSilenceCompactorTests.run()
         PrivacyPermissionTests.run()
         LocalDictationTests.run()
         SpokenNumberTests.run()
