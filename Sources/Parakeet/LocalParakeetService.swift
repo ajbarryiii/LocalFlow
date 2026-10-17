@@ -6,7 +6,8 @@ import Foundation
 /// unused encoder instances and transfers them only after warmup succeeds.
 /// Audio and text stay in memory; this backend never writes diagnostics.
 final class LocalParakeetService: @unchecked Sendable {
-    static let shared = LocalParakeetService()
+    // The app loads the model from its stable copy; scripts have no bundle identifier and no store.
+    static let shared = LocalParakeetService(modelStore: .application)
     static var bundleDirectory: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("Parakeet", isDirectory: true)
     }
@@ -21,6 +22,9 @@ final class LocalParakeetService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "localflow.local-model", qos: .userInitiated)
     private let preparationQueue = DispatchQueue(label: "localflow.local-model-optimization", qos: .utility)
     private var runtime: LocalParakeetRuntime?
+    // The directory a caller asked for; the runtime may load from its store copy.
+    private var runtimeSource: URL?
+    private let modelStore: ParakeetModelStore?
     private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
     private let onBucketUsed: (@Sendable (Int) -> Void)?
@@ -33,10 +37,13 @@ final class LocalParakeetService: @unchecked Sendable {
     // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
     // its serial queue. Benchmarks can compare startup policies explicitly.
     // A host that may lose the Neural Engine in the background can use .cpuOnly.
+    // With a model store, each directory is loaded from its stable copy when possible.
     init(startupStrategy: ParakeetStartupStrategy = .applicationDefault,
          computeUnits: MLComputeUnits = .cpuAndNeuralEngine,
-         onBucketUsed: (@Sendable (Int) -> Void)? = nil) {
+         onBucketUsed: (@Sendable (Int) -> Void)? = nil,
+         modelStore: ParakeetModelStore? = nil) {
         self.startupStrategy = startupStrategy
+        self.modelStore = modelStore
         self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
     }
@@ -77,13 +84,18 @@ final class LocalParakeetService: @unchecked Sendable {
 
     // Call only on queue. Keep the runtime and any loaded models alive.
     private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
-        if let runtime, runtime.directory == directory { return runtime }
-        let runtime = try LocalParakeetRuntime(directory: directory, startupStrategy: startupStrategy,
-                                               computeUnits: computeUnits,
-                                               ownerQueue: queue, preparationQueue: preparationQueue,
-                                               onBucketUsed: onBucketUsed)
+        if let runtime, runtimeSource == directory { return runtime }
+        let make = { (directory: URL) in
+            try LocalParakeetRuntime(directory: directory, startupStrategy: self.startupStrategy,
+                                     computeUnits: self.computeUnits,
+                                     ownerQueue: self.queue, preparationQueue: self.preparationQueue,
+                                     onBucketUsed: self.onBucketUsed)
+        }
+        // A store copy that fails the integrity check is removed and the bundle is used.
+        let runtime = try modelStore.map { try $0.open(bundle: directory, make) } ?? make(directory)
         self.runtime?.cancelBackgroundPreparation()
         self.runtime = runtime
+        runtimeSource = directory
         return runtime
     }
 

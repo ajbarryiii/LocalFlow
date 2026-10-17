@@ -142,6 +142,38 @@ and 340 MiB for same-path reuse. The compiled encoder grew from 299 MB to
 332 MB because the shared position tables cover 30 seconds. The b30 function
 has no upstream accuracy gate; these checks are synthetic smoke results only.
 
+## Stable model location
+
+Core ML's on-device specialization cache (per app, per OS build, per
+function) is keyed by `Encoder.mlmodelc/weights/weight.bin`'s path and inode,
+not its content or timestamps. On the shared M1 Pro (macOS 27.0, 2026-10-17),
+b4 loaded in about 100–117 s cold and 0.4–4 s warm. The load was cold after
+any of these:
+
+- replacing the files in place with an identical copy (an app update)
+- `cp -Rp`, which keeps timestamps
+- an APFS clone to a new path
+- `mv`
+- re-creating a previously warm path
+- replacing only `weight.bin`
+
+It stayed warm after `touch` of any file or replacing `model.mil` or
+`coremldata.bin`.
+
+`ParakeetModelStore` therefore loads the model from
+`<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`.
+It installs that directory once, by an APFS clone into a staging directory
+and a rename, and never rewrites it. Other entries under `Models` are removed.
+Any failure, including a store copy that fails the integrity check, falls
+back to the bundle. The clone shares the bundle's blocks until an update
+replaces the bundle; then the store costs about 370 MB.
+
+In a synthetic smoke run of the real service with a temporary store, b15
+preparation took 216.96 s on the first process (install plus cold, on a busy
+machine) and 2.14 s on the second. After the source bundle was replaced at the
+same path by a fresh `cp -R` copy, the third process took 2.88 s; the store's
+`weight.bin` kept its inode.
+
 ## Validation limits
 
 New-path loads are not proven cold device-cache loads: no cache deletion or

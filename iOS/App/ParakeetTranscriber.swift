@@ -134,14 +134,16 @@ final class ParakeetTranscriber: ObservableObject {
 }
 
 /// `LocalParakeetService` as a `SpeechRuntime`: one encoder function (`.fifteenSecondsFirst`) to bound
-/// memory. Dropping the last reference releases the model.
+/// memory. Dropping the last reference releases the model. The model loads from the app's stable copy
+/// (`ParakeetModelStore.application`), falling back to the bundle.
 private final class ParakeetRuntime: SpeechRuntime {
     private let service: LocalParakeetService
     private let directory: URL?
     private let dictionary: DictionarySnapshotBox
 
     init(units: ComputePolicy.Units, directory: URL?, dictionary: DictionarySnapshotBox) {
-        service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits)
+        service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits,
+                                       modelStore: .application)
         self.directory = directory
         self.dictionary = dictionary
     }
