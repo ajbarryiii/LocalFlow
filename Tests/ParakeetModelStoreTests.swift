@@ -14,7 +14,9 @@ enum ParakeetModelStoreTests {
         testIncompleteDirectoryReplaced()
         testFailureReturnsBundle()
         testCollectionStaysInsideRoot()
+        testTamperedCopyReplaced()
         testRejectedStoreFallsBackOnce()
+        testFirstLoadFailureFallsBack()
         testConcurrentInstalls()
     }
 
@@ -127,22 +129,22 @@ enum ParakeetModelStoreTests {
         let target = scratch.root.appendingPathComponent(identity(bundle)).standardizedFileURL.path
 
         var opened: [String] = []
-        let accepted = try! store.open(bundle: bundle) { url -> URL in opened.append(url.standardizedFileURL.path); return url }
+        let accepted = try! store.open(bundle: bundle, make: { url -> URL in opened.append(url.standardizedFileURL.path); return url }, prepare: { _ in })
         TestSupport.expectEqual(opened, [target])
         TestSupport.expectEqual(accepted.standardizedFileURL.path, target)
 
         opened = []
-        let fallback = try! store.open(bundle: bundle) { url -> URL in
+        let fallback = try! store.open(bundle: bundle, make: { url -> URL in
             opened.append(url.standardizedFileURL.path)
             guard url == bundle else { throw LocalParakeetError.invalid("rejected") }
             return url
-        }
+        }, prepare: { _ in })
         TestSupport.expectEqual(fallback, bundle)
         TestSupport.expectEqual(opened, [target, bundle.standardizedFileURL.path])
         TestSupport.expect(!files.fileExists(atPath: target), "A rejected store copy must be removed")
 
         opened = []
-        _ = try! store.open(bundle: bundle) { url -> URL in opened.append(url.standardizedFileURL.path); return url }
+        _ = try! store.open(bundle: bundle, make: { url -> URL in opened.append(url.standardizedFileURL.path); return url }, prepare: { _ in })
         TestSupport.expectEqual(opened, [bundle.standardizedFileURL.path])
         TestSupport.expectEqual(store.directory(for: bundle).path, bundle.path)
         TestSupport.expect(!files.fileExists(atPath: target), "The store must not reinstall in the same process")
@@ -151,16 +153,65 @@ enum ParakeetModelStoreTests {
         let other = Scratch(), broken = other.bundle(manifest: "first")
         var attempts = 0
         do {
-            _ = try ParakeetModelStore(root: other.root).open(bundle: broken) { _ -> Int in
+            _ = try ParakeetModelStore(root: other.root).open(bundle: broken, make: { _ -> Int in
                 attempts += 1
                 throw LocalParakeetError.invalid("rejected")
-            }
+            }, prepare: { _ in })
             TestSupport.expect(false, "A rejected bundle must throw")
         } catch {}
         TestSupport.expectEqual(attempts, 2)
 
         // The next launch (a new store) installs again.
         TestSupport.expectEqual(ParakeetModelStore(root: scratch.root).directory(for: bundle).standardizedFileURL.path, target)
+    }
+
+    // The copy is writable, so its manifest is trusted only if it is the bundle's
+    // own: a file changed together with its hash in the copy's manifest is replaced.
+    private static func testTamperedCopyReplaced() {
+        let scratch = Scratch(), bundle = scratch.bundle(manifest: "first")
+        let directory = ParakeetModelStore(root: scratch.root).directory(for: bundle)
+        let tampered = Data("{\"0\":\"▁tampered\"}".utf8)
+        try! tampered.write(to: directory.appendingPathComponent("vocabulary.json"))
+        try! Data("{\"model\":\"first\",\"files\":{\"vocabulary.json\":\"\(LocalParakeetCore.sha256(tampered))\"}}".utf8)
+            .write(to: directory.appendingPathComponent("bundle.json"))
+        let again = ParakeetModelStore(root: scratch.root).directory(for: bundle)
+        TestSupport.expectEqual(again.standardizedFileURL.path, directory.standardizedFileURL.path)
+        TestSupport.expectEqual(contents(of: again), contents(of: bundle))
+        TestSupport.expectEqual(entries(scratch.root), [identity(bundle)])
+    }
+
+    // Construction can succeed while Core ML's first load of the store copy
+    // fails (files gone after the integrity check): the bundle is used instead.
+    private static func testFirstLoadFailureFallsBack() {
+        let scratch = Scratch(), bundle = scratch.bundle(manifest: "first")
+        let store = ParakeetModelStore(root: scratch.root)
+        let target = scratch.root.appendingPathComponent(identity(bundle)).standardizedFileURL.path
+        let source = bundle.standardizedFileURL.path
+        var made: [String] = [], loaded: [String] = []
+        let opened = try! store.open(bundle: bundle, make: { url -> String in
+            made.append(url.standardizedFileURL.path)
+            return url.standardizedFileURL.path
+        }, prepare: { path in
+            loaded.append(path)
+            guard path == source else { throw LocalParakeetError.invalid("load failed") }
+        })
+        TestSupport.expectEqual(opened, source)
+        TestSupport.expectEqual(made, [target, source])
+        TestSupport.expectEqual(loaded, [target, source])
+        TestSupport.expect(!files.fileExists(atPath: target), "A store copy that cannot be loaded must be removed")
+        TestSupport.expectEqual(store.directory(for: bundle).path, bundle.path)
+
+        // A bundle that cannot be loaded either: each location once, then the error.
+        let other = Scratch(), broken = other.bundle(manifest: "first")
+        var loads = 0
+        do {
+            _ = try ParakeetModelStore(root: other.root).open(bundle: broken, make: { $0 }, prepare: { _ in
+                loads += 1
+                throw LocalParakeetError.invalid("load failed")
+            })
+            TestSupport.expect(false, "An unloadable bundle must throw")
+        } catch {}
+        TestSupport.expectEqual(loads, 2)
     }
 
     private static func testConcurrentInstalls() {

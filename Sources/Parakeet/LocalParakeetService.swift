@@ -60,9 +60,8 @@ final class LocalParakeetService: @unchecked Sendable {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    let runtime = try self.runtime(for: directory)
-                    try runtime.prepare(buckets: self.startupStrategy.initialBuckets)
-                    runtime.startBackgroundPreparation()
+                    // The runtime has prepared its initial functions.
+                    try self.runtime(for: directory).startBackgroundPreparation()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))
@@ -91,8 +90,16 @@ final class LocalParakeetService: @unchecked Sendable {
                                      ownerQueue: self.queue, preparationQueue: self.preparationQueue,
                                      onBucketUsed: self.onBucketUsed)
         }
-        // A store copy that fails the integrity check is removed and the bundle is used.
-        let runtime = try modelStore.map { try $0.open(bundle: directory, make) } ?? make(directory)
+        // The initial functions load here, so a store copy that fails the integrity
+        // check or Core ML's first load is removed and the bundle is used instead.
+        let prepare = { (runtime: LocalParakeetRuntime) in try runtime.prepare(buckets: self.startupStrategy.initialBuckets) }
+        let runtime: LocalParakeetRuntime
+        if let modelStore {
+            runtime = try modelStore.open(bundle: directory, make: make, prepare: prepare)
+        } else {
+            runtime = try make(directory)
+            try prepare(runtime)
+        }
         self.runtime?.cancelBackgroundPreparation()
         self.runtime = runtime
         runtimeSource = directory

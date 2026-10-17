@@ -29,20 +29,26 @@ final class ParakeetModelStore: @unchecked Sendable {
         self.root = root
     }
 
-    /// Opens the model from the store, installing it first when missing. If
-    /// `open` rejects the store copy, that copy is removed, the store is off for
-    /// this process and `bundle` is opened instead; the next launch installs again.
-    func open<T>(bundle: URL, _ open: (URL) throws -> T) throws -> T {
+    /// Opens the model with `make` and its first load with `prepare`, from the
+    /// store when possible, installing it first when missing. If either rejects
+    /// the store copy, that copy is removed, the store is off for this process
+    /// and `bundle` is opened instead; the next launch installs again.
+    func open<T>(bundle: URL, make: (URL) throws -> T, prepare: (T) throws -> Void) throws -> T {
+        func attempt(_ directory: URL) throws -> T {
+            let model = try make(directory)
+            try prepare(model)
+            return model
+        }
         let directory = self.directory(for: bundle)
-        guard directory != bundle else { return try open(bundle) }
+        guard directory != bundle else { return try attempt(bundle) }
         do {
-            return try open(directory)
+            return try attempt(directory)
         } catch {
             lock.lock()
             disabled = true
             lock.unlock()
             discard(directory)
-            return try open(bundle)
+            return try attempt(bundle)
         }
     }
 
@@ -73,9 +79,11 @@ final class ParakeetModelStore: @unchecked Sendable {
     }
 
     // The marker is written last, before the rename, so a directory without it
-    // is an interrupted or foreign copy.
+    // is an interrupted or foreign copy. The copy is writable, so its manifest,
+    // which the integrity check trusts, must also be the bundle's own.
     private func isComplete(_ directory: URL, identity: String) -> Bool {
         (try? Data(contentsOf: directory.appendingPathComponent(Self.marker))) == Data(identity.utf8)
+            && (try? self.identity(of: directory)) == identity
     }
 
     // copyItem clones on APFS; the rename keeps every inode, so the first load

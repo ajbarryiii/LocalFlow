@@ -163,10 +163,13 @@ It stayed warm after `touch` of any file or replacing `model.mil` or
 `ParakeetModelStore` therefore loads the model from
 `<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`.
 It installs that directory once, by an APFS clone into a staging directory
-and a rename, and never rewrites it. Other entries under `Models` are removed.
-Any failure, including a store copy that fails the integrity check, falls
-back to the bundle. The clone shares the bundle's blocks until an update
-replaces the bundle; then the store costs about 370 MB.
+and a rename, and never rewrites it. A copy is used only if its `bundle.json`
+still hashes to the directory name, so the integrity check never trusts a
+manifest that differs from the bundle's. Other entries under `Models` are
+removed. Any failure falls back to the bundle, including a store copy that
+fails the integrity check or Core ML's first load. The clone shares the
+bundle's blocks until an update replaces the bundle; then the store costs
+about 370 MB.
 
 In a synthetic smoke run of the real service with a temporary store, b15
 preparation took 216.96 s on the first process (install plus cold, on a busy
