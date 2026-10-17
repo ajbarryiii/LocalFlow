@@ -19,6 +19,23 @@ enum ParakeetSilenceCompactorTests {
         testNoSpeech()
         testInvalidSamplesReachTheModel()
         testSplitInvariance()
+        testBoundedPieces()
+    }
+
+    // A whole recording appended at once is emitted in bounded pieces, so the
+    // compactor never builds a second full-size copy.
+    private static func testBoundedPieces() {
+        let limit = ParakeetSilenceCompactor.maxPieceSamples
+        for (input, expected) in [(tone(60, level: -20), tone(60, level: -20)),
+                                  (zeros(3) + tone(60, level: -20) + zeros(3), zeros(0.3) + tone(60, level: -20) + zeros(0.3)),
+                                  (zeros(60), zeros(60))] {
+            var compactor = ParakeetSilenceCompactor(), pieces: [[Float]] = []
+            compactor.append(input) { pieces.append($0) }
+            compactor.finish { pieces.append($0) }
+            TestSupport.expect(pieces.count >= expected.count / limit, "A long recording must be emitted in several pieces")
+            TestSupport.expect(pieces.allSatisfy { !$0.isEmpty && $0.count <= limit }, "Every piece must be bounded")
+            TestSupport.expectEqual(Array(pieces.joined()), expected)
+        }
     }
 
     // Leading silence keeps its last margin, trailing silence its first, and a
@@ -81,7 +98,7 @@ enum ParakeetSilenceCompactorTests {
     // A long steady sound at speech level, or a held quiet vowel, is never
     // learned as the noise floor and chopped.
     private static func testSustainedSound() {
-        for (seconds, level) in [(10.0, -26.0), (4.0, -35.0)] {
+        for (seconds, level) in [(10.0, -26.0), (4.0, -35.0), (12.0, -35.0), (20.0, -40.0)] {
             var input = noise(seconds + 4, level: -60, seed: 11)
             add(noise(seconds, level: level, seed: 12), to: &input, at: s(2))
             TestSupport.expectEqual(compact(input), Array(input[s(1.7)..<s(2 + seconds + 0.3)]))

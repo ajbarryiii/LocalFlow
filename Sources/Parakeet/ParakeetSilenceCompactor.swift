@@ -16,13 +16,16 @@ struct ParakeetSilenceCompactor {
     // A pause between speech, such as searching for a word, keeps up to 0.8 s;
     // chosen on synthetic hesitations (see the pull request).
     static let defaultInteriorPause = 12_800  // 0.8 s
+    /// Output is emitted in pieces of at most 1 s, so appending a whole
+    /// recording at once never builds a second full-size copy.
+    static let maxPieceSamples = 16_000
     /// 10 ms, the front end's hop. Speech is decided per frame.
     static let frameSamples = 160
     // Levels are a frame's mean square in dB relative to full scale. The noise
-    // floor follows the quietest recent frames: it drops at once and rises
-    // 3 dB/s, so steady noise is learned within seconds while speech, which
-    // keeps dipping, is not. It stays within -70...-40 dB, so speech never
-    // starts below -60 dB, and frames above -30 dB are always speech.
+    // floor follows the quietest recent frames: it drops at once and, outside
+    // speech, rises 3 dB/s, so steady noise is learned within seconds while
+    // speech, however long, is not. It stays within -70...-40 dB, so speech
+    // never starts below -60 dB, and frames above -30 dB are always speech.
     private static let floorRange = -70.0 ... -40.0
     private static let floorRise = 0.03
     // A frame starts speech 10 dB over the floor and continues it 6 dB over.
@@ -59,19 +62,32 @@ struct ParakeetSilenceCompactor {
         while rest.count >= Self.frameSamples {
             process(rest.prefix(Self.frameSamples), into: &output)
             rest = rest.dropFirst(Self.frameSamples)
+            try Self.flush(&output, whole: false, emit: emit)
         }
         frame += rest
-        if !output.isEmpty { try emit(output) }
+        try Self.flush(&output, whole: true, emit: emit)
     }
 
     mutating func finish(emit: ([Float]) throws -> Void) rethrows {
         var output: [Float] = []
         if !frame.isEmpty { process(frame[...], into: &output) }
         // Trailing silence keeps its first margin. With no speech at all, the
-        // model hears the recording unchanged.
-        output += heardSpeech ? held.prefix(margin) : held[...]
+        // model hears the recording unchanged; output is empty then, so the
+        // held recording moves rather than copies.
+        if heardSpeech { output += held.prefix(margin) } else { swap(&output, &held) }
         self = Self(margin: margin, interiorPause: interiorPause)
-        if !output.isEmpty { try emit(output) }
+        try Self.flush(&output, whole: true, emit: emit)
+    }
+
+    /// Emits full pieces of `output`, and with `whole` the rest too, keeping order.
+    private static func flush(_ output: inout [Float], whole: Bool, emit: ([Float]) throws -> Void) rethrows {
+        var start = 0
+        while output.count - start >= maxPieceSamples || (whole && start < output.count) {
+            let end = min(start + maxPieceSamples, output.count)
+            try emit(Array(output[start..<end]))
+            start = end
+        }
+        output.removeFirst(start)
     }
 
     private mutating func process(_ samples: ArraySlice<Float>, into output: inout [Float]) {
@@ -98,7 +114,7 @@ struct ParakeetSilenceCompactor {
         guard energy > 0 else { speaking = false; return false }
         let level = 10 * log10(energy / Double(samples.count))
         speaking = level > floor + (speaking ? Self.release : Self.onset)
-        let next = level < floor ? level : floor + Self.floorRise
+        let next = level < floor ? level : speaking ? floor : floor + Self.floorRise
         floor = min(max(next, Self.floorRange.lowerBound), Self.floorRange.upperBound)
         return speaking
     }
