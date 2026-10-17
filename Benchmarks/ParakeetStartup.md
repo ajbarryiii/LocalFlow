@@ -162,12 +162,14 @@ It stayed warm after `touch` of any file or replacing `model.mil` or
 
 `ParakeetModelStore` therefore loads the model from
 `<Application Support>/<bundle identifier>/Models/<SHA-256 of bundle.json>/`
-on macOS, and from `Library/Application Support/Models/<SHA-256>/` in the App
-Group container on iOS. iOS moves an app's own data container on every
-update: on TestFlight 18 → 19 the copy in Application Support survived, but
-Core ML computed a new cache key for it and compiled again. The App Group
-container keeps its path. On macOS, a rebuilt executable or the same
-executable at a new path stayed warm.
+on macOS. There, a rebuilt executable or the same executable at a new path
+also stayed warm. iOS keeps loading from the bundle, because a stable copy
+does not survive its updates. On TestFlight 18 → 19, a copy in Application
+Support survived the update, but Core ML computed a new cache key and
+compiled again (iOS moves the app's data container). On TestFlight 20 → 21,
+a copy in the App Group container kept its model cache entry, yet the Neural
+Engine program was compiled again for the new build. Both measurements used
+an iPhone 15 Pro on iOS 26.
 It installs that directory once, by an APFS clone into a staging directory
 and a rename, and never rewrites it. A copy is used only if its `bundle.json`
 still hashes to the directory name, so the integrity check never trusts a

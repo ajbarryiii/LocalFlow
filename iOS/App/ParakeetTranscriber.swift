@@ -134,29 +134,29 @@ final class ParakeetTranscriber: ObservableObject {
 }
 
 /// `LocalParakeetService` as a `SpeechRuntime`: one encoder function (`.fifteenSecondsFirst`) to bound
-/// memory. Dropping the last reference releases the model. The model loads from the app's stable copy
-/// (`modelStore`), falling back to the bundle.
+/// memory. Dropping the last reference releases the model. The model loads from the bundle: a stable
+/// copy (`ParakeetModelStore`, macOS) does not survive iOS updates, because iOS compiles the Neural
+/// Engine program again for each installed build (TestFlight 20 → 21 reused the copy's cache entry
+/// but still compiled).
 private final class ParakeetRuntime: SpeechRuntime {
     private let service: LocalParakeetService
     private let directory: URL?
     private let dictionary: DictionarySnapshotBox
 
-    /// In the App Group container: iOS moves the app's own data container on every update, which
-    /// changes the copy's path and so Core ML's cache key (seen on TestFlight 18 → 19), while the
-    /// group container keeps its path. Without a group, Application Support.
-    private static let modelStore: ParakeetModelStore? = {
-        guard let group = LocalFlowConfiguration.main?.appGroupIdentifier,
-              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
-            return .application
+    /// Test builds 18–21 kept a copy of the model in Application Support or the App Group
+    /// container; nothing uses it now.
+    private static let removeTestCopies: Void = {
+        let files = FileManager.default
+        if let old = ParakeetModelStore.application?.root { try? files.removeItem(at: old) }
+        if let group = LocalFlowConfiguration.main?.appGroupIdentifier,
+           let container = files.containerURL(forSecurityApplicationGroupIdentifier: group) {
+            try? files.removeItem(at: container.appendingPathComponent("Library/Application Support/Models", isDirectory: true))
         }
-        // Test builds 18-19 kept a copy in Application Support; it would never be used again.
-        if let old = ParakeetModelStore.application?.root { try? FileManager.default.removeItem(at: old) }
-        return ParakeetModelStore(root: container.appendingPathComponent("Library/Application Support/Models", isDirectory: true))
     }()
 
     init(units: ComputePolicy.Units, directory: URL?, dictionary: DictionarySnapshotBox) {
-        service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits,
-                                       modelStore: Self.modelStore)
+        _ = Self.removeTestCopies
+        service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits)
         self.directory = directory
         self.dictionary = dictionary
     }
