@@ -49,6 +49,9 @@ enum HostSessionCoreTests {
             ("staleConversionFailureAfterReconfigurationIsIgnored", isolated(testStaleConversionFailureAfterReconfigurationIsIgnored)),
             ("backgroundChoiceIsDeferredOnTheRoutePath", isolated(testBackgroundChoiceIsDeferredOnTheRoutePath)),
             ("unresolvedMicrophoneChoiceKeepsDictating", isolated(testUnresolvedMicrophoneChoiceKeepsDictating)),
+            ("recordingStreamsWhileRecorded", isolated(testRecordingStreamsWhileRecorded)),
+            ("staleRequestNeverFeedsANewerStream", isolated(testStaleRequestNeverFeedsANewerStream)),
+            ("cancelLockAndExpiryCancelTheStream", isolated(testCancelLockAndExpiryCancelTheStream)),
         ]
     }
 
@@ -1125,6 +1128,116 @@ enum HostSessionCoreTests {
         h.capture.routeChanged(to: .headset)
         TestSupport.expectEqual(h.capture.router.routing, .builtInMicrophone)
     }
+
+    // MARK: Transcription while recording
+
+    /// With the model ready, the recording streams to the transcriber while it is recorded: the stream
+    /// is handed over with exactly the samples the drain returns, and is not cancelled.
+    @MainActor
+    private static func testRecordingStreamsWhileRecorded() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.transcriber.streams = true
+        h.record(R)
+        h.feed(count: 800)
+        TestSupport.expectEqual(h.transcriber.begunStreams.count, 1)
+        let stream = h.transcriber.begunStreams[0]
+        TestSupport.expectEqual(stream.samples.count, 2_400)
+        h.writeIntent(.finish, R)
+        h.core.reconcile(.intentSignal)
+        h.feed(count: 400)   // the tail, captured before the finish, still lands
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "transcription not started")
+        TestSupport.expectEqual(h.transcriber.received, [2_800])
+        TestSupport.expect(h.transcriber.receivedStreams.first! === stream, "the recording's stream was not handed over")
+        TestSupport.expectEqual(stream.samples.count, 2_800)
+        TestSupport.expectEqual(stream.samples, h.transcriber.lastAudio?.samples)
+        TestSupport.expect(!stream.isCancelled, "a finished recording cancelled its stream")
+        h.transcriber.complete(.success("synthetic words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.current?.phase == .completed }, "not completed")
+        TestSupport.expectEqual(h.store.readResult(requestID: R).value?.text, "<synthetic words>")
+
+        // A model that is not ready offers no stream: the recording is transcribed after it ends.
+        h.transcriber.modelState = .preparing
+        h.record(S)
+        h.writeIntent(.finish, S)
+        h.core.reconcile(.intentSignal)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "transcription not started")
+        TestSupport.expectEqual(h.transcriber.begunStreams.count, 1)
+        TestSupport.expect(h.transcriber.receivedStreams.last! == nil, "a stream without a ready model")
+    }
+
+    /// A newer request cancels the older recording's stream, and audio converted for the older one never
+    /// reaches the newer stream.
+    @MainActor
+    private static func testStaleRequestNeverFeedsANewerStream() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.transcriber.streams = true
+        h.record(R)
+        let stale = h.buffer.recordingToken!
+        h.record(S)
+        TestSupport.expectEqual(h.transcriber.begunStreams.count, 2)
+        let (first, second) = (h.transcriber.begunStreams[0], h.transcriber.begunStreams[1])
+        TestSupport.expect(first.isCancelled, "the superseded recording's stream is open")
+        let buffer = h.buffer
+        DispatchQueue.global().sync { _ = buffer.append([Float](repeating: 0.2, count: 160), token: stale) }
+        TestSupport.expectEqual(first.samples.count, 1_600)
+        TestSupport.expectEqual(second.samples.count, 1_600)
+        h.writeIntent(.finish, S)
+        h.core.reconcile(.intentSignal)
+        h.completeTail()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }, "transcription not started")
+        TestSupport.expect(h.transcriber.receivedStreams.first! === second, "wrong stream handed over")
+        TestSupport.expectEqual(second.samples, h.transcriber.lastAudio?.samples)
+    }
+
+    /// Cancel, the device lock (recording or transcribing), the session end and background-time expiry
+    /// all cancel the dictation's stream.
+    @MainActor
+    private static func testCancelLockAndExpiryCancelTheStream() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.transcriber.streams = true
+        func recordAndFinish(_ requestID: UUID) {
+            h.record(requestID)
+            h.writeIntent(.finish, requestID)
+            h.core.reconcile(.intentSignal)
+            h.completeTail()
+            _ = TestSupport.waitUntil(timeout: 2) { h.transcriber.pendingCount == 1 }
+        }
+
+        h.record(R)
+        h.writeIntent(.cancel, R)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expect(h.transcriber.begunStreams.last!.isCancelled, "cancel kept the stream")
+
+        h.record(S)
+        h.core.deviceWillLock()
+        TestSupport.expect(h.transcriber.begunStreams.last!.isCancelled, "a lock while recording kept the stream")
+        h.core.deviceDidUnlock()
+
+        recordAndFinish(R2)
+        h.core.deviceWillLock()
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.begunStreams.last!.isCancelled },
+                           "a lock while transcribing kept the stream")
+        h.core.deviceDidUnlock()
+
+        let expiring = UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
+        recordAndFinish(expiring)
+        h.background.expire(h.background.expirations.count - 1)
+        TestSupport.expectEqual(h.status?.dictation?.error, .backgroundTimeExpired)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.transcriber.begunStreams.last!.isCancelled },
+                           "background-time expiry kept the stream")
+
+        let ending = UUID(uuidString: "00000000-0000-4000-8000-000000000005")!
+        h.record(ending)
+        h.core.userEndSession()
+        TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
+        TestSupport.expect(h.transcriber.begunStreams.last!.isCancelled, "the session end kept the stream")
+        TestSupport.expectEqual(h.transcriber.begunStreams.count, 5)
+    }
 }
 
 // MARK: Harness
@@ -1344,21 +1457,37 @@ private final class FakeTranscriber: HostTranscriber {
     /// Sample counts of every recording handed over.
     var received: [Int] = []
     weak var lastAudio: RecordedAudio?
+    /// Offers a stream to each recording admitted while the model is ready.
+    var streams = false
+    private(set) var begunStreams: [FakeSpeechStream] = []
+    /// The stream handed over with each recording, in order.
+    private(set) var receivedStreams: [SpeechStream?] = []
     private var pending: [(id: UUID, continuation: CheckedContinuation<String, Error>)] = []
 
     var pendingCount: Int { pending.count }
 
     func prepare() { prepareCount += 1 }
 
+    func beginStream() -> SpeechStream? {
+        guard streams, modelState == .ready else { return nil }
+        let stream = FakeSpeechStream()
+        begunStreams.append(stream)
+        return stream
+    }
+
+    /// Like `TranscriptionEngine`, cancellation also cancels the recording's stream.
     func transcribe(_ audio: RecordedAudio) async throws -> String {
         received.append(audio.samples.count)
+        receivedStreams.append(audio.stream)
         lastAudio = audio
         let id = UUID()
         let honors = honorsCancellation
+        let stream = audio.stream
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { pending.append((id, $0)) }
         } onCancel: {
             guard honors else { return }
+            stream?.cancel()
             Task { @MainActor in self.resume(id, with: .failure(CancellationError())) }
         }
     }

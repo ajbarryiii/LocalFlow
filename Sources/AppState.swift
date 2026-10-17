@@ -379,6 +379,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     private var debugOverlayTimer: Timer?
     private var recordingInitializationTimer: DispatchSourceTimer?
     private var transcriptionTask: Task<Void, Never>?
+    /// The recording's transcription while it is recorded, with the dictionary
+    /// revision and retention it began with. Nil: the file is transcribed after.
+    private var streamingDictation: (session: ParakeetStreamingSession, dictionaryRevision: UInt64, retainForCorrection: Bool)?
     private var transcribingAudioFileName: String?
     private var audioDeviceObservers: [NSObjectProtocol] = []
     private var needsMicrophoneRefreshAfterRecording = false
@@ -1254,6 +1257,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
         cancelRecordingInitializationTimer()
+        cancelStreamingDictation()
         isRecording = false
         errorMessage = nil
         debugStatusMessage = "Idle"
@@ -1276,6 +1280,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
         cancelRecordingInitializationTimer()
+        cancelStreamingDictation()
         isRecording = false
         errorMessage = nil
         debugStatusMessage = "Cancelled"
@@ -1542,6 +1547,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             }
         }
 
+        // Only this capture feeds this session: the recorder forwards to the sink
+        // of the capture its buffers belong to, until that capture has drained.
+        let sampleSink = beginStreamingDictation().map { session -> AudioRecorder.SampleSink in { session.append($0) } }
         // Reserve the capture ticket here, before dispatching: a cancel from now on
         // (a discarded tap) voids this start wherever its work then is.
         let captureTicket = audioRecorder.reserveCapture()
@@ -1550,7 +1558,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             guard let self else { return }
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
-                try self.audioRecorder.startRecording(deviceUID: deviceUID, ticket: captureTicket)
+                try self.audioRecorder.startRecording(deviceUID: deviceUID, ticket: captureTicket, sampleSink: sampleSink)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 DispatchQueue.main.async { [self] in
                     guard self.recordingAttempts.isCurrent(attempt), self.isRecording,
@@ -1572,12 +1580,60 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         }
     }
 
+    /// Audio is retained only while suggestions are on.
+    private var retainsAudioForCorrection: Bool {
+        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
+    }
+
+    /// Transcribes the new recording while it is recorded when the model is
+    /// ready. Otherwise, and whenever the session cannot be used, the file is
+    /// transcribed after recording as before.
+    private func beginStreamingDictation() -> ParakeetStreamingSession? {
+        cancelStreamingDictation()
+        guard localModelPreparationState == .ready else { return nil }
+        let dictionary = dictionarySnapshot, retain = retainsAudioForCorrection
+        guard let session = LocalParakeetService.shared.beginStreamingTranscription(
+            dictionary: dictionary, retainForCorrection: retain) else { return nil }
+        streamingDictation = (session, dictionary.revision, retain)
+        return session
+    }
+
+    /// The recording is discarded or failed: its audio and partial result go.
+    private func cancelStreamingDictation() {
+        streamingDictation?.session.cancel()
+        streamingDictation = nil
+    }
+
+    /// The session for this transcription, if it began with the same dictionary
+    /// and retention; otherwise it is dropped and the file is transcribed.
+    private func takeStreamingDictation(dictionary: DictionarySnapshot, retainForCorrection: Bool) -> ParakeetStreamingSession? {
+        defer { streamingDictation = nil }
+        guard let streaming = streamingDictation else { return nil }
+        guard streaming.dictionaryRevision == dictionary.revision, streaming.retainForCorrection == retainForCorrection else {
+            streaming.session.cancel()
+            return nil
+        }
+        return streaming.session
+    }
+
+    /// The session's result; without one, or after any failure but cancellation,
+    /// the recorded file exactly as before.
+    private static func transcribeDictation(fileURL: URL, streaming: ParakeetStreamingSession?, dictionary: DictionarySnapshot,
+                                            retainForCorrection: Bool) async throws -> TranscriptionResult {
+        if let streaming {
+            do { return try await streaming.finish() } catch { try Task.checkCancellation() }
+        }
+        return try await LocalParakeetService.shared.transcribe(fileURL: fileURL, dictionary: dictionary,
+                                                                retainForCorrection: retainForCorrection)
+    }
+
     private func handleRecordingFailure(_ error: Error) {
         cancelRecordingInitializationTimer()
         audioRecorder.onRecordingReady = nil
         audioRecorder.onRecordingFailure = nil
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
+        cancelStreamingDictation()
         audioRecorder.cleanup()
         restoreAudioInterruptionIfNeeded()
         isRecording = false
@@ -1662,7 +1718,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         let dictionary = dictionarySnapshot
         // Audio is retained only while suggestions are on; macros and press-enter
         // results release it right after processing.
-        let retainForCorrection = isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
+        let retainForCorrection = retainsAudioForCorrection
+        let streaming = takeStreamingDictation(dictionary: dictionary, retainForCorrection: retainForCorrection)
         // Any cancel or dictionary edit after this point makes the result ineligible.
         let watchGeneration = correctionWatcher.currentGeneration
         cancelPendingShortcutStart()
@@ -1685,8 +1742,9 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         playAlertSound(named: "Pop")
         overlayManager.showTranscribing()
         audioRecorder.stopRecording { [weak self] fileURL in
-            guard let self else { return }
+            guard let self else { streaming?.cancel(); return }
             guard let fileURL else {
+                streaming?.cancel()
                 self.isTranscribing = false
                 self.audioRecorder.cleanup()
                 self.endCriticalDictationActivity()
@@ -1697,6 +1755,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                 return
             }
             guard self.isTranscribing else {
+                streaming?.cancel()
                 self.audioRecorder.cleanup()
                 self.refreshAvailableMicrophonesIfNeeded()
                 return
@@ -1712,8 +1771,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                     // Read off the main thread, alongside transcription, so it never delays it.
                     async let audioSeconds = Self.audioDuration(of: input)
                     // Casing restoration runs inside, before LocalDictationCore.
-                    let transcription = try await LocalParakeetService.shared.transcribe(
-                        fileURL: input, dictionary: dictionary, retainForCorrection: retainForCorrection)
+                    let transcription = try await Self.transcribeDictation(
+                        fileURL: input, streaming: streaming, dictionary: dictionary, retainForCorrection: retainForCorrection)
                     let raw = transcription.text
                     try Task.checkCancellation()
                     let seconds = await audioSeconds
@@ -2138,11 +2197,13 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
 
     /// Discards any watched paste, running verification and retained audio
     /// without finalizing: new dictation, cancel, setting off, dictionary
-    /// change, quit.
+    /// change, quit. A recording's streaming transcription holds audio
+    /// retained under the old state, so it goes too; stop transcribes the file.
     func stopCorrectionSuggestions() {
         correctionWatcher.cancel()
         correctionSuggestionTask?.cancel()
         correctionSuggestionTask = nil
+        cancelStreamingDictation()
         LocalParakeetService.shared.discardCorrectionSession()
     }
 

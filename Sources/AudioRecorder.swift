@@ -100,6 +100,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
 
     var onRecordingReady: (() -> Void)?
     var onRecordingFailure: ((Error) -> Void)?
+    /// Receives the recording as it is written: 16 kHz mono samples equal to
+    /// what the model reads back from the file. Memory only.
+    typealias SampleSink = @Sendable ([Float]) -> Void
+    /// One capture's sink, set when it is admitted and cleared once its
+    /// buffers have drained, so a stale capture never feeds a newer sink. Boxed:
+    /// a closure kept directly in the lock's generic state is re-wrapped in
+    /// reabstraction thunks on every `withLock`, until calling it overflows the stack.
+    private let sampleSink = OSAllocatedUnfairLock<CaptureSampleSink?>(initialState: nil)
     private let recordingConverterLock = OSAllocatedUnfairLock<AVAudioConverter?>(initialState: nil)
     private let recordingTargetFormat: AVAudioFormat = {
         AVAudioFormat(
@@ -293,6 +301,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
                 writeFailed: self.fileWriteErrorLock.withLock { _ in self.fileWriteError != nil })
             self.activeAudioFile = nil
             self.activeAudioFormat = nil
+            self.sampleSink.withLock { $0 = nil }
         }
 
         defer {
@@ -328,7 +337,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         }
     }
 
-    private func appendSampleBufferToFile(_ sampleBuffer: CMSampleBuffer) throws {
+    private func appendSampleBufferToFile(_ sampleBuffer: CMSampleBuffer, capture: UInt64) throws {
         if let fileWriteError = fileWriteErrorLock.withLock({ _ in
             self.fileWriteError
         }) {
@@ -390,6 +399,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         if sourceFormat == targetFormat {
             try activeAudioFile.write(from: inputBuffer)
             recordedFrameCount += AVAudioFramePosition(inputBuffer.frameLength)
+            forwardWrittenSamples(inputBuffer, capture: capture)
             return
         }
 
@@ -401,6 +411,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         guard outputBuffer.frameLength > 0 else { return }
         try activeAudioFile.write(from: outputBuffer)
         recordedFrameCount += AVAudioFramePosition(outputBuffer.frameLength)
+        forwardWrittenSamples(outputBuffer, capture: capture)
+    }
+
+    /// The written buffer, as the model will read it back from the file, to the
+    /// capture's sink. Sample-buffer queue only, so samples arrive in file order.
+    private func forwardWrittenSamples(_ buffer: AVAudioPCMBuffer, capture: UInt64) {
+        guard let sink = sampleSink.withLock({ $0 }), sink.capture == capture else { return }
+        sink.send(ParakeetAudioReader.samples(int16: buffer))
     }
 
     private func validatedPCMBufferFormat(
@@ -632,7 +650,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         try startRecording(deviceUID: deviceUID, ticket: lifecycle.reserve())
     }
 
-    func startRecording(deviceUID: String?, ticket: UInt64) throws {
+    func startRecording(deviceUID: String?, ticket: UInt64, sampleSink sink: SampleSink? = nil) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
 
         os_log(.info, log: recordingLog, "startRecording() entered")
@@ -648,11 +666,13 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
             try self.lifecycle.start(ticket: ticket, at: t0, setup: { capture in
                 self._bufferCount.withLock { $0 = 0 }
                 self.liveLevelNormalizerLock.withLock { $0.reset() }
+                self.sampleSink.withLock { $0 = sink.map { CaptureSampleSink(capture: capture, send: $0) } }
                 try self.makeSession(deviceUID: deviceUID, outputURL: outputURL, capture: capture)
                 self._recording.withLock { $0 = true }
                 self.startBufferWatchdog(capture: capture)
             }, cleanUp: {
                 self.tempFileURL = nil
+                self.sampleSink.withLock { $0 = nil }
             }, cancelled: AudioRecorderError.captureCancelled)
         }
 
@@ -809,7 +829,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
         guard _recording.withLock({ $0 }), let capture = lifecycle.capture(for: ObjectIdentifier(output)) else { return }
 
         do {
-            try appendSampleBufferToFile(sampleBuffer)
+            try appendSampleBufferToFile(sampleBuffer, capture: capture)
         } catch {
             fileWriteErrorLock.withLock { _ in
                 fileWriteError = error
@@ -839,5 +859,16 @@ final class AudioRecorder: NSObject, ObservableObject, AVCaptureAudioDataOutputS
                 self.onRecordingReady?()
             }
         }
+    }
+}
+
+/// One capture's sample sink. Immutable, so the lock holds only a reference.
+private final class CaptureSampleSink: Sendable {
+    let capture: UInt64
+    let send: AudioRecorder.SampleSink
+
+    init(capture: UInt64, send: @escaping AudioRecorder.SampleSink) {
+        self.capture = capture
+        self.send = send
     }
 }

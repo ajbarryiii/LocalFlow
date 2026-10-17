@@ -364,7 +364,10 @@ final class HostSessionCore {
         // The newest request wins; the old one's outcome is discarded by the fence.
         endInProgress(.cancelled(.superseded), now)
         knownRequestIDs.insert(requestID)
-        let ticket = slot.admit(requestID, generation: buffer.begin(requestID: requestID), now: now)
+        // With the model ready, the recording is transcribed while it is recorded; the buffer feeds the
+        // stream exactly the samples it collects and cancels it with the recording.
+        let generation = buffer.begin(requestID: requestID, stream: transcriber.beginStream())
+        let ticket = slot.admit(requestID, generation: generation, now: now)
         capture.recordingBoundary()
         idleSince = nil
         needsPublish = true
@@ -397,13 +400,13 @@ final class HostSessionCore {
         guard let closing else { return }
         self.closing = nil
         guard slot.isCurrent(closing.ticket), slot.phase == .transcribing else { return }
-        guard let samples = buffer.finish(requestID: closing.ticket.requestID) else {
+        guard let audio = buffer.finishRecording(requestID: closing.ticket.requestID) else {
             endInProgress(.failed(.notRecording), now)
             return
         }
         capture.recordingBoundary()
         needsPublish = true
-        transcribe(RecordedAudio(samples: samples), closing.ticket)
+        transcribe(audio, closing.ticket)
     }
 
     /// Ends the request in progress, if any: stops its recording or transcription, so its samples are
