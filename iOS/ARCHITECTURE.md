@@ -1729,6 +1729,18 @@ their strength comes from the arrows or from one test recording.
   the next dictation. An empty dictionary takes the unbiased path unchanged;
   otherwise `LocalParakeetService.transcribe(samples:directory:dictionary:)`
   boosts and then restores casing, as on the Mac.
+- **Transcription while recording.** When the model is ready as a request is
+  admitted, `DictationSampleBuffer` feeds a streaming session
+  (`LocalParakeetService.beginStreamingTranscription`) exactly the samples it
+  collects, so each complete chunk is encoded and decoded during the recording
+  and only the last partial chunk remains when it ends. The result equals the
+  batch transcription of the same samples. Its snapshot is taken at admission;
+  if the dictionary changed before the end, or the session fails, the drained
+  samples are transcribed as above. Cancel, supersession, lock, session end
+  and background-time expiry cancel the session; audio stays in memory. The
+  session holds the audio the model queue has not processed yet plus one
+  chunk window. Until its model work has drained after finish or cancel, the
+  engine counts it as busy, so the runtime is neither released nor replaced.
 - **Find strength** ("record a phrase and infer"). The recording runs in the
   foreground only; leaving it discards the recording. A check that has already
   started (after Done) uses no microphone and may finish in the background; its

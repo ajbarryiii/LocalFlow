@@ -4,6 +4,15 @@ import Foundation
 /// Bounded, streaming resampling to mono float32 16 kHz. Checks EOF before
 /// asking AVAudioFile to read again (AIFF can throw when read after EOF).
 enum ParakeetAudioReader {
+    /// What `read` returns once 16 kHz mono 16-bit samples are in a recording
+    /// file (x / 32768), so a recording can be streamed to the model as it is
+    /// written and still match a later read of the file.
+    static func samples(int16 buffer: AVAudioPCMBuffer) -> [Float] {
+        precondition(buffer.format.commonFormat == .pcmFormatInt16 && buffer.format.channelCount == 1, "Expected mono 16-bit samples")
+        let data = buffer.int16ChannelData![0]
+        return (0..<Int(buffer.frameLength)).map { Float(data[$0]) / 32768 }
+    }
+
     static func read(fileURL: URL, check: () throws -> Void,
                      consume: ([Float]) throws -> Void) throws {
         let file = try AVAudioFile(forReading: fileURL)

@@ -20,6 +20,7 @@ enum ParakeetSilenceCompactorTests {
         testInvalidSamplesReachTheModel()
         testSplitInvariance()
         testBoundedPieces()
+        testChunkedTranscription()
     }
 
     // A whole recording appended at once is emitted in bounded pieces, so the
@@ -153,6 +154,40 @@ enum ParakeetSilenceCompactorTests {
         TestSupport.expect(whole.count < input.count, "The fixture must contain compacted silence")
         for reads in [[1], [7], [159], [160], [161], [4096], [8192], [3, 500, 1, 16_000, 160]] {
             TestSupport.expectEqual(compact(input, reads: reads), whole)
+        }
+    }
+
+    // A chunked transcription with a compactor chunks the compacted audio: any
+    // split into appends gives the chunks and text of one append, and the
+    // chunks cover the compacted audio exactly.
+    private static func testChunkedTranscription() {
+        let input = zeros(1) + tone(2, level: -20) + zeros(4) + tone(1.5, level: -20, frequency: 300) + zeros(2)
+        let compacted = compact(input)
+        TestSupport.expect(compacted.count < input.count, "The fixture must contain compacted silence")
+        func transcribe(_ reads: [Int]) -> (text: String, chunks: [ParakeetChunk]) {
+            var transcription = ParakeetChunkedTranscription(size: s(1), overlap: s(0.25), compactor: ParakeetSilenceCompactor())
+            var chunks: [ParakeetChunk] = [], start = 0, index = 0
+            func words(_ chunk: ParakeetChunk) -> [ParakeetWord] {
+                chunks.append(chunk)
+                return [ParakeetWord(text: "w\(chunk.start).", start: chunk.start)]
+            }
+            repeat {
+                let end = min(start + (reads.isEmpty ? input.count : reads[index % reads.count]), input.count)
+                transcription.append(Array(input[start..<end]), transcribe: words)
+                start = end
+                index += 1
+            } while start < input.count
+            return (transcription.finish(transcribe: words), chunks)
+        }
+        let whole = transcribe([])
+        TestSupport.expectEqual(whole.chunks.first?.start, 0)
+        TestSupport.expectEqual(whole.chunks.last?.range.upperBound, compacted.count)
+        TestSupport.expect(whole.chunks.allSatisfy { Array(compacted[$0.range]) == $0.samples },
+                           "Every chunk must hold the compacted audio at its range")
+        for reads in [[1], [160], [4096], [s(3)], [3, 500, 16_000, 7]] {
+            let split = transcribe(reads)
+            TestSupport.expectEqual(split.chunks, whole.chunks)
+            TestSupport.expectEqual(split.text, whole.text)
         }
     }
 

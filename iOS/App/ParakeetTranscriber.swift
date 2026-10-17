@@ -134,13 +134,31 @@ final class ParakeetTranscriber: ObservableObject {
 }
 
 /// `LocalParakeetService` as a `SpeechRuntime`: one encoder function (`.fifteenSecondsFirst`) to bound
-/// memory. Dropping the last reference releases the model.
+/// memory. Dropping the last reference releases the model. The model loads from the bundle: a stable
+/// copy (`ParakeetModelStore`, macOS) does not survive iOS updates, because iOS compiles the Neural
+/// Engine program again for each installed build (TestFlight 20 → 21 reused the copy's cache entry
+/// but still compiled).
 private final class ParakeetRuntime: SpeechRuntime {
     private let service: LocalParakeetService
     private let directory: URL?
     private let dictionary: DictionarySnapshotBox
 
+    /// Test builds 18–21 kept a copy of the model in Application Support or the App Group
+    /// container; nothing uses it now. Removed in the background: `init` runs on the main actor
+    /// before capture starts, and loading from the bundle doesn't wait for it.
+    private static let removeTestCopies: Void = {
+        DispatchQueue.global(qos: .utility).async {
+            let files = FileManager.default
+            if let old = ParakeetModelStore.application?.root { try? files.removeItem(at: old) }
+            if let group = LocalFlowConfiguration.main?.appGroupIdentifier,
+               let container = files.containerURL(forSecurityApplicationGroupIdentifier: group) {
+                try? files.removeItem(at: container.appendingPathComponent("Library/Application Support/Models", isDirectory: true))
+            }
+        }
+    }()
+
     init(units: ComputePolicy.Units, directory: URL?, dictionary: DictionarySnapshotBox) {
+        _ = Self.removeTestCopies
         service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits)
         self.directory = directory
         self.dictionary = dictionary
@@ -163,7 +181,43 @@ private final class ParakeetRuntime: SpeechRuntime {
         guard let directory else { throw TranscriptionFailure.modelUnavailable }
         return try await service.probeStrength(samples: samples, directory: directory, word: word, dictionary: dictionary)
     }
+
+    /// The snapshot is taken now; `finish` fails, so the recording is transcribed as before, if the
+    /// dictionary changed meanwhile.
+    func beginStream(onEnd: @escaping @Sendable () -> Void) -> SpeechStream? {
+        guard let directory else { return nil }
+        let snapshot = dictionary.current
+        let session = service.beginStreamingTranscription(directory: directory, dictionary: snapshot, retainForCorrection: false,
+                                                          onEnd: onEnd)
+        return ParakeetStream(session: session, revision: snapshot.revision, dictionary: dictionary)
+    }
 }
+
+/// `ParakeetStreamingSession` as a `SpeechStream`. Audio stays in memory.
+private final class ParakeetStream: SpeechStream {
+    private let session: ParakeetStreamingSession
+    private let revision: UInt64
+    private let dictionary: DictionarySnapshotBox
+
+    init(session: ParakeetStreamingSession, revision: UInt64, dictionary: DictionarySnapshotBox) {
+        self.session = session
+        self.revision = revision
+        self.dictionary = dictionary
+    }
+
+    func append(_ samples: [Float]) { session.append(samples) }
+
+    func finish() async throws -> String {
+        guard dictionary.current.revision == revision else {
+            session.cancel()
+            throw TranscriptionFailure.transcriptionFailed
+        }
+        return try await session.finish().text
+    }
+
+    func cancel() { session.cancel() }
+}
+
 
 /// The current dictionary snapshot, set on the main actor and read when a transcription starts.
 private final class DictionarySnapshotBox: @unchecked Sendable {

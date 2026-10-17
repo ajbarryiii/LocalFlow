@@ -6,7 +6,8 @@ import Foundation
 /// unused encoder instances and transfers them only after warmup succeeds.
 /// Audio and text stay in memory; this backend never writes diagnostics.
 final class LocalParakeetService: @unchecked Sendable {
-    static let shared = LocalParakeetService()
+    // The app loads the model from its stable copy; scripts have no bundle identifier and no store.
+    static let shared = LocalParakeetService(modelStore: .application)
     static var bundleDirectory: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("Parakeet", isDirectory: true)
     }
@@ -21,6 +22,9 @@ final class LocalParakeetService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "localflow.local-model", qos: .userInitiated)
     private let preparationQueue = DispatchQueue(label: "localflow.local-model-optimization", qos: .utility)
     private var runtime: LocalParakeetRuntime?
+    // The directory a caller asked for; the runtime may load from its store copy.
+    private var runtimeSource: URL?
+    private let modelStore: ParakeetModelStore?
     private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
     private let onBucketUsed: (@Sendable (Int) -> Void)?
@@ -33,10 +37,13 @@ final class LocalParakeetService: @unchecked Sendable {
     // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
     // its serial queue. Benchmarks can compare startup policies explicitly.
     // A host that may lose the Neural Engine in the background can use .cpuOnly.
+    // With a model store, each directory is loaded from its stable copy when possible.
     init(startupStrategy: ParakeetStartupStrategy = .applicationDefault,
          computeUnits: MLComputeUnits = .cpuAndNeuralEngine,
-         onBucketUsed: (@Sendable (Int) -> Void)? = nil) {
+         onBucketUsed: (@Sendable (Int) -> Void)? = nil,
+         modelStore: ParakeetModelStore? = nil) {
         self.startupStrategy = startupStrategy
+        self.modelStore = modelStore
         self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
     }
@@ -53,9 +60,8 @@ final class LocalParakeetService: @unchecked Sendable {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    let runtime = try self.runtime(for: directory)
-                    try runtime.prepare(buckets: self.startupStrategy.initialBuckets)
-                    runtime.startBackgroundPreparation()
+                    // The runtime has prepared its initial functions.
+                    try self.runtime(for: directory).startBackgroundPreparation()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))
@@ -77,13 +83,26 @@ final class LocalParakeetService: @unchecked Sendable {
 
     // Call only on queue. Keep the runtime and any loaded models alive.
     private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
-        if let runtime, runtime.directory == directory { return runtime }
-        let runtime = try LocalParakeetRuntime(directory: directory, startupStrategy: startupStrategy,
-                                               computeUnits: computeUnits,
-                                               ownerQueue: queue, preparationQueue: preparationQueue,
-                                               onBucketUsed: onBucketUsed)
+        if let runtime, runtimeSource == directory { return runtime }
+        let make = { (directory: URL) in
+            try LocalParakeetRuntime(directory: directory, startupStrategy: self.startupStrategy,
+                                     computeUnits: self.computeUnits,
+                                     ownerQueue: self.queue, preparationQueue: self.preparationQueue,
+                                     onBucketUsed: self.onBucketUsed)
+        }
+        // The initial functions load here, so a store copy that fails the integrity
+        // check or Core ML's first load is removed and the bundle is used instead.
+        let prepare = { (runtime: LocalParakeetRuntime) in try runtime.prepare(buckets: self.startupStrategy.initialBuckets) }
+        let runtime: LocalParakeetRuntime
+        if let modelStore {
+            runtime = try modelStore.open(bundle: directory, make: make, prepare: prepare)
+        } else {
+            runtime = try make(directory)
+            try prepare(runtime)
+        }
         self.runtime?.cancelBackgroundPreparation()
         self.runtime = runtime
+        runtimeSource = directory
         return runtime
     }
 
@@ -165,15 +184,53 @@ final class LocalParakeetService: @unchecked Sendable {
             self.corrections.discard()
             let bias = runtime.graph(for: dictionary)
             let decoded = try runtime.transcribe(fileURL: fileURL, bias: bias, retain: retainForCorrection, check: check)
-            let text = CasingRestorer.apply(decoded.text, entries: dictionary.entries)
-            guard retainForCorrection, let retained = decoded.retained else {
-                return TranscriptionResult(text: text, dictationID: nil)
-            }
-            let session = RetainedCorrection(runtime: runtime, chunks: retained.chunks, dictionary: dictionary, base: text)
-            let id = self.corrections.retain(session, bytes: retained.bytes, now: ProcessInfo.processInfo.systemUptime)
-            if let id { self.scheduleExpiry(id: id) }
-            return TranscriptionResult(text: text, dictationID: id)
+            return try self.dictationResult(decoded.text, retained: decoded.retained, runtime: runtime, dictionary: dictionary,
+                                            check: check)
         }
+    }
+
+    /// The same dictation as `transcribe(fileURL:dictionary:retainForCorrection:)`,
+    /// fed with 16 kHz mono samples while recording. Chunk size, dictionary and
+    /// retention are fixed now; `finish` returns what the batch call returns for
+    /// the appended samples. Nil without the bundled model. Nothing is written.
+    func beginStreamingTranscription(dictionary: DictionarySnapshot, retainForCorrection: Bool) -> ParakeetStreamingSession? {
+        guard Self.isAvailable, let directory = Self.bundleDirectory else { return nil }
+        return beginStreamingTranscription(directory: directory, dictionary: dictionary, retainForCorrection: retainForCorrection)
+    }
+
+    /// `onEnd` runs once all of the session's model work has drained.
+    func beginStreamingTranscription(directory: URL, dictionary: DictionarySnapshot, retainForCorrection: Bool,
+                                     onEnd: (@Sendable () -> Void)? = nil) -> ParakeetStreamingSession {
+        let transcription = ParakeetStreamingTranscription<TranscriptionResult>(queue: queue, onEnd: onEnd) {
+            let runtime = try self.runtime(for: directory)
+            let bias = runtime.graph(for: dictionary)
+            var retained: RetainedAudio? = retainForCorrection ? RetainedAudio() : nil
+            return .init(transcription: runtime.makeTranscription(), transcribe: { chunk, check in
+                try runtime.transcribeChunk(chunk, bias: bias, retained: &retained, check: check)
+            }, complete: { text, check in
+                try check()
+                // What the batch call drops when it starts.
+                self.corrections.discard()
+                return try self.dictationResult(text, retained: retained, runtime: runtime, dictionary: dictionary, check: check)
+            }, abandon: { result in
+                // Cancelled after retaining: nobody will ever see this dictation.
+                if let id = result.dictationID { self.corrections.expire(id: id) }
+            })
+        }
+        return ParakeetStreamingSession(transcription: transcription, willFinish: { [weak self] in self?.cancelVerification() })
+    }
+
+    /// Casing restoration, then retention for correction when `retained` is set,
+    /// unless cancelled by then. Queue only.
+    private func dictationResult(_ raw: String, retained: RetainedAudio?, runtime: LocalParakeetRuntime,
+                                 dictionary: DictionarySnapshot, check: () throws -> Void) throws -> TranscriptionResult {
+        let text = CasingRestorer.apply(raw, entries: dictionary.entries)
+        guard let retained else { return TranscriptionResult(text: text, dictationID: nil) }
+        try check()
+        let session = RetainedCorrection(runtime: runtime, chunks: retained.chunks, dictionary: dictionary, base: text)
+        let id = corrections.retain(session, bytes: retained.bytes, now: ProcessInfo.processInfo.systemUptime)
+        if let id { scheduleExpiry(id: id) }
+        return TranscriptionResult(text: text, dictationID: id)
     }
 
     /// Registers a correction check now, cancelling any older one. Call it
@@ -275,13 +332,7 @@ final class LocalParakeetService: @unchecked Sendable {
                         try cancellation.check()
                         continuation.resume(returning: result)
                     } catch {
-                        // Core ML exceptions may carry input details;
-                        // expose only our content-free errors or cancellation.
-                        if error is CancellationError || error is LocalParakeetError {
-                            continuation.resume(throwing: error)
-                        } else {
-                            continuation.resume(throwing: LocalParakeetError.invalid("Local transcription failed while loading the model or processing audio."))
-                        }
+                        continuation.resume(throwing: LocalParakeetError.contentFree(error))
                     }
                 }
             }
@@ -316,6 +367,29 @@ struct TranscriptionResult: Sendable {
     let dictationID: UInt64?
 }
 
+/// A dictation transcribed while it is recorded (see `ParakeetStreamingTranscription`).
+/// Finishing cancels any running correction check, as starting a batch call does.
+final class ParakeetStreamingSession: Sendable {
+    private let transcription: ParakeetStreamingTranscription<TranscriptionResult>
+    private let willFinish: @Sendable () -> Void
+
+    fileprivate init(transcription: ParakeetStreamingTranscription<TranscriptionResult>, willFinish: @escaping @Sendable () -> Void) {
+        self.transcription = transcription
+        self.willFinish = willFinish
+    }
+
+    /// 16 kHz mono samples in recording order; never waits for model work.
+    func append(_ samples: [Float]) { transcription.append(samples) }
+
+    func finish() async throws -> TranscriptionResult {
+        willFinish()
+        return try await transcription.finish()
+    }
+
+    /// Drops the audio and any partial result; retains nothing. Idempotent.
+    func cancel() { transcription.cancel() }
+}
+
 /// Encoder output kept for re-decoding, owned (not a view on Core ML memory).
 private final class RetainedProjection {
     let buffer: FloatBuffer
@@ -347,8 +421,6 @@ private struct RetainedCorrection {
 }
 
 private final class LocalParakeetRuntime {
-    private enum Audio { case file(URL), samples([Float]) }
-
     let directory: URL
     let frontend: VDSPFrontEnd
     let math: NativeMath
@@ -426,7 +498,13 @@ private final class LocalParakeetRuntime {
 
     func transcribe(fileURL: URL, bias: BiasGraph?, retain: Bool,
                     check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        try transcribe(.file(fileURL), bias: bias, retain: retain, check: check)
+        var transcription = makeTranscription()
+        var retained: RetainedAudio? = retain ? RetainedAudio() : nil
+        try ParakeetAudioReader.read(fileURL: fileURL, check: check) { samples in
+            try transcription.append(samples) { try transcribeChunk($0, bias: bias, retained: &retained, check: check) }
+        }
+        let text = try transcription.finish { try transcribeChunk($0, bias: bias, retained: &retained, check: check) }
+        return (text, retained)
     }
 
     func transcribe(samples: [Float], check: () throws -> Void) throws -> String {
@@ -435,26 +513,11 @@ private final class LocalParakeetRuntime {
 
     func transcribe(samples: [Float], bias: BiasGraph?, retain: Bool,
                     check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        try transcribe(.samples(samples), bias: bias, retain: retain, check: check)
-    }
-
-    /// Silence is compacted before chunking, so chunk ranges and word starts
-    /// are positions in the compacted model input, not in the recording.
-    private func transcribe(_ audio: Audio, bias: BiasGraph?, retain: Bool,
-                            check: () throws -> Void) throws -> (text: String, retained: RetainedAudio?) {
-        var compactor = ParakeetSilenceCompactor(), chunker = makeChunker(), transcript = ParakeetTranscriptAssembler()
+        var transcription = makeTranscription()
         var retained: RetainedAudio? = retain ? RetainedAudio() : nil
-        func assemble(_ chunk: ParakeetChunk) throws {
-            transcript.append(try transcribeChunk(chunk, bias: bias, retained: &retained, check: check), covering: chunk.range)
-        }
-        func feed(_ samples: [Float]) throws { try chunker.append(samples, emit: assemble) }
-        switch audio {
-        case .file(let url): try ParakeetAudioReader.read(fileURL: url, check: check) { try compactor.append($0, emit: feed) }
-        case .samples(let samples): try compactor.append(samples, emit: feed)
-        }
-        try compactor.finish(emit: feed)
-        try chunker.finish(emit: assemble)
-        return (transcript.text, retained)
+        try transcription.append(samples) { try transcribeChunk($0, bias: bias, retained: &retained, check: check) }
+        let text = try transcription.finish { try transcribeChunk($0, bias: bias, retained: &retained, check: check) }
+        return (text, retained)
     }
 
     /// Re-decodes retained chunks exactly as transcribed, with a new bias.
@@ -478,12 +541,15 @@ private final class LocalParakeetRuntime {
     }
 
     // Installs also run on this queue, so readiness is fixed for the recording.
-    private func makeChunker() -> ParakeetChunker {
-        ParakeetChunker(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples)
+    // Silence is compacted before chunking, so chunk ranges and word starts
+    // are positions in the compacted model input, not in the recording.
+    func makeTranscription() -> ParakeetChunkedTranscription {
+        ParakeetChunkedTranscription(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples,
+                                     compactor: ParakeetSilenceCompactor())
     }
 
-    private func transcribeChunk(_ chunk: ParakeetChunk, bias: BiasGraph?, retained: inout RetainedAudio?,
-                                 check: () throws -> Void) throws -> [ParakeetWord] {
+    func transcribeChunk(_ chunk: ParakeetChunk, bias: BiasGraph?, retained: inout RetainedAudio?,
+                         check: () throws -> Void) throws -> [ParakeetWord] {
         guard let projection = try project(chunk.samples, check: check) else {
             retained?.chunks.append(RetainedChunk(range: chunk.range, projection: nil))
             return []

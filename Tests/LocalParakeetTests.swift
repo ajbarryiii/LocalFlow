@@ -38,6 +38,7 @@ enum LocalParakeetTests {
         TestSupport.expectEqual(silence.frames, 4)
         TestSupport.expect(silence.features.allSatisfy { $0.isFinite && $0 == 0 }, "Silence features must remain zero")
         testSyntheticAudioEOF()
+        testRecordedSamplesMatchFile()
         testBlobBounds()
         testPreparedModelReuse()
         testFifteenSecondBootstrap()
@@ -303,6 +304,41 @@ enum LocalParakeetTests {
         expectFailure {
             try ParakeetAudioReader.read(fileURL: url, check: { throw CancellationError() }, consume: { _ in })
         }
+    }
+
+    // Samples streamed while recording must equal what the model reads back
+    // from the recorder's 16 kHz mono 16-bit file, including the extremes.
+    private static func testRecordedSamplesMatchFile() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("synthetic.wav")
+        let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000.0, AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        var streamed: [Float] = [], state: UInt32 = 1
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatInt16, interleaved: true)
+            for count in [341, 1, 8192, 9000] {
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+                buffer.frameLength = AVAudioFrameCount(count)
+                for index in 0..<count {
+                    state = state &* 1_664_525 &+ 1_013_904_223
+                    buffer.int16ChannelData![0][index] = Int16(truncatingIfNeeded: state >> 16)
+                }
+                if count == 341 { buffer.int16ChannelData![0][0] = .min; buffer.int16ChannelData![0][1] = .max }
+                try file.write(from: buffer)
+                streamed += ParakeetAudioReader.samples(int16: buffer)
+            }
+        } catch { fatalError("Unable to create synthetic audio fixture") }
+        var read: [Float] = []
+        try! ParakeetAudioReader.read(fileURL: url, check: {}) { read += $0 }
+        TestSupport.expectEqual(read.count, streamed.count)
+        TestSupport.expect(read == streamed, "Streamed samples must equal the samples read from the file")
+        TestSupport.expectEqual(Array(streamed.prefix(2)), [-1, Float(32767) / 32768])
     }
 
     private static func testBlobBounds() {

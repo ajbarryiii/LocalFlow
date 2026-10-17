@@ -40,6 +40,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Parakeet/ParakeetDecoder.swift \
 	Sources/Parakeet/ParakeetFrames.swift \
 	Sources/Parakeet/ParakeetFrontEnd.swift \
+	Sources/Parakeet/ParakeetModelStore.swift \
 	Sources/Parakeet/ParakeetSilenceCompactor.swift \
 	Sources/UpdateManager.swift \
 	Sources/UpdateSignatureVerifier.swift \

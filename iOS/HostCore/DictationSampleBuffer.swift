@@ -22,6 +22,9 @@ final class DictationSampleBuffer: @unchecked Sendable {
     private var requestID: UUID?
     private var currentGeneration: UInt64 = 0
     private var samples: [Float] = []
+    /// Fed every accepted sample of the recording, in order, under the lock; cancelled whenever the
+    /// recording is discarded or replaced, and handed over with the samples by `finishRecording`.
+    private var stream: SpeechStream?
     private var meter = LevelMeter()
     private let hostClock: @Sendable () -> UInt64
     private var beginHostTime: UInt64 = 0
@@ -60,12 +63,14 @@ final class DictationSampleBuffer: @unchecked Sendable {
     /// Normalized input level in 0...1 while recording, otherwise 0.
     var level: Float { locked { requestID == nil ? 0 : meter.level } }
 
-    /// Starts accepting samples for `requestID`, discarding anything held for an earlier request.
+    /// Starts accepting samples for `requestID`, discarding anything held for an earlier request. `stream`,
+    /// if given, receives exactly the samples `finishRecording` will return.
     @discardableResult
-    func begin(requestID: UUID) -> UInt64 {
+    func begin(requestID: UUID, stream: SpeechStream? = nil) -> UInt64 {
         locked {
             reset()
             self.requestID = requestID
+            self.stream = stream
             currentGeneration += 1
             beginHostTime = hostClock()
             samples.reserveCapacity(min(maxSampleCount, Int(30 * Self.sampleRate)))
@@ -104,11 +109,19 @@ final class DictationSampleBuffer: @unchecked Sendable {
     /// Stops accepting and drains in one step, so no tap callback can append after the snapshot.
     /// Returns nil, changing nothing, unless `requestID` is the one recording.
     func finish(requestID: UUID) -> [Float]? {
+        let audio = finishRecording(requestID: requestID)
+        audio?.stream?.cancel()
+        return audio?.samples
+    }
+
+    /// As `finish(requestID:)`, with the stream that was fed exactly the returned samples.
+    func finishRecording(requestID: UUID) -> RecordedAudio? {
         locked {
             guard self.requestID == requestID else { return nil }
-            let collected = samples
+            let audio = RecordedAudio(samples: samples, stream: stream)
+            stream = nil
             reset()
-            return collected
+            return audio
         }
     }
 
@@ -132,12 +145,15 @@ final class DictationSampleBuffer: @unchecked Sendable {
         let isFirst = samples.isEmpty
         let accepted = newSamples.prefix(maxSampleCount - samples.count)
         samples.append(contentsOf: accepted)
+        stream?.append(Array(accepted))
         meter.update(with: accepted)
         if samples.count >= maxSampleCount { return .reachedLimit(generation: currentGeneration) }
         return isFirst ? .started(generation: currentGeneration) : .accepted
     }
 
     private func reset() {
+        stream?.cancel()
+        stream = nil
         requestID = nil
         endHostTime = nil
         samples = []
