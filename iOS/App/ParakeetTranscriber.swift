@@ -144,13 +144,16 @@ private final class ParakeetRuntime: SpeechRuntime {
     private let dictionary: DictionarySnapshotBox
 
     /// Test builds 18–21 kept a copy of the model in Application Support or the App Group
-    /// container; nothing uses it now.
+    /// container; nothing uses it now. Removed in the background: `init` runs on the main actor
+    /// before capture starts, and loading from the bundle doesn't wait for it.
     private static let removeTestCopies: Void = {
-        let files = FileManager.default
-        if let old = ParakeetModelStore.application?.root { try? files.removeItem(at: old) }
-        if let group = LocalFlowConfiguration.main?.appGroupIdentifier,
-           let container = files.containerURL(forSecurityApplicationGroupIdentifier: group) {
-            try? files.removeItem(at: container.appendingPathComponent("Library/Application Support/Models", isDirectory: true))
+        DispatchQueue.global(qos: .utility).async {
+            let files = FileManager.default
+            if let old = ParakeetModelStore.application?.root { try? files.removeItem(at: old) }
+            if let group = LocalFlowConfiguration.main?.appGroupIdentifier,
+               let container = files.containerURL(forSecurityApplicationGroupIdentifier: group) {
+                try? files.removeItem(at: container.appendingPathComponent("Library/Application Support/Models", isDirectory: true))
+            }
         }
     }()
 
