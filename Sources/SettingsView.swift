@@ -798,12 +798,17 @@ struct DictionaryEntryEditorView: View {
                         .foregroundStyle(.red)
                 }
             }
-            Picker("Strength", selection: $strength) {
-                ForEach(strengthOptions, id: \.self) { value in
-                    Text(DictionaryValidation.label(value)).tag(value)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Strength")
+                    .font(.caption.weight(.semibold))
+                Picker("Strength", selection: $strength) {
+                    ForEach(strengthOptions, id: \.self) { value in
+                        Text(DictionaryValidation.label(value)).tag(value)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
             Text("Raise the strength if the word is still misheard; lower it if it appears where it shouldn't.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -820,7 +825,9 @@ struct DictionaryEntryEditorView: View {
             }
         }
         .padding(20)
-        .frame(width: 440)
+        // The equal-width segments need 476 pt, or 536 pt with a custom strength
+        // as a ninth; a narrower sheet clips them on both sides.
+        .frame(width: 580)
         .onAppear {
             if let original {
                 text = original.text
