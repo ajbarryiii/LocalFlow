@@ -9,6 +9,33 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.4] - 2026-10-17
+
+Sixth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.3.
+
+### Changed
+
+- Long dictations finish almost as soon as you stop. Each full 30-second
+  stretch is transcribed while you are still speaking, so the wait after you
+  stop no longer grows with the length of the dictation.
+- Silence is shortened before transcription, so dictations with dead air or
+  long pauses transcribe faster. Silence at the start and end keeps 0.3
+  seconds, and a pause longer than 0.8 seconds, such as while searching for
+  a word, is shortened to 0.8 seconds. Shorter pauses are untouched. The saved
+  recording is not changed.
+- The speech model is kept in a stable copy in
+  `~/Library/Application Support/com.ajbarryiii.localflow.dev/Models`, so later
+  updates that keep the same model no longer prepare it again (about a
+  minute and a half per model size). 2.1.4 itself prepares the model once
+  more. The copy shares disk space with the app until an update replaces the
+  app, after which it uses about 370 MB.
+
+### Fixed
+
+- The Add Word and Edit Word sheet in Settings → Dictionary no longer cuts
+  off its sides.
+
 ## [2.1.3] - 2026-10-15
 
 Fifth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
