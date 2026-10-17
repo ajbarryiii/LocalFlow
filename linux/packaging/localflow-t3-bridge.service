@@ -4,7 +4,7 @@
 #
 # Not installed automatically. It needs a T3 token in
 # ~/.config/localflow/t3-token (mode 0600):
-#   (umask 077; t3 auth session issue --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
+#   (umask 077; t3 auth session issue --scope orchestration:read --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
 # Then:
 #   cp linux/packaging/localflow-t3-bridge.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload

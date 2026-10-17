@@ -67,59 +67,75 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-fn bool_field(v: &Value, key: &str) -> bool {
-    v.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
 fn present(v: &Value, key: &str) -> bool {
     v.get(key).is_some_and(|x| !x.is_null())
 }
 
-/// Counts the threads of an `OrchestrationShellSnapshot` (mirroring T3's
-/// `projectThreadAwareness`), with the precedence approval, input, failed
-/// (not counted), working, done. `now_iso` is the current time as
-/// [`now_iso`] formats it; `snoozedUntil` is compared with it as text.
+/// Counts the threads of a T3 Code 0.1.0 `OrchestrationV2ShellSnapshot`,
+/// mirroring T3's `projectThreadAwarenessV2`: a pending request (input,
+/// else approval) first, then the run status (`activityRunStatus`, else
+/// `status`). `now_iso` is the current time as [`now_iso`] formats it;
+/// `snoozedUntil` is compared with it as text.
 ///
 /// Entries of `threads` that are not objects are skipped, and a field of an
-/// unexpected type counts as absent. `None` when there is no `threads`
-/// array. Counts saturate.
+/// unexpected type counts as absent. `None` without a numeric
+/// `schemaVersion` and a `threads` array, so an older (0.0.x) shell is an
+/// unexpected response rather than zero counts. Counts saturate.
 pub fn count(shell: &Value, now_iso: &str) -> Option<Counts> {
+    shell.get("schemaVersion")?.as_u64()?;
     let threads = shell.get("threads")?.as_array()?;
     let mut c = Counts::default();
     for t in threads.iter().filter(|t| t.is_object()) {
-        if present(t, "archivedAt") {
+        let subagent = t
+            .get("lineage")
+            .and_then(|l| str_field(l, "relationshipToParent"))
+            == Some("subagent");
+        if present(t, "archivedAt") || present(t, "deletedAt") || subagent {
             continue;
         }
-        let session = t.get("session").and_then(|s| str_field(s, "status"));
-        let turn = t.get("latestTurn");
-        let turn_state = turn.and_then(|x| str_field(x, "state"));
-        let slot = if bool_field(t, "hasPendingApprovals") {
-            &mut c.approval
-        } else if bool_field(t, "hasPendingUserInput") {
+        let request = t.get("pendingRuntimeRequest").filter(|r| r.is_object());
+        let request_kind = request.and_then(|r| str_field(r, "kind"));
+        let status = str_field(t, "activityRunStatus").or_else(|| str_field(t, "status"));
+        let slot = if request_kind == Some("user_input") {
             &mut c.input
-        } else if session == Some("error") || turn_state == Some("error") {
-            continue;
-        } else if matches!(session, Some("starting" | "running")) || turn_state == Some("running") {
-            &mut c.working
+        } else if request.is_some() && request_kind != Some("auth_refresh") {
+            &mut c.approval
         } else {
-            let finished = turn_state == Some("completed")
-                || (turn_state == Some("interrupted")
-                    && turn.is_some_and(|x| present(x, "completedAt")))
-                || matches!(session, Some("ready" | "idle"));
-            let settled = match str_field(t, "settledOverride") {
-                Some("settled") => true,
-                Some("active") => false,
-                _ => present(t, "settledAt"),
-            };
-            let snoozed = str_field(t, "snoozedUntil").is_some_and(|s| s > now_iso);
-            if !finished || settled || snoozed {
-                continue;
+            match status {
+                Some("preparing" | "starting" | "running" | "waiting") => &mut c.working,
+                Some("completed") if wakes_agent(t) => &mut c.working,
+                Some("completed") => {
+                    let settled = match str_field(t, "settledOverride") {
+                        Some("settled") => true,
+                        Some("active") => false,
+                        _ => present(t, "settledAt"),
+                    };
+                    let snoozed = str_field(t, "snoozedUntil").is_some_and(|s| s > now_iso);
+                    if settled || snoozed {
+                        continue;
+                    }
+                    &mut c.done
+                }
+                _ => continue,
             }
-            &mut c.done
         };
         *slot = slot.saturating_add(1);
     }
     Some(c)
+}
+
+/// Background work left by a completed run that will wake the agent again
+/// (T3's `backgroundWorkHoldsCompletion`): any task but a `command`, such as
+/// a dev server. Unknown kinds count, as in T3.
+fn wakes_agent(thread: &Value) -> bool {
+    thread
+        .get("pendingBackgroundTasks")
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| {
+            tasks
+                .iter()
+                .any(|task| str_field(task, "kind") != Some("command"))
+        })
 }
 
 /// The current UTC time like JavaScript's `toISOString`:
@@ -735,19 +751,26 @@ mod tests {
     const NOW: &str = "2026-10-16T12:00:00.000Z";
     const TOKEN: &str = "synthetic-token-7f3a";
 
-    /// A synthetic thread with every field at rest, then `over` applied.
+    /// A synthetic T3 Code 0.1.0 thread shell at rest (idle, nothing
+    /// pending), then `over` applied.
     fn thread(over: Value) -> Value {
         let mut t = json!({
             "id": "thread-synthetic",
             "projectId": "project-synthetic",
             "title": "Invented title",
+            "lineage": {
+                "parentThreadId": null,
+                "relationshipToParent": null,
+                "rootThreadId": "thread-synthetic",
+            },
+            "status": "idle",
+            "activityRunStatus": null,
+            "pendingRuntimeRequest": null,
+            "pendingBackgroundTasks": [],
             "archivedAt": null,
+            "deletedAt": null,
             "settledOverride": null,
             "settledAt": null,
-            "hasPendingApprovals": false,
-            "hasPendingUserInput": false,
-            "session": null,
-            "latestTurn": null,
         });
         for (k, v) in over.as_object().unwrap() {
             t[k] = v.clone();
@@ -755,20 +778,20 @@ mod tests {
         t
     }
 
-    fn session(status: &str) -> Value {
-        json!({"threadId": "thread-synthetic", "status": status})
+    fn request(kind: &str) -> Value {
+        json!({"id": "request-synthetic", "kind": kind, "createdAt": "2026-10-16T11:00:00.000Z"})
     }
 
-    fn turn(state: &str, completed: bool) -> Value {
-        json!({
-            "turnId": "turn-synthetic",
-            "state": state,
-            "completedAt": if completed { json!("2026-10-16T11:00:00.000Z") } else { Value::Null },
-        })
+    fn task(kind: &str) -> Value {
+        json!({"taskId": "task-synthetic", "kind": kind})
+    }
+
+    fn shell(threads: Vec<Value>) -> Value {
+        json!({"schemaVersion": 1, "snapshotSequence": 1, "threads": threads, "archivedThreads": [], "projects": []})
     }
 
     fn counts_of(threads: Vec<Value>) -> Counts {
-        count(&json!({"snapshotSequence": 1, "threads": threads}), NOW).unwrap()
+        count(&shell(threads), NOW).unwrap()
     }
 
     fn one(over: Value) -> Counts {
@@ -807,83 +830,111 @@ mod tests {
     };
 
     #[test]
-    fn snapshot_without_threads_array_is_none() {
-        assert_eq!(count(&json!({"projects": []}), NOW), None);
-        assert_eq!(count(&json!({"threads": {}}), NOW), None);
+    fn snapshot_shape_is_checked() {
+        assert_eq!(
+            count(&json!({"schemaVersion": 1, "projects": []}), NOW),
+            None
+        );
+        assert_eq!(
+            count(&json!({"schemaVersion": 1, "threads": {}}), NOW),
+            None
+        );
         assert_eq!(count(&json!([]), NOW), None);
-        assert_eq!(count(&json!({"threads": []}), NOW), Some(NONE));
+        assert_eq!(
+            count(&json!({"schemaVersion": "1", "threads": []}), NOW),
+            None
+        );
+        assert_eq!(count(&shell(vec![]), NOW), Some(NONE));
+        // A T3 Code 0.0.x shell (no schemaVersion) is not read as zero counts.
+        let old = json!({
+            "snapshotSequence": 1,
+            "projects": [],
+            "threads": [{"id": "thread-synthetic", "hasPendingApprovals": true}],
+            "updatedAt": "2026-10-16T10:00:00.000Z",
+        });
+        assert_eq!(count(&old, NOW), None);
     }
 
     #[test]
-    fn archived_threads_are_skipped() {
+    fn archived_deleted_and_subagent_threads_are_skipped() {
+        let approval = request("command_execution_approval");
         assert_eq!(
-            one(json!({"archivedAt": "2026-10-16T10:00:00.000Z", "hasPendingApprovals": true})),
+            one(
+                json!({"archivedAt": "2026-10-16T10:00:00.000Z", "pendingRuntimeRequest": approval})
+            ),
             NONE
         );
         assert_eq!(
-            one(json!({"archivedAt": "2026-10-16T10:00:00.000Z", "session": session("running")})),
+            one(json!({"deletedAt": "2026-10-16T10:00:00.000Z", "status": "running"})),
             NONE
         );
+        let subagent = json!({
+            "parentThreadId": "thread-parent",
+            "relationshipToParent": "subagent",
+            "rootThreadId": "thread-parent",
+        });
+        assert_eq!(
+            one(json!({"lineage": subagent, "pendingRuntimeRequest": request("user_input")})),
+            NONE
+        );
+        // A fork is a thread of its own.
+        let fork = json!({
+            "parentThreadId": "thread-parent",
+            "relationshipToParent": "fork",
+            "rootThreadId": "thread-parent",
+        });
+        assert_eq!(one(json!({"lineage": fork, "status": "running"})), WORKING);
     }
 
     #[test]
-    fn approval_takes_precedence() {
+    fn pending_requests_come_first() {
+        assert_eq!(
+            one(json!({"pendingRuntimeRequest": request("user_input"), "status": "failed"})),
+            INPUT
+        );
         assert_eq!(
             one(json!({
-                "hasPendingApprovals": true,
-                "hasPendingUserInput": true,
-                "session": session("error"),
-                "latestTurn": turn("running", false),
+                "pendingRuntimeRequest": request("command_execution_approval"),
+                "activityRunStatus": "running",
                 "settledOverride": "settled",
                 "snoozedUntil": "2099-01-01T00:00:00.000Z",
             })),
             APPROVAL
         );
-    }
-
-    #[test]
-    fn input_beats_failed_and_working() {
+        // Any other kind, including ones this build does not know, asks for
+        // approval; an auth refresh does not.
         assert_eq!(
-            one(json!({"hasPendingUserInput": true, "session": session("error")})),
-            INPUT
+            one(json!({"pendingRuntimeRequest": request("dynamic_tool_call")})),
+            APPROVAL
         );
         assert_eq!(
-            one(json!({"hasPendingUserInput": true, "latestTurn": turn("running", false)})),
-            INPUT
+            one(json!({"pendingRuntimeRequest": request("invented_kind")})),
+            APPROVAL
         );
         assert_eq!(
-            one(json!({"hasPendingUserInput": true, "settledAt": "2026-10-16T10:00:00.000Z"})),
-            INPUT
-        );
-    }
-
-    #[test]
-    fn failed_threads_are_not_counted_and_beat_working() {
-        assert_eq!(one(json!({"session": session("error")})), NONE);
-        assert_eq!(one(json!({"latestTurn": turn("error", true)})), NONE);
-        assert_eq!(
-            one(json!({"session": session("running"), "latestTurn": turn("error", true)})),
-            NONE
+            one(json!({"pendingRuntimeRequest": request("auth_refresh"), "status": "running"})),
+            WORKING
         );
         assert_eq!(
-            one(json!({"session": session("error"), "latestTurn": turn("running", false)})),
+            one(json!({"pendingRuntimeRequest": request("auth_refresh")})),
             NONE
         );
     }
 
     #[test]
     fn working_threads() {
-        assert_eq!(one(json!({"session": session("starting")})), WORKING);
-        assert_eq!(one(json!({"session": session("running")})), WORKING);
-        assert_eq!(one(json!({"latestTurn": turn("running", false)})), WORKING);
-        assert_eq!(
-            one(json!({"session": session("ready"), "latestTurn": turn("running", false)})),
-            WORKING
-        );
+        for status in ["preparing", "starting", "running", "waiting"] {
+            assert_eq!(one(json!({"status": status})), WORKING, "{status}");
+            assert_eq!(
+                one(json!({"status": "completed", "activityRunStatus": status})),
+                WORKING,
+                "{status}"
+            );
+        }
         // Settled and snoozed affect done only.
         assert_eq!(
             one(json!({
-                "session": session("running"),
+                "status": "running",
                 "settledOverride": "settled",
                 "snoozedUntil": "2099-01-01T00:00:00.000Z",
             })),
@@ -892,59 +943,103 @@ mod tests {
     }
 
     #[test]
-    fn done_threads() {
-        assert_eq!(one(json!({"latestTurn": turn("completed", true)})), DONE);
-        assert_eq!(one(json!({"latestTurn": turn("interrupted", true)})), DONE);
-        assert_eq!(one(json!({"latestTurn": turn("interrupted", false)})), NONE);
-        assert_eq!(one(json!({"session": session("ready")})), DONE);
-        assert_eq!(one(json!({"session": session("idle")})), DONE);
+    fn background_work_that_wakes_the_agent_keeps_it_working() {
+        for kind in ["subagent", "monitor", "background_task", "invented_kind"] {
+            assert_eq!(
+                one(json!({"status": "completed", "pendingBackgroundTasks": [task(kind)]})),
+                WORKING,
+                "{kind}"
+            );
+        }
         assert_eq!(
-            one(json!({"session": session("stopped"), "latestTurn": turn("completed", true)})),
+            one(json!({"status": "completed", "pendingBackgroundTasks": [task("command")]})),
             DONE
         );
-        assert_eq!(one(json!({"session": session("stopped")})), NONE);
-        assert_eq!(one(json!({"session": session("interrupted")})), NONE);
-        assert_eq!(one(json!({})), NONE);
+        assert_eq!(
+            one(json!({
+                "status": "completed",
+                "pendingBackgroundTasks": [task("command"), task("monitor")],
+            })),
+            WORKING
+        );
+    }
+
+    #[test]
+    fn other_statuses_are_not_counted() {
+        for status in [
+            "idle",
+            "queued",
+            "interrupted",
+            "cancelled",
+            "rolled_back",
+            "failed",
+            "invented",
+        ] {
+            assert_eq!(one(json!({"status": status})), NONE, "{status}");
+        }
+        assert_eq!(one(json!({"status": null})), NONE);
+        // The activity status wins over the thread status.
+        assert_eq!(
+            one(json!({"status": "completed", "activityRunStatus": "invented"})),
+            NONE
+        );
+        assert_eq!(
+            one(json!({"status": "failed", "activityRunStatus": "running"})),
+            WORKING
+        );
+    }
+
+    #[test]
+    fn completed_threads_are_done() {
+        assert_eq!(one(json!({"status": "completed"})), DONE);
+        assert_eq!(
+            one(json!({"status": "completed", "activityRunStatus": null})),
+            DONE
+        );
     }
 
     #[test]
     fn settled_threads_are_not_done() {
-        let done = turn("completed", true);
         assert_eq!(
-            one(json!({"latestTurn": done, "settledOverride": "settled"})),
+            one(json!({"status": "completed", "settledOverride": "settled"})),
             NONE
         );
         assert_eq!(
-            one(json!({"latestTurn": done, "settledAt": "2026-10-16T10:00:00.000Z"})),
+            one(json!({"status": "completed", "settledAt": "2026-10-16T10:00:00.000Z"})),
             NONE
         );
         assert_eq!(
             one(json!({
-                "latestTurn": done,
+                "status": "completed",
                 "settledAt": "2026-10-16T10:00:00.000Z",
                 "settledOverride": "active",
             })),
             DONE
         );
         assert_eq!(
-            one(json!({"latestTurn": done, "settledOverride": "active"})),
+            one(json!({"status": "completed", "settledOverride": "active"})),
             DONE
         );
     }
 
     #[test]
     fn snoozed_threads_are_not_done() {
-        let done = turn("completed", true);
         assert_eq!(
-            one(json!({"latestTurn": done, "snoozedUntil": "2026-10-16T12:00:00.001Z"})),
+            one(json!({"status": "completed", "snoozedUntil": "2026-10-16T12:00:00.001Z"})),
             NONE
         );
-        assert_eq!(one(json!({"latestTurn": done, "snoozedUntil": NOW})), DONE);
         assert_eq!(
-            one(json!({"latestTurn": done, "snoozedUntil": "2026-10-16T11:59:59.999Z"})),
+            one(json!({"status": "completed", "snoozedUntil": NOW})),
             DONE
         );
-        assert_eq!(one(json!({"latestTurn": done, "snoozedUntil": null})), DONE);
+        assert_eq!(
+            one(json!({"status": "completed", "snoozedUntil": "2026-10-16T11:59:59.999Z"})),
+            DONE
+        );
+        assert_eq!(
+            one(json!({"status": "completed", "snoozedUntil": null})),
+            DONE
+        );
     }
 
     #[test]
@@ -953,23 +1048,32 @@ mod tests {
             json!(null),
             json!("thread"),
             json!(7),
-            thread(json!({"hasPendingApprovals": "true"})),
-            thread(json!({"session": "running"})),
-            thread(json!({"hasPendingUserInput": true})),
+            thread(json!({"pendingRuntimeRequest": "user_input"})),
+            thread(json!({"status": 3})),
+            thread(json!({"pendingBackgroundTasks": "monitor", "status": "completed"})),
+            thread(json!({"pendingRuntimeRequest": request("user_input")})),
         ]);
-        assert_eq!(c, INPUT);
+        assert_eq!(
+            c,
+            Counts {
+                approval: 0,
+                input: 1,
+                working: 0,
+                done: 1
+            }
+        );
     }
 
     #[test]
     fn counts_add_up() {
         let c = counts_of(vec![
-            thread(json!({"hasPendingApprovals": true})),
-            thread(json!({"hasPendingApprovals": true})),
-            thread(json!({"hasPendingUserInput": true})),
-            thread(json!({"session": session("running")})),
-            thread(json!({"session": session("ready")})),
-            thread(json!({"session": session("idle")})),
-            thread(json!({"latestTurn": turn("completed", true)})),
+            thread(json!({"pendingRuntimeRequest": request("command_execution_approval")})),
+            thread(json!({"pendingRuntimeRequest": request("file_change_approval")})),
+            thread(json!({"pendingRuntimeRequest": request("user_input")})),
+            thread(json!({"status": "running"})),
+            thread(json!({"status": "completed"})),
+            thread(json!({"status": "completed", "pendingBackgroundTasks": [task("command")]})),
+            thread(json!({"status": "idle"})),
         ]);
         assert_eq!(
             c,
@@ -977,7 +1081,7 @@ mod tests {
                 approval: 2,
                 input: 1,
                 working: 1,
-                done: 3
+                done: 2
             }
         );
     }
@@ -1369,14 +1473,15 @@ mod tests {
     #[test]
     fn poll_counts_a_snapshot() {
         let snapshot = json!({
+            "schemaVersion": 1,
             "snapshotSequence": 3,
             "projects": [{"id": "project-synthetic", "title": "Invented"}],
             "threads": [
-                thread(json!({"hasPendingApprovals": true})),
-                thread(json!({"session": session("running")})),
-                thread(json!({"latestTurn": turn("completed", true)})),
+                thread(json!({"pendingRuntimeRequest": request("command_execution_approval")})),
+                thread(json!({"status": "running"})),
+                thread(json!({"status": "completed"})),
             ],
-            "updatedAt": "2026-10-16T10:00:00.000Z",
+            "archivedThreads": [],
         });
         let (server, rx) = serve(json_response(&snapshot));
         let c = poll(&server, &token(), TIMEOUT).unwrap();
@@ -1402,7 +1507,10 @@ mod tests {
 
     #[test]
     fn poll_chunked_and_close_delimited() {
-        let body = json!({"threads": [thread(json!({"hasPendingUserInput": true}))]}).to_string();
+        let body = shell(vec![thread(
+            json!({"pendingRuntimeRequest": request("user_input")}),
+        )])
+        .to_string();
         let (a, b) = body.split_at(10);
         let chunked = format!(
             "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x};ext=1\r\n{b}\r\n0\r\n\r\n",
@@ -1485,7 +1593,7 @@ mod tests {
             host: "::1".into(),
             port: listener.local_addr().unwrap().port(),
         };
-        let rx = serve_on(listener, json_response(&json!({"threads": []})));
+        let rx = serve_on(listener, json_response(&shell(vec![])));
         assert_eq!(poll(&server, &token(), TIMEOUT), Ok(NONE));
         let req = rx.recv().unwrap();
         assert!(

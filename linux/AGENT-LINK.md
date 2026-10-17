@@ -168,9 +168,10 @@ New exit code: 8, the T3 token file is missing, unreadable or unsafe.
   - Create it with:
 
     ```bash
-    (umask 077; t3 auth session issue --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
+    (umask 077; t3 auth session issue --scope orchestration:read --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
     ```
-  - T3 cannot limit a session token's scope. The bridge only reads with it.
+  - `orchestration:read` (T3 Code 0.1.0 or later) is the only scope the
+    shell endpoint needs, so the token cannot change anything in T3.
   - The token is never printed or logged.
 - **Server:**
   - Each poll re-reads `server-runtime.json` from `$T3CODE_HOME/userdata/`
@@ -186,24 +187,31 @@ New exit code: 8, the T3 token file is missing, unreadable or unsafe.
     `Authorization: Bearer <token>` and `Connection: close`.
   - Timeout: 5 s. Response limit: 32 MiB. Content-Length, chunked and
     close-delimited bodies are accepted.
-- **Counting:** each object in the snapshot's `threads` is counted as
-  follows. This mirrors T3's `projectThreadAwareness`.
-  - Threads with a non-null `archivedAt` are skipped.
-  - `approval`: `hasPendingApprovals`.
-  - Else `input`: `hasPendingUserInput`.
-  - Else failed, not counted: `session.status == "error"` or
-    `latestTurn.state == "error"`.
-  - Else `working`: `session.status` is `starting` or `running`, or
-    `latestTurn.state == "running"`.
-  - Else `done`, only if the thread is neither settled nor snoozed:
-    - It counts as done when `latestTurn.state == "completed"`,
-      `latestTurn.state == "interrupted"` with a non-null `completedAt`, or
-      `session.status` is `ready` or `idle`.
-    - Settled means `settledOverride == "settled"`, or a non-null
-      `settledAt` when `settledOverride` is not `"active"`.
-    - Snoozed means a `snoozedUntil` string later than now (ISO 8601 UTC,
-      compared as text).
-  - A snapshot without a `threads` array is a protocol error.
+- **Counting:** this targets T3 Code 0.1.0's shell snapshot
+  (`OrchestrationV2ShellSnapshot`) and mirrors T3's
+  `projectThreadAwarenessV2`. Each object in the snapshot's `threads` is
+  counted as follows.
+  - Threads are skipped when they have a non-null `archivedAt` or
+    `deletedAt`, or when `lineage.relationshipToParent` is `"subagent"`.
+  - `input`: `pendingRuntimeRequest.kind == "user_input"`.
+  - Else `approval`: a non-null `pendingRuntimeRequest` whose `kind` is not
+    `"auth_refresh"`.
+  - Otherwise the run status decides. It is `activityRunStatus` when that is
+    a string, else `status`:
+    - `preparing`, `starting`, `running` or `waiting`: `working`.
+    - `completed`: `working` while `pendingBackgroundTasks` holds a task
+      whose `kind` is not `"command"` (subagents, monitors and unknown kinds
+      wake the agent; a dev server does not). Otherwise `done`, but only if
+      the thread is neither settled nor snoozed.
+    - Anything else (`failed`, `idle`, `queued`, `interrupted`,
+      `cancelled`, `rolled_back`) is not counted.
+  - Settled means `settledOverride == "settled"`, or a non-null `settledAt`
+    when `settledOverride` is not `"active"`.
+  - Snoozed means a `snoozedUntil` string later than now (ISO 8601 UTC,
+    compared as text).
+  - A snapshot without a numeric `schemaVersion` and a `threads` array is a
+    protocol error. Older T3 Code (0.0.x) shells therefore show as an
+    unexpected response, never as zero counts.
 - **Reporting:**
   - After each successful poll, the bridge sends `agents-set` with the
     counts and `ttl` of three intervals (clamped to 5..600 s).

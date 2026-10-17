@@ -441,18 +441,29 @@ fn fake_t3(token: &'static str, body: String) -> u16 {
     port
 }
 
-/// A synthetic T3 thread shell with the given flags.
-fn thread(approval: bool, input: bool, session: &str, turn: &str) -> serde_json::Value {
+/// A synthetic T3 Code 0.1.0 thread shell with this pending request kind
+/// and run status.
+fn thread(request: Option<&str>, status: &str) -> serde_json::Value {
     serde_json::json!({
         "id": "thread-synthetic",
         "title": "Zorblax",
+        "lineage": {
+            "parentThreadId": null,
+            "relationshipToParent": null,
+            "rootThreadId": "thread-synthetic",
+        },
+        "status": status,
+        "activityRunStatus": null,
+        "pendingRuntimeRequest": request.map(|kind| serde_json::json!({
+            "id": "request-synthetic",
+            "kind": kind,
+            "createdAt": "2026-10-16T10:00:00.000Z",
+        })),
+        "pendingBackgroundTasks": [],
         "archivedAt": null,
+        "deletedAt": null,
         "settledOverride": null,
         "settledAt": null,
-        "hasPendingApprovals": approval,
-        "hasPendingUserInput": input,
-        "session": {"status": session},
-        "latestTurn": {"state": turn, "completedAt": null},
     })
 }
 
@@ -466,16 +477,17 @@ fn t3_bridge_reports_thread_counts() {
     const TOKEN: &str = "synthetic-token-1234";
     let (rig, _) = start("link-t3");
     let shell = serde_json::json!({
+        "schemaVersion": 1,
         "snapshotSequence": 1,
         "projects": [],
         "threads": [
-            thread(true, false, "running", "running"),
-            thread(false, true, "running", "running"),
-            thread(false, true, "ready", "completed"),
-            thread(false, false, "running", "running"),
-            thread(false, false, "ready", "completed"),
+            thread(Some("command_execution_approval"), "running"),
+            thread(Some("user_input"), "running"),
+            thread(Some("user_input"), "completed"),
+            thread(None, "running"),
+            thread(None, "completed"),
         ],
-        "updatedAt": "2026-10-16T10:00:00.000Z",
+        "archivedThreads": [],
     });
     let port = fake_t3(TOKEN, shell.to_string());
     let t3_home = rig.dir.path().join("t3");

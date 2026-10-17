@@ -273,9 +273,15 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
 - **Agent skill:** give agents `skills/localflow-dictation/SKILL.md`, e.g.
   link it into `~/.claude/skills/`, so they know what to do with
   `[dictated]` prompts.
-- **Bridge:** it needs a T3 token in `~/.config/localflow/t3-token` with
-  mode 0600. A systemd user unit for it is in
-  `packaging/localflow-t3-bridge.service`.
+- **Bridge:** it reads T3 Code 0.1.0's thread list, so it needs T3 Code
+  0.1.0 or later, and a read-only T3 token in
+  `~/.config/localflow/t3-token` with mode 0600:
+
+  ```bash
+  (umask 077; t3 auth session issue --scope orchestration:read --label localflow --ttl 30d --token-only > ~/.config/localflow/t3-token)
+  ```
+
+  A systemd user unit for it is in `packaging/localflow-t3-bridge.service`.
 - **Waybar:**
   - Bind the module's `on-click` to `localflowctl dict review` to approve
     suggestions with a click.
