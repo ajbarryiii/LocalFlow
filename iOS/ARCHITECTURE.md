@@ -1891,6 +1891,15 @@ TestFlight only, measure what is left.
     (`BarControlFrames`).
   - Until it has reported any, only the strip below the controls counts, as
     above.
+  - The Start/Stop capsule's tap area is the capsule inset by 6 pt on every
+    side (`StartCapsule.hitInset`); it looks the same. It reports that smaller
+    frame, so the keys take the ring around it, above O and P (user decision,
+    2026-10-18: the capsule is never missed).
+  - A control that moves or goes keeps its previous frame for
+    `BarControlRegions.linger` (0.6 s) as well (`BarControlRegions`, pure).
+    The bar animates chips over 0.2 s and the Start capsule with a spring, and
+    reported frames are the destination layout, so a control still visible
+    where it was stays the bar's (code review, 2026-10-18).
   - A touch in a status line or in empty bar space now types the top-row key
     nearest it. It counts as `aboveKeys`.
 

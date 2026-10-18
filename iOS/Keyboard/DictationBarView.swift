@@ -29,21 +29,24 @@ final class SwipeStripModel: ObservableObject {
 @MainActor
 final class BarControlFrames {
     static let space = "lf.bar"
-    private var frames: [String: CGRect] = [:]
+    private var regions = BarControlRegions()
 
-    var rects: [KeyRect] {
-        frames.values.map { KeyRect(x: Double($0.minX), y: Double($0.minY), width: Double($0.width), height: Double($0.height)) }
-    }
+    /// The controls' frames now, with those a control left while it may still be animating there.
+    var rects: [KeyRect] { regions.rects(now: CACurrentMediaTime()) }
 
     func set(_ id: String, _ frame: CGRect?) {
-        frames[id] = frame
+        let rect = frame.map { KeyRect(x: Double($0.minX), y: Double($0.minY), width: Double($0.width), height: Double($0.height)) }
+        regions.set(id, rect, now: CACurrentMediaTime())
     }
 }
 
 private extension View {
-    /// Reports this control's frame in the bar to `controls` while it is shown.
-    func barControl(_ id: String, in controls: BarControlFrames) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarControlFrames.space)) } action: { controls.set(id, $0) }
+    /// Reports this control's frame in the bar to `controls` while it is shown, inset by `inset` on every side
+    /// for a control whose tap area is smaller than its look.
+    func barControl(_ id: String, in controls: BarControlFrames, inset: CGFloat = 0) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarControlFrames.space)).insetBy(dx: inset, dy: inset) } action: {
+            controls.set(id, $0)
+        }
             .onDisappear { controls.set(id, nil) }
     }
 }
@@ -115,7 +118,7 @@ struct DictationBarView: View {
                 .barControl("cancel", in: controls)
             }
             StartCapsule(client: client, state: state, height: height, onAction: onAction, onUnavailable: onMenu)
-                .barControl("start", in: controls)
+                .barControl("start", in: controls, inset: StartCapsule.hitInset)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -247,6 +250,10 @@ private struct Chip: View {
 /// The primary control: "Start" with a waveform glyph, a red "Stop" with live levels and the elapsed
 /// time while starting or recording, and a spinner while transcribing.
 private struct StartCapsule: View {
+    /// The tap area is the capsule inset this much on every side; the keys take the rest (user decision,
+    /// 2026-10-18: the capsule is never missed, and fast top-row taps land around it). It looks the same.
+    static let hitInset: CGFloat = 6
+
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
@@ -267,7 +274,7 @@ private struct StartCapsule: View {
                 .padding(.horizontal, 14)
                 .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
                 .background(Capsule().fill(fill))
-                .contentShape(Capsule())
+                .contentShape(Capsule().inset(by: Self.hitInset))
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
