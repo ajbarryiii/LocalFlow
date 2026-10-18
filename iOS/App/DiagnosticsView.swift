@@ -271,6 +271,8 @@ private struct TypingCountersSection: View {
         Section {
             Toggle("Count typing events", isOn: $enabled)
                 .accessibilityIdentifier("diagnostics.typingCountersEnabled")
+            NavigationLink("Typing test") { TypingTestView(settings: settings) }
+                .accessibilityIdentifier("diagnostics.typingTest")
             ForEach(Self.titles, id: \.0) { entry in
                 VStack(alignment: .leading, spacing: 2) {
                     LabeledContent(entry.1, value: "\(counters.total(entry.0))")

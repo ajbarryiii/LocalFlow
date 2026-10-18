@@ -1969,6 +1969,44 @@ letter.
   local logging, approved for TestFlight only. It must be removed before the
   first production release.
 
+**Typing test (TestFlight only; remove before production).** The user asked
+for this on 2026-10-18 to compare dropped keys between LocalFlow and Apple's
+keyboard.
+- It lives in Diagnostics, next to the counters (`App/TypingTestView.swift`).
+- **Passages.** A fixed set of invented sentences, lowercase letters and
+  single spaces only, so every key press is one character and Shift is never
+  needed.
+- **Field.** Autocorrection, spell checking, inline predictions,
+  autocapitalization and smart quotes, dashes and insert/delete are off for
+  this field only. Both keyboards honour these, so Apple's keyboard types raw.
+- **Attempt.** The user picks which keyboard they are testing (iOS does not
+  say), types the passage without correcting, and taps Score. Timing runs
+  from the first edit to the last.
+- **Scoring** (`TypingTestScore`, HostCore, pure). Both texts are lowercased
+  and aligned by Levenshtein distance with unit costs. Ties in the backtrace
+  prefer, in order: a match or substitution, a dropped character, an extra
+  character. Each passage character comes out as matched, dropped or wrong;
+  each extra typed character as extra. Dropped characters are broken down:
+  - by row of the intended key: top, middle, bottom, space, other
+  - by position: the space itself, the first letter of a word (a one-letter
+    word counts here), the last letter of a word, or inside a word
+
+  The score also gives characters per minute: characters typed per minute of
+  the attempt's span.
+- **Counters.** On a LocalFlow attempt with the typing counters on, the test
+  reads `typingCounters` when the field starts editing (the keyboard added
+  its pending counts when it last hid). It reads them again a second after
+  Score has closed the keyboard. The difference in `touchDown` is set
+  against the characters typed. Equal means every touch that reached the keys
+  typed; fewer touch-downs than characters typed plus dropped means taps never
+  reached the keys.
+- **Display.** Each attempt shows the passage with dropped characters struck
+  through in red, wrong ones in orange, and extra ones in blue, plus the
+  numbers.
+- **Privacy.** Attempts and the typed text stay in the app's memory and go
+  when it quits. Nothing is stored or sent, and the passages are invented
+  text. Remove this before the first production release, with the counters.
+
 ## Custom dictionary (contract, 2026-10-15)
 
 The macOS custom dictionary (`Sources/Dictionary`, the fixed bonus with a
