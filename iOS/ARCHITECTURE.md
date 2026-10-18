@@ -1994,9 +1994,13 @@ keyboard.
   The score also gives characters per minute: characters typed per minute of
   the attempt's span.
 - **Counters.** On a LocalFlow attempt with the typing counters on, the test
-  reads `typingCounters` when the field starts editing (the keyboard added
-  its pending counts when it last hid). It reads them again a second after
-  Score has closed the keyboard. The difference in `touchDown` is set
+  reads `typingCounters` when the field first starts editing in that attempt
+  (the keyboard added its pending counts when it last hid). It reads them
+  once per attempt, so a refocus never drops touches already counted. It reads
+  them again a second after Score has closed the keyboard. Score and Next
+  passage both close the keyboard and lock the field for that second, so the
+  keyboard adds its pending counts and no new attempt's counts mix in (code
+  review, 2026-10-18). The difference in `touchDown` is set
   against the characters typed. Equal means every touch that reached the keys
   typed; fewer touch-downs than characters typed plus dropped means taps never
   reached the keys.

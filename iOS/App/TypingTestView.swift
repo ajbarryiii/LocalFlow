@@ -29,6 +29,9 @@ struct TypingTestView: View {
     @State private var lastEdit: Date?
     @State private var countersAtStart: TypingCounters?
     @State private var attempts: [Attempt] = []
+    /// For a second after Score or Next passage, while the closed keyboard adds its pending counts (and Score
+    /// reads them), no new attempt can start, so no attempt's counts mix with another's (code review).
+    @State private var settling = false
 
     private var passage: String { TypingTestScore.passages[passageIndex % TypingTestScore.passages.count] }
 
@@ -43,18 +46,16 @@ struct TypingTestView: View {
                 Text(passage)
                     .font(.title3)
                     .accessibilityIdentifier("typingTest.passage")
-                RawTextView(text: $typed, onBeginEditing: beganEditing, onEdit: edited)
+                RawTextView(text: $typed, isEditable: !settling, onBeginEditing: beganEditing, onEdit: edited)
                     .frame(minHeight: 110)
                     .accessibilityIdentifier("typingTest.field")
                 HStack {
                     Button("Score", action: score)
-                        .disabled(typed.isEmpty)
+                        .disabled(typed.isEmpty || settling)
                         .accessibilityIdentifier("typingTest.score")
                     Spacer()
-                    Button("Next passage") {
-                        startOver()
-                        passageIndex += 1
-                    }
+                    Button("Next passage") { finishAttempt(reading: nil) }
+                        .disabled(settling)
                 }
                 .buttonStyle(.borderless)
             } header: {
@@ -98,8 +99,9 @@ struct TypingTestView: View {
     }
 
     private func beganEditing() {
-        // The keyboard added its pending counts when it last hid, so this is where the attempt's counting starts.
-        if firstEdit == nil { countersAtStart = settings?.typingCounters }
+        // The keyboard added its pending counts when it last hid, so this is where the attempt's counting starts:
+        // once per attempt, so a refocus never drops touches already counted for it.
+        if countersAtStart == nil { countersAtStart = settings?.typingCounters }
     }
 
     private func edited() {
@@ -115,19 +117,26 @@ struct TypingTestView: View {
         let attempt = Attempt(keyboard: keyboard, passage: passage, score: TypingTestScore.score(passage: passage, typed: typed),
                               seconds: (lastEdit ?? Date()).timeIntervalSince(firstEdit ?? Date()))
         attempts.append(attempt)
-        let start = countersAtStart
-        // Closing the keyboard makes it add its pending counts; read them a moment later.
+        let counted = keyboard == .localFlow && settings?.typingCountersEnabled == true
+        finishAttempt(reading: counted ? countersAtStart.map { (id: attempt.id, start: $0) } : nil)
+    }
+
+    /// Ends the attempt (scored or skipped): closes the keyboard, which makes it add its pending counts, moves to
+    /// the next passage, and holds new attempts off for a second. Then `reading`'s attempt gets the touch-downs
+    /// counted since its start.
+    private func finishAttempt(reading: (id: UUID, start: TypingCounters)?) {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        if keyboard == .localFlow, settings?.typingCountersEnabled == true, let start {
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                guard let end = settings?.typingCounters,
-                      let index = attempts.firstIndex(where: { $0.id == attempt.id }) else { return }
-                attempts[index].touchDowns = max(0, end.total(.touchDown) - start.total(.touchDown))
-            }
-        }
         startOver()
         passageIndex += 1
+        settling = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if let reading, let end = settings?.typingCounters,
+               let index = attempts.firstIndex(where: { $0.id == reading.id }) {
+                attempts[index].touchDowns = max(0, end.total(.touchDown) - reading.start.total(.touchDown))
+            }
+            settling = false
+        }
     }
 
     private func startOver() {
@@ -204,6 +213,7 @@ struct TypingTestView: View {
 /// A plain text view with every typing aid off (ARCHITECTURE.md, "Typing test"), so either keyboard types raw.
 private struct RawTextView: UIViewRepresentable {
     @Binding var text: String
+    var isEditable: Bool
     var onBeginEditing: () -> Void
     var onEdit: () -> Void
 
@@ -227,6 +237,7 @@ private struct RawTextView: UIViewRepresentable {
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
         if view.text != text { view.text = text }
+        if view.isEditable != isEditable { view.isEditable = isEditable }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
