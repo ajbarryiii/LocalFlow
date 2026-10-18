@@ -1030,6 +1030,9 @@ final class KeyboardHarness {
                 editor.keyTouchedDown(now: time)
             case .type(let action, let field):
                 editor.press(action, field: field, at: time, now: time)
+            case .tap(let action, _, _, let field):
+                // Soft taps stay off here; without a prior a tap types its nearest key.
+                editor.press(action, field: field, at: time, now: time)
             case .beginDelete:
                 let press = deleteKey.began(at: time, documentID: document.documentID)
                 deleteDue = (press.token, time + press.firstAt, time)

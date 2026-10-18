@@ -38,6 +38,11 @@ enum KeyTouchModelTests {
             ("swipeTrailKeepsAtLeastTwoPoints", testSwipeTrailKeepsAtLeastTwoPoints),
             ("swipeTrailToleratesDisorderedTimestamps", testSwipeTrailToleratesDisorderedTimestamps),
             ("swipeTrailTapersAndFadesTowardsItsTail", testSwipeTrailTapersAndFadesTowardsItsTail),
+            ("softTapsComeAtReleaseWithTheTouchDownPoint", testSoftTapsComeAtReleaseWithTheTouchDownPoint),
+            ("softTapsComeAtRollover", testSoftTapsComeAtRollover),
+            ("softTapsAreOnlyLetterTouches", testSoftTapsAreOnlyLetterTouches),
+            ("softTapsLeaveFunctionKeysAndSwipesAlone", testSoftTapsLeaveFunctionKeysAndSwipesAlone),
+            ("softTapsOffTypeAsBefore", testSoftTapsOffTypeAsBefore),
         ]
     }
 
@@ -47,9 +52,10 @@ enum KeyTouchModelTests {
         KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: false)
     }
 
-    private static func model(_ layer: KeyboardLayer = .letters, swipe: Bool = false) -> KeyTouchModel {
+    private static func model(_ layer: KeyboardLayer = .letters, swipe: Bool = false, softTaps: Bool = false) -> KeyTouchModel {
         var model = KeyTouchModel()
         model.swipeEnabled = swipe
+        model.softTapsEnabled = softTaps
         _ = model.keysChanged(keys(layer), layer: layer)
         return model
     }
@@ -780,5 +786,95 @@ extension KeyTouchModelTests {
         let equal = SwipeTrail.points(from: samples([5, 5, 5]))
         TestSupport.expectEqual(equal.map(\.width), [0, 4, 8])
         TestSupport.expect(close(equal[1].alpha, 0.225), "equal \(equal)")
+    }
+
+    // MARK: Soft key edges
+
+    private static func testSoftTapsComeAtReleaseWithTheTouchDownPoint() {
+        // ARCHITECTURE.md, "Soft key edges": the key nearest the touch-down point, and that point, wherever
+        // the finger lifts; the field is the touch-down one.
+        let field = UUID()
+        var model = model(softTaps: true)
+        let a = frame(.character("a")), s = center(.character("s"))
+        let x = a.maxX - 2, y = a.y + 3
+        TestSupport.expectEqual(model.began(1, x: x, y: y, field: field), [.keyDown])
+        TestSupport.expectEqual(model.calloutAction, .character("a"))
+        TestSupport.expectEqual(model.moved(1, x: s.x, y: s.y), [])
+        TestSupport.expectEqual(model.ended(1, x: s.x, y: s.y), [.tap(.character("a"), x: x, y: y, field: field)])
+        TestSupport.expect(model.touches.isEmpty, "touch kept")
+        // A cancelled tap still types nothing.
+        _ = model.began(2, x: x, y: y)
+        TestSupport.expectEqual(model.cancelled(2), [])
+    }
+
+    private static func testSoftTapsComeAtRollover() {
+        var model = model(softTaps: true)
+        let a = center(.character("a")), s = center(.character("s")), space = center(.space)
+        _ = model.began(1, x: a.x, y: a.y)
+        TestSupport.expectEqual(model.began(2, x: s.x, y: s.y), [.keyDown, .tap(.character("a"), x: a.x, y: a.y, field: nil)])
+        TestSupport.expectEqual(model.ended(1, x: a.x, y: a.y), [])
+        // Press order holds across a space: the letter commits first, the space types as before.
+        TestSupport.expectEqual(model.began(3, x: space.x, y: space.y),
+                                [.keyDown, .tap(.character("s"), x: s.x, y: s.y, field: nil), .startHoldTimer(3)])
+        TestSupport.expectEqual(model.ended(2, x: s.x, y: s.y), [])
+        TestSupport.expectEqual(model.ended(3, x: space.x, y: space.y), [.cancelHoldTimer(3), .type(.space)])
+    }
+
+    private static func testSoftTapsAreOnlyLetterTouches() {
+        // Another layer's characters type as before, even after the keys return to letters under the finger.
+        var numbers = model(.numbers, softTaps: true)
+        let one = center(.character("1"), .numbers)
+        _ = numbers.began(1, x: one.x, y: one.y)
+        TestSupport.expectEqual(numbers.ended(1, x: one.x, y: one.y), [.type(.character("1"))])
+        _ = numbers.began(2, x: one.x, y: one.y)
+        TestSupport.expectEqual(numbers.keysChanged(keys(.letters), layer: .letters), [])
+        TestSupport.expectEqual(numbers.ended(2, x: one.x, y: one.y), [.type(.character("1"))])
+        // A slide from the layer key onto a letter is not a tap.
+        var slide = model(softTaps: true)
+        let layer = center(.layer(.numbers)), a = center(.character("a"))
+        TestSupport.expectEqual(slide.began(1, x: layer.x, y: layer.y), [.keyDown, .type(.layer(.numbers))])
+        TestSupport.expectEqual(slide.moved(1, x: a.x, y: a.y), [])
+        TestSupport.expectEqual(slide.ended(1, x: a.x, y: a.y), [.type(.character("a"))])
+    }
+
+    private static func testSoftTapsLeaveFunctionKeysAndSwipesAlone() {
+        // Space, delete, Return, Shift and the layer key act exactly as with soft taps off.
+        for action in [KeyAction.space, .delete, .returnKey, .shift, .layer(.numbers)] {
+            var on = model(softTaps: true), off = model()
+            let point = center(action)
+            TestSupport.expectEqual(on.began(1, x: point.x, y: point.y), off.began(1, x: point.x, y: point.y))
+            TestSupport.expectEqual(on.ended(1, x: point.x, y: point.y), off.ended(1, x: point.x, y: point.y))
+            // And when a letter rolls over them.
+            let a = center(.character("a"))
+            TestSupport.expectEqual(on.began(2, x: point.x, y: point.y), off.began(2, x: point.x, y: point.y))
+            TestSupport.expectEqual(on.began(3, x: a.x, y: a.y), off.began(3, x: a.x, y: a.y))
+        }
+        // A swipe is still a swipe, with no tap.
+        var swipe = model(swipe: true, softTaps: true)
+        let a = center(.character("a"))
+        _ = swipe.began(1, x: a.x, y: a.y, t: 0)
+        TestSupport.expectEqual(swipe.moved(1, x: a.x + threshold, y: a.y, t: 0.1), [])
+        TestSupport.expect(swipe.isSwipeActive, "swipe began")
+        let effects = swipe.ended(1, x: a.x + threshold + 5, y: a.y, t: 0.2)
+        TestSupport.expectEqual(effects.count, 1)
+        if case .swipe = effects.first {} else { TestSupport.expect(false, "swipe emitted: \(effects)") }
+        // A short drag (below the threshold) with swipe typing on is a soft tap from its touch-down point.
+        _ = swipe.began(2, x: a.x, y: a.y, t: 1)
+        _ = swipe.moved(2, x: a.x + 3, y: a.y, t: 1.05)
+        TestSupport.expectEqual(swipe.ended(2, x: a.x + 3, y: a.y, t: 1.1), [.tap(.character("a"), x: a.x, y: a.y, field: nil)])
+    }
+
+    private static func testSoftTapsOffTypeAsBefore() {
+        var model = model()
+        TestSupport.expect(!model.softTapsEnabled, "off by default")
+        let a = center(.character("a")), s = center(.character("s"))
+        _ = model.began(1, x: a.x, y: a.y)
+        TestSupport.expectEqual(model.began(2, x: s.x, y: s.y), [.keyDown, .type(.character("a"))])
+        TestSupport.expectEqual(model.ended(2, x: s.x, y: s.y), [.type(.character("s"))])
+        // Turned off while a finger is held: it types as before.
+        var switched = Self.model(softTaps: true)
+        _ = switched.began(1, x: a.x, y: a.y)
+        switched.softTapsEnabled = false
+        TestSupport.expectEqual(switched.ended(1, x: a.x, y: a.y), [.type(.character("a"))])
     }
 }

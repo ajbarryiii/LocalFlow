@@ -18,6 +18,10 @@ import Foundation
 ///   finger becomes a swipe once any sample of its path (a coalesced move or the lift) is `swipeThreshold`
 ///   from its touch-down point. It types nothing, its callout ends, other touches are ignored until it
 ///   ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
+/// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
+///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
+///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"). Slides, other layers and every other key
+///   are unchanged.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
@@ -48,6 +52,9 @@ struct KeyTouchModel: Equatable, Sendable {
         var field: UUID?
         /// The finger's path while it may still become a swipe (from its touch-down point); empty otherwise.
         var samples: [SwipeSample] = []
+        /// It touched down on a letter key of the letters layer: with `softTapsEnabled`, its character is
+        /// re-decided where it would type (`tap`).
+        var onLetters = false
     }
 
     enum Effect: Equatable, Sendable {
@@ -68,12 +75,19 @@ struct KeyTouchModel: Equatable, Sendable {
         /// A swipe was released: its samples from the touch-down point through the lift, and the field it
         /// touched down in (ARCHITECTURE.md, "Typing model v4 and swipe typing").
         case swipe([SwipeSample], field: UUID?)
+        /// With `softTapsEnabled`, a character tap by a finger that touched down on a letter key, where it
+        /// would otherwise `type`: the key nearest its touch-down point, that point, and its field, so the
+        /// keyboard can re-decide the key (ARCHITECTURE.md, "Soft key edges").
+        case tap(KeyAction, x: Double, y: Double, field: UUID?)
     }
 
     var parameters = TrackpadParameters.standard
     /// Whether a drag on a letter may become a swipe: true only while the swipe engine is loaded and the
     /// field is not secure text entry.
     var swipeEnabled = false
+    /// Whether a letter tap is emitted as `tap` for the keyboard to re-decide: true only while soft key
+    /// edges are on, their model has loaded, and the field is not secure text entry.
+    var softTapsEnabled = false
     private(set) var keys: [PlacedKey] = []
     private(set) var layer = KeyboardLayer.letters
     /// Held fingers in press order.
@@ -131,6 +145,7 @@ struct KeyTouchModel: Equatable, Sendable {
         switch action {
         case .character:
             // Typed at release or rollover (v4); a possible swipe until then.
+            touch.onLetters = layer == .letters
             if swipeEnabled, layer == .letters { touch.samples = [SwipeSample(x: x, y: y, t: t)] }
         case .nextKeyboard:
             break
@@ -223,7 +238,7 @@ struct KeyTouchModel: Equatable, Sendable {
         switch touch.role {
         case .character, .slide:
             guard !touch.committed, let action = touch.action, action.isCharacter else { break }
-            effects.append(.type(action, field: touch.field))
+            effects.append(characterEffect(touch, action))
             // A number slid to from the layer key returns to letters, as on Apple's keyboard.
             if touch.role == .slide, layer != .letters { effects.append(.type(.layer(.letters))) }
         case .space:
@@ -370,6 +385,13 @@ struct KeyTouchModel: Equatable, Sendable {
         return (last - first) / Double(centers.count - 1) / 2
     }
 
+    /// What a held character types: a soft tap (`tap`, from its touch-down point) for a character touch that
+    /// touched down on a letter key while `softTapsEnabled`; otherwise the key itself. Slides never are.
+    private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
+        guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
+        return .tap(action, x: touch.startX, y: touch.startY, field: touch.field)
+    }
+
     /// Rollover: commits every earlier finger's key, in press order.
     private mutating func commitPending() -> [Effect] {
         var effects: [Effect] = []
@@ -378,7 +400,7 @@ struct KeyTouchModel: Equatable, Sendable {
             switch touch.role {
             case .character, .slide:
                 guard let action = touch.action, action.isCharacter else { continue }
-                effects.append(.type(action, field: touch.field))
+                effects.append(characterEffect(touch, action))
             case .space:
                 guard touch.action == .space else { continue }
                 effects += [.cancelHoldTimer(touch.id), .type(.space, field: touch.field)]

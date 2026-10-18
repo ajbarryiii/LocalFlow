@@ -21,6 +21,12 @@ struct LocalFlowSettings {
         static let cursorTouchRate = "cursorTouchRate"
         static let cursorEventStepScale = "cursorEventStepScale"
         static let fieldLayoutOverrides = "fieldLayoutOverrides"
+        static let softKeyEdgesEnabled = "softKeyEdgesEnabled"
+        static let softKeyEdgesModel = "softKeyEdgesModel"
+        static let softKeyEdgesCentre = "softKeyEdgesCentre"
+        static let softKeyEdgesMargin = "softKeyEdgesMargin"
+        static let softKeyEdgesSurpriseGate = "softKeyEdgesSurpriseGate"
+        static let softKeyEdgesMaxSurprise = "softKeyEdgesMaxSurprise"
     }
 
     /// Remembered field layout choices, at most this many.
@@ -32,6 +38,14 @@ struct LocalFlowSettings {
     /// it derives (`TouchRateEstimator.scaleRange`).
     static let cursorTouchRateRange: ClosedRange<Double> = 1...1_000
     static let cursorEventStepScaleRange: ClosedRange<Double> = 0.5...2.5
+
+    /// Accepted soft-key-edge rule values (ARCHITECTURE.md, "Soft key edges"): the centre box as a fraction
+    /// of a key's width and height, the margin as posterior odds, and the surprise gate in bits.
+    static let softKeyEdgesCentreRange: ClosedRange<Double> = 0.3...0.9
+    static let softKeyEdgesMarginRange: ClosedRange<Double> = 1...10
+    static let softKeyEdgesMaxSurpriseRange: ClosedRange<Double> = 2...8
+    /// Longest accepted model name; the names themselves come from the bundle.
+    static let softKeyEdgesModelNameLimit = 64
 
     let defaults: UserDefaults
 
@@ -134,6 +148,78 @@ struct LocalFlowSettings {
             stored[other] = nil
         }
         defaults.set(stored, forKey: Key.fieldLayoutOverrides)
+    }
+
+    // MARK: Soft key edges (ARCHITECTURE.md, "Soft key edges")
+
+    /// Off by default, unlike the other booleans. The keyboard reads it when it appears.
+    var softKeyEdgesEnabled: Bool {
+        get { defaults.object(forKey: Key.softKeyEdgesEnabled) as? Bool ?? false }
+        nonmutating set { defaults.set(newValue, forKey: Key.softKeyEdgesEnabled) }
+    }
+
+    /// The chosen model's size name; nil when unset, so the bundle's default applies. Whether the
+    /// bundle has it is the reader's check (`SoftKeyEdgesManifest.modelName`). Setting nil, an empty
+    /// name or one over `softKeyEdgesModelNameLimit` characters forgets the choice.
+    var softKeyEdgesModel: String? {
+        get {
+            guard let name = defaults.object(forKey: Key.softKeyEdgesModel) as? String, Self.isModelName(name) else {
+                return nil
+            }
+            return name
+        }
+        nonmutating set {
+            guard let newValue, Self.isModelName(newValue) else {
+                defaults.removeObject(forKey: Key.softKeyEdgesModel)
+                return
+            }
+            defaults.set(newValue, forKey: Key.softKeyEdgesModel)
+        }
+    }
+
+    /// The rule values the user set; nil when unset or invalid, so the bundle's default applies.
+    /// Setting nil forgets the value; values outside the range are ignored when written.
+    var softKeyEdgesCentre: Double? {
+        get { number(Key.softKeyEdgesCentre, in: Self.softKeyEdgesCentreRange) }
+        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesCentre, in: Self.softKeyEdgesCentreRange) }
+    }
+
+    var softKeyEdgesMargin: Double? {
+        get { number(Key.softKeyEdgesMargin, in: Self.softKeyEdgesMarginRange) }
+        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesMargin, in: Self.softKeyEdgesMarginRange) }
+    }
+
+    /// Whether the surprise gate applies (`softKeyEdgesMaxSurprise`). Default on.
+    var softKeyEdgesSurpriseGate: Bool {
+        get { bool(Key.softKeyEdgesSurpriseGate) }
+        nonmutating set { defaults.set(newValue, forKey: Key.softKeyEdgesSurpriseGate) }
+    }
+
+    var softKeyEdgesMaxSurprise: Double? {
+        get { number(Key.softKeyEdgesMaxSurprise, in: Self.softKeyEdgesMaxSurpriseRange) }
+        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesMaxSurprise, in: Self.softKeyEdgesMaxSurpriseRange) }
+    }
+
+    /// Back to the bundle's defaults: forgets the model choice and the rule values, and turns the gate
+    /// back on. Whether the feature is on is left alone.
+    func resetSoftKeyEdgesTuning() {
+        for key in [Key.softKeyEdgesModel, Key.softKeyEdgesCentre, Key.softKeyEdgesMargin, Key.softKeyEdgesSurpriseGate,
+                    Key.softKeyEdgesMaxSurprise] {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private static func isModelName(_ name: String) -> Bool {
+        !name.isEmpty && name.count <= softKeyEdgesModelNameLimit
+    }
+
+    private func setNumber(_ value: Double?, forKey key: String, in range: ClosedRange<Double>) {
+        guard let value else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        guard value.isFinite, range.contains(value) else { return }
+        defaults.set(value, forKey: key)
     }
 
     private static func isFingerprintKey(_ key: String) -> Bool {

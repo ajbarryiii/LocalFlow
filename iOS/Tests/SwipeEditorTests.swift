@@ -28,6 +28,7 @@ enum SwipeEditorTests {
             ("pendingSpaceSurvivesALaggingProxy", testPendingSpaceSurvivesALaggingProxy),
             ("unreportedHostEditBackToThePreviousTextEndsTheSwipe", testUnreportedHostEditBackToThePreviousTextEndsTheSwipe),
             ("tappedLetterIsCasedAfterTheSpace", testTappedLetterIsCasedAfterTheSpace),
+            ("pendingSpaceIsReadableForTheTapPrior", testPendingSpaceIsReadableForTheTapPrior),
             ("stripShowsUpToThreeInsertedFirst", testStripShowsUpToThreeInsertedFirst),
             ("tapReplacesTheInsertedWord", testTapReplacesTheInsertedWord),
             ("tapAfterAnOutsideEditDoesNothing", testTapAfterAnOutsideEditDoesNothing),
@@ -264,6 +265,29 @@ enum SwipeEditorTests {
         digit.swipe(["word"])
         digit.press(.character("4"))
         TestSupport.expectEqual(digit.text, "x word 4")
+    }
+
+    private static func testPendingSpaceIsReadableForTheTapPrior() {
+        // Soft key edges read whether a tapped letter would get the space first ("Soft key edges",
+        // context), without changing it: it follows the pending space exactly.
+        let rig = SwipeRig("")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace, "nothing swiped")
+        rig.swipe(["have"])
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "after a swipe")
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "reading keeps it")
+        rig.press(.shift)
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "survives Shift")
+        rig.press(.character("a"))
+        TestSupport.expectEqual(rig.text, "have A")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace, "used by the letter")
+        let spaced = SwipeRig("")
+        spaced.swipe(["word"])
+        spaced.press(.space)
+        TestSupport.expect(!spaced.editor.tappedLetterGetsSpace, "ended by space")
+        let outside = SwipeRig("x")
+        outside.swipe(["word"])
+        outside.document.moveCaret(to: 1)
+        TestSupport.expect(!outside.editor.tappedLetterGetsSpace, "caret no longer after the word")
     }
 
     private static func testPendingSpaceSurvivesShiftLayersAndReplacement() {

@@ -74,6 +74,10 @@ final class KeyboardEditor {
 
     /// The strip shown after a swipe, nil when closed.
     var swipeStrip: SwipeStrip? { swipe?.strip }
+    /// Whether a letter or digit typed now would get the space owed after a swiped word first ("Space
+    /// before a tapped word"), as `press` would decide. For the soft-key-edge prior's context (ARCHITECTURE.md,
+    /// "Soft key edges"); it only reads whether the proxy now shows the word.
+    var tappedLetterGetsSpace: Bool { pendingSpaceApplies() }
     /// The strip, and where its word left the caret. Held in memory only while the strip shows.
     private var swipe: (strip: SwipeStrip, anchor: SwipeAnchor)? {
         didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }

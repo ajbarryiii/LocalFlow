@@ -11,6 +11,9 @@ enum LocalFlowSettingsTests {
             ("cursorMultipliersAcceptOnlyTheRange", testCursorMultipliersAcceptOnlyTheRange),
             ("cursorTouchRateIsRecordedAsNumbersOnly", testCursorTouchRateIsRecordedAsNumbersOnly),
             ("fieldLayoutChoicesAreContentFreeAndBounded", testFieldLayoutChoicesAreContentFreeAndBounded),
+            ("softKeyEdgesAreOffAndUnsetByDefault", testSoftKeyEdgesAreOffAndUnsetByDefault),
+            ("softKeyEdgesAcceptOnlyTheirRanges", testSoftKeyEdgesAcceptOnlyTheirRanges),
+            ("softKeyEdgesResetKeepsTheSwitch", testSoftKeyEdgesResetKeepsTheSwitch),
         ]
     }
 
@@ -159,6 +162,108 @@ enum LocalFlowSettingsTests {
                 defaults.set(stored, forKey: "sessionMinutes")
                 TestSupport.expectEqual(settings.sessionMinutes, 5)
             }
+        }
+    }
+
+    // MARK: Soft key edges
+
+    private static func testSoftKeyEdgesAreOffAndUnsetByDefault() {
+        // Off by default, unlike the other booleans; the model and the rule values are unset, so the
+        // bundle's defaults apply; the gate is on.
+        withSettings { settings, defaults in
+            TestSupport.expect(!settings.softKeyEdgesEnabled, "off by default")
+            TestSupport.expectEqual(settings.softKeyEdgesModel, nil)
+            TestSupport.expectEqual(settings.softKeyEdgesCentre, nil)
+            TestSupport.expectEqual(settings.softKeyEdgesMargin, nil)
+            TestSupport.expect(settings.softKeyEdgesSurpriseGate, "gate on by default")
+            TestSupport.expectEqual(settings.softKeyEdgesMaxSurprise, nil)
+            settings.softKeyEdgesEnabled = true
+            settings.softKeyEdgesModel = "232k"
+            settings.softKeyEdgesCentre = 0.45
+            settings.softKeyEdgesMargin = 5
+            settings.softKeyEdgesSurpriseGate = false
+            settings.softKeyEdgesMaxSurprise = 6.5
+            let reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expect(reread.softKeyEdgesEnabled, "enabled stored")
+            TestSupport.expectEqual(reread.softKeyEdgesModel, "232k")
+            TestSupport.expectEqual(reread.softKeyEdgesCentre, 0.45)
+            TestSupport.expectEqual(reread.softKeyEdgesMargin, 5)
+            TestSupport.expect(!reread.softKeyEdgesSurpriseGate, "gate stored")
+            TestSupport.expectEqual(reread.softKeyEdgesMaxSurprise, 6.5)
+            // Independent of the other settings.
+            TestSupport.expect(reread.keyHapticsEnabled, "key haptics untouched")
+            TestSupport.expectEqual(reread.cursorSensitivity, 1)
+            // A stored value that is not a Bool reads as the default.
+            defaults.set("on", forKey: "softKeyEdgesEnabled")
+            TestSupport.expect(!settings.softKeyEdgesEnabled, "enabled invalid value")
+        }
+    }
+
+    private static func testSoftKeyEdgesAcceptOnlyTheirRanges() {
+        withSettings { settings, defaults in
+            TestSupport.expectEqual(LocalFlowSettings.softKeyEdgesCentreRange, 0.3...0.9)
+            TestSupport.expectEqual(LocalFlowSettings.softKeyEdgesMarginRange, 1...10)
+            TestSupport.expectEqual(LocalFlowSettings.softKeyEdgesMaxSurpriseRange, 2...8)
+            settings.softKeyEdgesCentre = 0.5
+            settings.softKeyEdgesMargin = 2
+            settings.softKeyEdgesMaxSurprise = 4
+            for rejected in [0.2, 0.95, -1, Double.nan, .infinity] {
+                settings.softKeyEdgesCentre = rejected
+                TestSupport.expectEqual(settings.softKeyEdgesCentre, 0.5)
+            }
+            for rejected in [0.5, 11, Double.nan] {
+                settings.softKeyEdgesMargin = rejected
+                TestSupport.expectEqual(settings.softKeyEdgesMargin, 2)
+            }
+            for rejected in [1.5, 9, -Double.infinity] {
+                settings.softKeyEdgesMaxSurprise = rejected
+                TestSupport.expectEqual(settings.softKeyEdgesMaxSurprise, 4)
+            }
+            // The ends are accepted; nil forgets the value.
+            settings.softKeyEdgesCentre = 0.3
+            TestSupport.expectEqual(settings.softKeyEdgesCentre, 0.3)
+            settings.softKeyEdgesMargin = 10
+            TestSupport.expectEqual(settings.softKeyEdgesMargin, 10)
+            settings.softKeyEdgesMaxSurprise = 2
+            TestSupport.expectEqual(settings.softKeyEdgesMaxSurprise, 2)
+            settings.softKeyEdgesCentre = nil
+            TestSupport.expectEqual(settings.softKeyEdgesCentre, nil)
+            // Stored values written by something else read as unset when invalid.
+            let invalid: [Any] = [0.1, 1.0, "0.5", true]
+            for stored in invalid {
+                defaults.set(stored, forKey: "softKeyEdgesCentre")
+                TestSupport.expectEqual(settings.softKeyEdgesCentre, nil)
+            }
+            defaults.set(0.7, forKey: "softKeyEdgesCentre")
+            TestSupport.expectEqual(settings.softKeyEdgesCentre, 0.7)
+            // Model names: any non-empty name up to the limit; the bundle decides which exist.
+            settings.softKeyEdgesModel = "18k"
+            settings.softKeyEdgesModel = ""
+            TestSupport.expectEqual(settings.softKeyEdgesModel, nil)
+            settings.softKeyEdgesModel = "18k"
+            settings.softKeyEdgesModel = String(repeating: "m", count: LocalFlowSettings.softKeyEdgesModelNameLimit + 1)
+            TestSupport.expectEqual(settings.softKeyEdgesModel, nil)
+            defaults.set(18, forKey: "softKeyEdgesModel")
+            TestSupport.expectEqual(settings.softKeyEdgesModel, nil)
+        }
+    }
+
+    private static func testSoftKeyEdgesResetKeepsTheSwitch() {
+        withSettings { settings, defaults in
+            settings.softKeyEdgesEnabled = true
+            settings.softKeyEdgesModel = "18k"
+            settings.softKeyEdgesCentre = 0.8
+            settings.softKeyEdgesMargin = 7
+            settings.softKeyEdgesSurpriseGate = false
+            settings.softKeyEdgesMaxSurprise = 5
+            settings.resetSoftKeyEdgesTuning()
+            let reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expect(reread.softKeyEdgesEnabled, "switch kept")
+            TestSupport.expectEqual(reread.softKeyEdgesModel, nil)
+            TestSupport.expectEqual(reread.softKeyEdgesCentre, nil)
+            TestSupport.expectEqual(reread.softKeyEdgesMargin, nil)
+            TestSupport.expect(reread.softKeyEdgesSurpriseGate, "gate back on")
+            TestSupport.expectEqual(reread.softKeyEdgesMaxSurprise, nil)
         }
     }
 }
