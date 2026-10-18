@@ -1885,6 +1885,11 @@ boundary was 6 pt below those letters.
   the globe or Return (6–7 pt), and none of the 7 pt row gap in landscape.
   Below it, nothing else is near, so the space bar still takes the bottom
   padding.
+- The globe is a system button. It takes every touch whose nearest key is
+  the globe, including points outside its frame. Before, that part of its
+  region was dead: the key area ignores touches nearest the globe. The
+  penalty would have widened that dead strip to the whole gap beside the
+  space bar (code review, 2026-10-18).
 - Every user of the nearest key follows: taps, the space bar's hold, slides,
   soft key edges (`TapDecoder`'s nearest key and centre box) and the counters'
   regions. The touch likelihood is unchanged, so soft key edges may still
@@ -1910,8 +1915,9 @@ letter.
   `left` or `right`. So an event counts once in its row, plus once in `left`
   or `right` on an edge. Nothing finer is kept.
 - **Events** (each counted at its touch-down point):
-  - `touchDown`: every touch-down in the key area, including ignored ones and
-    those in the reach above the keys
+  - `touchDown`: every touch-down the key area receives, including ignored
+    ones and those in the reach above the keys. The globe's button takes its
+    own touches, which are not counted.
   - `aboveKeys`: a touch-down in the reach above the keys
   - `late16`, `late50`, `late100`: a touch-down handled at least 16, 50 or
     100 ms after its timestamp (cumulative)

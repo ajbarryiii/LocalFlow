@@ -99,7 +99,7 @@ final class KeyAreaView: UIView {
     private var model = KeyTouchModel()
     private var keyViews: [KeyCapView] = []
     private var builtSize = CGSize.zero
-    private let globeButton = UIButton(type: .system)
+    private let globeButton = GlobeButton(type: .system)
     private let callout = KeyCalloutView()
     private var keyHaptics: UIImpactFeedbackGenerator?
     /// Stable small IDs for the model, one per live `UITouch`.
@@ -131,6 +131,13 @@ final class KeyAreaView: UIView {
         globeButton.tintColor = .label
         globeButton.accessibilityLabel = "Next keyboard"
         globeButton.accessibilityIdentifier = "lf.globe"
+        // Its whole nearest-key region, so no point beside it is dead (ARCHITECTURE.md, "A stricter space bar").
+        globeButton.claims = { [weak self] point in
+            guard let self else { return false }
+            let keys = placedKeys
+            return KeyboardLayout.nearestKey(toX: Double(point.x), y: Double(point.y), in: keys)
+                .map { keys[$0].action == .nextKeyboard } ?? false
+        }
         addSubview(trail)
         addSubview(callout)
     }
@@ -558,6 +565,19 @@ final class KeyAreaView: UIView {
             elements.append(element)
         }
         accessibilityElements = elements
+    }
+}
+
+/// The globe key: a system button, so the system's input-mode list works. It also takes touches outside its
+/// frame whose nearest key is the globe (`claims`, given a point in its superview), which the key area would
+/// otherwise ignore.
+private final class GlobeButton: UIButton {
+    var claims: (CGPoint) -> Bool = { _ in false }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if super.point(inside: point, with: event) { return true }
+        guard let superview else { return false }
+        return claims(convert(point, to: superview))
     }
 }
 

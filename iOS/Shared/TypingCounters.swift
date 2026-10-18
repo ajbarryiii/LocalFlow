@@ -5,7 +5,8 @@ import Foundation
 /// keys, positions or times. Remove before the first production release.
 struct TypingCounters: Equatable, Sendable {
     enum Event: String, CaseIterable, Sendable {
-        /// Every touch-down in the key area, ignored ones and those above the keys included.
+        /// Every touch-down the key area receives, ignored ones and those above the keys included (not the
+        /// globe button's own).
         case touchDown
         /// A touch-down in the reach above the keys (the strip of the bar below its controls).
         case aboveKeys
