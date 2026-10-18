@@ -27,6 +27,8 @@ struct LocalFlowSettings {
         static let softKeyEdgesMargin = "softKeyEdgesMargin"
         static let softKeyEdgesSurpriseGate = "softKeyEdgesSurpriseGate"
         static let softKeyEdgesMaxSurprise = "softKeyEdgesMaxSurprise"
+        static let typingCountersEnabled = "typingCountersEnabled"
+        static let typingCounters = "typingCounters"
     }
 
     /// Remembered field layout choices, at most this many.
@@ -207,6 +209,32 @@ struct LocalFlowSettings {
                     Key.softKeyEdgesMaxSurprise] {
             defaults.removeObject(forKey: key)
         }
+    }
+
+    // MARK: Typing counters (ARCHITECTURE.md, "Dropped taps: reach, skids and counters"; TestFlight only)
+
+    /// Off by default. The keyboard reads it when it appears.
+    var typingCountersEnabled: Bool {
+        get { defaults.object(forKey: Key.typingCountersEnabled) as? Bool ?? false }
+        nonmutating set { defaults.set(newValue, forKey: Key.typingCountersEnabled) }
+    }
+
+    /// The counts so far; anything invalid stored there reads as no counts.
+    var typingCounters: TypingCounters {
+        TypingCounters(stored: defaults.dictionary(forKey: Key.typingCounters))
+    }
+
+    /// Adds the keyboard's pending counts to the stored ones.
+    func addTypingCounters(_ counters: TypingCounters) {
+        guard !counters.isEmpty else { return }
+        var total = typingCounters
+        total.merge(counters)
+        defaults.set(total.stored, forKey: Key.typingCounters)
+    }
+
+    /// Forgets every count; whether counting is on is left alone.
+    func resetTypingCounters() {
+        defaults.removeObject(forKey: Key.typingCounters)
     }
 
     private static func isModelName(_ name: String) -> Bool {

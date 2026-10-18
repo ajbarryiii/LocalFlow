@@ -13,6 +13,8 @@ struct DiagnosticsView: View {
 
             SoftKeyEdgesSection(settings: host.settings.settings)
 
+            TypingCountersSection(settings: host.settings.settings)
+
             Section("Runtime") {
                 LabeledContent("Model", value: modelText)
                 LabeledContent("Compute units", value: transcriber.activeUnits?.label ?? "Not loaded")
@@ -244,6 +246,61 @@ private struct SoftKeyEdgesSection: View {
             }
         }
         return nil
+    }
+}
+
+/// The TestFlight typing counters (ARCHITECTURE.md, "Dropped taps: reach, skids and counters"): the
+/// keyboard counts while the switch is on and adds its counts when it hides. Counts only. Remove before
+/// the first production release.
+private struct TypingCountersSection: View {
+    let settings: LocalFlowSettings?
+    @State private var enabled = false
+    @State private var counters = TypingCounters()
+
+    private static let titles: [(TypingCounters.Event, String)] = [
+        (.touchDown, "Touch-downs"), (.aboveKeys, "Above the keys"), (.late16, "Late ≥ 16 ms"), (.late50, "Late ≥ 50 ms"),
+        (.late100, "Late ≥ 100 ms"), (.cancelled, "Cancelled by iOS"), (.ignored, "Ignored during a swipe"),
+        (.swipe, "Became a swipe"), (.skid, "Skid typed as a tap"), (.swipeEmpty, "Swipe typed nothing"),
+        (.softTap, "Soft taps"), (.softLetter, "Soft tap: other letter"), (.softSpace, "Soft tap: space"),
+    ]
+    private static let regions: [(TypingCounters.Region, String)] = [
+        (.row1, "Top"), (.row2, "2nd"), (.row3, "3rd"), (.row4, "Bottom"), (.left, "Left"), (.right, "Right"),
+    ]
+
+    var body: some View {
+        Section {
+            Toggle("Count typing events", isOn: $enabled)
+                .accessibilityIdentifier("diagnostics.typingCountersEnabled")
+            ForEach(Self.titles, id: \.0) { entry in
+                VStack(alignment: .leading, spacing: 2) {
+                    LabeledContent(entry.1, value: "\(counters.total(entry.0))")
+                    Text(Self.regions.map { "\($0.1) \(counters[entry.0, $0.0])" }.joined(separator: " · "))
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Button("Refresh", action: load)
+                .accessibilityIdentifier("diagnostics.typingCountersRefresh")
+            Button("Reset counts", role: .destructive) {
+                settings?.resetTypingCounters()
+                load()
+            }
+            .disabled(counters.isEmpty)
+            .accessibilityIdentifier("diagnostics.typingCountersReset")
+        } header: {
+            Text("Typing counters (TestFlight)")
+        } footer: {
+            Text("Counts only, by the row and edge of the nearest key: never text, keys, positions or times. They stay on this iPhone until reset. The switch applies the next time the keyboard appears; the keyboard adds its counts when it hides and every 50 events. Needs Full Access.")
+        }
+        .onAppear(perform: load)
+        .onChange(of: enabled) { _, value in
+            if value != settings?.typingCountersEnabled { settings?.typingCountersEnabled = value }
+        }
+    }
+
+    private func load() {
+        enabled = settings?.typingCountersEnabled ?? false
+        counters = settings?.typingCounters ?? TypingCounters()
     }
 }
 

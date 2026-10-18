@@ -58,6 +58,18 @@ struct KeyboardMetrics: Equatable, Sendable {
     static let regularHeight: Double = 216
     static let compactHeight: Double = 162
 
+    /// The dictation bar above the keys, and its controls, centred in it (ARCHITECTURE.md, "Top row").
+    static let barHeight: Double = 54
+    static let compactBarHeight: Double = 44
+    static let barControlHeight: Double = 38
+    static let compactBarControlHeight: Double = 32
+
+    /// How far above its top the key area takes touches: the strip of the bar below its controls
+    /// (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
+    static func reachAboveKeys(compact: Bool) -> Double {
+        compact ? (compactBarHeight - compactBarControlHeight) / 2 : (barHeight - barControlHeight) / 2
+    }
+
     init(width: Double, height: Double) {
         self.width = width
         self.height = height

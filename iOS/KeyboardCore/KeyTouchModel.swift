@@ -15,9 +15,13 @@ import Foundation
 ///   v4 and swipe typing", amending "Typing model v3"). Every key's touch-down first ends trackpad
 ///   settlement (`keyDown`).
 /// - Swipe: with `swipeEnabled`, on the letters layer, an uncommitted character touch that is the only
-///   finger becomes a swipe once any sample of its path (a coalesced move or the lift) is `swipeThreshold`
-///   from its touch-down point. It types nothing, its callout ends, other touches are ignored until it
-///   ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
+///   finger becomes a swipe once any sample of a move (a coalesced touch; never the lift) is
+///   `swipeThreshold` from its touch-down point. It types nothing, its callout ends, other touches are
+///   ignored until it ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
+/// - Skid: a swipe younger than `skidDuration`, none of whose samples was a full letter pitch from its
+///   touch-down point, is a tap that skidded. Released, it types its touch-down key as a tap would; a new
+///   finger first commits it so, in press order, and is then handled as usual (ARCHITECTURE.md, "Dropped
+///   taps: reach, skids and counters").
 /// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
 ///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
 ///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"). Slides, other layers and every other key
@@ -103,6 +107,12 @@ struct KeyTouchModel: Equatable, Sendable {
     private(set) var swipeField: UUID?
     /// The running swipe's samples so far.
     private(set) var swipeSamples: [SwipeSample] = []
+    /// The touch that became the running swipe, as it was then: what a skid types.
+    private var swipeOrigin: Touch?
+
+    /// A swipe younger than this (seconds from its touch-down) that never strayed a full letter pitch from
+    /// its touch-down point is a skid: a tap.
+    static let skidDuration: TimeInterval = 0.15
 
     var isTrackpadActive: Bool { trackpadTouch != nil }
     var isSwipeActive: Bool { swipeTouch != nil }
@@ -137,7 +147,13 @@ struct KeyTouchModel: Equatable, Sendable {
 
     /// `t`: the touch's timestamp in seconds. `field`: the field the keyboard serves at this touch-down.
     mutating func began(_ id: TouchID, x: Double, y: Double, t: TimeInterval = 0, field: UUID? = nil) -> [Effect] {
-        guard trackpadTouch == nil, swipeTouch == nil, let action = nearestAction(x: x, y: y) else { return [] }
+        guard trackpadTouch == nil else { return [] }
+        if swipeTouch != nil {
+            // A skid is committed as a tap below (rollover); any other swipe ignores the new finger.
+            guard isSkid(at: t) else { return [] }
+            restoreSkid()
+        }
+        guard let action = nearestAction(x: x, y: y) else { return [] }
         // The globe is a UIKit button with its own touches; a touch that lands near it is ignored.
         if action == .nextKeyboard { return commitPending() }
         var effects: [Effect] = [.keyDown] + commitPending()
@@ -222,17 +238,18 @@ struct KeyTouchModel: Equatable, Sendable {
         if id == swipeTouch {
             var samples = swipeSamples
             let lift = SwipeSample(x: x, y: y, t: t)
+            if isSkid(at: t, lift: lift), var touch = swipeOrigin, let action = touch.action {
+                touch.field = swipeField
+                endSwipe()
+                return [characterEffect(touch, action)]
+            }
             if samples.last != lift { samples.append(lift) }
             let field = swipeField
             endSwipe()
             return [.swipe(samples, field: field)]
         }
+        // The lift never makes a swipe: a finger first past the threshold as it lifts skidded (a tap).
         guard let index = touches.firstIndex(where: { $0.id == id }) else { return [] }
-        // A flick whose first position past the threshold is the lift is a swipe too.
-        if mayBecomeSwipe(touches[index]), reachesSwipeThreshold(touches[index], x: x, y: y) {
-            beginSwipe(index)
-            return ended(id, x: x, y: y, t: t)
-        }
         let touch = touches.remove(at: index)
         var effects: [Effect] = []
         switch touch.role {
@@ -426,12 +443,38 @@ struct KeyTouchModel: Equatable, Sendable {
     /// The finger leaves the keys: it types nothing, and other touches are ignored until it ends.
     private mutating func beginSwipe(_ index: Int) {
         let touch = touches.remove(at: index)
+        swipeOrigin = touch
         swipeTouch = touch.id
         swipeField = touch.field
         swipeSamples = touch.samples
     }
 
+    /// The running swipe is a skid at time `t`, counting `lift` too: younger than `skidDuration`, and no
+    /// sample a full letter pitch (2 × `swipeThreshold`) or more from its touch-down point.
+    private func isSkid(at t: TimeInterval, lift: SwipeSample? = nil) -> Bool {
+        guard let origin = swipeOrigin, let touchDown = swipeSamples.first, t - touchDown.t < Self.skidDuration else {
+            return false
+        }
+        let pitch = 2 * swipeThreshold
+        func strayed(_ sample: SwipeSample) -> Bool {
+            let dx = sample.x - origin.startX, dy = sample.y - origin.startY
+            return (dx * dx + dy * dy).squareRoot() >= pitch
+        }
+        return !swipeSamples.contains(where: strayed) && !(lift.map(strayed) ?? false)
+    }
+
+    /// A skid goes back to the keys as the uncommitted character it was, first in press order and bound to
+    /// the swipe's field, for the rollover to commit.
+    private mutating func restoreSkid() {
+        guard var touch = swipeOrigin else { return }
+        touch.field = swipeField
+        touch.samples = []
+        endSwipe()
+        touches.insert(touch, at: 0)
+    }
+
     private mutating func endSwipe() {
+        swipeOrigin = nil
         swipeTouch = nil
         swipeField = nil
         swipeSamples = []

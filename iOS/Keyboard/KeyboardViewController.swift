@@ -25,7 +25,16 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// predictive bar's place, a little taller for the Start capsule, as on Wispr Flow's keyboard.
     private var heights: (bar: CGFloat, keys: CGFloat) {
         traitCollection.verticalSizeClass == .compact
-            ? (44, CGFloat(KeyboardMetrics.compactHeight)) : (54, CGFloat(KeyboardMetrics.regularHeight))
+            ? (CGFloat(KeyboardMetrics.compactBarHeight), CGFloat(KeyboardMetrics.compactHeight))
+            : (CGFloat(KeyboardMetrics.barHeight), CGFloat(KeyboardMetrics.regularHeight))
+    }
+
+    /// The strip of the bar below its controls belongs to the top row (ARCHITECTURE.md, "Dropped taps:
+    /// reach, skids and counters"), except while the menu panel is open.
+    private func updateReachAboveKeys() {
+        let reach = chrome.isMenuOpen
+            ? 0 : CGFloat(KeyboardMetrics.reachAboveKeys(compact: traitCollection.verticalSizeClass == .compact))
+        if keyArea.reachAboveKeys != reach { keyArea.reachAboveKeys = reach }
     }
 
     override func loadView() {
@@ -46,7 +55,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
         input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
         // Read on every tap soft key edges re-decide, so slider changes apply to the next tap.
-        input.softKeyEdgesSettings = { [weak self] in self?.fieldSettings }
+        input.sharedSettings = { [weak self] in self?.fieldSettings }
         input.onSwipeStripChanged = { [weak self] in
             guard let self else { return }
             swipeStrip.show(input.swipeStrip)
@@ -89,10 +98,12 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         ])
         self.barHeight = barHeight
         self.totalHeight = totalHeight
+        updateReachAboveKeys()
         registerForTraitChanges([UITraitVerticalSizeClass.self]) { (controller: KeyboardViewController, _: UITraitCollection) in
             let heights = controller.heights
             controller.barHeight?.constant = heights.bar
             controller.totalHeight?.constant = heights.bar + heights.keys
+            controller.updateReachAboveKeys()
         }
     }
 
@@ -108,6 +119,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // Soft key edges (on or off, and the model) are read when the keyboard appears.
         let settings = fieldSettings
         input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false, model: settings?.softKeyEdgesModel)
+        // TestFlight only (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
+        input.configureTypingCounters(enabled: settings?.typingCountersEnabled ?? false)
         client.start()
     }
 
@@ -260,6 +273,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// The menu panel covers the key area; a tap outside its card, or on the menu button, closes it.
     private func setMenu(visible: Bool) {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
+        updateReachAboveKeys()
         if visible, menuPanel == nil {
             keyArea.cancelAllTouches()
             readField()

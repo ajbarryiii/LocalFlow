@@ -488,6 +488,9 @@ The keyboard can read these, so they live in App Group `UserDefaults`
   true) and `softKeyEdgesMaxSurprise` (2–8 bits). The model and the numbers are
   unset by default, and an unset, out-of-range or malformed value reads as the
   bundle's default (see "Soft key edges")
+- `typingCountersEnabled`: default false; `typingCounters`, content-free
+  counts written by the keyboard (TestFlight only; see "Dropped taps: reach,
+  skids and counters")
 
 No transcript history is stored.
 
@@ -620,7 +623,10 @@ No transcript history is stored.
    the App Group `Library/Caches` (excluded from backup) and is deleted on
    claim, expiry (by either process) or run change. There is no history.
 3. There are no network APIs and no telemetry. `os.Logger` messages carry only
-   content-free state, never transcripts, text context or levels.
+   content-free state, never transcripts, text context or levels. TestFlight
+   builds may keep opt-in typing counters, which are counts only and stay on
+   the device ("Dropped taps: reach, skids and counters"). They are removed
+   before production.
 4. URLs and Darwin notifications carry no authority (see above). A URL can
    never start capture.
 5. The keyboard reads `documentContextBeforeInput` only to choose spacing
@@ -1597,7 +1603,9 @@ that drifts onto space, delete or Shift still types its own key.
   threshold is half a letter-key pitch (`(letterWidth + keyGap) / 2`, about
   20 pt in portrait).
 - Once a swipe, the touch types nothing, its callout ends, and new touches are
-  ignored until it ends (as during the trackpad).
+  ignored until it ends (as during the trackpad). Amended 2026-10-18: only
+  moves start a swipe, and a skid (short and quick) types as a tap. See
+  "Dropped taps: reach, skids and counters".
 - Samples are `SwipeSample(x:y:t:)`: key-area points and `UITouch`
   timestamps in seconds. They start with the touch-down point and include
   every coalesced touch of each move, in order.
@@ -1819,6 +1827,95 @@ its normalized form, the cache and every prediction stay in the instance's
 memory. They are dropped when the keyboard hides or the field changes, and
 are never logged, stored, sent or learned from. The models are fixed;
 nothing on the device trains them.
+
+### Dropped taps: reach, skids and counters (contract change, 2026-10-18)
+
+**Why.** On the device, letters went missing mostly on the top and bottom
+rows (E, T and N among them), and more often when typing fast. Three
+mechanisms in the code can drop such a tap:
+- a tap more than 8 pt above the top row lands in the dictation bar
+- a fast tap whose finger skids half a key pitch becomes a swipe, which types
+  a wrong word or nothing
+- while that swipe runs, the next finger is ignored
+
+This section amends "Typing model v4 and swipe typing". The counters, for
+TestFlight only, measure what is left.
+
+**Reach above the keys.**
+- The key area also takes touches that land up to
+  `KeyboardMetrics.reachAboveKeys(compact:)` above it. That is the strip of
+  the bar below its controls: (bar height − control height) / 2, 8 pt in
+  portrait (54 − 38) and 6 pt in landscape (44 − 32).
+- Such a touch is an ordinary key touch, and its nearest key is in the top
+  row. The bar's controls keep their full size.
+- The bar and control heights are `KeyboardMetrics` constants
+  (`barHeight`, `barControlHeight`, and their compact values). The bar uses
+  them too.
+- While the menu panel is open, the reach is 0.
+
+**Skids are taps.**
+- Only moves turn a touch into a swipe; the lift no longer does. This amends
+  "any sample of its path" and replaces the code-review rule of 2026-10-15
+  that made a flick past the threshold at the lift a swipe. A touch that first
+  reaches the threshold at its lift is a tap of its touch-down key.
+- A swipe is a **skid** while two things hold:
+  - it is younger than `KeyTouchModel.skidDuration` (0.15 s, timed from its
+    touch-down timestamp)
+  - none of its samples so far, the lift included, is a full letter pitch
+    (2 × `swipeThreshold`) or more from its touch-down point
+- A released skid types its touch-down key as a tap would, instead of
+  `.swipe`: a soft tap with soft key edges on. It carries the swipe's field.
+- If a new finger touches down during a skid, the skid first commits as that
+  tap, in press order (rollover), and then the new touch is handled as usual.
+  The skid's finger stays as a committed character, so its moves and lift do
+  nothing.
+- During a swipe that is not a skid, new touches are ignored as before. A
+  cancelled skid types nothing, as a cancelled swipe does.
+- Timing uses the touch timestamps (the `t` of samples and events).
+
+**Counters (TestFlight only; remove before production).** The user approved
+these on 2026-10-18 for TestFlight builds, optional and off by default, to
+find which mechanism still drops taps and how often soft key edges change a
+letter.
+- **Setting.** `typingCountersEnabled` (App Group; default false) is read when
+  the keyboard appears. Counting needs Full Access, because the counts live
+  in the App Group.
+- **Counting.** While it is on, the keyboard counts events in memory. It adds
+  them to `typingCounters` when it hides, and every 50 events.
+- **Stored form.** `typingCounters` is a dictionary from `"event.region"` to a
+  count (`TypingCounters`, Shared). Any other entry reads as absent.
+- **Region.** The region comes from the key nearest the touch-down point in
+  the current layout: its row (`row1` at the top to `row4`; any lower row
+  counts as `row4`). A key that is first or last in its row also counts as
+  `left` or `right`. So an event counts once in its row, plus once in `left`
+  or `right` on an edge. Nothing finer is kept.
+- **Events** (each counted at its touch-down point):
+  - `touchDown`: every touch-down in the key area, including ignored ones and
+    those in the reach above the keys
+  - `aboveKeys`: a touch-down in the reach above the keys
+  - `late16`, `late50`, `late100`: a touch-down handled at least 16, 50 or
+    100 ms after its timestamp (cumulative)
+  - `cancelled`: the system cancelled a touch that had not typed yet (a held
+    character, slide, space or Return), or a swipe
+  - `ignored`: a touch-down ignored because a swipe was running
+  - `swipe`: a touch became a swipe
+  - `skid`: a swipe typed as a tap, at release or because a new finger
+    committed it
+  - `swipeEmpty`: a released swipe that decoded to no word
+  - `softTap`: a tap that soft key edges predicted
+  - `softLetter`: of those, a tap that typed a letter other than its nearest
+    key
+  - `softSpace`: of those, a tap that typed a space
+- **Display.** Diagnostics shows them in a "Typing counters (TestFlight)"
+  section: the switch, then a row per event with its total (the sum of the
+  rows) and each region, then Refresh and Reset. Turning the switch off keeps
+  the counts until Reset.
+- **Privacy (amends invariant 3).** These are counts only. No text,
+  characters, words, keys (beyond row and edge), positions or times are
+  recorded. The keyboard holds only pending counts in memory. The counts
+  stay in the App Group on the device and are never sent. This is persistent
+  local logging, approved for TestFlight only. It must be removed before the
+  first production release.
 
 ## Custom dictionary (contract, 2026-10-15)
 

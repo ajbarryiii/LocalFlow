@@ -42,7 +42,8 @@ struct DictationBarView: View {
     var body: some View {
         let compact = verticalSizeClass == .compact
         let state = client.state
-        let height: CGFloat = compact ? 32 : 38
+        // The key area takes the strip below the controls (`KeyboardMetrics.reachAboveKeys`).
+        let height = CGFloat(compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight)
         HStack(spacing: 8) {
             Button(action: onMenu) {
                 Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")

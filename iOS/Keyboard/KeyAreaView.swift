@@ -29,9 +29,14 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// would otherwise be `typed`: the key nearest the touch-down point, that point in key-area points, and
     /// the field it touched down in. The delegate types the key it decides on.
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
+    /// A typing event happened (only while `countsEvents`; ARCHITECTURE.md, "Dropped taps: reach, skids and
+    /// counters"), in these regions of the keys. TestFlight only.
+    func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region])
 }
 
 extension KeyAreaViewDelegate {
+    func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region]) {}
+
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
 
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
@@ -71,6 +76,12 @@ final class KeyAreaView: UIView {
         get { model.softTapsEnabled }
         set { model.softTapsEnabled = newValue }
     }
+    /// How far above its top the view takes touches (`KeyboardMetrics.reachAboveKeys`): the strip of the
+    /// bar below its controls. Such a touch is an ordinary key touch, on the top row. 0 while the menu is open.
+    var reachAboveKeys: CGFloat = 0
+    /// Whether typing events are reported to the delegate (`counted`): only while the TestFlight typing
+    /// counters are on.
+    var countsEvents = false
     /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
     var spaceTitle = "LocalFlow" {
         didSet { if spaceTitle != oldValue { relabel() } }
@@ -242,13 +253,19 @@ final class KeyAreaView: UIView {
         haptics.impactOccurred()
     }
 
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.inset(by: UIEdgeInsets(top: -reachAboveKeys, left: 0, bottom: 0, right: 0)).contains(point)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
             let touchID = id(for: touch)
+            let swipe = model.swipeTouch
             let effects = model.began(touchID, x: Double(point.x), y: Double(point.y), t: touch.timestamp,
                                       field: currentField())
             if model.touches.last?.id == touchID { keyTouchedDown() }
+            if countsEvents { countTouchDown(at: point, delay: CACurrentMediaTime() - touch.timestamp, swipe: swipe) }
             perform(effects, timestamp: touch.timestamp)
         }
         refreshPressed()
@@ -270,8 +287,12 @@ final class KeyAreaView: UIView {
             // A swipe, or a letter that may become one, keeps every coalesced sample of the move, in order
             // (ARCHITECTURE.md, "Typing model v4 and swipe typing"); other touches only where they are now.
             let samples = model.collectsSamples(id) ? swipeSamples(of: touch, with: event) : []
+            let wasSwipe = model.isSwipeActive
             let effects = model.moved(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp, coalesced: samples)
             if id == model.trackpadTouch { trackpadLast = point }
+            if countsEvents, !wasSwipe, id == model.swipeTouch, let touchDown = model.swipeSamples.first {
+                count(.swipe, x: touchDown.x, y: touchDown.y)
+            }
             perform(effects, timestamp: touch.timestamp)
         }
         refreshPressed()
@@ -291,7 +312,13 @@ final class KeyAreaView: UIView {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
             let point = touch.location(in: self)
-            perform(model.ended(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp), timestamp: touch.timestamp)
+            let swipeTouchDown = id == model.swipeTouch ? model.swipeSamples.first : nil
+            let effects = model.ended(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp)
+            // A swipe that typed a key was a skid.
+            if countsEvents, let swipeTouchDown, !effects.contains(where: Self.isSwipe) {
+                count(.skid, x: swipeTouchDown.x, y: swipeTouchDown.y)
+            }
+            perform(effects, timestamp: touch.timestamp)
         }
         refreshPressed()
     }
@@ -299,9 +326,51 @@ final class KeyAreaView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            if countsEvents { countCancellation(of: id) }
             perform(model.cancelled(id), timestamp: touch.timestamp)
         }
         refreshPressed()
+    }
+
+    // MARK: Typing counters (ARCHITECTURE.md, "Dropped taps: reach, skids and counters"; TestFlight only)
+
+    private static let lateness: [(event: TypingCounters.Event, seconds: TimeInterval)] = [
+        (.late16, 0.016), (.late50, 0.05), (.late100, 0.1),
+    ]
+    private static let unsentRoles: [KeyTouchModel.Role] = [.character, .slide, .space, .returnKey]
+
+    private static func isSwipe(_ effect: KeyTouchModel.Effect) -> Bool {
+        if case .swipe = effect { return true }
+        return false
+    }
+
+    private func count(_ event: TypingCounters.Event, x: Double, y: Double) {
+        delegate?.keyArea(self, counted: event, in: TypingCounters.regions(x: x, y: y, keys: placedKeys))
+    }
+
+    /// A touch-down handled `delay` seconds after its timestamp, while `swipe` was running (nil when none):
+    /// if that swipe has ended now, the new finger committed it as a skid; otherwise it ignored the finger.
+    private func countTouchDown(at point: CGPoint, delay: TimeInterval, swipe: KeyTouchModel.TouchID?) {
+        let x = Double(point.x), y = Double(point.y)
+        count(.touchDown, x: x, y: y)
+        if point.y < 0 { count(.aboveKeys, x: x, y: y) }
+        for late in Self.lateness where delay >= late.seconds { count(late.event, x: x, y: y) }
+        guard let swipe else { return }
+        if model.swipeTouch == swipe {
+            count(.ignored, x: x, y: y)
+        } else if let skid = model.touches.first(where: { $0.id == swipe }) {
+            count(.skid, x: skid.startX, y: skid.startY)
+        }
+    }
+
+    /// Before the model drops it: a swipe, or a touch whose key had not typed yet.
+    private func countCancellation(of id: KeyTouchModel.TouchID) {
+        if id == model.swipeTouch, let touchDown = model.swipeSamples.first {
+            count(.cancelled, x: touchDown.x, y: touchDown.y)
+        } else if let touch = model.touches.first(where: { $0.id == id }), !touch.committed,
+                  Self.unsentRoles.contains(touch.role) {
+            count(.cancelled, x: touch.startX, y: touch.startY)
+        }
     }
 
     /// Ends every touch, for example when the keyboard disappears mid-gesture.

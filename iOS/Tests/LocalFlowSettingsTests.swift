@@ -14,6 +14,7 @@ enum LocalFlowSettingsTests {
             ("softKeyEdgesAreOffAndUnsetByDefault", testSoftKeyEdgesAreOffAndUnsetByDefault),
             ("softKeyEdgesAcceptOnlyTheirRanges", testSoftKeyEdgesAcceptOnlyTheirRanges),
             ("softKeyEdgesResetKeepsTheSwitch", testSoftKeyEdgesResetKeepsTheSwitch),
+            ("typingCountersAreOffAndAddUp", testTypingCountersAreOffAndAddUp),
         ]
     }
 
@@ -264,6 +265,44 @@ enum LocalFlowSettingsTests {
             TestSupport.expectEqual(reread.softKeyEdgesMargin, nil)
             TestSupport.expect(reread.softKeyEdgesSurpriseGate, "gate back on")
             TestSupport.expectEqual(reread.softKeyEdgesMaxSurprise, nil)
+        }
+    }
+
+    // MARK: Typing counters (TestFlight only)
+
+    private static func testTypingCountersAreOffAndAddUp() {
+        // ARCHITECTURE.md, "Dropped taps": off by default; the keyboard adds its counts, Reset clears them, and
+        // turning the switch off keeps them.
+        withSettings { settings, defaults in
+            TestSupport.expect(!settings.typingCountersEnabled, "counters on by default")
+            TestSupport.expectEqual(settings.typingCounters, TypingCounters())
+            settings.typingCountersEnabled = true
+            TestSupport.expect(LocalFlowSettings(defaults: defaults).typingCountersEnabled, "switch not stored")
+            var first = TypingCounters()
+            first.add(.touchDown, regions: [.row1, .left])
+            first.add(.skid, regions: [.row3])
+            settings.addTypingCounters(first)
+            var second = TypingCounters()
+            second.add(.touchDown, regions: [.row1])
+            settings.addTypingCounters(second)
+            settings.addTypingCounters(TypingCounters())
+            let reread = LocalFlowSettings(defaults: defaults).typingCounters
+            TestSupport.expectEqual(reread[.touchDown, .row1], 2)
+            TestSupport.expectEqual(reread[.touchDown, .left], 1)
+            TestSupport.expectEqual(reread.total(.skid), 1)
+            TestSupport.expectEqual(defaults.dictionary(forKey: "typingCounters") as? [String: Int],
+                                    ["touchDown.row1": 2, "touchDown.left": 1, "skid.row3": 1])
+            settings.typingCountersEnabled = false
+            TestSupport.expectEqual(settings.typingCounters.total(.touchDown), 2)
+            settings.resetTypingCounters()
+            TestSupport.expectEqual(settings.typingCounters, TypingCounters())
+            // Something else stored there reads as no counts, and is replaced by the next addition.
+            defaults.set("lots", forKey: "typingCounters")
+            TestSupport.expectEqual(settings.typingCounters, TypingCounters())
+            settings.addTypingCounters(second)
+            TestSupport.expectEqual(settings.typingCounters, second)
+            defaults.set("yes", forKey: "typingCountersEnabled")
+            TestSupport.expect(!settings.typingCountersEnabled, "enabled invalid value")
         }
     }
 }

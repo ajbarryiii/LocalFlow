@@ -70,9 +70,15 @@ final class KeyboardInput: KeyAreaViewDelegate {
         didSet { updateTouchModes() }
     }
     private var swipeEngineLoading = false
-    /// The App Group settings, read on every tap soft key edges re-decide (the rule values); nil without
-    /// Full Access.
-    var softKeyEdgesSettings: () -> LocalFlowSettings? = { nil }
+    /// The App Group settings, read on every tap soft key edges re-decide (the rule values) and when the
+    /// typing counters are added; nil without Full Access.
+    var sharedSettings: () -> LocalFlowSettings? = { nil }
+    /// The TestFlight typing counters' pending counts while they are on (`configureTypingCounters`), and how
+    /// many events they hold since they were last added to the App Group's.
+    private var counters: TypingCounters?
+    private var pendingCounterEvents = 0
+    /// Pending counts are added to the App Group's after this many events, and when the keyboard hides.
+    private static let countersFlushEvents = 50
     /// Soft key edges once their model has loaded (`configureSoftKeyEdges`): the bundle's `tap` section, the
     /// model's name and the prior with its cache. Nil keeps letter taps as they are.
     private var softKeys: (manifest: SoftKeyEdgesManifest, model: String)?
@@ -137,6 +143,36 @@ final class KeyboardInput: KeyAreaViewDelegate {
         serviceTimer?.invalidate()
         serviceTimer = nil
         tapPrior?.clear()
+        flushCounters()
+    }
+
+    // MARK: Typing counters (ARCHITECTURE.md, "Dropped taps: reach, skids and counters"; TestFlight only)
+
+    /// The keyboard appeared with the counters on or off. Turning them off adds what is pending first.
+    func configureTypingCounters(enabled: Bool) {
+        if enabled {
+            if counters == nil { counters = TypingCounters() }
+        } else {
+            flushCounters()
+            counters = nil
+        }
+        keyArea?.countsEvents = enabled
+    }
+
+    /// Counts nothing while the counters are off.
+    private func count(_ event: TypingCounters.Event, in regions: [TypingCounters.Region]) {
+        guard counters != nil, !regions.isEmpty else { return }
+        counters?.add(event, regions: regions)
+        pendingCounterEvents += 1
+        if pendingCounterEvents >= Self.countersFlushEvents { flushCounters() }
+    }
+
+    /// Adds the pending counts to the App Group's (dropped without Full Access).
+    private func flushCounters() {
+        pendingCounterEvents = 0
+        guard let pending = counters, !pending.isEmpty else { return }
+        counters = TypingCounters()
+        sharedSettings()?.addTypingCounters(pending)
     }
 
     /// A `textDidChange` (`textChanged`) or `selectionDidChange` callback.
@@ -221,7 +257,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// context is the proxy's text before the cursor, plus the space the editor would insert first after a
     /// swiped word; the rule values are read from the settings now. The prior's cache is bound to the
     /// current field first, and a tap bound to another identified field (which the editor refuses) is not
-    /// predicted. On the main thread; nothing here is logged or kept beyond the prior's in-memory cache.
+    /// predicted. On the main thread; nothing here is logged or kept beyond the prior's in-memory cache, and,
+    /// with the TestFlight counters on, counts of whether the tap changed, by row and edge.
     private func softTapKey(_ action: KeyAction, x: Double, y: Double, field: UUID?, keyArea: KeyAreaView) -> KeyAction {
         guard let softKeys, tapPrior != nil else { return action }
         // Bound first, even for a tap that is not predicted (a secure field, a refused stale tap).
@@ -234,8 +271,14 @@ final class KeyboardInput: KeyAreaViewDelegate {
         let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
         let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
         let decoder = TapDecoder(touch: TapDecoder.TouchModel(softKeys.manifest.touch),
-                                 rule: TapDecoder.Rule(defaults: softKeys.manifest.rule, settings: softKeyEdgesSettings()))
-        return decoder.resolve(action, x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise)
+                                 rule: TapDecoder.Rule(defaults: softKeys.manifest.rule, settings: sharedSettings()))
+        let typed = decoder.resolve(action, x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise)
+        if counters != nil {
+            let regions = TypingCounters.regions(x: x, y: y, keys: keys)
+            count(.softTap, in: regions)
+            if typed != action { count(typed == .space ? .softSpace : .softLetter, in: regions) }
+        }
+        return typed
     }
 
     /// The candidate strip after a swipe, nil when closed.
@@ -435,7 +478,15 @@ final class KeyboardInput: KeyAreaViewDelegate {
         guard let swipeEngine, proxy?.isSecureTextEntry != true else { return }
         let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
         let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
-        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keys), field: field, now: now)
+        let candidates = swipeEngine.candidates(for: samples, keys: keys)
+        if counters != nil, !candidates.contains(where: { !$0.word.isEmpty }), let touchDown = samples.first {
+            count(.swipeEmpty, in: TypingCounters.regions(x: touchDown.x, y: touchDown.y, keys: keys))
+        }
+        editor.insertSwipe(candidates, field: field, now: now)
+    }
+
+    func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region]) {
+        count(event, in: regions)
     }
 
     func keyAreaBeganTrackpad(_ keyArea: KeyAreaView) {

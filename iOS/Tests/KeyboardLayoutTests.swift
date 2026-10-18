@@ -10,6 +10,7 @@ enum KeyboardLayoutTests {
             ("keysStayInsideAndNeverOverlap", testKeysStayInsideAndNeverOverlap),
             ("nearestKeyHasNoDeadGaps", testNearestKeyHasNoDeadGaps),
             ("landscapeKeepsACenteredBand", testLandscapeKeepsACenteredBand),
+            ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
         ]
     }
 
@@ -120,5 +121,28 @@ enum KeyboardLayoutTests {
         TestSupport.expect(metrics.rowHeight > 30 && metrics.rowHeight < 36, "landscape row height \(metrics.rowHeight)")
         let placed = keys(.letters, width: 874, height: KeyboardMetrics.compactHeight)
         TestSupport.expectEqual(key(.character("q"), in: placed).frame.x, 87)
+    }
+
+    private static func testReachAboveTheKeysIsTheBarBelowItsControls() {
+        // ARCHITECTURE.md, "Dropped taps": the key area takes the strip of the bar below its controls, half the
+        // difference of their heights (the controls are centred in the bar).
+        TestSupport.expectEqual(KeyboardMetrics.barHeight, 54)
+        TestSupport.expectEqual(KeyboardMetrics.barControlHeight, 38)
+        TestSupport.expectEqual(KeyboardMetrics.compactBarHeight, 44)
+        TestSupport.expectEqual(KeyboardMetrics.compactBarControlHeight, 32)
+        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: false), 8)
+        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: true), 6)
+        // A touch there is the top-row key below it, in every layer, portrait and landscape.
+        for (width, height, compact) in [(402.0, KeyboardMetrics.regularHeight, false), (874, KeyboardMetrics.compactHeight, true)] {
+            let reach = KeyboardMetrics.reachAboveKeys(compact: compact)
+            for layer in [KeyboardLayer.letters, .numbers, .symbols] {
+                let placed = keys(layer, width: width, height: height)
+                let top = placed.map(\.frame.y).min()!
+                for key in placed where key.frame.y == top {
+                    let hit = KeyboardLayout.nearestKey(toX: key.frame.midX, y: -reach, in: placed).map { placed[$0].action }
+                    TestSupport.expectEqual(hit, key.action)
+                }
+            }
+        }
     }
 }
