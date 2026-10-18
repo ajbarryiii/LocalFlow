@@ -223,9 +223,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// current field first, and a tap bound to another identified field (which the editor refuses) is not
     /// predicted. On the main thread; nothing here is logged or kept beyond the prior's in-memory cache.
     private func softTapKey(_ action: KeyAction, x: Double, y: Double, field: UUID?, keyArea: KeyAreaView) -> KeyAction {
-        guard let softKeys, tapPrior != nil, proxy?.isSecureTextEntry != true else { return action }
+        guard let softKeys, tapPrior != nil else { return action }
+        // Bound first, even for a tap that is not predicted (a secure field, a refused stale tap).
         let current = proxy?.documentIdentifierIfAvailable
         tapPrior?.bind(to: current)
+        guard proxy?.isSecureTextEntry != true else { return action }
         if let field, let current, field != current { return action }
         let context = (proxy?.documentContextBeforeInput ?? "") + (editor.tappedLetterGetsSpace ? " " : "")
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
