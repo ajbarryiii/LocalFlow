@@ -111,6 +111,7 @@ struct DictationBarView: View {
                         .foregroundStyle(.primary)
                         .frame(width: height - 6, height: height - 6)
                         .background(Circle().fill(Color(uiColor: KeyPalette.fill)))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Cancel dictation")
@@ -241,6 +242,7 @@ private struct Chip: View {
                 .frame(height: height)
                 .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
                 .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+                .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .fixedSize()
@@ -274,7 +276,7 @@ private struct StartCapsule: View {
                 .padding(.horizontal, 14)
                 .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
                 .background(Capsule().fill(fill))
-                .contentShape(Capsule().inset(by: Self.hitInset))
+                .contentShape(Rectangle().inset(by: Self.hitInset))
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.

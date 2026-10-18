@@ -70,17 +70,13 @@ struct KeyboardMetrics: Equatable, Sendable {
         compact ? (compactBarHeight - compactBarControlHeight) / 2 : (barHeight - barControlHeight) / 2
     }
 
-    /// A touch this close to a bar control (points, to its frame) stays the bar's.
-    static let barControlSlop: Double = 4
-
-    /// Whether a touch at (x, y) in the bar's own coordinates goes to the keys: anywhere in the bar at least
-    /// `barControlSlop` from every control's frame; with no control frames known, only the strip below the
-    /// controls (`reachAboveKeys`). ARCHITECTURE.md, "Reach above the keys".
+    /// Whether a touch at (x, y) in the bar's own coordinates goes to the keys: anywhere in the bar outside every
+    /// control's frame (an edge is the control's; each control's tap area is exactly its frame); with no control
+    /// frames known, only the strip below the controls (`reachAboveKeys`). ARCHITECTURE.md, "Reach above the keys".
     static func barPointGoesToKeys(x: Double, y: Double, barHeight: Double, compact: Bool, controls: [KeyRect]) -> Bool {
         guard y >= 0, y <= barHeight else { return false }
         guard !controls.isEmpty else { return y >= barHeight - reachAboveKeys(compact: compact) }
-        let slop = barControlSlop * barControlSlop
-        return controls.allSatisfy { $0.distanceSquared(toX: x, y: y) >= slop }
+        return controls.allSatisfy { $0.distanceSquared(toX: x, y: y) > 0 }
     }
 
     init(width: Double, height: Double) {

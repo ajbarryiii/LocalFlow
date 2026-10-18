@@ -1881,18 +1881,25 @@ TestFlight only, measure what is left.
   In the user's LocalFlow attempts, touch-downs equalled characters typed, so
   the dropped taps never reached the keys. 11 of the 15 dropped letters were
   on the top row. Fast top-row taps were landing higher in the bar.
-  - The key area now also takes any touch in the bar that is at least
-    `KeyboardMetrics.barControlSlop` (4 pt) from every control's frame:
-    `KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`, in
-    the bar's own coordinates.
+  - The key area now also takes any touch in the bar outside every control's
+    frame: `KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`,
+    in the bar's own coordinates. A point on a frame's edge is the control's.
   - The controls are the menu button, the Cancel button, the Start capsule,
     the Undo and "Insert last" chips, and the swipe candidate strip. The bar
     reports their frames as they lay out, and forgets them as they go
     (`BarControlFrames`).
+  - Each control's tap area is exactly the rectangle it reports
+    (`contentShape(Rectangle())`). So every point of the bar is either a
+    control's or the keys', and none is dead. This replaces a 4 pt slop
+    around each control, which left a dead ring outside its tap area (code
+    review, 2026-10-18).
+  - Two deliberate exceptions: the 1 pt dividers between swipe candidates,
+    and the Start capsule while it shows the transcribing spinner (it takes
+    no taps then, and a tap there should not type a letter).
   - Until it has reported any, only the strip below the controls counts, as
     above.
-  - The Start/Stop capsule's tap area is the capsule inset by 6 pt on every
-    side (`StartCapsule.hitInset`); it looks the same. It reports that smaller
+  - The Start/Stop capsule's tap area is its frame inset by 6 pt on every
+    side (`StartCapsule.hitInset`), a rectangle; it looks the same. It reports that smaller
     frame, so the keys take the ring around it, above O and P (user decision,
     2026-10-18: the capsule is never missed).
   - A control that moves or goes keeps its previous frame for
