@@ -1784,7 +1784,11 @@ distance between neighbouring top-row letter centres.
   right after a rollover therefore follows the letter just typed (code
   review, 2026-10-18). The typing tail counts only in the field it was
   typed in: if the proxy already serves another field, before any callback
-  reports it, the proxy's text is the context. It is normalized as `normalize_context`:
+  reports it, the proxy's text is the context. Fields without an identity
+  cannot be told apart here, as everywhere in the keyboard ("Typing model
+  v2"): while neither has one, the tail still counts (code review round 3,
+  declined: the state is brief, and the decision stays bounded by the centre
+  box, margin and gate). It is normalized as `normalize_context`:
   - only the current line counts (after the last line break)
   - accents are dropped (NFKD, combining marks removed), the text is
     lowercased, and curly apostrophes and backticks become "'"

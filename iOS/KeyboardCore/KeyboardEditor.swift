@@ -82,7 +82,7 @@ final class KeyboardEditor {
     /// keyboard knows it (`currentBefore`, which includes own edits the proxy has not shown yet), plus the
     /// space a swiped word is owed (ARCHITECTURE.md, "Soft key edges", context). The typing tail belongs to the
     /// field our edits went to: in another one the proxy serves, before a callback reports it, only the proxy
-    /// knows.
+    /// knows. Fields without an identity cannot be told apart, as elsewhere in the keyboard.
     var tapPriorContext: String {
         let before = core.documentID == document.documentID ? currentBefore : document.contextBefore
         return (before ?? "") + (tappedLetterGetsSpace ? " " : "")
