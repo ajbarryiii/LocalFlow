@@ -189,6 +189,17 @@ struct TapPrior {
         clock = 0
     }
 
+    /// The field the cache's text came from.
+    private var field: UUID?
+
+    /// Binds the cache to `field`, the field current now: a different one (identified or not) drops it
+    /// first, so one field's text never serves, or outlives the change to, another.
+    mutating func bind(to field: UUID?) {
+        guard field != self.field else { return }
+        clear()
+        self.field = field
+    }
+
     /// Log probabilities over `output` (a–z, space) of the character after `context`, the raw text before
     /// the cursor.
     mutating func logProbs(context: String) -> [Double] {

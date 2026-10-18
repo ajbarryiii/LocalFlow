@@ -219,17 +219,21 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// The key a soft tap types: the nearest key, unless `TapDecoder` re-decides it from the prior. The
     /// context is the proxy's text before the cursor, plus the space the editor would insert first after a
-    /// swiped word; the rule values are read from the settings now. On the main thread; nothing here is
-    /// logged or kept beyond the prior's in-memory cache.
-    private func softTapKey(_ action: KeyAction, x: Double, y: Double, keyArea: KeyAreaView) -> KeyAction {
+    /// swiped word; the rule values are read from the settings now. The prior's cache is bound to the
+    /// current field first, and a tap bound to another identified field (which the editor refuses) is not
+    /// predicted. On the main thread; nothing here is logged or kept beyond the prior's in-memory cache.
+    private func softTapKey(_ action: KeyAction, x: Double, y: Double, field: UUID?, keyArea: KeyAreaView) -> KeyAction {
         guard let softKeys, tapPrior != nil, proxy?.isSecureTextEntry != true else { return action }
+        let current = proxy?.documentIdentifierIfAvailable
+        tapPrior?.bind(to: current)
+        if let field, let current, field != current { return action }
         let context = (proxy?.documentContextBeforeInput ?? "") + (editor.tappedLetterGetsSpace ? " " : "")
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
         let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
         let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
         let decoder = TapDecoder(touch: TapDecoder.TouchModel(softKeys.manifest.touch),
                                  rule: TapDecoder.Rule(defaults: softKeys.manifest.rule, settings: softKeyEdgesSettings()))
-        return decoder.decide(x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise) ?? action
+        return decoder.resolve(action, x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise)
     }
 
     /// The candidate strip after a swipe, nil when closed.
@@ -376,7 +380,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// A letter tap re-decided at the moment it types, then typed exactly like a key.
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
-        editor.press(softTapKey(action, x: x, y: y, keyArea: keyArea), field: field, at: timestamp, now: now)
+        editor.press(softTapKey(action, x: x, y: y, field: field, keyArea: keyArea), field: field, at: timestamp, now: now)
     }
 
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval) {

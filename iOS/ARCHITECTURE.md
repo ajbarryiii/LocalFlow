@@ -1723,7 +1723,11 @@ touched down on a letter key (`Role.character`, not a slide). Its key is
 re-decided at the moment it would type: at release, or at rollover.
 - Space, delete, Return, Shift, the layer keys and the globe are never
   re-decided, and taps on them never become letters.
-- A re-decided tap types a letter or a space.
+- A re-decided tap types a letter or a space. If the keys changed under the
+  touch-down point before it types (a resize), so that its nearest key is no
+  longer the one recorded at touch-down, the recorded key types.
+- A tap bound to another identified field is not predicted (the editor
+  refuses it), and the prior's cache is bound to the field it came from.
 - Swipes are unchanged.
 - `KeyTouchModel.softTapsEnabled` (default false): when true, such a tap emits
   `.tap(KeyAction, x:, y:, field:)` instead of `.type(KeyAction, field:)`,

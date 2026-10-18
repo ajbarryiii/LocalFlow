@@ -18,6 +18,8 @@ enum TapCoreTests {
             ("touchLikelihoodsMatchTheReference", testTouchLikelihoodsMatchTheReference),
             ("decisionsMatchTheReference", testDecisionsMatchTheReference),
             ("centreBoxAndFunctionKeysAreNeverOverridden", testCentreBoxAndFunctionKeysAreNeverOverridden),
+            ("resolveKeepsTheRecordedKeyWhenTheLayoutMoved", testResolveKeepsTheRecordedKeyWhenTheLayoutMoved),
+            ("cacheIsBoundToOneField", testCacheIsBoundToOneField),
             ("logNdtrIsFiniteAndContinuous", testLogNdtrIsFiniteAndContinuous),
             ("manifestReadsTheTapSection", testManifestReadsTheTapSection),
             ("manifestRejectsAnInvalidTapSection", testManifestRejectsAnInvalidTapSection),
@@ -238,6 +240,42 @@ enum TapCoreTests {
         // A prior of the wrong size types the nearest key; no keys, nothing.
         TestSupport.expectEqual(decoder.decide(x: w.x + 1, y: w.midY, keys: keys, logPrior: [0], surprise: 0), .character("w"))
         TestSupport.expectEqual(decoder.decide(x: 1, y: 1, keys: [], logPrior: logPrior, surprise: 0), nil)
+    }
+
+    private static func testResolveKeepsTheRecordedKeyWhenTheLayoutMoved() {
+        // A prior that wants only "q", so any re-decided tap would type q.
+        var logPrior = [Double](repeating: -40, count: 27)
+        logPrior[16] = 0
+        let decoder = TapDecoder(touch: .standard, rule: TapDecoder.Rule(centre: 0.6, margin: 3, maxSurprise: nil))
+        // Same layout: resolve is decide.
+        let w = keys.first { $0.action == .character("w") }!.frame
+        TestSupport.expectEqual(decoder.resolve(.character("w"), x: w.x + 1, y: w.midY, keys: keys, logPrior: logPrior, surprise: 0),
+                                .character("q"))
+        // Touched down on m's centre at 390 x 216; the keys shrank to 390 x 162 before the release, and the
+        // point is now nearest another key (Return): the recorded letter types, never that key.
+        let m = keys.first { $0.action == .character("m") }!.frame
+        let shrunk = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 390, height: 162), showsGlobe: false)
+        let now = shrunk[KeyboardLayout.nearestKey(toX: m.midX, y: m.midY, in: shrunk)!].action
+        TestSupport.expect(now != .character("m"), "the point moved off m: \(now)")
+        TestSupport.expectEqual(decoder.resolve(.character("m"), x: m.midX, y: m.midY, keys: shrunk, logPrior: logPrior, surprise: 0),
+                                .character("m"))
+        // No keys: the recorded key.
+        TestSupport.expectEqual(decoder.resolve(.character("m"), x: 1, y: 1, keys: [], logPrior: logPrior, surprise: 0), .character("m"))
+    }
+
+    private static func testCacheIsBoundToOneField() {
+        var prior = prior()
+        let a = UUID(), b = UUID()
+        prior.bind(to: a)
+        _ = prior.prediction(context: "hello there")
+        TestSupport.expect(prior.cachedCount > 0, "cache used")
+        prior.bind(to: a)
+        TestSupport.expect(prior.cachedCount > 0, "same field keeps the cache")
+        prior.bind(to: b)
+        TestSupport.expectEqual(prior.cachedCount, 0)
+        _ = prior.prediction(context: "other text")
+        prior.bind(to: nil)
+        TestSupport.expectEqual(prior.cachedCount, 0)
     }
 
     private static func testLogNdtrIsFiniteAndContinuous() {

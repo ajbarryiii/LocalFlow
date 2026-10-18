@@ -104,6 +104,17 @@ struct TapDecoder: Equatable, Sendable {
         return keys[best].action
     }
 
+    /// What a letter tap recorded as `recorded` (its nearest key at touch-down) types now: `decide`'s letter
+    /// or space, but `recorded` itself whenever the keys have changed under the point since (a resize: the
+    /// point's nearest key is no longer `recorded`) or `decide` would give anything else.
+    func resolve(_ recorded: KeyAction, x: Double, y: Double, keys: [PlacedKey], logPrior: [Double], surprise: Double)
+        -> KeyAction {
+        guard let near = KeyboardLayout.nearestKey(toX: x, y: y, in: keys), keys[near].action == recorded,
+              let action = decide(x: x, y: y, keys: keys, logPrior: logPrior, surprise: surprise),
+              Self.outputIndex(of: action) != nil else { return recorded }
+        return action
+    }
+
     // MARK: Densities
 
     /// The log density of one Gaussian component around a target segment from a to b, given dx0 = x − a
