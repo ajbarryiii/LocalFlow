@@ -11,6 +11,7 @@ enum KeyboardLayoutTests {
             ("nearestKeyHasNoDeadGaps", testNearestKeyHasNoDeadGaps),
             ("landscapeKeepsACenteredBand", testLandscapeKeepsACenteredBand),
             ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
+            ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
         ]
     }
 
@@ -144,5 +145,41 @@ enum KeyboardLayoutTests {
                 }
             }
         }
+    }
+
+    private static func testTheSpaceBarGetsTheLeastOfItsGaps() {
+        // ARCHITECTURE.md, "A stricter space bar": a point outside the space bar counts as `spaceMissPenalty`
+        // (8 pt) farther from it, so a low tap on the bottom letter row types its letter.
+        TestSupport.expectEqual(KeyboardLayout.spaceMissPenalty, 8)
+        for globe in [false, true] {
+            let letters = keys(.letters, globe: globe)
+            func hit(_ x: Double, _ y: Double) -> KeyAction? {
+                KeyboardLayout.nearestKey(toX: x, y: y, in: letters).map { letters[$0].action }
+            }
+            let space = key(.space, in: letters).frame, n = key(.character("n"), in: letters).frame
+            TestSupport.expect(n.midX > space.x && n.midX < space.maxX, "n is not above the space bar")
+            // The 12 pt gap above it: 10 pt for the letter, 2 pt for the space bar.
+            TestSupport.expectEqual(hit(n.midX, n.maxY + 6), .character("n"))
+            TestSupport.expectEqual(hit(n.midX, space.y - 2.5), .character("n"))
+            TestSupport.expectEqual(hit(n.midX, space.y - 1.5), .space)
+            // Inside its frame, and below it, the space bar as before.
+            TestSupport.expectEqual(hit(n.midX, space.y + 0.5), .space)
+            TestSupport.expectEqual(hit(space.midX, space.maxY + 3), .space)
+            // The gaps beside it go to the neighbours, right up to its edge.
+            let left = letters[letters.firstIndex { $0.action == .space }! - 1]
+            TestSupport.expectEqual(hit(space.x - 0.5, space.midY), left.action)
+            TestSupport.expectEqual(hit(space.maxX + 0.5, space.midY), .returnKey)
+            TestSupport.expectEqual(hit(space.x + 0.5, space.midY), .space)
+            // Other keys are unchanged: the gap between two letters still splits in half.
+            let m = key(.character("m"), in: letters).frame
+            TestSupport.expectEqual(hit(n.maxX + 0.4 * (m.x - n.maxX), n.midY), .character("n"))
+            TestSupport.expectEqual(hit(n.maxX + 0.6 * (m.x - n.maxX), n.midY), .character("m"))
+        }
+        // In landscape the letters take the whole 7 pt gap above it.
+        let landscape = keys(.letters, width: 874, height: KeyboardMetrics.compactHeight)
+        let space = key(.space, in: landscape).frame, n = key(.character("n"), in: landscape).frame
+        TestSupport.expect(n.midX > space.x && n.midX < space.maxX, "n is not above the landscape space bar")
+        let hit = KeyboardLayout.nearestKey(toX: n.midX, y: space.y - 0.5, in: landscape).map { landscape[$0].action }
+        TestSupport.expectEqual(hit, .character("n"))
     }
 }

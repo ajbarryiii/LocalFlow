@@ -1873,6 +1873,26 @@ TestFlight only, measure what is left.
   cancelled skid types nothing, as a cancelled swipe does.
 - Timing uses the touch timestamps (the `t` of samples and events).
 
+**A stricter space bar (user decision, 2026-10-18).** The space bar is the
+biggest key and the hardest to miss, so it gets the least of the gaps around
+it. A low tap aimed at the bottom letter row used to type a space: the
+boundary was 6 pt below those letters.
+- `KeyboardLayout.nearestKey` counts a point outside the space bar's frame as
+  `KeyboardLayout.spaceMissPenalty` (8 pt) farther from it than it is. Inside
+  its frame the space bar is as before, and so is every other key.
+- In portrait, the space bar now gets 2 pt of the 12 pt gap above it, and the
+  bottom letter row gets 10 pt. The space bar gets none of the gap to `123`,
+  the globe or Return (6–7 pt), and none of the 7 pt row gap in landscape.
+  Below it, nothing else is near, so the space bar still takes the bottom
+  padding.
+- Every user of the nearest key follows: taps, the space bar's hold, slides,
+  soft key edges (`TapDecoder`'s nearest key and centre box) and the counters'
+  regions. The touch likelihood is unchanged, so soft key edges may still
+  type a space for a tap in the gap when the text strongly predicts one.
+- The reference follows too: localflow-swipe `tap/geometry.py` `nearest_key`
+  and `tap/decide.py` `nearest_keys`, pinned by its Swift-generated layout
+  fixture.
+
 **Counters (TestFlight only; remove before production).** The user approved
 these on 2026-10-18 for TestFlight builds, optional and off by default, to
 find which mechanism still drops taps and how often soft key edges change a
