@@ -45,6 +45,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
         input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
+        // Read on every tap soft key edges re-decide, so slider changes apply to the next tap.
+        input.softKeyEdgesSettings = { [weak self] in self?.fieldSettings }
         input.onSwipeStripChanged = { [weak self] in
             guard let self else { return }
             swipeStrip.show(input.swipeStrip)
@@ -103,6 +105,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.viewWillAppear(animated)
         documentDidChange()
         input.reset()
+        // Soft key edges (on or off, and the model) are read when the keyboard appears.
+        let settings = fieldSettings
+        input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false, model: settings?.softKeyEdgesModel)
         client.start()
     }
 
@@ -156,7 +161,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// written (no Full Access).
     private var layoutChoices: [String: FieldLayout] = [:]
 
-    /// Remembered choices live in the App Group, which needs Full Access.
+    /// Remembered choices, and the soft-key-edge settings, live in the App Group, which needs Full Access.
     private var fieldSettings: LocalFlowSettings? {
         guard hasFullAccess, let configuration = LocalFlowConfiguration.main else { return nil }
         return LocalFlowSettings(configuration: configuration)

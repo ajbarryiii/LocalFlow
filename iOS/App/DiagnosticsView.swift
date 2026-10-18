@@ -11,6 +11,8 @@ struct DiagnosticsView: View {
         List {
             CursorTuningSection(settings: host.settings.settings)
 
+            SoftKeyEdgesSection(settings: host.settings.settings)
+
             Section("Runtime") {
                 LabeledContent("Model", value: modelText)
                 LabeledContent("Compute units", value: transcriber.activeUnits?.label ?? "Not loaded")
@@ -123,6 +125,125 @@ private struct CursorTuningSection: View {
                 .accessibilityValue(String(format: "%.2f times", value.wrappedValue))
                 .accessibilityIdentifier(identifier)
         }
+    }
+}
+
+/// Soft key edges (App Group settings; ARCHITECTURE.md, "Soft key edges"), for tuning on a device. The
+/// keyboard reads the rule values on every tap it re-decides, and the toggle and model when it appears.
+/// Models and defaults come from the keyboard's bundle; a value equal to what the keyboard already reads
+/// is not written, so the defaults stay the bundle's until a slider moves.
+private struct SoftKeyEdgesSection: View {
+    let settings: LocalFlowSettings?
+    /// The keyboard's bundle section, or nil when this build has no models. Read once per launch.
+    private static let bundled = bundledManifest()
+    private var manifest: SoftKeyEdgesManifest? { Self.bundled }
+    @State private var enabled = false
+    @State private var model = ""
+    @State private var centre = 0.6
+    @State private var margin = 3.0
+    @State private var gate = true
+    @State private var maxSurprise = 3.0
+
+    /// The bundle's defaults, or the reference ones when this build has no models.
+    private var defaults: SoftKeyEdgesManifest.Rule {
+        manifest?.rule ?? SoftKeyEdgesManifest.Rule(centre: 0.6, margin: 3, maxSurprise: 3, surpriseWindow: 8)
+    }
+
+    private var modelNames: [String] { manifest?.modelNames ?? ["18k", "67k", "232k"] }
+
+    private var resolvedModel: String {
+        manifest?.modelName(settings?.softKeyEdgesModel) ?? settings?.softKeyEdgesModel ?? "67k"
+    }
+
+    var body: some View {
+        Section {
+            Toggle("Soft key edges", isOn: $enabled)
+                .accessibilityIdentifier("diagnostics.softKeyEdgesEnabled")
+            if manifest == nil {
+                Text("This build has no tap models; the keyboard types as before.").foregroundStyle(.secondary)
+            }
+            Picker("Model", selection: $model) {
+                ForEach(modelNames, id: \.self) { Text($0).tag($0) }
+            }
+            .accessibilityIdentifier("diagnostics.softKeyEdgesModel")
+            slider("Guaranteed press region", value: $centre, range: LocalFlowSettings.softKeyEdgesCentreRange, step: 0.05,
+                   text: String(format: "%.0f%%", centre * 100), spoken: String(format: "%.0f percent", centre * 100),
+                   identifier: "diagnostics.softKeyEdgesCentre")
+            slider("Margin", value: $margin, range: LocalFlowSettings.softKeyEdgesMarginRange, step: 0.5,
+                   text: String(format: "%g:1", margin), spoken: String(format: "%g to 1", margin),
+                   identifier: "diagnostics.softKeyEdgesMargin")
+            Toggle("Surprise gate", isOn: $gate)
+                .accessibilityIdentifier("diagnostics.softKeyEdgesSurpriseGate")
+            slider("Maximum surprise", value: $maxSurprise, range: LocalFlowSettings.softKeyEdgesMaxSurpriseRange, step: 0.25,
+                   text: String(format: "%.2f bits", maxSurprise), spoken: String(format: "%.2f bits", maxSurprise),
+                   identifier: "diagnostics.softKeyEdgesMaxSurprise")
+                .disabled(!gate)
+            Button("Reset to bundle defaults") {
+                settings?.resetSoftKeyEdgesTuning()
+                load()
+            }
+            .disabled(model == (manifest?.defaultModel ?? "67k") && centre == defaults.centre && margin == defaults.margin
+                && gate && maxSurprise == defaults.maxSurprise)
+            .accessibilityIdentifier("diagnostics.softKeyEdgesReset")
+        } header: {
+            Text("Soft key edges (experimental)")
+        } footer: {
+            Text("A tap near a key's edge may type the likelier neighbour, predicted from the text before the cursor; a tap inside the guaranteed press region (a share of the key's width and height) always types its key. The margin is the odds a neighbour needs. With the gate on, nothing is overridden while the recent text is more surprising than the maximum. Slider changes apply to the next tap; the switch and the model apply the next time the keyboard appears.")
+        }
+        .onAppear(perform: load)
+        .onChange(of: enabled) { _, value in
+            if value != settings?.softKeyEdgesEnabled { settings?.softKeyEdgesEnabled = value }
+        }
+        .onChange(of: model) { _, value in
+            if value != resolvedModel { settings?.softKeyEdgesModel = value }
+        }
+        .onChange(of: centre) { _, value in
+            if value != (settings?.softKeyEdgesCentre ?? defaults.centre) { settings?.softKeyEdgesCentre = value }
+        }
+        .onChange(of: margin) { _, value in
+            if value != (settings?.softKeyEdgesMargin ?? defaults.margin) { settings?.softKeyEdgesMargin = value }
+        }
+        .onChange(of: gate) { _, value in
+            if value != settings?.softKeyEdgesSurpriseGate { settings?.softKeyEdgesSurpriseGate = value }
+        }
+        .onChange(of: maxSurprise) { _, value in
+            if value != (settings?.softKeyEdgesMaxSurprise ?? defaults.maxSurprise) { settings?.softKeyEdgesMaxSurprise = value }
+        }
+    }
+
+    /// The settings as the keyboard reads them, over the bundle's defaults.
+    private func load() {
+        enabled = settings?.softKeyEdgesEnabled ?? false
+        model = resolvedModel
+        centre = settings?.softKeyEdgesCentre ?? defaults.centre
+        margin = settings?.softKeyEdgesMargin ?? defaults.margin
+        gate = settings?.softKeyEdgesSurpriseGate ?? true
+        maxSurprise = settings?.softKeyEdgesMaxSurprise ?? defaults.maxSurprise
+    }
+
+    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, text: String,
+                        spoken: String, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title, value: text)
+            Slider(value: value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(spoken)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+
+    /// The `tap` section of the keyboard extension's swipe bundle (`Swipe/bundle.json` in the `.appex`).
+    private static func bundledManifest() -> SoftKeyEdgesManifest? {
+        guard let plugIns = Bundle.main.builtInPlugInsURL,
+              let extensions = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil)
+        else { return nil }
+        for appex in extensions where appex.pathExtension == "appex" {
+            let url = appex.appendingPathComponent("Swipe").appendingPathComponent("bundle.json")
+            if let data = try? Data(contentsOf: url), let manifest = try? SoftKeyEdgesManifest.decode(from: data) {
+                return manifest
+            }
+        }
+        return nil
     }
 }
 

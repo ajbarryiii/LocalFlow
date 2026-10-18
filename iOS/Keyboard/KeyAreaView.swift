@@ -25,10 +25,18 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// timestamps, from the touch-down point through the lift, and the field it touched down in. A
     /// cancelled swipe never arrives.
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval)
+    /// A letter tap to re-decide (only while `softTapsEnabled`; ARCHITECTURE.md, "Soft key edges"), where it
+    /// would otherwise be `typed`: the key nearest the touch-down point, that point in key-area points, and
+    /// the field it touched down in. The delegate types the key it decides on.
+    func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
 }
 
 extension KeyAreaViewDelegate {
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
+
+    func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        self.keyArea(keyArea, typed: action, field: field, timestamp: timestamp)
+    }
 }
 
 /// The key area: one view that tracks every touch itself, with nearest-key hit testing so gaps are
@@ -56,6 +64,12 @@ final class KeyAreaView: UIView {
     var swipeEnabled: Bool {
         get { model.swipeEnabled }
         set { model.swipeEnabled = newValue }
+    }
+    /// Whether letter taps come as `tapped` to be re-decided (`KeyTouchModel.softTapsEnabled`): only while
+    /// soft key edges are on, their model has loaded, and the field is not secure text entry.
+    var softTapsEnabled: Bool {
+        get { model.softTapsEnabled }
+        set { model.softTapsEnabled = newValue }
     }
     /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
     var spaceTitle = "LocalFlow" {
@@ -329,6 +343,8 @@ final class KeyAreaView: UIView {
                 delegate?.keyAreaEndedTrackpad(self, timestamp: timestamp, cancelled: cancelled)
             case .swipe(let samples, let field):
                 delegate?.keyArea(self, swiped: samples, field: field, timestamp: timestamp)
+            case .tap(let action, let x, let y, let field):
+                delegate?.keyArea(self, tapped: action, x: x, y: y, field: field, timestamp: timestamp)
             }
         }
     }

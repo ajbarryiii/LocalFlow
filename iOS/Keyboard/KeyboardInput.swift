@@ -67,9 +67,18 @@ final class KeyboardInput: KeyAreaViewDelegate {
     var onSwipeStripChanged: (() -> Void)?
     /// The swipe engine, once loaded (`loadSwipeEngine`); nil keeps swipe typing off.
     private var swipeEngine: SwipeEngine? {
-        didSet { updateSwipeEnabled() }
+        didSet { updateTouchModes() }
     }
     private var swipeEngineLoading = false
+    /// The App Group settings, read on every tap soft key edges re-decide (the rule values); nil without
+    /// Full Access.
+    var softKeyEdgesSettings: () -> LocalFlowSettings? = { nil }
+    /// Soft key edges once their model has loaded (`configureSoftKeyEdges`): the bundle's `tap` section, the
+    /// model's name and the prior with its cache. Nil keeps letter taps as they are.
+    private var softKeys: (manifest: SoftKeyEdgesManifest, model: String)?
+    private var tapPrior: TapPrior?
+    /// Bumped by every configuration, so a load that finishes after a newer one is dropped.
+    private var softKeysGeneration = 0
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -112,7 +121,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         let numeric: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
         editor.reset(numeric: numeric.contains(proxy?.keyboardType ?? .default))
         stopUndoTimers()
-        updateSwipeEnabled()
+        updateTouchModes()
     }
 
     /// The keyboard is hiding: end every gesture and held key and, synchronously, drop every copy of
@@ -127,13 +136,14 @@ final class KeyboardInput: KeyAreaViewDelegate {
         tailExpiry = nil
         serviceTimer?.invalidate()
         serviceTimer = nil
+        tapPrior?.clear()
     }
 
     /// A `textDidChange` (`textChanged`) or `selectionDidChange` callback.
     func hostChanged(textChanged: Bool) {
         editor.hostChanged(textChanged: textChanged, now: now)
         // The field's traits may have changed with it (secure text entry).
-        updateSwipeEnabled()
+        updateTouchModes()
     }
 
     /// Another field became current (a callback, or adopted for a key typed before it): held keys and a
@@ -142,7 +152,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private func fieldChanged(to field: UUID?) {
         if deleteKey.fieldChanged(to: field) { endDeleteRepeat() }
         keyArea?.fieldChanged(to: field)
-        updateSwipeEnabled()
+        // The prior's cache holds the old field's text.
+        tapPrior?.clear()
+        updateTouchModes()
     }
 
     // MARK: Swipe typing
@@ -160,10 +172,64 @@ final class KeyboardInput: KeyAreaViewDelegate {
         }
     }
 
-    /// Swipe typing is on only with the engine loaded and outside secure text entry.
-    private func updateSwipeEnabled() {
-        let enabled = swipeEngine != nil && proxy?.isSecureTextEntry != true
-        if keyArea?.swipeEnabled != enabled { keyArea?.swipeEnabled = enabled }
+    /// Swipe typing and soft taps are on only with their models loaded and outside secure text entry.
+    private func updateTouchModes() {
+        let secure = proxy?.isSecureTextEntry == true
+        let swipe = swipeEngine != nil && !secure
+        if keyArea?.swipeEnabled != swipe { keyArea?.swipeEnabled = swipe }
+        let softTaps = tapPrior != nil && !secure
+        if keyArea?.softTapsEnabled != softTaps { keyArea?.softTapsEnabled = softTaps }
+    }
+
+    // MARK: Soft key edges
+
+    /// The keyboard appeared with these settings (ARCHITECTURE.md, "Soft key edges"): off drops the model;
+    /// on loads the chosen one (the bundle's default if the bundle lacks it) off the main thread, unless it
+    /// is already loaded. Until it has loaded, and for good if the bundle has no `tap` section or a file is
+    /// missing or invalid, letter taps type their nearest key.
+    func configureSoftKeyEdges(enabled: Bool, model stored: String?) {
+        if let softKeys, enabled, tapPrior != nil, softKeys.manifest.modelName(stored) == softKeys.model { return }
+        softKeysGeneration += 1
+        softKeys = nil
+        tapPrior = nil
+        updateTouchModes()
+        guard enabled, let directory = SwipeEngine.bundledDirectory else { return }
+        let generation = softKeysGeneration
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .userInitiated) {
+                try? Self.loadSoftKeyEdges(from: directory, model: stored)
+            }.value
+            guard let self, generation == self.softKeysGeneration, let loaded else { return }
+            self.softKeys = (loaded.manifest, loaded.name)
+            self.tapPrior = TapPrior(model: loaded.model, surpriseWindow: loaded.manifest.rule.surpriseWindow)
+            self.updateTouchModes()
+        }
+    }
+
+    /// The swipe bundle's `tap` section and the chosen model; nil without the section. Slow: off the main
+    /// thread.
+    private nonisolated static func loadSoftKeyEdges(from directory: URL, model stored: String?) throws
+        -> (manifest: SoftKeyEdgesManifest, name: String, model: TapModel)? {
+        let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
+        guard let manifest = try SoftKeyEdgesManifest.decode(from: data) else { return nil }
+        let name = manifest.modelName(stored)
+        guard let path = manifest.models[name] else { return nil }
+        return (manifest, name, try TapModel.load(from: directory.appendingPathComponent(path)))
+    }
+
+    /// The key a soft tap types: the nearest key, unless `TapDecoder` re-decides it from the prior. The
+    /// context is the proxy's text before the cursor, plus the space the editor would insert first after a
+    /// swiped word; the rule values are read from the settings now. On the main thread; nothing here is
+    /// logged or kept beyond the prior's in-memory cache.
+    private func softTapKey(_ action: KeyAction, x: Double, y: Double, keyArea: KeyAreaView) -> KeyAction {
+        guard let softKeys, tapPrior != nil, proxy?.isSecureTextEntry != true else { return action }
+        let context = (proxy?.documentContextBeforeInput ?? "") + (editor.tappedLetterGetsSpace ? " " : "")
+        guard let prediction = tapPrior?.prediction(context: context) else { return action }
+        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
+        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
+        let decoder = TapDecoder(touch: TapDecoder.TouchModel(softKeys.manifest.touch),
+                                 rule: TapDecoder.Rule(defaults: softKeys.manifest.rule, settings: softKeyEdgesSettings()))
+        return decoder.decide(x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise) ?? action
     }
 
     /// The candidate strip after a swipe, nil when closed.
@@ -306,6 +372,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, field: UUID?, timestamp: TimeInterval) {
         editor.press(action, field: field, at: timestamp, now: now)
+    }
+
+    /// A letter tap re-decided at the moment it types, then typed exactly like a key.
+    func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        editor.press(softTapKey(action, x: x, y: y, keyArea: keyArea), field: field, at: timestamp, now: now)
     }
 
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval) {
