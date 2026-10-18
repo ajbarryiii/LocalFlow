@@ -310,6 +310,17 @@ enum SwipeEditorTests {
         TestSupport.expectEqual(swiped.editor.tapPriorContext, "have ")
         // Without edits of ours, the proxy's text.
         TestSupport.expectEqual(SwipeRig("ab").editor.tapPriorContext, "ab")
+        // Code review round 2: in another field the proxy already serves, before any callback reports it, the
+        // first field's typing tail is not the context, even where the new field's text is a suffix of it.
+        for text in ["", "th"] {
+            let switched = SwipeRig("so ")
+            switched.document.host.editContextLagFrames = 3
+            switched.press(.character("t"))
+            switched.press(.character("h"))
+            TestSupport.expectEqual(switched.editor.tapPriorContext, "so th")
+            switched.document.switchField(to: FakeTextHost(text: text), id: UUID())
+            TestSupport.expectEqual(switched.editor.tapPriorContext, text)
+        }
     }
 
     private static func testPendingSpaceSurvivesShiftLayersAndReplacement() {

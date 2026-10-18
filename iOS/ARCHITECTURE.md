@@ -1782,7 +1782,9 @@ distance between neighbouring top-row letter centres.
   That text is the proxy's `documentContextBeforeInput`, or the typing tail
   while the proxy has not yet shown the keyboard's own edits. A tap decided
   right after a rollover therefore follows the letter just typed (code
-  review, 2026-10-18). It is normalized as `normalize_context`:
+  review, 2026-10-18). The typing tail counts only in the field it was
+  typed in: if the proxy already serves another field, before any callback
+  reports it, the proxy's text is the context. It is normalized as `normalize_context`:
   - only the current line counts (after the last line break)
   - accents are dropped (NFKD, combining marks removed), the text is
     lowercased, and curly apostrophes and backticks become "'"

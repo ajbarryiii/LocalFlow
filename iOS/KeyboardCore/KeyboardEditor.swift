@@ -80,8 +80,13 @@ final class KeyboardEditor {
     var tappedLetterGetsSpace: Bool { pendingSpaceApplies() }
     /// The text a tapped letter would follow, for the soft-key-edge prior: the text before the caret as this
     /// keyboard knows it (`currentBefore`, which includes own edits the proxy has not shown yet), plus the
-    /// space a swiped word is owed (ARCHITECTURE.md, "Soft key edges", context).
-    var tapPriorContext: String { (currentBefore ?? "") + (tappedLetterGetsSpace ? " " : "") }
+    /// space a swiped word is owed (ARCHITECTURE.md, "Soft key edges", context). The typing tail belongs to the
+    /// field our edits went to: in another one the proxy serves, before a callback reports it, only the proxy
+    /// knows.
+    var tapPriorContext: String {
+        let before = core.documentID == document.documentID ? currentBefore : document.contextBefore
+        return (before ?? "") + (tappedLetterGetsSpace ? " " : "")
+    }
     /// The strip, and where its word left the caret. Held in memory only while the strip shows.
     private var swipe: (strip: SwipeStrip, anchor: SwipeAnchor)? {
         didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }
