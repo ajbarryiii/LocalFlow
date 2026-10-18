@@ -1877,6 +1877,22 @@ TestFlight only, measure what is left.
   (`barHeight`, `barControlHeight`, and their compact values). The bar uses
   them too.
 - While the menu panel is open, the reach is 0.
+- **The whole bar outside its controls (2026-10-18, from the typing test).**
+  In the user's LocalFlow attempts, touch-downs equalled characters typed, so
+  the dropped taps never reached the keys. 11 of the 15 dropped letters were
+  on the top row. Fast top-row taps were landing higher in the bar.
+  - The key area now also takes any touch in the bar that is at least
+    `KeyboardMetrics.barControlSlop` (4 pt) from every control's frame:
+    `KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`, in
+    the bar's own coordinates.
+  - The controls are the menu button, the Cancel button, the Start capsule,
+    the Undo and "Insert last" chips, and the swipe candidate strip. The bar
+    reports their frames as they lay out, and forgets them as they go
+    (`BarControlFrames`).
+  - Until it has reported any, only the strip below the controls counts, as
+    above.
+  - A touch in a status line or in empty bar space now types the top-row key
+    nearest it. It counts as `aboveKeys`.
 
 **Skids are taps.**
 - Only moves turn a touch into a swipe; the lift no longer does. This amends

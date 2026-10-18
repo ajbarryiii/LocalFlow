@@ -23,6 +23,31 @@ final class SwipeStripModel: ObservableObject {
     }
 }
 
+/// Where the bar's controls are, in the bar's coordinates (`DictationBarView` reports them as they lay out and
+/// forgets them as they go), so the key area can take every other touch in the bar (ARCHITECTURE.md, "Reach
+/// above the keys"). Read on touches; never published, so it re-renders nothing.
+@MainActor
+final class BarControlFrames {
+    static let space = "lf.bar"
+    private var frames: [String: CGRect] = [:]
+
+    var rects: [KeyRect] {
+        frames.values.map { KeyRect(x: Double($0.minX), y: Double($0.minY), width: Double($0.width), height: Double($0.height)) }
+    }
+
+    func set(_ id: String, _ frame: CGRect?) {
+        frames[id] = frame
+    }
+}
+
+private extension View {
+    /// Reports this control's frame in the bar to `controls` while it is shown.
+    func barControl(_ id: String, in controls: BarControlFrames) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarControlFrames.space)) } action: { controls.set(id, $0) }
+            .onDisappear { controls.set(id, nil) }
+    }
+}
+
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
 /// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
 /// candidate strip instead while it shows), and the Start capsule on the right, which becomes a red
@@ -32,6 +57,8 @@ struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
     @ObservedObject var swipe: SwipeStripModel
+    /// Where its controls are, for the key area.
+    let controls: BarControlFrames
     var onMenu: () -> Void
     /// Any other bar action also closes the menu.
     var onAction: () -> Void
@@ -42,7 +69,7 @@ struct DictationBarView: View {
     var body: some View {
         let compact = verticalSizeClass == .compact
         let state = client.state
-        // The key area takes the strip below the controls (`KeyboardMetrics.reachAboveKeys`).
+        // The key area takes the bar away from the controls (`KeyboardMetrics.barPointGoesToKeys`).
         let height = CGFloat(compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight)
         HStack(spacing: 8) {
             Button(action: onMenu) {
@@ -56,6 +83,7 @@ struct DictationBarView: View {
             .buttonStyle(PressableStyle())
             .accessibilityLabel(chrome.isMenuOpen ? "Close menu" : "LocalFlow menu")
             .accessibilityIdentifier("lf.menu")
+            .barControl("menu", in: controls)
 
             Group {
                 if let strip = swipe.strip {
@@ -63,8 +91,9 @@ struct DictationBarView: View {
                         onAction()
                         onCandidate(index)
                     }
+                    .barControl("strip", in: controls)
                 } else {
-                    Middle(client: client, state: state, height: height - 8, onAction: onAction)
+                    Middle(client: client, state: state, height: height - 8, controls: controls, onAction: onAction)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,11 +112,14 @@ struct DictationBarView: View {
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Cancel dictation")
                 .accessibilityIdentifier("lf.cancel")
+                .barControl("cancel", in: controls)
             }
             StartCapsule(client: client, state: state, height: height, onAction: onAction, onUnavailable: onMenu)
+                .barControl("start", in: controls)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .coordinateSpace(.named(BarControlFrames.space))
         .animation(.easeOut(duration: 0.2), value: state.canUndo)
         .animation(.easeOut(duration: 0.2), value: state.canInsertLast)
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
@@ -100,6 +132,7 @@ private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
+    let controls: BarControlFrames
     let onAction: () -> Void
 
     var body: some View {
@@ -111,6 +144,7 @@ private struct Middle: View {
                 }
                 .accessibilityLabel("Undo last dictation")
                 .accessibilityIdentifier("lf.undo")
+                .barControl("undo", in: controls)
             }
             if state.canInsertLast, !state.mode.isRecording {
                 Chip(title: "Insert last", symbol: "text.insert", height: height) {
@@ -119,6 +153,7 @@ private struct Middle: View {
                 }
                 .accessibilityLabel("Insert last dictation")
                 .accessibilityIdentifier("lf.insertLast")
+                .barControl("insertLast", in: controls)
             }
             if let notice = state.notice {
                 // Notices render on their own, ahead of any idle hint or status, in every mode.

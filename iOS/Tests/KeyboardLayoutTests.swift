@@ -12,6 +12,7 @@ enum KeyboardLayoutTests {
             ("landscapeKeepsACenteredBand", testLandscapeKeepsACenteredBand),
             ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
             ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
+            ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
         ]
     }
 
@@ -181,5 +182,32 @@ enum KeyboardLayoutTests {
         TestSupport.expect(n.midX > space.x && n.midX < space.maxX, "n is not above the landscape space bar")
         let hit = KeyboardLayout.nearestKey(toX: n.midX, y: space.y - 0.5, in: landscape).map { landscape[$0].action }
         TestSupport.expectEqual(hit, .character("n"))
+    }
+
+    private static func testTheBarOutsideItsControlsGoesToTheKeys() {
+        // ARCHITECTURE.md, "Reach above the keys" (2026-10-18): any point of the bar at least `barControlSlop` from
+        // every control goes to the keys; with no control frames reported yet, only the strip below the controls.
+        TestSupport.expectEqual(KeyboardMetrics.barControlSlop, 4)
+        let bar = KeyboardMetrics.barHeight
+        let menu = KeyRect(x: 8, y: 8, width: 38, height: 38), start = KeyRect(x: 300, y: 8, width: 92, height: 38)
+        func goes(_ x: Double, _ y: Double, compact: Bool = false, _ controls: [KeyRect] = [menu, start]) -> Bool {
+            KeyboardMetrics.barPointGoesToKeys(x: x, y: y, barHeight: compact ? KeyboardMetrics.compactBarHeight : bar,
+                                               compact: compact, controls: controls)
+        }
+        // Empty bar space, top to bottom, and the status line's place in the middle.
+        TestSupport.expect(goes(150, 0) && goes(150, 27) && goes(150, bar - 0.5), "empty bar space kept from the keys")
+        // On a control, or within the slop of one, the bar keeps the touch.
+        TestSupport.expect(!goes(20, 20), "the menu button")
+        TestSupport.expect(!goes(menu.maxX + 3.9, 20), "within the slop of the menu button")
+        TestSupport.expect(goes(menu.maxX + 4.1, 20), "just past the slop")
+        TestSupport.expect(!goes(350, start.maxY + 3), "below the Start capsule, within the slop")
+        TestSupport.expect(goes(350, start.maxY + 4.5), "below the Start capsule's slop")
+        // Outside the bar, nothing.
+        TestSupport.expect(!goes(150, -1) && !goes(150, bar + 1), "outside the bar")
+        // No frames yet: only the strip below the controls (8 pt in portrait, 6 in landscape).
+        TestSupport.expect(goes(150, bar - 7.5, []) && !goes(150, bar - 8.5, []), "portrait strip without frames")
+        let compactBar = KeyboardMetrics.compactBarHeight
+        TestSupport.expect(goes(150, compactBar - 5.5, compact: true, []) && !goes(150, compactBar - 6.5, compact: true, []),
+                           "landscape strip without frames")
     }
 }

@@ -8,7 +8,7 @@ struct TypingCounters: Equatable, Sendable {
         /// Every touch-down the key area receives, ignored ones and those above the keys included (not the
         /// globe button's own).
         case touchDown
-        /// A touch-down in the reach above the keys (the strip of the bar below its controls).
+        /// A touch-down above the keys: in the bar, away from its controls.
         case aboveKeys
         /// A touch-down handled at least 16, 50 or 100 ms after its timestamp (cumulative).
         case late16, late50, late100

@@ -15,6 +15,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private lazy var input = KeyboardInput(controller: self, keyArea: keyArea)
     private let chrome = KeyboardChrome()
     private let swipeStrip = SwipeStripModel()
+    private let barControls = BarControlFrames()
     private var bar: UIHostingController<DictationBarView>?
     private var menuPanel: UIHostingController<MenuPanelView>?
     private var barHeight: NSLayoutConstraint?
@@ -29,12 +30,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             : (CGFloat(KeyboardMetrics.barHeight), CGFloat(KeyboardMetrics.regularHeight))
     }
 
-    /// The strip of the bar below its controls belongs to the top row (ARCHITECTURE.md, "Dropped taps:
-    /// reach, skids and counters"), except while the menu panel is open.
-    private func updateReachAboveKeys() {
-        let reach = chrome.isMenuOpen
-            ? 0 : CGFloat(KeyboardMetrics.reachAboveKeys(compact: traitCollection.verticalSizeClass == .compact))
-        if keyArea.reachAboveKeys != reach { keyArea.reachAboveKeys = reach }
+    /// Whether a touch above the key area (in its coordinates) goes to the keys: one in the bar away from its
+    /// controls (ARCHITECTURE.md, "Reach above the keys"), never while the menu panel is open.
+    private func keysTakeTouch(above point: CGPoint) -> Bool {
+        guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
+        let inBar = keyArea.convert(point, to: barView)
+        return KeyboardMetrics.barPointGoesToKeys(x: Double(inBar.x), y: Double(inBar.y), barHeight: Double(barView.bounds.height),
+                                                  compact: traitCollection.verticalSizeClass == .compact,
+                                                  controls: barControls.rects)
     }
 
     override func loadView() {
@@ -64,7 +67,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.loadSwipeEngine()
 
         let bar = UIHostingController(rootView: DictationBarView(
-            client: client, chrome: chrome, swipe: swipeStrip,
+            client: client, chrome: chrome, swipe: swipeStrip, controls: barControls,
             onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
             onAction: { [weak self] in self?.setMenu(visible: false) },
             onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) }))
@@ -98,12 +101,11 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         ])
         self.barHeight = barHeight
         self.totalHeight = totalHeight
-        updateReachAboveKeys()
+        keyArea.takesTouchAbove = { [weak self] point in self?.keysTakeTouch(above: point) ?? false }
         registerForTraitChanges([UITraitVerticalSizeClass.self]) { (controller: KeyboardViewController, _: UITraitCollection) in
             let heights = controller.heights
             controller.barHeight?.constant = heights.bar
             controller.totalHeight?.constant = heights.bar + heights.keys
-            controller.updateReachAboveKeys()
         }
     }
 
@@ -273,7 +275,6 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// The menu panel covers the key area; a tap outside its card, or on the menu button, closes it.
     private func setMenu(visible: Bool) {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
-        updateReachAboveKeys()
         if visible, menuPanel == nil {
             keyArea.cancelAllTouches()
             readField()

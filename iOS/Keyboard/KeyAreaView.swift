@@ -84,9 +84,10 @@ final class KeyAreaView: UIView {
         get { model.softTapsEnabled }
         set { model.softTapsEnabled = newValue }
     }
-    /// How far above its top the view takes touches (`KeyboardMetrics.reachAboveKeys`): the strip of the
-    /// bar below its controls. Such a touch is an ordinary key touch, on the top row. 0 while the menu is open.
-    var reachAboveKeys: CGFloat = 0
+    /// Whether the view takes a touch at this point above its top (in its own coordinates): one in the bar
+    /// away from the bar's controls (`KeyboardMetrics.barPointGoesToKeys`). Such a touch is an ordinary key
+    /// touch, on the top row. Never while the menu is open.
+    var takesTouchAbove: (CGPoint) -> Bool = { _ in false }
     /// Whether typing events are reported to the delegate (`counted`): only while the TestFlight typing
     /// counters are on.
     var countsEvents = false
@@ -269,7 +270,8 @@ final class KeyAreaView: UIView {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.inset(by: UIEdgeInsets(top: -reachAboveKeys, left: 0, bottom: 0, right: 0)).contains(point)
+        if bounds.contains(point) { return true }
+        return point.y < bounds.minY && point.x >= bounds.minX && point.x <= bounds.maxX && takesTouchAbove(point)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
