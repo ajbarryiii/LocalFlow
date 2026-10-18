@@ -1745,7 +1745,10 @@ typed, so the callout showed the touched key, not the one that typed.
   re-decided, and taps on them never become letters.
 - A re-decided tap types a letter or a space. If the keys changed under the
   touch-down point before it types (a resize), so that its nearest key is no
-  longer the one recorded at touch-down, the recorded key types.
+  longer the one recorded at touch-down, the recorded key types. This holds
+  for a tap decided at touch-down too: a rebuild of the letters layer that
+  moves the keys this way sets its decision back to the recorded key, which
+  then shows in the callout as well (code review, 2026-10-18).
 - A tap bound to another identified field is not predicted (the editor
   refuses it), and the prior's cache is bound to the field it came from.
 - Swipes are unchanged.
@@ -1773,9 +1776,13 @@ distance between neighbouring top-row letter centres.
 
 **Prior** (`TapPrior`, pure; reference: localflow-swipe `tap/neural.py` and
 `tap/export_ios.py`):
-- **Context.** The text the character would follow: the proxy's
-  `documentContextBeforeInput`, plus the space the editor would insert first
-  after a swiped word. It is normalized as `normalize_context`:
+- **Context.** The text the character would follow
+  (`KeyboardEditor.tapPriorContext`): the text before the caret as the editor
+  knows it, plus the space the editor would insert first after a swiped word.
+  That text is the proxy's `documentContextBeforeInput`, or the typing tail
+  while the proxy has not yet shown the keyboard's own edits. A tap decided
+  right after a rollover therefore follows the letter just typed (code
+  review, 2026-10-18). It is normalized as `normalize_context`:
   - only the current line counts (after the last line break)
   - accents are dropped (NFKD, combining marks removed), the text is
     lowercased, and curly apostrophes and backticks become "'"

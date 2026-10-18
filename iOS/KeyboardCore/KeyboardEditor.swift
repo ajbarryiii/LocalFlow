@@ -78,6 +78,10 @@ final class KeyboardEditor {
     /// before a tapped word"), as `press` would decide. For the soft-key-edge prior's context (ARCHITECTURE.md,
     /// "Soft key edges"); it only reads whether the proxy now shows the word.
     var tappedLetterGetsSpace: Bool { pendingSpaceApplies() }
+    /// The text a tapped letter would follow, for the soft-key-edge prior: the text before the caret as this
+    /// keyboard knows it (`currentBefore`, which includes own edits the proxy has not shown yet), plus the
+    /// space a swiped word is owed (ARCHITECTURE.md, "Soft key edges", context).
+    var tapPriorContext: String { (currentBefore ?? "") + (tappedLetterGetsSpace ? " " : "") }
     /// The strip, and where its word left the caret. Held in memory only while the strip shows.
     private var swipe: (strip: SwipeStrip, anchor: SwipeAnchor)? {
         didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }

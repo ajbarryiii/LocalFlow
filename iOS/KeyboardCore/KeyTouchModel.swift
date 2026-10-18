@@ -332,7 +332,7 @@ struct KeyTouchModel: Equatable, Sendable {
             }
             switch touch.role {
             case .character:
-                kept.append(touch)
+                kept.append(pinnedIfMoved(touch))
             case .slide, .layer:
                 touch.action = nearestAction(x: touch.x, y: touch.y)
                 kept.append(touch)
@@ -345,7 +345,20 @@ struct KeyTouchModel: Equatable, Sendable {
             }
         }
         touches = kept
+        if let origin = swipeOrigin { swipeOrigin = pinnedIfMoved(origin) }
         return effects
+    }
+
+    /// A decided soft tap whose touch-down point is no longer nearest the key it touched (a resize) types and
+    /// shows that key instead (ARCHITECTURE.md, "Soft key edges"). Only the letters layer is checked: another
+    /// layer's keys say nothing about where the letters are.
+    private func pinnedIfMoved(_ touch: Touch) -> Touch {
+        guard touch.decided != nil, layer == .letters, nearestAction(x: touch.startX, y: touch.startY) != touch.action else {
+            return touch
+        }
+        var pinned = touch
+        pinned.decided = touch.action
+        return pinned
     }
 
     /// Another field became current (`field`, ARCHITECTURE.md, "Typing model v2"): fingers that touched

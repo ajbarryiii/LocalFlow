@@ -254,11 +254,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     }
 
     /// The key a soft tap types: the nearest key, unless `TapDecoder` re-decides it from the prior. The
-    /// context is the proxy's text before the cursor, plus the space the editor would insert first after a
-    /// swiped word; the rule values are read from the settings now. The prior's cache is bound to the
-    /// current field first, and a tap bound to another identified field (which the editor refuses) is not
-    /// predicted. On the main thread; nothing here is logged or kept beyond the prior's in-memory cache, and,
-    /// with the TestFlight counters on, counts of whether the tap changed, by row and edge.
+    /// context is the text before the cursor as the editor knows it, own edits the proxy has not shown yet
+    /// included, plus the space owed after a swiped word (`KeyboardEditor.tapPriorContext`). The rule values
+    /// are read from the settings now. The prior's cache is bound to the current field first, and a tap bound
+    /// to another identified field (which the editor refuses) is not predicted. On the main thread; nothing
+    /// here is logged or kept beyond the prior's in-memory cache, and, with the TestFlight counters on,
+    /// counts of whether the tap changed, by row and edge.
     private func softTapKey(_ action: KeyAction, x: Double, y: Double, field: UUID?, keyArea: KeyAreaView) -> KeyAction {
         guard let softKeys, tapPrior != nil else { return action }
         // Bound first, even for a tap that is not predicted (a secure field, a refused stale tap).
@@ -266,7 +267,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         tapPrior?.bind(to: current)
         guard proxy?.isSecureTextEntry != true else { return action }
         if let field, let current, field != current { return action }
-        let context = (proxy?.documentContextBeforeInput ?? "") + (editor.tappedLetterGetsSpace ? " " : "")
+        let context = editor.tapPriorContext
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
         let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
         let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)

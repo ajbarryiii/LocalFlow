@@ -46,6 +46,7 @@ enum KeyTouchModelTests {
             ("softTapsLeaveFunctionKeysAndSwipesAlone", testSoftTapsLeaveFunctionKeysAndSwipesAlone),
             ("softTapsOffTypeAsBefore", testSoftTapsOffTypeAsBefore),
             ("aDecidedTapShowsAndTypesItsDecision", testADecidedTapShowsAndTypesItsDecision),
+            ("aResizeUnderADecidedTapTypesTheTouchedKey", testAResizeUnderADecidedTapTypesTheTouchedKey),
         ]
     }
 
@@ -1055,5 +1056,37 @@ extension KeyTouchModelTests {
         _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
         TestSupport.expect(skid.isSwipeActive, "no swipe")
         TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.type(.character("f"))])
+    }
+
+    private static func testAResizeUnderADecidedTapTypesTheTouchedKey() {
+        // ARCHITECTURE.md, "Soft key edges" (code review 2026-10-18): if the keys change under a decided tap's
+        // touch-down point so that its nearest key is no longer the one it touched, the touched key types and
+        // shows, as an undecided tap's re-decision would give.
+        let d = frame(.character("d"))
+        let x = d.maxX - 2, y = d.midY
+        let narrow = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 330, height: KeyboardMetrics.regularHeight),
+                                         showsGlobe: false)
+        let moved = KeyboardLayout.nearestKey(toX: x, y: y, in: narrow).map { narrow[$0].action }
+        TestSupport.expect(moved != .character("d"), "the narrow layout still has d under the point")
+        var model = model(softTaps: true)
+        _ = model.began(1, x: x, y: y)
+        model.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(model.keysChanged(narrow, layer: .letters), [])
+        TestSupport.expectEqual(model.calloutAction, .character("d"))
+        TestSupport.expectEqual(model.ended(1, x: x, y: y), [.type(.character("d"))])
+        // A rebuild that keeps the touched key under the point keeps the decision.
+        var same = self.model(softTaps: true)
+        _ = same.began(1, x: x, y: y)
+        same.decideTap(1, as: .character("f"))
+        _ = same.keysChanged(keys(.letters), layer: .letters)
+        TestSupport.expectEqual(same.ended(1, x: x, y: y), [.type(.character("f"))])
+        // So for a skid, whose touch is held aside while it swipes.
+        var skid = self.model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: x, y: y, t: 0)
+        skid.decideTap(1, as: .character("f"))
+        _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        _ = skid.keysChanged(narrow, layer: .letters)
+        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.type(.character("d"))])
     }
 }

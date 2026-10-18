@@ -29,6 +29,7 @@ enum SwipeEditorTests {
             ("unreportedHostEditBackToThePreviousTextEndsTheSwipe", testUnreportedHostEditBackToThePreviousTextEndsTheSwipe),
             ("tappedLetterIsCasedAfterTheSpace", testTappedLetterIsCasedAfterTheSpace),
             ("pendingSpaceIsReadableForTheTapPrior", testPendingSpaceIsReadableForTheTapPrior),
+            ("tapPriorContextIncludesEditsTheProxyHasNotShown", testTapPriorContextIncludesEditsTheProxyHasNotShown),
             ("stripShowsUpToThreeInsertedFirst", testStripShowsUpToThreeInsertedFirst),
             ("tapReplacesTheInsertedWord", testTapReplacesTheInsertedWord),
             ("tapAfterAnOutsideEditDoesNothing", testTapAfterAnOutsideEditDoesNothing),
@@ -288,6 +289,27 @@ enum SwipeEditorTests {
         outside.swipe(["word"])
         outside.document.moveCaret(to: 1)
         TestSupport.expect(!outside.editor.tappedLetterGetsSpace, "caret no longer after the word")
+    }
+
+    private static func testTapPriorContextIncludesEditsTheProxyHasNotShown() {
+        // ARCHITECTURE.md, "Soft key edges" (context, code review 2026-10-18): a tap decided right after a rollover
+        // follows the letter just typed even while the proxy still shows the field without it.
+        let rig = SwipeRig("so ")
+        rig.document.host.editContextLagFrames = 3
+        rig.press(.character("t"))
+        rig.press(.character("h"))
+        TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
+        TestSupport.expectEqual(rig.document.contextBefore, "so ")
+        TestSupport.expectEqual(rig.editor.tapPriorContext, "so th")
+        for _ in 0 ..< 3 { rig.document.host.advanceFrame() }
+        TestSupport.expectEqual(rig.editor.tapPriorContext, "so th")
+        // Plus the space a swiped word is owed, before the proxy shows the word too.
+        let swiped = SwipeRig("")
+        swiped.document.host.editContextLagFrames = 3
+        swiped.swipe(["have"])
+        TestSupport.expectEqual(swiped.editor.tapPriorContext, "have ")
+        // Without edits of ours, the proxy's text.
+        TestSupport.expectEqual(SwipeRig("ab").editor.tapPriorContext, "ab")
     }
 
     private static func testPendingSpaceSurvivesShiftLayersAndReplacement() {
