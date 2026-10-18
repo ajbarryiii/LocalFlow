@@ -1728,7 +1728,19 @@ as before. It is also off in secure text entry.
 
 **Which taps.** Only a character tap on the letters layer, by a finger that
 touched down on a letter key (`Role.character`, not a slide). Its key is
-re-decided at the moment it would type: at release, or at rollover.
+decided when it touches down, after any earlier fingers have committed
+(rollover), and it types at release or rollover as before. Contract change
+from device testing, 2026-10-18: the decision used to be made when the tap
+typed, so the callout showed the touched key, not the one that typed.
+- The key area asks for the decision right after the touch-down's effects
+  (`KeyAreaViewDelegate.keyArea(_:decideTap:x:y:field:)`) and records it with
+  `KeyTouchModel.decideTap(_:as:)`.
+- The callout shows the decided key, over that key. A space has no callout.
+- At release or rollover the tap emits `.type(decided, field:)`.
+- A tap with no decision (none was given) emits `.tap` as below, and the key is
+  re-decided when it types.
+- If soft taps are off by the time it types (a secure field), the nearest key
+  types.
 - Space, delete, Return, Shift, the layer keys and the globe are never
   re-decided, and taps on them never become letters.
 - A re-decided tap types a letter or a space. If the keys changed under the
@@ -1928,7 +1940,8 @@ letter.
   - `skid`: a swipe typed as a tap, at release or because a new finger
     committed it
   - `swipeEmpty`: a released swipe that decoded to no word
-  - `softTap`: a tap that soft key edges predicted
+  - `softTap`: a tap that soft key edges predicted. These are counted when
+    decided at touch-down, so a touch that then becomes a swipe still counts.
   - `softLetter`: of those, a tap that typed a letter other than its nearest
     key
   - `softSpace`: of those, a tap that typed a space

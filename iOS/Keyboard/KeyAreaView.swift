@@ -29,12 +29,20 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// would otherwise be `typed`: the key nearest the touch-down point, that point in key-area points, and
     /// the field it touched down in. The delegate types the key it decides on.
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
+    /// A letter tap to decide at touch-down (only while `softTapsEnabled`; ARCHITECTURE.md, "Soft key edges"):
+    /// its nearest key, the touch-down point and its field. The key returned shows in its callout and types
+    /// at release or rollover; nil leaves it to `tapped`.
+    func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction?
     /// A typing event happened (only while `countsEvents`; ARCHITECTURE.md, "Dropped taps: reach, skids and
     /// counters"), in these regions of the keys. TestFlight only.
     func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region])
 }
 
 extension KeyAreaViewDelegate {
+    func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction? {
+        nil
+    }
+
     func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region]) {}
 
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
@@ -274,6 +282,12 @@ final class KeyAreaView: UIView {
             if model.touches.last?.id == touchID { keyTouchedDown() }
             if countsEvents { countTouchDown(at: point, delay: CACurrentMediaTime() - touch.timestamp, swipe: swipe) }
             perform(effects, timestamp: touch.timestamp)
+            // Decided after earlier fingers have typed, before the callout shows (ARCHITECTURE.md, "Soft key edges").
+            if model.needsTapDecision(touchID), let held = model.touches.first(where: { $0.id == touchID }),
+               let action = held.action,
+               let decided = delegate?.keyArea(self, decideTap: action, x: held.startX, y: held.startY, field: held.field) {
+                model.decideTap(touchID, as: decided)
+            }
         }
         refreshPressed()
     }
@@ -440,7 +454,7 @@ final class KeyAreaView: UIView {
         }
         // A swipe has no callout: the model no longer counts it as a held character.
         let target = isBlank ? nil : model.calloutTouch
-        let callout = target.flatMap { touch in touch.action.map { (touch: touch.id, action: $0) } }
+        let callout = target.flatMap { touch in model.shownAction(touch).map { (touch: touch.id, action: $0) } }
         guard callout?.touch != shownCallout?.touch || callout?.action != shownCallout?.action else { return }
         shownCallout = callout
         if let callout, case .character(let character) = callout.action,

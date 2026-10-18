@@ -423,7 +423,13 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.press(action, field: field, at: timestamp, now: now)
     }
 
-    /// A letter tap re-decided at the moment it types, then typed exactly like a key.
+    /// A letter tap decided at touch-down, after earlier fingers have typed: its callout shows the key, which
+    /// types at release or rollover.
+    func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction? {
+        softTapKey(action, x: x, y: y, field: field, keyArea: keyArea)
+    }
+
+    /// A letter tap with no decision at touch-down, re-decided at the moment it types, then typed like a key.
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
         editor.press(softTapKey(action, x: x, y: y, field: field, keyArea: keyArea), field: field, at: timestamp, now: now)
     }

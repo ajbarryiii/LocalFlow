@@ -24,8 +24,9 @@ import Foundation
 ///   taps: reach, skids and counters").
 /// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
 ///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
-///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"). Slides, other layers and every other key
-///   are unchanged.
+///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"), unless the keyboard decided its key at
+///   touch-down (`decideTap`): then it types that key, which its callout shows. Slides, other layers and
+///   every other key are unchanged.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
@@ -59,6 +60,9 @@ struct KeyTouchModel: Equatable, Sendable {
         /// It touched down on a letter key of the letters layer: with `softTapsEnabled`, its character is
         /// re-decided where it would type (`tap`).
         var onLetters = false
+        /// The key decided for this soft tap at touch-down (`decideTap`): shown in its callout and typed instead
+        /// of `action` while soft taps stay on.
+        var decided: KeyAction?
     }
 
     enum Effect: Equatable, Sendable {
@@ -134,8 +138,26 @@ struct KeyTouchModel: Equatable, Sendable {
         }
     }
 
-    /// The character to show in a callout (`calloutTouch`).
-    var calloutAction: KeyAction? { calloutTouch?.action }
+    /// The character to show in a callout (`calloutTouch`): a soft tap's decided key, when it has one.
+    var calloutAction: KeyAction? { calloutTouch.flatMap(shownAction) }
+
+    /// What a touch's callout shows: a soft tap's decided key while soft taps are on, otherwise its key.
+    func shownAction(_ touch: Touch) -> KeyAction? {
+        softTapsEnabled ? touch.decided ?? touch.action : touch.action
+    }
+
+    /// The touch is an uncommitted soft tap with no decision yet (ARCHITECTURE.md, "Soft key edges").
+    func needsTapDecision(_ id: TouchID) -> Bool {
+        guard let touch = touches.first(where: { $0.id == id }) else { return false }
+        return softTapsEnabled && touch.role == .character && touch.onLetters && !touch.committed && touch.decided == nil
+    }
+
+    /// The keyboard decided a soft tap's key at touch-down: it shows in the callout and types at release or
+    /// rollover. Ignored for any touch that does not `needsTapDecision`.
+    mutating func decideTap(_ id: TouchID, as action: KeyAction) {
+        guard needsTapDecision(id), let index = touches.firstIndex(where: { $0.id == id }) else { return }
+        touches[index].decided = action
+    }
 
     /// Whether the touch's moves should bring every coalesced sample (`moved(_:x:y:t:coalesced:)`): it is
     /// a swipe, or may still become one.
@@ -402,10 +424,12 @@ struct KeyTouchModel: Equatable, Sendable {
         return (last - first) / Double(centers.count - 1) / 2
     }
 
-    /// What a held character types: a soft tap (`tap`, from its touch-down point) for a character touch that
-    /// touched down on a letter key while `softTapsEnabled`; otherwise the key itself. Slides never are.
+    /// What a held character types: for a character touch that touched down on a letter key while
+    /// `softTapsEnabled`, its decided key, or without one a soft tap (`tap`, from its touch-down point);
+    /// otherwise the key itself. Slides never are.
     private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
         guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
+        if let decided = touch.decided { return .type(decided, field: touch.field) }
         return .tap(action, x: touch.startX, y: touch.startY, field: touch.field)
     }
 

@@ -45,6 +45,7 @@ enum KeyTouchModelTests {
             ("softTapsAreOnlyLetterTouches", testSoftTapsAreOnlyLetterTouches),
             ("softTapsLeaveFunctionKeysAndSwipesAlone", testSoftTapsLeaveFunctionKeysAndSwipesAlone),
             ("softTapsOffTypeAsBefore", testSoftTapsOffTypeAsBefore),
+            ("aDecidedTapShowsAndTypesItsDecision", testADecidedTapShowsAndTypesItsDecision),
         ]
     }
 
@@ -991,5 +992,68 @@ extension KeyTouchModelTests {
         _ = switched.began(1, x: a.x, y: a.y)
         switched.softTapsEnabled = false
         TestSupport.expectEqual(switched.ended(1, x: a.x, y: a.y), [.type(.character("a"))])
+    }
+
+    private static func testADecidedTapShowsAndTypesItsDecision() {
+        // ARCHITECTURE.md, "Soft key edges" (2026-10-18): the key is decided at touch-down; the callout shows the
+        // decision and it types at release, with the touch-down field.
+        let field = UUID()
+        let d = frame(.character("d")), f = center(.character("f"))
+        let x = d.maxX - 2, y = d.midY
+        var model = model(softTaps: true)
+        TestSupport.expectEqual(model.began(1, x: x, y: y, field: field), [.keyDown])
+        TestSupport.expect(model.needsTapDecision(1), "a soft tap needs no decision")
+        TestSupport.expectEqual(model.calloutAction, .character("d"))
+        model.decideTap(1, as: .character("f"))
+        TestSupport.expect(!model.needsTapDecision(1), "a decided tap needs another decision")
+        TestSupport.expectEqual(model.calloutAction, .character("f"))
+        TestSupport.expectEqual(model.ended(1, x: f.x, y: f.y), [.type(.character("f"), field: field)])
+        // At rollover too, in press order.
+        var rolled = self.model(softTaps: true)
+        let a = center(.character("a"))
+        _ = rolled.began(1, x: x, y: y)
+        rolled.decideTap(1, as: .space)
+        TestSupport.expectEqual(rolled.began(2, x: a.x, y: a.y), [.keyDown, .type(.space)])
+        TestSupport.expectEqual(rolled.ended(1, x: x, y: y), [])
+        // Turned off before it types (a secure field): the nearest key types.
+        var switched = self.model(softTaps: true)
+        _ = switched.began(1, x: x, y: y)
+        switched.decideTap(1, as: .character("f"))
+        switched.softTapsEnabled = false
+        TestSupport.expectEqual(switched.ended(1, x: x, y: y), [.type(.character("d"))])
+        // Only an uncommitted soft tap takes a decision: not with soft taps off, not a slide or another layer,
+        // not a function key, not a committed letter, not an unknown touch.
+        var off = self.model()
+        _ = off.began(1, x: x, y: y)
+        TestSupport.expect(!off.needsTapDecision(1), "soft taps off")
+        off.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(off.calloutAction, .character("d"))
+        TestSupport.expectEqual(off.ended(1, x: x, y: y), [.type(.character("d"))])
+        var numbers = self.model(.numbers, softTaps: true)
+        let one = center(.character("1"), .numbers)
+        _ = numbers.began(1, x: one.x, y: one.y)
+        TestSupport.expect(!numbers.needsTapDecision(1), "another layer")
+        var functions = self.model(softTaps: true)
+        let space = center(.space)
+        _ = functions.began(1, x: space.x, y: space.y)
+        TestSupport.expect(!functions.needsTapDecision(1), "the space bar")
+        functions.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(functions.ended(1, x: space.x, y: space.y), [.cancelHoldTimer(1), .type(.space)])
+        var committed = self.model(softTaps: true)
+        _ = committed.began(1, x: x, y: y)
+        _ = committed.began(2, x: a.x, y: a.y)
+        TestSupport.expect(!committed.needsTapDecision(1), "a committed letter")
+        TestSupport.expect(!committed.needsTapDecision(9), "an unknown touch")
+        // Without a decision, the tap is re-decided when it types, as before.
+        var undecided = self.model(softTaps: true)
+        _ = undecided.began(1, x: x, y: y)
+        TestSupport.expectEqual(undecided.ended(1, x: x, y: y), [.tap(.character("d"), x: x, y: y, field: nil)])
+        // A skid keeps its decision.
+        var skid = self.model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: x, y: y, t: 0)
+        skid.decideTap(1, as: .character("f"))
+        _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.type(.character("f"))])
     }
 }
