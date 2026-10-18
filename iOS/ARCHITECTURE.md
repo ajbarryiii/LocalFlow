@@ -483,6 +483,11 @@ The keyboard can read these, so they live in App Group `UserDefaults`
 - `pressEnterEnabled`: default true
 - `hapticsEnabled`: default true (dictation haptics and the trackpad-mode tap)
 - `keyHapticsEnabled`: default true (a light haptic on each key touch-down)
+- `softKeyEdgesEnabled`: default false; `softKeyEdgesModel`, `softKeyEdgesCentre`
+  (0.3–0.9), `softKeyEdgesMargin` (1–10), `softKeyEdgesSurpriseGate` (default
+  true) and `softKeyEdgesMaxSurprise` (2–8 bits). The model and the numbers are
+  unset by default, and an unset, out-of-range or malformed value reads as the
+  bundle's default (see "Soft key edges")
 
 No transcript history is stored.
 
@@ -1779,8 +1784,10 @@ section:
 A bundle without the section has no soft key edges. The Makefile needs no
 change: it copies every listed file.
 
-**Settings** (App Group, `LocalFlowSettings`; the keyboard reads them when it
-appears):
+**Settings** (App Group, `LocalFlowSettings`). The keyboard reads the model
+choice and `softKeyEdgesEnabled` when it appears, and the rule parameters
+(centre, margin, gate) on every tap it re-decides, so slider changes apply to
+the next tap, as the cursor sliders apply to the next gesture:
 - `softKeyEdgesEnabled`: default false
 - `softKeyEdgesModel`: one of the bundle's model names; default the bundle's
   `default_model`
@@ -1789,8 +1796,12 @@ appears):
 - `softKeyEdgesSurpriseGate`: default true. When on, `maxSurprise` is
   `softKeyEdgesMaxSurprise` (2–8 bits; default `rule.max_surprise`, 3)
 
-The app's Settings screen shows them under "Soft key edges (experimental)".
-Out-of-range or malformed values read as the default.
+The app shows them in Diagnostics, in a "Soft key edges (experimental)"
+section next to the cursor sliders and built the same way: a slider each for
+the guaranteed press region (`softKeyEdgesCentre`, shown as a percentage of
+the key's width and height), the margin (shown as odds, e.g. "3:1") and the
+maximum surprise (bits), with the toggles, the model picker and a reset to
+the bundle's defaults. Out-of-range or malformed values read as the default.
 
 **Performance.** The prior runs on the main thread when a tap types. It
 caches log probabilities by normalized prefix in memory (at most 64 entries),
