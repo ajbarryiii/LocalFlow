@@ -2000,7 +2000,9 @@ keyboard.
   them again a second after Score has closed the keyboard. Score and Next
   passage both close the keyboard and lock the field for that second, so the
   keyboard adds its pending counts and no new attempt's counts mix in (code
-  review, 2026-10-18). The difference in `touchDown` is set
+  review, 2026-10-18). This is best effort: the keyboard adds its counts in
+  its own process when it hides, which nothing confirms to the app. If that
+  takes longer than the second, counts can land in the wrong attempt. The difference in `touchDown` is set
   against the characters typed. Equal means every touch that reached the keys
   typed; fewer touch-downs than characters typed plus dropped means taps never
   reached the keys.

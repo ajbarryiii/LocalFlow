@@ -30,7 +30,8 @@ struct TypingTestView: View {
     @State private var countersAtStart: TypingCounters?
     @State private var attempts: [Attempt] = []
     /// For a second after Score or Next passage, while the closed keyboard adds its pending counts (and Score
-    /// reads them), no new attempt can start, so no attempt's counts mix with another's (code review).
+    /// reads them), no new attempt can start, so attempts' counts do not mix (code review). Best effort: the
+    /// keyboard adds them in its own process, which nothing confirms; a slower one can still mix them.
     @State private var settling = false
 
     private var passage: String { TypingTestScore.passages[passageIndex % TypingTestScore.passages.count] }
