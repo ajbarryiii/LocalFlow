@@ -1955,6 +1955,18 @@ boundary was 6 pt below those letters.
   and `tap/decide.py` `nearest_keys`, pinned by its Swift-generated layout
   fixture.
 
+**A wider delete key (user decision, 2026-10-18).**
+- For the nearest key, the delete key's frame reaches
+  `KeyboardLayout.deleteReachLeft` (8 pt) further left, towards M. It looks
+  the same.
+- In portrait, it now takes about 12 pt of the 16.5 pt gap beside M, up from
+  half. Only that side grows: the gaps above it (towards L) and below it
+  (towards Return) split as before, apart from the 8 pt beside its old left
+  edge.
+- Ties among keys at distance 0 still go to the nearer centre. A point inside
+  M's frame is never within 8 pt of delete, so M keeps its whole frame.
+- The reference follows, as for the space bar.
+
 **Counters (TestFlight only; remove before production).** The user approved
 these on 2026-10-18 for TestFlight builds, optional and off by default, to
 find which mechanism still drops taps and how often soft key edges change a

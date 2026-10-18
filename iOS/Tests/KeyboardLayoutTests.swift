@@ -13,6 +13,7 @@ enum KeyboardLayoutTests {
             ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
             ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
             ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
+            ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
         ]
     }
 
@@ -209,5 +210,30 @@ enum KeyboardLayoutTests {
         let compactBar = KeyboardMetrics.compactBarHeight
         TestSupport.expect(goes(150, compactBar - 5.5, compact: true, []) && !goes(150, compactBar - 6.5, compact: true, []),
                            "landscape strip without frames")
+    }
+
+    private static func testTheDeleteKeyReachesTowardsM() {
+        // ARCHITECTURE.md, "A wider delete key": delete's frame counts `deleteReachLeft` (8 pt) further left.
+        TestSupport.expectEqual(KeyboardLayout.deleteReachLeft, 8)
+        for globe in [false, true] {
+            let letters = keys(.letters, globe: globe)
+            func hit(_ x: Double, _ y: Double) -> KeyAction? {
+                KeyboardLayout.nearestKey(toX: x, y: y, in: letters).map { letters[$0].action }
+            }
+            let delete = key(.delete, in: letters).frame, m = key(.character("m"), in: letters).frame
+            let gap = delete.x - m.maxX
+            TestSupport.expect(gap > 8, "the gap beside m is only \(gap)")
+            // The gap splits at 8 pt plus half the rest from delete's edge, not at half.
+            let split = 8 + (gap - 8) / 2
+            TestSupport.expectEqual(hit(delete.x - split + 0.5, delete.midY), .delete)
+            TestSupport.expectEqual(hit(delete.x - split - 0.5, delete.midY), .character("m"))
+            TestSupport.expectEqual(hit(m.maxX - 0.5, delete.midY), .character("m"))
+            // Above and below its frame, the gaps split as before.
+            let l = key(.character("l"), in: letters).frame, ret = key(.returnKey, in: letters).frame
+            TestSupport.expectEqual(hit(delete.midX, delete.y - (delete.y - l.maxY) / 2 + 0.5), .delete)
+            TestSupport.expectEqual(hit(delete.midX, delete.y - (delete.y - l.maxY) / 2 - 0.5), .character("l"))
+            TestSupport.expectEqual(hit(delete.midX, delete.maxY + (ret.y - delete.maxY) / 2 - 0.5), .delete)
+            TestSupport.expectEqual(hit(delete.midX, delete.maxY + (ret.y - delete.maxY) / 2 + 0.5), .returnKey)
+        }
     }
 }

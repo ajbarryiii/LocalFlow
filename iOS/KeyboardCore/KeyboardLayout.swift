@@ -163,14 +163,22 @@ enum KeyboardLayout {
     /// A point outside the space bar counts as this much farther from it (points): the biggest key gets the
     /// least of the gaps around it (ARCHITECTURE.md, "A stricter space bar").
     static let spaceMissPenalty: Double = 8
+    /// The delete key's frame reaches this much further left, towards M, for the nearest key (points)
+    /// (ARCHITECTURE.md, "A wider delete key").
+    static let deleteReachLeft: Double = 8
 
     /// The key under a touch, or the nearest one, so gaps between keys are never dead. Distances are to the
-    /// frame, the space bar's plus `spaceMissPenalty` outside it; ties go to the nearer center, then the
-    /// earlier key.
+    /// frame (the delete key's reaching `deleteReachLeft` further left), the space bar's plus
+    /// `spaceMissPenalty` outside it; ties go to the nearer center, then the earlier key.
     static func nearestKey(toX x: Double, y: Double, in keys: [PlacedKey]) -> Int? {
         var best: (index: Int, distance: Double, center: Double)?
         for (index, key) in keys.enumerated() {
-            var distance = key.frame.distanceSquared(toX: x, y: y)
+            var frame = key.frame
+            if key.action == .delete {
+                frame.x -= deleteReachLeft
+                frame.width += deleteReachLeft
+            }
+            var distance = frame.distanceSquared(toX: x, y: y)
             if key.action == .space, distance > 0 {
                 let penalized = distance.squareRoot() + spaceMissPenalty
                 distance = penalized * penalized
