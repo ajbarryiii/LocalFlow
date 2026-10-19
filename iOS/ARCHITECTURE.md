@@ -1896,6 +1896,11 @@ TestFlight only, measure what is left.
   until a user decision on 2026-10-18 removed about 1 mm of empty space
   above the Start capsule, and the keyboard is 6 pt shorter (4 pt in
   landscape). The controls keep their size.
+- A top-row key's callout bubble must stay below the keyboard's top, where
+  iOS clips an extension's drawing. With the shorter bar, the portrait gap
+  between key and bubble goes from 10 to 4 pt. That keeps the bubble's top
+  about 3.7 pt clear, as before (code review, 2026-10-18). Landscape keeps its
+  6 pt gap and about 6 pt of clearance.
 - Such a touch is an ordinary key touch, and its nearest key is in the top
   row. The bar's controls keep their full size.
 - The bar and control heights are `KeyboardMetrics` constants
