@@ -29,6 +29,9 @@ enum AutocorrectEditorTests {
             ("unverifiedCaretContextIsNotCorrected", testUnverifiedCaretContextIsNotCorrected),
             ("proxyThatHasNotShownTheWordIsNotCorrected", testProxyThatHasNotShownTheWordIsNotCorrected),
             ("layoutChangeDropsTheRecordedPoints", testLayoutChangeDropsTheRecordedPoints),
+            ("layoutChangeDropsThePointsARevertRestores", testLayoutChangeDropsThePointsARevertRestores),
+            ("returnNeverArmsARevert", testReturnNeverArmsARevert),
+            ("revertNeedsAnIdentifiedUnchangedField", testRevertNeedsAnIdentifiedUnchangedField),
             ("deleteRightAfterRevertsAndRemembers", testDeleteRightAfterRevertsAndRemembers),
             ("heldDeleteRevertsThenRepeatsAsUsual", testHeldDeleteRevertsThenRepeatsAsUsual),
             ("revertRestoresTheTypedWordsTaps", testRevertRestoresTheTypedWordsTaps),
@@ -437,6 +440,71 @@ enum AutocorrectEditorTests {
                                 [nil, nil, nil, p(50), p(51)])
     }
 
+    private static func testLayoutChangeDropsThePointsARevertRestores() {
+        // Code review round 2 (2026-10-19, P2): a layout change between a correction and its revert drops the
+        // points the revert would restore too.
+        let rig = AutocorrectRig("", corrections: ["teh": "the"])
+        rig.tap("teh", from: 30)
+        rig.press(.space)
+        rig.editor.layoutChanged()
+        rig.heldDelete()
+        TestSupport.expectEqual(rig.text, "teh")
+        rig.tap("s", from: 40)
+        rig.press(.space)
+        TestSupport.expectEqual(rig.corrector.calls.last?.points.map { $0.map { TapPoint(x: $0.x, y: $0.y) } },
+                                [nil, nil, nil, p(40)])
+    }
+
+    private static func testReturnNeverArmsARevert() {
+        // Code review round 2 (2026-10-19, P1): Return can move focus before the proxy reports the new field, so
+        // a Delete right after would delete in the next field. A Return still corrects, but a Delete after it is a
+        // plain Delete.
+        let rig = AutocorrectRig("", corrections: ["teh": "the"])
+        rig.document.returnMovesFocusTo = (FakeTextHost(text: "Second field"), UUID())
+        rig.tap("teh")
+        rig.press(.returnKey)
+        TestSupport.expectEqual(rig.text, "the\n")
+        rig.heldDelete()
+        rig.pump()
+        TestSupport.expectEqual(rig.text, "Second fiel")
+        TestSupport.expectEqual(rig.document.previousHosts.last?.text, "the\n")
+        TestSupport.expect(rig.editor.revertedWords.isEmpty, "reverted across fields")
+        // In the same field, too.
+        let same = AutocorrectRig("", corrections: ["teh": "the"])
+        same.tap("teh")
+        same.press(.returnKey)
+        same.heldDelete()
+        TestSupport.expectEqual(same.text, "the")
+        TestSupport.expectEqual(same.events, [.checked, .corrected])
+    }
+
+    private static func testRevertNeedsAnIdentifiedUnchangedField() {
+        // A field without an identity cannot be told from the next one: no revert there.
+        let anonymous = AutocorrectRig("", corrections: ["teh": "the"], documentID: nil)
+        anonymous.tap("teh")
+        anonymous.press(.space)
+        TestSupport.expectEqual(anonymous.text, "the ")
+        anonymous.heldDelete()
+        TestSupport.expectEqual(anonymous.text, "the")
+        TestSupport.expect(anonymous.editor.revertedWords.isEmpty, "reverted without a field identity")
+        // A field change the proxy shows before any callback (the identity changed): the Delete is plain, there.
+        let switched = AutocorrectRig("", corrections: ["teh": "the"])
+        switched.tap("teh")
+        switched.press(.space)
+        switched.document.switchField(to: FakeTextHost(text: "x the "), id: UUID())
+        switched.heldDelete()
+        TestSupport.expectEqual(switched.text, "x the")
+        TestSupport.expect(switched.editor.revertedWords.isEmpty, "reverted in another field")
+        // The identity lost after the correction, before the Delete.
+        let lost = AutocorrectRig("", corrections: ["teh": "the"])
+        lost.tap("teh")
+        lost.press(.space)
+        lost.document.documentID = nil
+        lost.heldDelete()
+        TestSupport.expectEqual(lost.text, "the")
+        TestSupport.expect(lost.editor.revertedWords.isEmpty, "reverted after the identity went")
+    }
+
     // MARK: Revert
 
     private static func testDeleteRightAfterRevertsAndRemembers() {
@@ -455,8 +523,8 @@ enum AutocorrectEditorTests {
         rig.press(.character("."))
         TestSupport.expectEqual(rig.text, "so teh Teh.")
         TestSupport.expectEqual(rig.corrector.calls.count, 1)
-        // VoiceOver's delete reverts too, after punctuation or Return.
-        for (key, text) in [(KeyAction.character(","), ","), (.returnKey, "\n")] {
+        // VoiceOver's delete reverts too, after punctuation (never after Return: "returnNeverArmsARevert").
+        for (key, text) in [(KeyAction.character(","), ","), (.character("."), ".")] {
             let voiceOver = AutocorrectRig("", corrections: ["wrld": "world"])
             voiceOver.tap("Wrld")
             voiceOver.press(key)
@@ -664,8 +732,8 @@ final class AutocorrectRig {
     private(set) var events: [WordAutocorrect.Event] = []
     private var time: TimeInterval = 100
 
-    init(_ text: String, corrections: [String: String], editCallbackDelay: Int? = nil) {
-        document = FakeDocument(FakeTextHost(text: text))
+    init(_ text: String, corrections: [String: String], editCallbackDelay: Int? = nil, documentID: UUID? = UUID()) {
+        document = FakeDocument(FakeTextHost(text: text), documentID: documentID)
         document.editCallbackDelay = editCallbackDelay
         let trackpad = TrackpadController(host: document)
         trackpad.parameters = .flat

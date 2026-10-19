@@ -593,8 +593,11 @@ final class KeyboardEditor {
             return (correction.typed.count, inserted)
         }
         guard let made else { return }
-        pendingRevert = (anchor(made.inserted, made.context), made.correction)
         onAutocorrectEvent?(.corrected)
+        // Return can move focus before the proxy reports the next field, where a revert's deletions would land:
+        // it never arms one. Nor does a field without an identity, which cannot be told from the next.
+        guard action != .returnKey, document.documentID != nil else { return }
+        pendingRevert = (anchor(made.inserted, made.context), made.correction)
     }
 
     /// Whether the run of letters and apostrophes before the caret (as `before`, the editor's text, has it) is
@@ -616,7 +619,8 @@ final class KeyboardEditor {
     private func revertCorrection(field: UUID?, now: TimeInterval) -> Bool {
         guard let pending = pendingRevert else { return false }
         pendingRevert = nil
-        guard holds(pending.anchor) else { return false }
+        // Provably the same field: identified, the same identity the correction was made in, and the anchor holds.
+        guard let current = document.documentID, current == pending.anchor.documentID, holds(pending.anchor) else { return false }
         let reverted = type(field: field, now: now, recordEachDeletion: true) { [self] _ in
             typing.didDelete()
             return (pending.anchor.word.count, pending.correction.typed)
@@ -633,6 +637,13 @@ final class KeyboardEditor {
     /// the old geometry, so they become none; its characters stay.
     func layoutChanged() {
         wordTaps.forgetPoints()
+        // So for the record a revert would restore.
+        if var pending = pendingRevert {
+            var record = WordTapRecord(entries: pending.correction.record)
+            record.forgetPoints()
+            pending.correction.record = record.entries
+            pendingRevert = pending
+        }
     }
 
     /// The caret moved, the field changed or something else edited it: the word's taps and a pending revert

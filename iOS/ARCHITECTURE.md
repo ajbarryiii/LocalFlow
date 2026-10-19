@@ -2009,7 +2009,16 @@ left open:
   letters layer's geometry changes between taps and the commit key (a resize,
   a rotation, the globe key shown or hidden), the record keeps its characters
   and every recorded point becomes none. Points are never rebased. Taps after
-  the change record their points as usual.
+  the change record their points as usual. Code review round 2: the points a
+  pending revert would restore become none too, and a finger held through
+  the change keeps its key (or decision) but types with no point (`.type`,
+  not `.tap` or `.typeDecided`; such a tap is not re-decided).
+- **A revert stays in its field (code review round 2, 2026-10-19).** Return
+  never arms a revert: it can move focus before the proxy reports the next
+  field, and the deletions would land there. A Return still corrects. A
+  revert also needs the field identified, with the same identity as when the
+  correction was made, and the anchor holding. Otherwise Delete is a plain
+  Delete.
 - **Apostrophes.** The record matches the whole run, outer apostrophes
   included. Trailing apostrophes stay after the replacement. A curly
   apostrophe reaches the corrector as "'".

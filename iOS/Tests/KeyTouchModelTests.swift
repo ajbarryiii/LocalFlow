@@ -47,6 +47,7 @@ enum KeyTouchModelTests {
             ("softTapsOffTypeAsBefore", testSoftTapsOffTypeAsBefore),
             ("aDecidedTapShowsAndTypesItsDecision", testADecidedTapShowsAndTypesItsDecision),
             ("aResizeUnderADecidedTapTypesTheTouchedKey", testAResizeUnderADecidedTapTypesTheTouchedKey),
+            ("aTapHeldThroughAResizeLosesItsPoint", testATapHeldThroughAResizeLosesItsPoint),
         ]
     }
 
@@ -1073,7 +1074,7 @@ extension KeyTouchModelTests {
         model.decideTap(1, as: .character("f"))
         TestSupport.expectEqual(model.keysChanged(narrow, layer: .letters), [])
         TestSupport.expectEqual(model.calloutAction, .character("d"))
-        TestSupport.expectEqual(model.ended(1, x: x, y: y), [.typeDecided(.character("d"), x: x, y: y, field: nil)])
+        TestSupport.expectEqual(model.ended(1, x: x, y: y), [.type(.character("d"))])
         // A rebuild that keeps the touched key under the point keeps the decision.
         var same = self.model(softTaps: true)
         _ = same.began(1, x: x, y: y)
@@ -1087,6 +1088,48 @@ extension KeyTouchModelTests {
         _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
         TestSupport.expect(skid.isSwipeActive, "no swipe")
         _ = skid.keysChanged(narrow, layer: .letters)
-        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.typeDecided(.character("d"), x: x, y: y, field: nil)])
+        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.type(.character("d"))])
+    }
+
+    private static func testATapHeldThroughAResizeLosesItsPoint() {
+        // ARCHITECTURE.md, "Word autocorrect" (code review round 2, 2026-10-19): a finger held while the letters
+        // are laid out anew keeps its key (and decision) but carries no point: its touch-down point belongs to the
+        // old geometry. Undecided, it types its touch-down key as is (no re-decision without a point).
+        let d = center(.character("d"))
+        let wider = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 430, height: KeyboardMetrics.regularHeight),
+                                        showsGlobe: false)
+        TestSupport.expectEqual(KeyboardLayout.nearestKey(toX: d.x, y: d.y, in: wider).map { wider[$0].action }, .character("d"))
+        var undecided = model(softTaps: true)
+        _ = undecided.began(1, x: d.x, y: d.y)
+        _ = undecided.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(undecided.ended(1, x: d.x, y: d.y), [.type(.character("d"))])
+        var decided = model(softTaps: true)
+        _ = decided.began(1, x: d.x, y: d.y)
+        decided.decideTap(1, as: .character("f"))
+        _ = decided.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(decided.ended(1, x: d.x, y: d.y), [.type(.character("f"))])
+        // At rollover too.
+        var rolled = model(softTaps: true)
+        _ = rolled.began(1, x: d.x, y: d.y)
+        _ = rolled.keysChanged(wider, layer: .letters)
+        let a = KeyboardLayout.nearestKey(toX: 0, y: d.y, in: wider).map { wider[$0].frame }!
+        TestSupport.expectEqual(rolled.began(2, x: a.midX, y: a.midY), [.keyDown, .type(.character("d"))])
+        // A skid held through the resize.
+        var skid = model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: d.x, y: d.y, t: 0)
+        _ = skid.moved(1, x: d.x + threshold + 1, y: d.y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        _ = skid.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(skid.ended(1, x: d.x + threshold + 1, y: d.y, t: 0.1), [.type(.character("d"))])
+        // The same layout again, a layer change or a shift relabel is no resize: the point stays.
+        var same = model(softTaps: true)
+        _ = same.began(1, x: d.x, y: d.y)
+        _ = same.keysChanged(keys(.letters), layer: .letters)
+        TestSupport.expectEqual(same.ended(1, x: d.x, y: d.y), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
+        // Taps after the resize carry their points.
+        var after = model(softTaps: true)
+        _ = after.keysChanged(wider, layer: .letters)
+        _ = after.began(1, x: d.x, y: d.y)
+        TestSupport.expectEqual(after.ended(1, x: d.x, y: d.y), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
     }
 }

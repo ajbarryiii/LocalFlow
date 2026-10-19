@@ -63,6 +63,9 @@ struct KeyTouchModel: Equatable, Sendable {
         /// The key decided for this soft tap at touch-down (`decideTap`): shown in its callout and typed instead
         /// of `action` while soft taps stay on.
         var decided: KeyAction?
+        /// The letters were laid out anew while it was held (a resize or rotation): its touch-down point belongs
+        /// to the old geometry, so it types its key (or decision) with no point.
+        var geometryChanged = false
     }
 
     enum Effect: Equatable, Sendable {
@@ -117,6 +120,8 @@ struct KeyTouchModel: Equatable, Sendable {
     private(set) var swipeSamples: [SwipeSample] = []
     /// The touch that became the running swipe, as it was then: what a skid types.
     private var swipeOrigin: Touch?
+    /// The letters layer's key frames as last laid out: a held letter's point is only good for these.
+    private var letterFrames: [KeyRect]?
 
     /// A swipe younger than this (seconds from its touch-down) that never strayed a full letter pitch from
     /// its touch-down point is a skid: a tap.
@@ -327,6 +332,12 @@ struct KeyTouchModel: Equatable, Sendable {
         self.keys = keys
         self.layer = layer
         if layer == .letters, let threshold = Self.swipeThreshold(in: keys) { swipeThreshold = threshold }
+        var resized = false
+        if layer == .letters {
+            let frames = keys.map(\.frame)
+            resized = letterFrames.map { $0 != frames } ?? false
+            letterFrames = frames
+        }
         var effects: [Effect] = []
         var kept: [Touch] = []
         for var touch in touches {
@@ -336,6 +347,7 @@ struct KeyTouchModel: Equatable, Sendable {
             }
             switch touch.role {
             case .character:
+                if resized { touch.geometryChanged = true }
                 kept.append(pinnedIfMoved(touch))
             case .slide, .layer:
                 touch.action = nearestAction(x: touch.x, y: touch.y)
@@ -349,7 +361,10 @@ struct KeyTouchModel: Equatable, Sendable {
             }
         }
         touches = kept
-        if let origin = swipeOrigin { swipeOrigin = pinnedIfMoved(origin) }
+        if var origin = swipeOrigin {
+            if resized { origin.geometryChanged = true }
+            swipeOrigin = pinnedIfMoved(origin)
+        }
         return effects
     }
 
@@ -443,9 +458,12 @@ struct KeyTouchModel: Equatable, Sendable {
 
     /// What a held character types: for a character touch that touched down on a letter key while
     /// `softTapsEnabled`, its decided key (`typeDecided`), or without one a soft tap (`tap`), each with its
-    /// touch-down point; otherwise the key itself. Slides never are.
+    /// touch-down point, unless the letters were laid out anew while it was held (then its key or decision,
+    /// with no point); otherwise the key itself. Slides never are.
     private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
         guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
+        // Its point no longer matches the keys: its key, or its decision, without one.
+        if touch.geometryChanged { return .type(touch.decided ?? action, field: touch.field) }
         if let decided = touch.decided { return .typeDecided(decided, x: touch.startX, y: touch.startY, field: touch.field) }
         return .tap(action, x: touch.startX, y: touch.startY, field: touch.field)
     }
