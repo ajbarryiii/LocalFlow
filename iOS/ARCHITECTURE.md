@@ -1981,6 +1981,46 @@ reverted words stay in the instance's memory, are dropped when the keyboard
 hides (the reverted words when the keyboard instance ends), and are never
 logged, stored, sent or learned from. The models are fixed.
 
+**Resolved in the keyboard integration (2026-10-19).** Points the text above
+left open:
+- **Decided taps carry their point.** A soft tap decided at touch-down now
+  emits `.typeDecided(key, x:, y:, field:)` instead of `.type(key, field:)`
+  (amends "Soft key edges"), so its point reaches the record. With soft key
+  edges off, the keyboard decides such a tap as its nearest key.
+- **The record.** Each edit the editor makes applies its deletions, then its
+  insertion. Any inserted character other than a letter or apostrophe starts
+  a new word (clears the record), so the record is the run before the caret.
+  Only the last character of an edit carries the tap's point. Dictation,
+  undo, the trackpad and a selection also clear it.
+- **"Cannot account for".** A record that does not match the run gives all
+  points none, and the word is still checked, as "Taps" says. The editor
+  cannot account for the word only when text is selected (the commit key
+  replaces the selection): then nothing is corrected.
+- **Apostrophes.** The record matches the whole run, outer apostrophes
+  included. Trailing apostrophes stay after the replacement. A curly
+  apostrophe reaches the corrector as "'".
+- **Keep.** A result equal to the typed word ignoring case keeps the word.
+  The corrector's result is lowercased before casing.
+- **Revert.** A revert also restores the run's record. Reverted words are
+  kept lowercased, and are checked before the corrector is asked (no
+  `wordChecked`). "Any other key" includes Shift and layer keys. A swipe,
+  dictation, a caret move, the trackpad, a field change and hiding also
+  forget the pending revert.
+- **Settings.** Overrides exist only for the slider parameters. They are
+  keyed by the bundle's snake-case names (`autocorrectParam.margin_known`).
+  An infinite margin is stored as the string `"inf"`. If the merged
+  `w_repeat` + `w_slip` exceeds 1, both read as the preset's. The reset
+  clears the overrides only; the switch, model and preset stay.
+- **Bundle checks.** Presets are checked against each parameter's domain
+  (probabilities in (0, 1), margins ≥ 1 or null, edits 0–3, lengths 1–32,
+  `log_oov` < 0, weights summing to at most 1), not the sliders' ranges.
+  Every model must have presets that include `default_preset`, and presets
+  must not name a model the section lacks. A `unigram` model must have no
+  path.
+- **Counters.** `wordChecked`, `wordCorrected` and `wordReverted` have no
+  position. Each counts once in `row4`, and Diagnostics shows only their
+  totals.
+
 ### Dropped taps: reach, skids and counters (contract change, 2026-10-18)
 
 **Why.** On the device, letters went missing mostly on the top and bottom

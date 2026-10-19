@@ -33,6 +33,9 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// its nearest key, the touch-down point and its field. The key returned shows in its callout and types
     /// at release or rollover; nil leaves it to `tapped`.
     func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction?
+    /// A letter tap decided at touch-down, typed now (only while `softTapsEnabled`): the decided key, the
+    /// touch-down point and the field, for autocorrect to record (ARCHITECTURE.md, "Word autocorrect").
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
     /// A typing event happened (only while `countsEvents`; ARCHITECTURE.md, "Dropped taps: reach, skids and
     /// counters"), in these regions of the keys. TestFlight only.
     func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region])
@@ -48,6 +51,10 @@ extension KeyAreaViewDelegate {
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
 
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        self.keyArea(keyArea, typed: action, field: field, timestamp: timestamp)
+    }
+
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
         self.keyArea(keyArea, typed: action, field: field, timestamp: timestamp)
     }
 }
@@ -78,8 +85,9 @@ final class KeyAreaView: UIView {
         get { model.swipeEnabled }
         set { model.swipeEnabled = newValue }
     }
-    /// Whether letter taps come as `tapped` to be re-decided (`KeyTouchModel.softTapsEnabled`): only while
-    /// soft key edges are on, their model has loaded, and the field is not secure text entry.
+    /// Whether letter taps come with their touch-down point, `tapped` to be re-decided or `typed` as decided
+    /// (`KeyTouchModel.softTapsEnabled`): only while soft key edges have loaded or autocorrect is on, and the
+    /// field is not secure text entry.
     var softTapsEnabled: Bool {
         get { model.softTapsEnabled }
         set { model.softTapsEnabled = newValue }
@@ -442,6 +450,8 @@ final class KeyAreaView: UIView {
                 delegate?.keyArea(self, swiped: samples, field: field, timestamp: timestamp)
             case .tap(let action, let x, let y, let field):
                 delegate?.keyArea(self, tapped: action, x: x, y: y, field: field, timestamp: timestamp)
+            case .typeDecided(let action, let x, let y, let field):
+                delegate?.keyArea(self, typed: action, x: x, y: y, field: field, timestamp: timestamp)
             }
         }
     }

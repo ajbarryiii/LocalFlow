@@ -121,6 +121,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // Soft key edges (on or off, and the model) are read when the keyboard appears.
         let settings = fieldSettings
         input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false, model: settings?.softKeyEdgesModel)
+        // So are autocorrect, its model and preset (ARCHITECTURE.md, "Word autocorrect"); the parameters at each word.
+        input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false, model: settings?.autocorrectModel,
+                                   preset: settings?.autocorrectPreset)
         // TestFlight only (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
         input.configureTypingCounters(enabled: settings?.typingCountersEnabled ?? false)
         client.start()

@@ -25,8 +25,8 @@ import Foundation
 /// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
 ///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
 ///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"), unless the keyboard decided its key at
-///   touch-down (`decideTap`): then it types that key, which its callout shows. Slides, other layers and
-///   every other key are unchanged.
+///   touch-down (`decideTap`): then it types that key, which its callout shows, with its touch-down point
+///   (`typeDecided`, for autocorrect). Slides, other layers and every other key are unchanged.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
@@ -87,14 +87,18 @@ struct KeyTouchModel: Equatable, Sendable {
         /// would otherwise `type`: the key nearest its touch-down point, that point, and its field, so the
         /// keyboard can re-decide the key (ARCHITECTURE.md, "Soft key edges").
         case tap(KeyAction, x: Double, y: Double, field: UUID?)
+        /// With `softTapsEnabled`, a tap whose key was decided at touch-down (`decideTap`), where it would
+        /// otherwise `type`: the decided key, typed as it is, with the touch-down point and the field, so
+        /// autocorrect can record where the tap landed (ARCHITECTURE.md, "Word autocorrect", Taps).
+        case typeDecided(KeyAction, x: Double, y: Double, field: UUID?)
     }
 
     var parameters = TrackpadParameters.standard
     /// Whether a drag on a letter may become a swipe: true only while the swipe engine is loaded and the
     /// field is not secure text entry.
     var swipeEnabled = false
-    /// Whether a letter tap is emitted as `tap` for the keyboard to re-decide: true only while soft key
-    /// edges are on, their model has loaded, and the field is not secure text entry.
+    /// Whether a letter tap is emitted as `tap` (or `typeDecided`) with its touch-down point: true only while
+    /// soft key edges have loaded or autocorrect is on, and the field is not secure text entry.
     var softTapsEnabled = false
     private(set) var keys: [PlacedKey] = []
     private(set) var layer = KeyboardLayer.letters
@@ -438,11 +442,11 @@ struct KeyTouchModel: Equatable, Sendable {
     }
 
     /// What a held character types: for a character touch that touched down on a letter key while
-    /// `softTapsEnabled`, its decided key, or without one a soft tap (`tap`, from its touch-down point);
-    /// otherwise the key itself. Slides never are.
+    /// `softTapsEnabled`, its decided key (`typeDecided`), or without one a soft tap (`tap`), each with its
+    /// touch-down point; otherwise the key itself. Slides never are.
     private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
         guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
-        if let decided = touch.decided { return .type(decided, field: touch.field) }
+        if let decided = touch.decided { return .typeDecided(decided, x: touch.startX, y: touch.startY, field: touch.field) }
         return .tap(action, x: touch.startX, y: touch.startY, field: touch.field)
     }
 

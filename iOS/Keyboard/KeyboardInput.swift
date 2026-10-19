@@ -85,6 +85,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private var tapPrior: TapPrior?
     /// Bumped by every configuration, so a load that finishes after a newer one is dropped.
     private var softKeysGeneration = 0
+    /// Autocorrect once its model has loaded (`configureAutocorrect`): the bundle's `autocorrect` section, the
+    /// model's name, the chosen preset's parameters and the corrector. Nil keeps words as typed.
+    private var autocorrect: (manifest: AutocorrectManifest, model: String, preset: AutocorrectParams,
+                              corrector: WordCorrecting)?
+    /// Bumped by every configuration, so a load that finishes after a newer one is dropped.
+    private var autocorrectGeneration = 0
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -99,6 +105,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.onTrackpadFinished = { [weak self] _ in self?.trackpadFinished() }
         editor.onFieldChanged = { [weak self] field in self?.fieldChanged(to: field) }
         editor.onSwipeStripChanged = { [weak self] in self?.onSwipeStripChanged?() }
+        editor.autocorrect = { [weak self] in self?.autocorrectSetup() }
+        editor.onAutocorrectEvent = { [weak self] event in self?.countAutocorrect(event) }
         keyArea.currentField = { [weak controller] in controller?.textDocumentProxy.documentIdentifierIfAvailable }
     }
 
@@ -143,6 +151,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         serviceTimer?.invalidate()
         serviceTimer = nil
         tapPrior?.clear()
+        autocorrect?.corrector.forgetContext()
         flushCounters()
     }
 
@@ -208,12 +217,14 @@ final class KeyboardInput: KeyAreaViewDelegate {
         }
     }
 
-    /// Swipe typing and soft taps are on only with their models loaded and outside secure text entry.
+    /// Swipe typing and soft taps are on only with their models loaded and outside secure text entry. Letter
+    /// taps carry their touch-down point (soft taps) for soft key edges or autocorrect; without soft key edges
+    /// they type their nearest key.
     private func updateTouchModes() {
         let secure = proxy?.isSecureTextEntry == true
         let swipe = swipeEngine != nil && !secure
         if keyArea?.swipeEnabled != swipe { keyArea?.swipeEnabled = swipe }
-        let softTaps = tapPrior != nil && !secure
+        let softTaps = (tapPrior != nil || autocorrect != nil) && !secure
         if keyArea?.softTapsEnabled != softTaps { keyArea?.softTapsEnabled = softTaps }
     }
 
@@ -280,6 +291,71 @@ final class KeyboardInput: KeyAreaViewDelegate {
             if typed != action { count(typed == .space ? .softSpace : .softLetter, in: regions) }
         }
         return typed
+    }
+
+    // MARK: Word autocorrect
+
+    /// The keyboard appeared with these settings (ARCHITECTURE.md, "Word autocorrect"): off drops the corrector;
+    /// on loads the chosen model (the bundle's default if the bundle lacks it) off the main thread, unless it is
+    /// already loaded, and takes the chosen preset. Until it has loaded, and for good if the bundle has no
+    /// valid `autocorrect` section or a file is missing or invalid, words commit as typed.
+    func configureAutocorrect(enabled: Bool, model stored: String?, preset storedPreset: String?) {
+        if enabled, let loaded = autocorrect, loaded.manifest.modelName(stored) == loaded.model {
+            autocorrect?.preset = loaded.manifest.params(model: loaded.model, preset: storedPreset)
+            return
+        }
+        autocorrectGeneration += 1
+        autocorrect = nil
+        updateTouchModes()
+        guard enabled, let directory = SwipeEngine.bundledDirectory else { return }
+        let generation = autocorrectGeneration
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .userInitiated) {
+                Self.loadAutocorrect(from: directory, model: stored)
+            }.value
+            guard let self, generation == self.autocorrectGeneration, let loaded else { return }
+            self.autocorrect = (loaded.manifest, loaded.name, loaded.manifest.params(model: loaded.name, preset: storedPreset),
+                                loaded.corrector)
+            self.updateTouchModes()
+        }
+    }
+
+    /// What a load hands back to the main thread. The corrector is immutable once built.
+    private struct LoadedAutocorrect: @unchecked Sendable {
+        var manifest: AutocorrectManifest
+        var name: String
+        var corrector: WordCorrecting
+    }
+
+    /// The swipe bundle's `autocorrect` section and the chosen model's corrector; nil without a valid section
+    /// or when the model cannot be built. Slow: off the main thread.
+    private nonisolated static func loadAutocorrect(from directory: URL, model stored: String?) -> LoadedAutocorrect? {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("bundle.json")),
+              let manifest = try? AutocorrectManifest.decode(from: data) else { return nil }
+        let name = manifest.modelName(stored)
+        guard let corrector = AutocorrectLoader.load(manifest: manifest, bundleURL: directory, model: name) else { return nil }
+        return LoadedAutocorrect(manifest: manifest, name: name, corrector: corrector)
+    }
+
+    /// The corrector and its inputs at a commit key: only with the model loaded and the App Group's settings
+    /// (Full Access); the parameter overrides are read now. The editor declines in a secure field.
+    private func autocorrectSetup() -> AutocorrectSetup? {
+        guard let autocorrect, let settings = sharedSettings(), let keyArea else { return nil }
+        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
+        return AutocorrectSetup(corrector: autocorrect.corrector,
+                                keys: KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe),
+                                params: settings.autocorrectParams(over: autocorrect.preset),
+                                secureTextEntry: proxy?.isSecureTextEntry == true)
+    }
+
+    /// With the TestFlight counters on: words checked, corrected and reverted. Counts only; a word has no
+    /// position, so each counts once in the bottom row (`TypingCounters.wordRegions`).
+    private func countAutocorrect(_ event: WordAutocorrect.Event) {
+        switch event {
+        case .checked: count(.wordChecked, in: TypingCounters.wordRegions)
+        case .corrected: count(.wordCorrected, in: TypingCounters.wordRegions)
+        case .reverted: count(.wordReverted, in: TypingCounters.wordRegions)
+        }
     }
 
     /// The candidate strip after a swipe, nil when closed.
@@ -424,6 +500,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.press(action, field: field, at: timestamp, now: now)
     }
 
+    /// A letter tap decided at touch-down, typed now with its touch-down point (recorded for autocorrect).
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        editor.press(action, field: field, at: timestamp, now: now, point: TapPoint(x: x, y: y))
+    }
+
     /// A letter tap decided at touch-down, after earlier fingers have typed: its callout shows the key, which
     /// types at release or rollover.
     func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction? {
@@ -432,7 +513,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// A letter tap with no decision at touch-down, re-decided at the moment it types, then typed like a key.
     func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
-        editor.press(softTapKey(action, x: x, y: y, field: field, keyArea: keyArea), field: field, at: timestamp, now: now)
+        editor.press(softTapKey(action, x: x, y: y, field: field, keyArea: keyArea), field: field, at: timestamp, now: now,
+                     point: TapPoint(x: x, y: y))
     }
 
     func keyAreaBeganDelete(_ keyArea: KeyAreaView, timestamp: TimeInterval) {

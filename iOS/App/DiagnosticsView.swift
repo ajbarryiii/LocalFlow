@@ -13,6 +13,8 @@ struct DiagnosticsView: View {
 
             SoftKeyEdgesSection(settings: host.settings.settings)
 
+            AutocorrectSection(settings: host.settings.settings)
+
             TypingCountersSection(settings: host.settings.settings)
 
             Section("Runtime") {
@@ -236,16 +238,225 @@ private struct SoftKeyEdgesSection: View {
 
     /// The `tap` section of the keyboard extension's swipe bundle (`Swipe/bundle.json` in the `.appex`).
     private static func bundledManifest() -> SoftKeyEdgesManifest? {
-        guard let plugIns = Bundle.main.builtInPlugInsURL,
-              let extensions = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil)
-        else { return nil }
-        for appex in extensions where appex.pathExtension == "appex" {
-            let url = appex.appendingPathComponent("Swipe").appendingPathComponent("bundle.json")
-            if let data = try? Data(contentsOf: url), let manifest = try? SoftKeyEdgesManifest.decode(from: data) {
-                return manifest
+        bundledSwipeManifest { try? SoftKeyEdgesManifest.decode(from: $0) }
+    }
+}
+
+/// The first section `decode` reads from a keyboard extension's swipe bundle (`Swipe/bundle.json` in the
+/// `.appex`), or nil when this build has none.
+private func bundledSwipeManifest<Section>(_ decode: (Data) -> Section??) -> Section? {
+    guard let plugIns = Bundle.main.builtInPlugInsURL,
+          let extensions = try? FileManager.default.contentsOfDirectory(at: plugIns, includingPropertiesForKeys: nil)
+    else { return nil }
+    for appex in extensions where appex.pathExtension == "appex" {
+        let url = appex.appendingPathComponent("Swipe").appendingPathComponent("bundle.json")
+        if let data = try? Data(contentsOf: url), let section = decode(data) ?? nil { return section }
+    }
+    return nil
+}
+
+/// Word autocorrect (App Group settings; ARCHITECTURE.md, "Word autocorrect"), for tuning on a device. The
+/// keyboard reads the switch, model and preset when it appears, and the parameters at every word it commits.
+/// Models, presets and their values come from the keyboard's bundle. Each slider shows the selected preset's
+/// value merged with the user's overrides, as the keyboard reads it; only a slider that moves writes its
+/// override, and the reset clears them all.
+private struct AutocorrectSection: View {
+    let settings: LocalFlowSettings?
+    /// The keyboard's bundle section, or nil when this build has no word models. Read once per launch.
+    private static let bundled = bundledSwipeManifest { try? AutocorrectManifest.decode(from: $0) }
+    private var manifest: AutocorrectManifest? { Self.bundled }
+    @State private var enabled = false
+    @State private var model = ""
+    @State private var preset = ""
+    @State private var params = AutocorrectParams.standard
+    @State private var hasOverrides = false
+    /// Where the known-word and apostrophe margins' sliders return when their ∞ switch turns off.
+    @State private var finiteKnown = 100.0
+    @State private var finiteApostrophe = 100.0
+
+    private static let fallbackModels = ["unigram", "ngram", "lstm"]
+    private static let fallbackPresets = ["balanced", "conservative"]
+
+    private var modelNames: [String] { manifest?.modelNames ?? Self.fallbackModels }
+
+    private func presetNames(_ model: String) -> [String] { manifest?.presetNames(model: model) ?? Self.fallbackPresets }
+
+    private var resolvedModel: String {
+        manifest?.modelName(settings?.autocorrectModel) ?? settings?.autocorrectModel ?? Self.fallbackModels[1]
+    }
+
+    private func resolvedPreset(model: String) -> String {
+        manifest?.presetName(settings?.autocorrectPreset, model: model) ?? settings?.autocorrectPreset ?? Self.fallbackPresets[0]
+    }
+
+    /// The selected preset's values, before the overrides.
+    private var presetParams: AutocorrectParams {
+        manifest?.params(model: model, preset: preset) ?? .standard
+    }
+
+    /// What the keyboard reads now: the overrides merged over the preset.
+    private var merged: AutocorrectParams {
+        settings?.autocorrectParams(over: presetParams) ?? presetParams
+    }
+
+    var body: some View {
+        Section {
+            Toggle("Autocorrect", isOn: $enabled)
+                .accessibilityIdentifier("diagnostics.autocorrectEnabled")
+            if manifest == nil {
+                Text("This build has no word models; the keyboard types as before.").foregroundStyle(.secondary)
             }
+            Picker("Model", selection: $model) {
+                ForEach(modelNames, id: \.self) { Text($0).tag($0) }
+            }
+            .accessibilityIdentifier("diagnostics.autocorrectModel")
+            Picker("Preset", selection: $preset) {
+                ForEach(presetNames(model), id: \.self) { Text($0).tag($0) }
+            }
+            .accessibilityIdentifier("diagnostics.autocorrectPreset")
+            sliders
+            Button("Reset to preset") {
+                settings?.resetAutocorrectParams()
+                load()
+            }
+            .disabled(!hasOverrides)
+            .accessibilityIdentifier("diagnostics.autocorrectReset")
+        } header: {
+            Text("Autocorrect (experimental)")
+        } footer: {
+            Text("At space, Return or . , ! ? ; : the word before it may be replaced by a likelier one, from where your taps landed and the words before it. Delete right after a correction puts your word back, and it is not corrected again until the keyboard restarts. A margin is the odds a correction needs; at ∞ that kind is never replaced. The unknown-word probability is how likely a word outside the lexicon is. Repeat and slip weights split a stray letter between a doubled letter and a neighbour key. Sliders apply to the next word; the switch, model and preset the next time the keyboard appears. Needs Full Access. Words and taps stay in the keyboard's memory and are never stored or sent.")
         }
-        return nil
+        .onAppear(perform: load)
+        .onChange(of: enabled) { _, value in
+            if value != settings?.autocorrectEnabled { settings?.autocorrectEnabled = value }
+        }
+        .onChange(of: model) { _, value in
+            if value != resolvedModel { settings?.autocorrectModel = value }
+            preset = resolvedPreset(model: value)
+            showMerged()
+        }
+        .onChange(of: preset) { _, value in
+            if value != resolvedPreset(model: model) { settings?.autocorrectPreset = value }
+            showMerged()
+        }
+        .onChange(of: params) { _, value in write(value) }
+    }
+
+    @ViewBuilder private var sliders: some View {
+        let ln10 = log(10.0)
+        slider("Unknown word probability", value: binding(.logOOV, toSlider: { $0 / ln10 }, fromSlider: { $0 * ln10 }),
+               range: -10 ... -1, step: 1, text: Self.powerOfTen(params.logOOV / ln10),
+               identifier: "diagnostics.autocorrectLogOOV")
+        slider("Margin, unknown word", value: binding(.marginOOV), range: AutocorrectSetting.marginOOV.range, step: 0.5,
+               text: Self.odds(params.marginOOV), identifier: "diagnostics.autocorrectMarginOOV")
+        infiniteMargin("Margin, known word", .marginKnown, finite: $finiteKnown, identifier: "diagnostics.autocorrectMarginKnown")
+        infiniteMargin("Margin, apostrophe", .marginApostrophe, finite: $finiteApostrophe,
+                       identifier: "diagnostics.autocorrectMarginApostrophe")
+        slider("Word model weight", value: binding(.lmWeight), range: AutocorrectSetting.lmWeight.range, step: 0.05,
+               text: String(format: "%.2f", params.lmWeight), identifier: "diagnostics.autocorrectLMWeight")
+        logSlider("Omitted letter", .pOmit, identifier: "diagnostics.autocorrectPOmit")
+        logSlider("Stray letter", .pInsert, identifier: "diagnostics.autocorrectPInsert")
+        logSlider("Swapped letters", .pTranspose, identifier: "diagnostics.autocorrectPTranspose")
+        slider("Repeat weight", value: weight(.wRepeat, other: .wSlip), range: 0 ... 1, step: 0.05,
+               text: String(format: "%.2f", params.wRepeat), identifier: "diagnostics.autocorrectWRepeat")
+        slider("Slip weight", value: weight(.wSlip, other: .wRepeat), range: 0 ... 1, step: 0.05,
+               text: String(format: "%.2f", params.wSlip), identifier: "diagnostics.autocorrectWSlip")
+        slider("Short word length", value: binding(.shortLength), range: AutocorrectSetting.shortLength.range, step: 1,
+               text: "\(params.shortLength) letters", identifier: "diagnostics.autocorrectShortLength")
+    }
+
+    /// The settings as the keyboard reads them, over the bundle's presets.
+    private func load() {
+        enabled = settings?.autocorrectEnabled ?? false
+        model = resolvedModel
+        preset = resolvedPreset(model: model)
+        showMerged()
+    }
+
+    /// Shows what the keyboard reads now; writes nothing (`write` finds no difference).
+    private func showMerged() {
+        let current = merged
+        if current.marginKnown.isFinite { finiteKnown = current.marginKnown }
+        if current.marginApostrophe.isFinite { finiteApostrophe = current.marginApostrophe }
+        params = current
+        hasOverrides = AutocorrectSetting.allCases.contains { settings?.autocorrectOverride($0) != nil }
+    }
+
+    /// Writes an override for each value a control moved away from what the keyboard reads.
+    private func write(_ shown: AutocorrectParams) {
+        guard let settings else { return }
+        let current = merged
+        for setting in AutocorrectSetting.allCases where setting.value(in: shown) != setting.value(in: current) {
+            settings.setAutocorrectOverride(setting, setting.value(in: shown))
+        }
+        hasOverrides = AutocorrectSetting.allCases.contains { settings.autocorrectOverride($0) != nil }
+    }
+
+    /// A parameter on a slider: `toSlider` maps its value to the slider's scale (clamped into it for a preset
+    /// outside the range), `fromSlider` back, clamped into the accepted range.
+    private func binding(_ setting: AutocorrectSetting, toSlider: @escaping (Double) -> Double = { $0 },
+                         fromSlider: @escaping (Double) -> Double = { $0 }) -> Binding<Double> {
+        Binding(get: { toSlider(min(max(setting.value(in: params), setting.range.lowerBound), setting.range.upperBound)) },
+                set: { value in
+                    let range = setting.range
+                    setting.set(min(max(fromSlider(value), range.lowerBound), range.upperBound), in: &params)
+                })
+    }
+
+    /// One of the insertion weights; the other gives way so their sum stays at most 1.
+    private func weight(_ setting: AutocorrectSetting, other: AutocorrectSetting) -> Binding<Double> {
+        Binding(get: { setting.value(in: params) },
+                set: { value in
+                    let clamped = min(max(value, 0), 1)
+                    setting.set(clamped, in: &params)
+                    if clamped + other.value(in: params) > 1 { other.set(max(1 - clamped, 0), in: &params) }
+                })
+    }
+
+    /// An edit probability on a log scale, 0.001 to 0.1.
+    private func logSlider(_ title: String, _ setting: AutocorrectSetting, identifier: String) -> some View {
+        slider(title, value: binding(setting, toSlider: { log10(max($0, 1e-300)) }, fromSlider: { pow(10, $0) }),
+               range: log10(setting.range.lowerBound) ... log10(setting.range.upperBound), step: 0.05,
+               text: String(format: "%.3g", setting.value(in: params)), identifier: identifier)
+    }
+
+    /// A margin from 1 to 1000 on a log scale, with an ∞ switch (never replace).
+    @ViewBuilder
+    private func infiniteMargin(_ title: String, _ setting: AutocorrectSetting, finite: Binding<Double>,
+                                identifier: String) -> some View {
+        let infinite = setting.value(in: params) == .infinity
+        slider(title, value: Binding(get: { log10(min(max(infinite ? finite.wrappedValue : setting.value(in: params), 1), 1000)) },
+                                     set: { value in
+                                         let odds = min(max(pow(10, value), setting.range.lowerBound), setting.range.upperBound)
+                                         finite.wrappedValue = odds
+                                         setting.set(odds, in: &params)
+                                     }),
+               range: 0 ... 3, step: 0.05, text: Self.odds(setting.value(in: params)), identifier: identifier)
+            .disabled(infinite)
+        Toggle("\(title): ∞", isOn: Binding(get: { setting.value(in: params) == .infinity },
+                                             set: { on in setting.set(on ? .infinity : finite.wrappedValue, in: &params) }))
+            .accessibilityIdentifier(identifier + "Infinite")
+    }
+
+    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, text: String,
+                        identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title, value: text)
+            Slider(value: value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(text)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+
+    /// Posterior odds, e.g. "3:1", "250:1" or "∞".
+    private static func odds(_ value: Double) -> String {
+        value.isFinite ? String(format: value < 10 ? "%.3g:1" : "%.0f:1", value) : "∞"
+    }
+
+    /// A power of ten, e.g. "1e-5" (one decimal for a preset between whole powers).
+    private static func powerOfTen(_ exponent: Double) -> String {
+        String(format: "1e%g", (exponent * 10).rounded() / 10)
     }
 }
 
@@ -262,7 +473,10 @@ private struct TypingCountersSection: View {
         (.late100, "Late ≥ 100 ms"), (.cancelled, "Cancelled by iOS"), (.ignored, "Ignored during a swipe"),
         (.swipe, "Became a swipe"), (.skid, "Skid typed as a tap"), (.swipeEmpty, "Swipe typed nothing"),
         (.softTap, "Soft taps"), (.softLetter, "Soft tap: other letter"), (.softSpace, "Soft tap: space"),
+        (.wordChecked, "Words checked"), (.wordCorrected, "Words corrected"), (.wordReverted, "Corrections reverted"),
     ]
+    /// Events without a position (`TypingCounters.wordRegions`): only their total is shown.
+    private static let unplaced: Set<TypingCounters.Event> = [.wordChecked, .wordCorrected, .wordReverted]
     private static let regions: [(TypingCounters.Region, String)] = [
         (.row1, "Top"), (.row2, "2nd"), (.row3, "3rd"), (.row4, "Bottom"), (.left, "Left"), (.right, "Right"),
     ]
@@ -276,8 +490,10 @@ private struct TypingCountersSection: View {
             ForEach(Self.titles, id: \.0) { entry in
                 VStack(alignment: .leading, spacing: 2) {
                     LabeledContent(entry.1, value: "\(counters.total(entry.0))")
-                    Text(Self.regions.map { "\($0.1) \(counters[entry.0, $0.0])" }.joined(separator: " · "))
-                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    if !Self.unplaced.contains(entry.0) {
+                        Text(Self.regions.map { "\($0.1) \(counters[entry.0, $0.0])" }.joined(separator: " · "))
+                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
                 }
                 .accessibilityElement(children: .combine)
             }

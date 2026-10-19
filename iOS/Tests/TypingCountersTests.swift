@@ -14,7 +14,10 @@ enum TypingCountersTests {
     private static func testNamesAreTheContract() {
         TestSupport.expectEqual(TypingCounters.Event.allCases.map(\.rawValue),
                                 ["touchDown", "aboveKeys", "late16", "late50", "late100", "cancelled", "ignored", "swipe",
-                                 "skid", "swipeEmpty", "softTap", "softLetter", "softSpace"])
+                                 "skid", "swipeEmpty", "softTap", "softLetter", "softSpace", "wordChecked", "wordCorrected",
+                                 "wordReverted"])
+        // Word events (ARCHITECTURE.md, "Word autocorrect") have no position: one count each, in the bottom row.
+        TestSupport.expectEqual(TypingCounters.wordRegions, [.row4])
         TestSupport.expectEqual(TypingCounters.Region.allCases.map(\.rawValue), ["row1", "row2", "row3", "row4", "left", "right"])
     }
 

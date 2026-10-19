@@ -65,6 +65,12 @@ encoder on the CPU only); a missing or invalid bundle leaves swipe typing off.
 Swipes, candidates and decoder state stay in memory and are never logged,
 stored or sent.
 
+The same bundle may carry the experimental typing models, listed in
+`"files"` like the rest: an optional `"tap"` section (soft key edges) and an
+optional `"autocorrect"` section (the word lexicon, word models and their
+tuned presets; see ARCHITECTURE.md, "Word autocorrect"). An invalid section
+turns off only its own feature.
+
 ## Simulator
 
 ```bash
@@ -286,8 +292,17 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
     dictation.
 - **Typing:** a basic QWERTY layer with `123` and `#+=`. It has Apple-style
   shift (double-tap for caps lock), auto-capitalization and the double-space
-  period. There is no autocorrect. Keys play a light haptic (Typing haptics,
-  on by default; needs Full Access).
+  period. Keys play a light haptic (Typing haptics, on by default; needs Full
+  Access).
+- **Experimental typing (Diagnostics, off by default, needs Full Access):**
+  - Soft key edges: a tap near a key's edge may type the likelier neighbour.
+  - Autocorrect: at space, Return or `. , ! ? ; :` the word before it may be
+    replaced. Delete right after a correction puts your word back, and that
+    word is left alone until the keyboard restarts. Pick a word model and
+    preset, and tune the sliders; Reset to preset clears your changes. The
+    switch, model and preset apply the next time the keyboard appears, the
+    sliders to the next word. Swiped words and secure fields are never
+    corrected.
 - **Trackpad:** touch and hold space (about 0.5 s) and the keys blank out.
   - Drag to move the cursor horizontally, by character, or vertically, by
     line, keeping the column.
@@ -339,6 +354,7 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Held delete switches to words at a similar time and pace.
 - [ ] Shift, caps lock, auto-capitalization, double-space period, `123`/`#+=`, emoji and accent deletion.
 - [ ] Two-thumb rollover, including space, keeps typing order.
+- [ ] Autocorrect (Diagnostics, with a bundle that has the `autocorrect` section): with it off, typing is unchanged. On, a mistyped word ("teh") is corrected at space, Return and `. , ! ? ; :`, in its case ("Teh" → "The", "TEH" → "THE"); "cant" → "can't" with the apostrophe margin finite. Delete right after puts the typed word back without the space, and it is not corrected again until the keyboard restarts. Swiped words, password fields and words typed with accents are left alone. Each model and preset loads; the sliders take effect on the next word. The typing counters count words checked, corrected and reverted. Check Notes, Messages, Safari and a WebKit field for a lagging proxy.
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
 - [ ] Haptics only with Full Access; Typing haptics on key-down, off when the setting is off; VoiceOver labels; dark mode; landscape; SE-size layout.
 - [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.

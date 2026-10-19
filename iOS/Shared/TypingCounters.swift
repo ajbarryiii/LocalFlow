@@ -24,6 +24,9 @@ struct TypingCounters: Equatable, Sendable {
         case swipeEmpty
         /// A tap soft key edges predicted; of those, one that typed another letter, or a space.
         case softTap, softLetter, softSpace
+        /// A word autocorrect checked at a commit key; of those, one it replaced; a replacement a Delete reverted
+        /// (ARCHITECTURE.md, "Word autocorrect"). Counted in `wordRegions`.
+        case wordChecked, wordCorrected, wordReverted
     }
 
     /// The row of the nearest key (`row1` at the top; lower rows count as `row4`), and `left` or `right`
@@ -33,6 +36,9 @@ struct TypingCounters: Equatable, Sendable {
 
         static let rows: [Region] = [.row1, .row2, .row3, .row4]
     }
+
+    /// A word has no position: each word event counts once in the bottom row, so its total is the count.
+    static let wordRegions: [Region] = [.row4]
 
     /// Counts stop here, and larger stored values are ignored, so adding never overflows.
     static let maximumCount = 1_000_000_000

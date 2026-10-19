@@ -980,6 +980,18 @@ final class KeyboardHarness {
         set { model.swipeEnabled = newValue }
     }
 
+    /// Whether letter taps carry their touch-down point (`KeyTouchModel.softTapsEnabled`), as with soft key
+    /// edges or autocorrect on.
+    var softTapsEnabled: Bool {
+        get { model.softTapsEnabled }
+        set { model.softTapsEnabled = newValue }
+    }
+
+    /// The keyboard decides a soft tap's key at touch-down (`KeyTouchModel.decideTap`).
+    func decideTap(_ id: KeyTouchModel.TouchID, as action: KeyAction) {
+        model.decideTap(id, as: action)
+    }
+
     /// A released swipe's samples and field (`KeyTouchModel.Effect.swipe`), as the key area delivers them.
     var onSwipe: (([SwipeSample], UUID?) -> Void)?
 
@@ -1030,9 +1042,11 @@ final class KeyboardHarness {
                 editor.keyTouchedDown(now: time)
             case .type(let action, let field):
                 editor.press(action, field: field, at: time, now: time)
-            case .tap(let action, _, _, let field):
-                // Soft taps stay off here; without a prior a tap types its nearest key.
-                editor.press(action, field: field, at: time, now: time)
+            case .tap(let action, let x, let y, let field):
+                // Without a prior a tap types its nearest key, with its point (as autocorrect records it).
+                editor.press(action, field: field, at: time, now: time, point: TapPoint(x: x, y: y))
+            case .typeDecided(let action, let x, let y, let field):
+                editor.press(action, field: field, at: time, now: time, point: TapPoint(x: x, y: y))
             case .beginDelete:
                 let press = deleteKey.began(at: time, documentID: document.documentID)
                 deleteDue = (press.token, time + press.firstAt, time)
