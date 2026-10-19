@@ -301,8 +301,10 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
     word is left alone until the keyboard restarts. Pick a word model and
     preset, and tune the sliders; Reset to preset clears your changes. The
     switch, model and preset apply the next time the keyboard appears, the
-    sliders to the next word. Swiped words and secure fields are never
-    corrected.
+    sliders to the next word. Only words the keyboard typed whole, after a
+    space or punctuation it typed, are corrected; swiped words, text already
+    in the field, words edited after moving the cursor, and secure fields are
+    left alone.
 - **Trackpad:** touch and hold space (about 0.5 s) and the keys blank out.
   - Drag to move the cursor horizontally, by character, or vertically, by
     line, keeping the column.

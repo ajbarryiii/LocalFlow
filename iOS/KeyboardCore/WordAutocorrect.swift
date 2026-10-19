@@ -65,46 +65,43 @@ enum WordAutocorrect {
         return head.uppercased() + lower.dropFirst()
     }
 
-    /// A correction to make: what it replaces (the word as typed, with any apostrophes after it: the
-    /// characters before the caret from the word's start), what replaces it (the correction cased as the
-    /// word, then those apostrophes), and the record of the run before the caret, to restore on a revert
-    /// (empty when the record did not match it).
+    /// A correction to make: what it replaces (the owned word's characters from the word's start, apostrophes
+    /// after it included), what replaces it (the correction cased as the word, then those apostrophes), and the
+    /// record to restore on a revert.
     struct Correction: Equatable {
         /// The word as the corrector saw it (lowercased): what a revert remembers.
         var word: String
         var typed: String
         var replacement: String
-        var record: [WordTapRecord.Entry]
-        /// Whether that record began after a separator the editor typed (`WordTapRecord.startsAtOwnBoundary`).
-        var recordStartsAtOwnBoundary = false
+        var record: WordTapRecord
     }
 
-    /// The correction for the word ending `before` (the text before the caret as the editor knows it) at a
-    /// commit key, or nil to commit it as typed. Nil without a setup, in a secure field, without a word before
-    /// the caret, for a word that was swiped or holds other characters, or one reverted in this keyboard
-    /// session, or when the corrector keeps it. `checked` is called when the corrector is asked.
+    /// The correction for the owned word in `record` at a commit key, or nil to commit it as typed. The record
+    /// is the word: nothing is read from the field but the context before it (`before`, the text before the
+    /// caret as the editor knows it, for the word model only). Nil without a setup, in a secure field or one
+    /// that turns autocorrection off, for an unowned record or one without a letter, for a word holding other
+    /// characters or reverted in this keyboard session, or when the corrector keeps it. `checked` is called when
+    /// the corrector is asked.
     static func correction(before: String, record: WordTapRecord, reverted: Set<String>, setup: AutocorrectSetup?,
                            checked: () -> Void = {}) -> Correction? {
-        guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, let found = word(before: before) else { return nil }
-        let run = Array(found.run)
-        let word = String(run[found.word])
-        let matched = record.entries(matching: found.run)
-        guard isCorrectable(word), matched?.contains(where: \.swiped) != true else { return nil }
+        guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, record.owned,
+              let found = word(before: record.text) else { return nil }
+        let entries = record.entries
+        let word = String(entries[found.word].map(\.character))
+        guard isCorrectable(word) else { return nil }
         let lowered = correctorWord(word)
         guard !reverted.contains(lowered) else { return nil }
-        // A record that does not match the run gives no points.
-        let points: [(x: Double, y: Double)?] = found.word.map { index in
-            matched?[index].point.map { (x: $0.x, y: $0.y) }
-        }
-        let context = TapPrior.normalizeContext(String(before.dropLast(run.count - found.word.lowerBound)))
+        let points: [(x: Double, y: Double)?] = entries[found.word].map { $0.point.map { (x: $0.x, y: $0.y) } }
+        // The text before the word, when the editor's text ends with it (it always should); none otherwise.
+        let leading = entries.count - found.word.lowerBound
+        let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
         checked()
         let corrected = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                 params: setup.params)
         guard !corrected.isEmpty, corrected.lowercased() != lowered else { return nil }
         let cased = cased(corrected, like: word)
         guard cased != word else { return nil }
-        let tail = String(run[found.word.upperBound...])
-        return Correction(word: lowered, typed: word + tail, replacement: cased + tail, record: matched ?? [],
-                          recordStartsAtOwnBoundary: matched != nil && record.startsAtOwnBoundary)
+        let tail = String(entries[found.word.upperBound...].map(\.character))
+        return Correction(word: lowered, typed: word + tail, replacement: cased + tail, record: record)
     }
 }

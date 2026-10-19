@@ -418,7 +418,11 @@ final class FakeDocument: TextDocument, TrackpadHost {
     var contextAfter: String? { host.context.after.isEmpty ? nil : host.context.after }
     var hasSelection: Bool { host.hasSelection }
 
+    /// Every `insertText` call, in order, as the host received it (one call per string).
+    private(set) var insertions: [String] = []
+
     func insertText(_ text: String) {
+        insertions.append(text)
         if routedTo != nil {
             routedTo?.insertText(text)
             return

@@ -8,8 +8,7 @@ enum AutocorrectEditorTests {
     static var tests: [TestCase] {
         [
             ("recordKeepsTheWordsTapsInOrder", testRecordKeepsTheWordsTapsInOrder),
-            ("recordPopsOnDeleteAndClearsOnOtherCharacters", testRecordPopsOnDeleteAndClearsOnOtherCharacters),
-            ("recordMatchesOnlyTheRunItRecorded", testRecordMatchesOnlyTheRunItRecorded),
+            ("recordOwnsOnlyWordsAfterItsOwnSeparator", testRecordOwnsOnlyWordsAfterItsOwnSeparator),
             ("commitKeysAreSpaceReturnAndPunctuation", testCommitKeysAreSpaceReturnAndPunctuation),
             ("wordBeforeTheCaretDropsOuterApostrophes", testWordBeforeTheCaretDropsOuterApostrophes),
             ("onlyLatinLettersAndApostrophesAreCorrectable", testOnlyLatinLettersAndApostrophesAreCorrectable),
@@ -22,18 +21,20 @@ enum AutocorrectEditorTests {
             ("swipedWordsAreNotCorrected", testSwipedWordsAreNotCorrected),
             ("secureFieldsAreNotCorrected", testSecureFieldsAreNotCorrected),
             ("otherCharactersAreNotCorrected", testOtherCharactersAreNotCorrected),
-            ("unrecordedCharactersGiveNoPoints", testUnrecordedCharactersGiveNoPoints),
+            ("onlyWordsTheKeyboardTypedWholeAreCorrected", testOnlyWordsTheKeyboardTypedWholeAreCorrected),
             ("deleteRemovesTheLastTap", testDeleteRemovesTheLastTap),
             ("outsideEditsCaretMovesAndFieldsClearTheRecord", testOutsideEditsCaretMovesAndFieldsClearTheRecord),
             ("correctionIsOneOwnEditBeforeTheKey", testCorrectionIsOneOwnEditBeforeTheKey),
             ("unverifiedCaretContextIsNotCorrected", testUnverifiedCaretContextIsNotCorrected),
-            ("proxyThatHasNotShownTheWordIsNotCorrected", testProxyThatHasNotShownTheWordIsNotCorrected),
+            ("anOwnedWordIsCorrectedWhileTheProxyLags", testAnOwnedWordIsCorrectedWhileTheProxyLags),
             ("callbackBetweenCommitKeyDownAndUpIsNotTrusted", testCallbackBetweenCommitKeyDownAndUpIsNotTrusted),
-            ("aWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped", testAWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped),
+            ("aGestureOrReappearingDisownsTheWord", testAGestureOrReappearingDisownsTheWord),
             ("fieldsWithAutocorrectionOffAreNotCorrected", testFieldsWithAutocorrectionOffAreNotCorrected),
             ("layoutChangeDropsTheRecordedPoints", testLayoutChangeDropsTheRecordedPoints),
             ("layoutChangeDropsThePointsARevertRestores", testLayoutChangeDropsThePointsARevertRestores),
             ("returnNeverArmsARevert", testReturnNeverArmsARevert),
+            ("staleReadingAfterHidingIsNotCorrected", testStaleReadingAfterHidingIsNotCorrected),
+            ("returnIsSentOnItsOwnAfterTheCorrection", testReturnIsSentOnItsOwnAfterTheCorrection),
             ("revertNeedsAnIdentifiedUnchangedField", testRevertNeedsAnIdentifiedUnchangedField),
             ("deleteRightAfterRevertsAndRemembers", testDeleteRightAfterRevertsAndRemembers),
             ("heldDeleteRevertsThenRepeatsAsUsual", testHeldDeleteRevertsThenRepeatsAsUsual),
@@ -56,48 +57,44 @@ enum AutocorrectEditorTests {
         record.edited(deleted: 0, inserted: "e", point: p(2))
         record.edited(deleted: 0, inserted: "'")
         record.edited(deleted: 0, inserted: "h", point: p(3))
-        TestSupport.expectEqual(record.entries.map(\.character), ["T", "e", "'", "h"])
+        TestSupport.expectEqual(record.text, "Te'h")
         TestSupport.expectEqual(record.entries.map(\.point), [p(1), p(2), nil, p(3)])
-        TestSupport.expect(!record.entries.contains(where: \.swiped), "a tap recorded as swiped")
         // Only the last character of an edit carries the tap's point (a space owed after a swiped word goes in
         // with the tapped letter).
         record.edited(deleted: 0, inserted: " a", point: p(4))
-        TestSupport.expectEqual(record.entries, [WordTapRecord.Entry(character: "a", point: p(4), swiped: false)])
-        // A swipe's characters have no point.
-        record.edited(deleted: 0, inserted: " word", swiped: true)
-        TestSupport.expectEqual(record.entries.map(\.point), [nil, nil, nil, nil])
-        TestSupport.expect(record.entries.allSatisfy(\.swiped), "a swipe recorded as tapped")
+        TestSupport.expectEqual(record.entries, [WordTapRecord.Entry(character: "a", point: p(4))])
     }
 
-    private static func testRecordPopsOnDeleteAndClearsOnOtherCharacters() {
+    private static func testRecordOwnsOnlyWordsAfterItsOwnSeparator() {
+        // ARCHITECTURE.md, "Word autocorrect", Owned words (code review round 5): the record owns its word only from
+        // a separator the editor typed, or a field start it saw empty, until anything else touches it.
         var record = WordTapRecord()
+        TestSupport.expect(!record.owned, "a new record is owned")
+        record.edited(deleted: 0, inserted: "ab", point: p(1))
+        TestSupport.expect(!record.owned, "letters without a separator are owned")
+        for separator in [" ", "\n", ".", "-", "7", "@"] {
+            record.edited(deleted: 0, inserted: "q" + separator, point: p(1))
+            TestSupport.expect(record.owned && record.entries.isEmpty, "\(separator) did not start an owned word")
+        }
         for (index, letter) in "abc".enumerated() { record.edited(deleted: 0, inserted: String(letter), point: p(Double(index))) }
         record.edited(deleted: 1, inserted: "")
-        TestSupport.expectEqual(record.entries.map(\.character), ["a", "b"])
+        TestSupport.expectEqual(record.text, "ab")
         record.edited(deleted: 1, inserted: "x", point: p(9))
         TestSupport.expectEqual(record.entries.map(\.point), [p(0), p(9)])
-        // Deleting further back than the record empties it.
-        record.edited(deleted: 5, inserted: "")
-        TestSupport.expectEqual(record.entries, [])
-        // A commit key, a digit or a symbol starts a new word.
-        for other in [" ", "\n", ".", "-", "7", "@"] {
-            record.edited(deleted: 0, inserted: "q", point: p(1))
-            record.edited(deleted: 0, inserted: other)
-            TestSupport.expect(record.entries.isEmpty, "\(other) kept the record")
-        }
+        TestSupport.expect(record.owned, "deleting within the word disowned it")
+        // Deleting the whole word keeps it owned (back at the separator); one more makes it unowned.
+        record.edited(deleted: 2, inserted: "")
+        TestSupport.expect(record.owned && record.entries.isEmpty, "deleting back to the separator disowned it")
+        record.edited(deleted: 1, inserted: "")
+        TestSupport.expect(!record.owned, "deleting past the word's start kept it owned")
+        record.edited(deleted: 0, inserted: "q", point: p(1))
+        TestSupport.expect(!record.owned, "letters after deleting past the start are owned")
+        // Clearing disowns; a field start seen empty owns.
+        record.startOwned()
+        TestSupport.expect(record.owned && record.entries.isEmpty, "startOwned")
         record.edited(deleted: 0, inserted: "q", point: p(1))
         record.clear()
-        TestSupport.expectEqual(record.entries, [])
-    }
-
-    private static func testRecordMatchesOnlyTheRunItRecorded() {
-        var record = WordTapRecord()
-        record.edited(deleted: 0, inserted: "h", point: p(1))
-        record.edited(deleted: 0, inserted: "i", point: p(2))
-        TestSupport.expectEqual(record.entries(matching: "hi")?.map(\.point), [p(1), p(2)])
-        TestSupport.expectEqual(record.entries(matching: "ohi"), nil)
-        TestSupport.expectEqual(record.entries(matching: "i"), nil)
-        TestSupport.expectEqual(record.entries(matching: "Hi"), nil)
+        TestSupport.expectEqual(record, WordTapRecord())
     }
 
     // MARK: Words
@@ -161,7 +158,7 @@ enum AutocorrectEditorTests {
                                            (.character("!"), "!"), (.character("?"), "?"), (.character(";"), ";"),
                                            (.character(":"), ":")]
         for (key, text) in keys {
-            let rig = AutocorrectRig("so ", corrections: ["teh": "the"])
+            let rig = AutocorrectRig.typingASpace(after: "so")
             rig.tap("teh")
             rig.press(key)
             TestSupport.expectEqual(rig.text, "so the" + text)
@@ -171,7 +168,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testCorrectorGetsContextWordPointsLayoutAndParams() {
-        let rig = AutocorrectRig("Well, I \u{2019}said\u{2019}\nNo WAY 42 ", corrections: ["teh": "the"])
+        let rig = AutocorrectRig.typingASpace(after: "Well, I \u{2019}said\u{2019}\nNo WAY 42")
         rig.params.lmWeight = 1.7
         rig.tap("Teh", from: 20)
         rig.press(.space)
@@ -214,8 +211,9 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(rig.corrector.calls.last?.word, "teh")
         TestSupport.expectEqual(rig.corrector.calls.last?.context, "can't '")
         TestSupport.expectEqual(rig.corrector.calls.last?.points.count, 3)
-        // A curly apostrophe in the proxy's text is given to the corrector as "'".
-        let curly = AutocorrectRig("don\u{2019}t", corrections: [:])
+        // A curly apostrophe is given to the corrector as "'".
+        let curly = AutocorrectRig("", corrections: [:])
+        curly.tap("don\u{2019}t")
         curly.press(.space)
         TestSupport.expectEqual(curly.corrector.calls.last?.word, "don't")
         TestSupport.expectEqual(curly.text, "don\u{2019}t ")
@@ -230,11 +228,12 @@ enum AutocorrectEditorTests {
         // Nothing to revert: delete deletes the space.
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "hello")
-        // A space after a space, or a key after punctuation, has no word.
+        // Deleting back into the word disowns it (round 5): committed again, it is not checked. A space after a
+        // space, or a key after punctuation, has no word.
         rig.press(.space)
         rig.press(.space)
         rig.press(.character("."))
-        TestSupport.expectEqual(rig.corrector.calls.count, 2)
+        TestSupport.expectEqual(rig.corrector.calls.count, 1)
     }
 
     private static func testSwipedWordsAreNotCorrected() {
@@ -296,14 +295,38 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(selected.text, "a teh ")
     }
 
-    private static func testUnrecordedCharactersGiveNoPoints() {
-        // The word started in the proxy's text: the record ("h") does not match it ("teh").
-        let rig = AutocorrectRig("so te", corrections: ["teh": "the"])
-        rig.tap("h")
-        rig.press(.space)
-        TestSupport.expectEqual(rig.text, "so the ")
-        TestSupport.expectEqual(rig.corrector.calls[0].points.map { $0 == nil }, [true, true, true])
-        // A letter from another layer (no point) is recorded as none.
+    private static func testOnlyWordsTheKeyboardTypedWholeAreCorrected() {
+        // ARCHITECTURE.md, "Word autocorrect", Owned words (code review round 5): a word that began in the field's
+        // own text is never corrected, nor one after text the keyboard did not type, even after a space it did not
+        // type.
+        for (text, tapped, expected) in [("so te", "h", "so teh "), ("so ", "teh", "so teh "), ("teh", "", "teh ")] {
+            let rig = AutocorrectRig(text, corrections: ["teh": "the"])
+            rig.tap(tapped)
+            rig.press(.space)
+            TestSupport.expectEqual(rig.text, expected)
+            TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        }
+        // The start of a field the keyboard saw empty is a boundary; so is one the host emptied (an outside change it
+        // reports, such as a sent message).
+        let empty = AutocorrectRig("", corrections: ["teh": "the"])
+        empty.tap("teh")
+        empty.press(.space)
+        TestSupport.expectEqual(empty.text, "the ")
+        let emptied = AutocorrectRig("", corrections: ["teh": "the"])
+        emptied.tap("hi")
+        emptied.document.hostDeletes(0 ..< 2)
+        emptied.pump()
+        emptied.tap("teh")
+        emptied.press(.space)
+        TestSupport.expectEqual(emptied.text, "the ")
+        // A field with text after the caret is not empty.
+        let after = AutocorrectRig("x", corrections: ["teh": "the"])
+        after.document.moveCaret(to: 0)
+        after.pump()
+        after.tap("teh")
+        after.press(.space)
+        TestSupport.expectEqual(after.text, "teh x")
+        // A letter from another layer (no point) is the keyboard's own, recorded with none.
         let mixed = AutocorrectRig("", corrections: [:])
         mixed.tap("t")
         mixed.press(.character("e"))
@@ -330,8 +353,7 @@ enum AutocorrectEditorTests {
         TestSupport.expect(rig.editor.wordTaps.entries.isEmpty, "an outside edit kept the record")
         rig.tap("c")
         rig.press(.space)
-        TestSupport.expectEqual(rig.corrector.calls[0].word, "xabc")
-        TestSupport.expectEqual(rig.corrector.calls[0].points.map { $0 == nil }, [true, true, true, true])
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
         // A caret move.
         rig.tap("de")
         rig.document.moveCaret(to: 2)
@@ -441,10 +463,10 @@ enum AutocorrectEditorTests {
         TestSupport.expect(reproduced > 0, "no configuration had a report between Space's touch-down and release")
     }
 
-    private static func testAWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped() {
-        // Conservative rule (code review round 4): after a trackpad gesture, only a word whose whole run this
-        // keyboard typed after a separator it also typed is corrected: deleting it removes only those characters,
-        // wherever the host has the caret. A word that began before the gesture is committed as typed.
+    private static func testAGestureOrReappearingDisownsTheWord() {
+        // Owned words (code review rounds 4 and 5): only a word this keyboard typed whole, after a separator it also
+        // typed, is corrected; deleting it removes only those characters, wherever the host has the caret. A
+        // gesture, deleting past the word's start, or hiding and appearing again disowns the word.
         let harness = KeyboardHarness(FakeTextHost(text: "so teh", unit: .utf16))
         let corrector = FakeCorrector(["teh": "the", "tehx": "then", "tehxx": "then"])
         harness.editor.autocorrect = {
@@ -475,12 +497,15 @@ enum AutocorrectEditorTests {
         harness.press(.space)
         TestSupport.expectEqual(harness.document.text, "so tehxx ")
         TestSupport.expectEqual(corrector.calls.count, 1)
-        // A new field, or the keyboard appearing again, starts verified.
+        // Appearing again does not own the word before the caret (the field is not empty).
+        harness.press(.character("t"))
         harness.hide()
         harness.show()
-        harness.press(.delete)
+        harness.press(.character("e"))
+        harness.press(.character("h"))
         harness.press(.space)
-        TestSupport.expectEqual(harness.document.text, "so then ")
+        TestSupport.expectEqual(harness.document.text, "so tehxx teh ")
+        TestSupport.expectEqual(corrector.calls.count, 1)
     }
 
     private static func testFieldsWithAutocorrectionOffAreNotCorrected() {
@@ -499,22 +524,17 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(rig.text, "teh the ")
     }
 
-    private static func testProxyThatHasNotShownTheWordIsNotCorrected() {
-        // A proxy that lags our own edits does not show the word yet: its text before the caret is not verified,
-        // so the word is committed as typed.
-        let rig = AutocorrectRig("so ", corrections: ["teh": "the"])
+    private static func testAnOwnedWordIsCorrectedWhileTheProxyLags() {
+        // The record is the word: a proxy that has not shown our edits yet changes nothing, since the deletions
+        // remove exactly the characters this keyboard typed, in order. (Round 1 declined to correct here; the owned
+        // word rule of round 5 makes the proxy's reading irrelevant.)
+        let rig = AutocorrectRig.typingASpace(after: "so")
         rig.document.host.editContextLagFrames = 3
         rig.tap("teh")
         TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
         rig.press(.space)
-        TestSupport.expectEqual(rig.text, "so teh ")
-        TestSupport.expectEqual(rig.corrector.calls.count, 0)
-        // Once it shows the word, the word is corrected.
-        rig.tap("teh")
-        for _ in 0 ..< 4 { rig.document.host.advanceFrame() }
-        TestSupport.expect(!rig.document.host.isContextStale, "the proxy never caught up")
-        rig.press(.space)
-        TestSupport.expectEqual(rig.text, "so teh the ")
+        TestSupport.expectEqual(rig.text, "so the ")
+        TestSupport.expectEqual(rig.corrector.calls.last?.context, "so ")
     }
 
     private static func testLayoutChangeDropsTheRecordedPoints() {
@@ -522,10 +542,10 @@ enum AutocorrectEditorTests {
         // rotation). A layout change keeps the word's characters and drops their points; later taps have theirs.
         var record = WordTapRecord()
         record.edited(deleted: 0, inserted: "a", point: p(1))
-        record.edited(deleted: 0, inserted: "b", swiped: true)
+        record.edited(deleted: 0, inserted: "b", point: p(2))
         record.forgetPoints()
-        TestSupport.expectEqual(record.entries, [WordTapRecord.Entry(character: "a", point: nil, swiped: false),
-                                                 WordTapRecord.Entry(character: "b", point: nil, swiped: true)])
+        TestSupport.expectEqual(record.entries, [WordTapRecord.Entry(character: "a", point: nil),
+                                                 WordTapRecord.Entry(character: "b", point: nil)])
         let rig = AutocorrectRig("", corrections: [:])
         rig.tap("hel", from: 0)
         rig.editor.layoutChanged()
@@ -574,6 +594,54 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(same.events, [.checked, .corrected])
     }
 
+    private static func testStaleReadingAfterHidingIsNotCorrected() {
+        // Code review round 5 (2026-10-19, P1): the keyboard hides and appears again before a move a key
+        // interrupted reaches the proxy, which still reads "teh" before the caret. The keyboard did not type that
+        // word in this appearance, so it is never corrected, wherever the host has the caret.
+        let original = "teh\u{1F44D}\u{1F3FD}x"
+        var reproduced = 0
+        for callbackFrames in 1 ... 4 {
+            for lift in [true, false] {
+                let harness = KeyboardHarness(FakeTextHost(text: original, caret: 3, unit: .utf16, lagFrames: 3,
+                                                           callbackFrames: callbackFrames))
+                let corrector = FakeCorrector(["teh": "the"])
+                harness.editor.autocorrect = {
+                    AutocorrectSetup(corrector: corrector, keys: AutocorrectRig.keys, params: .standard, secureTextEntry: false)
+                }
+                harness.gesture(dx: 10, events: 1, lift: lift)
+                guard harness.trackpad.session?.hasOutstandingProbe == true || !lift else { continue }
+                harness.hide()
+                harness.show()
+                guard harness.document.contextBefore == "teh" else { continue }
+                reproduced += 1
+                harness.press(.space)
+                harness.settle()
+                TestSupport.expect(corrector.calls.isEmpty, "frames \(callbackFrames) lift \(lift): \(harness.document.text)")
+                TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != " " })),
+                                        original)
+            }
+        }
+        TestSupport.expect(reproduced > 0, "the proxy never read the stale word after reappearing")
+    }
+
+    private static func testReturnIsSentOnItsOwnAfterTheCorrection() {
+        // Code review round 5 (2026-10-19, P2): hosts that act on `text == "\n"` (Send, Next) must still get Return
+        // alone: the correction goes in first, then the Return as its own insertion.
+        let rig = AutocorrectRig("", corrections: ["teh": "the"])
+        rig.tap("teh")
+        rig.press(.returnKey)
+        TestSupport.expectEqual(rig.text, "the\n")
+        TestSupport.expectEqual(Array(rig.document.insertions.suffix(2)), ["the", "\n"])
+        // So for every commit key.
+        rig.tap("teh")
+        rig.press(.character("."))
+        TestSupport.expectEqual(Array(rig.document.insertions.suffix(2)), ["the", "."])
+        // Without a correction, the key is one insertion as ever.
+        rig.tap("ok")
+        rig.press(.returnKey)
+        TestSupport.expectEqual(Array(rig.document.insertions.suffix(2)), ["k", "\n"])
+    }
+
     private static func testRevertNeedsAnIdentifiedUnchangedField() {
         // A field without an identity cannot be told from the next one: no revert there.
         let anonymous = AutocorrectRig("", corrections: ["teh": "the"], documentID: nil)
@@ -604,7 +672,7 @@ enum AutocorrectEditorTests {
     // MARK: Revert
 
     private static func testDeleteRightAfterRevertsAndRemembers() {
-        let rig = AutocorrectRig("so ", corrections: ["teh": "the"])
+        let rig = AutocorrectRig.typingASpace(after: "so")
         rig.tap("teh")
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "so the ")
@@ -632,7 +700,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testHeldDeleteRevertsThenRepeatsAsUsual() {
-        let rig = AutocorrectRig("so ", corrections: ["teh": "the"])
+        let rig = AutocorrectRig.typingASpace(after: "so")
         rig.tap("teh")
         rig.press(.space)
         rig.heldDelete()
@@ -847,6 +915,13 @@ final class AutocorrectRig {
     }
 
     var text: String { document.text }
+
+    /// A field holding `text` the keyboard did not type, then a space it typed: the next word is its own.
+    static func typingASpace(after text: String, corrections: [String: String] = ["teh": "the"]) -> AutocorrectRig {
+        let rig = AutocorrectRig(text, corrections: corrections)
+        rig.press(.space)
+        return rig
+    }
 
     @discardableResult
     func tick() -> TimeInterval {

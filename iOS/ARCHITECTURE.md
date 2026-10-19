@@ -1869,30 +1869,51 @@ on. With it off, without Full Access, without the files in the bundle, or in a
 secure field, typing is exactly as before.
 
 **When it runs.** When a commit key types right after a word: space, Return,
-or one of `. , ! ? ; :` (from any layer). The word is the run of letters and
-apostrophes that ends at the caret, without leading or trailing apostrophes
-(`tap/words.py` `tokens`), as the editor knows the text before the caret
-(`KeyboardEditor.tapPriorContext` without the owed swipe space). It is not
+or one of `. , ! ? ; :` (from any layer). The word is the keyboard's own
+("Owned words" below): the run of letters and apostrophes it typed, without
+leading or trailing apostrophes (`tap/words.py` `tokens`). It is not
 corrected when:
-- it was swiped (the swipe decoder already chose a lexicon word), or it holds
-  a character other than a–z, A–Z and apostrophes;
+- the keyboard does not own it (see "Owned words"): text it did not type, a
+  swipe (the swipe decoder already chose a lexicon word), or anything
+  between that could have moved the caret;
+- it holds a character other than a–z, A–Z and apostrophes;
 - it was reverted earlier in this keyboard session ("Revert" below);
-- the editor cannot account for every character of it (see "Taps");
+- text is selected (the commit key replaces the selection);
 - the field turns autocorrection off (`autocorrectionType == .no`, as
   SwiftUI's `.autocorrectionDisabled()` does): its input stays literal
   (code review round 4, 2026-10-19). `.default` and `.yes` are corrected.
 
-**Taps.** For each character of the current word the keyboard records the
-touch-down point of the tap that typed it (key-area points), or none (a
-character typed without a letters-layer tap: other layers, a swipe, the
-proxy's own text). The record is the word's characters in order; it is
-cleared by a commit key, a caret move, a field change or any edit the editor
-did not make. Delete removes the last record. If the record does not match the
-word before the caret, the word's points are all none. A tap is recorded with
-the key it typed, after soft key edges decided it, so autocorrect needs the
-touch-down point whether or not soft key edges are on: with autocorrect on,
-letter taps carry their point (`KeyTouchModel.softTapsEnabled` is true) and,
-with soft key edges off, type their nearest key.
+**Owned words (contract change, code review round 5, 2026-10-19; approved
+by the owner).** Replaces the earlier "Taps" rule (a record matched against
+the text before the caret) and every verification built on it. A word is
+corrected only if this keyboard typed every character of it, in this
+keyboard appearance and this field, right after a space or commit key (any
+character other than a letter or apostrophe) it also typed. Nothing may
+come in between: no caret move, trackpad gesture, selection change,
+host-reported text change it did not make, swipe, dictation, undo, or
+hiding and showing.
+- **Field start.** The start of a field counts as such a boundary only
+  where the keyboard sees the field empty (nothing before or after the
+  caret, nothing selected): when it appears, when another field becomes
+  current, and after a host-reported change (a field the host emptied).
+- **The record is the word.** `WordTapRecord` holds the word's characters
+  as typed, each with the touch-down point of the tap that typed it
+  (key-area points), or none (another layer). It is the source of truth: the
+  word is never read from the proxy. Only the text before it, for the word
+  model's context, comes from the editor's text before the caret.
+- **Deletion.** Delete within the word removes its last characters. Deleting
+  past the word's start, or any other edit, leaves no word owned until the
+  keyboard's next own separator.
+- **Replacement.** The correction deletes exactly the word's characters the
+  keyboard typed (and any apostrophes after them), so it never touches text
+  the keyboard did not type, wherever the host has the caret. This makes
+  proxy lag, abandoned trackpad probes, stale readings after reappearing and
+  early host reports irrelevant to it.
+- **Points.** A tap is recorded with the key it typed, after soft key edges
+  decided it, so autocorrect needs the touch-down point whether or not soft
+  key edges are on: with autocorrect on, letter taps carry their point
+  (`KeyTouchModel.softTapsEnabled` is true) and, with soft key edges off,
+  type their nearest key.
 
 **Correction** (`Autocorrector`, KeyboardCore, pure; reference: localflow-swipe
 `tap/autocorrect.py`, the contract there, which this port must match on the
@@ -1931,7 +1952,8 @@ file (no copy of the tables into memory). Parity:
 
 **Revert.** Delete pressed right after an autocorrection, with nothing typed
 or moved in between, replaces the corrected word and its commit key with the
-typed word (the caret right after it) and remembers the typed word as reverted
+typed word (the caret right after it; it deletes only what the keyboard
+inserted) and remembers the typed word as reverted
 for the rest of the keyboard session (in memory). Any other key forgets the
 pending revert.
 
@@ -1990,36 +2012,17 @@ left open:
   emits `.typeDecided(key, x:, y:, field:)` instead of `.type(key, field:)`
   (amends "Soft key edges"), so its point reaches the record. With soft key
   edges off, the keyboard decides such a tap as its nearest key.
-- **The record.** Each edit the editor makes applies its deletions, then its
-  insertion. Any inserted character other than a letter or apostrophe starts
-  a new word (clears the record), so the record is the run before the caret.
-  Only the last character of an edit carries the tap's point. Dictation,
-  undo, the trackpad and a selection also clear it.
-- **"Cannot account for".** A record that does not match the run gives all
-  points none, and the word is still checked, as "Taps" says. The editor
-  cannot account for the word only when text is selected (the commit key
-  replaces the selection): then nothing is corrected.
-- **Only a verified word is replaced (code review, 2026-10-19).** The
-  replacement deletes the word from wherever the host has the caret, so the
-  word's whole run must be verified. That means the proxy itself shows that
-  same run before the caret now, and its reading is not one a key left
-  unverified by ending a gesture whose last adjustment's outcome is unknown
-  (an abandoned probe or jump). Otherwise (that reading, a probe still
-  unresolved, a proxy that has not shown our edits or the trackpad's
-  landing yet, or anything else that makes the text uncertain) the commit
-  key types without a correction.
-- **After an unconfirmed caret move, only our own word (code review round 4,
-  2026-10-19).** A host report can arrive between a commit key's touch-down
-  (which ends a trackpad probe) and its release. WebKit's report of an
-  adjustment as issued shows the old caret and confirms nothing. So once a
-  trackpad gesture has begun in this field, a word is corrected only if
-  this keyboard typed its whole run right after a separator it also typed
-  (a space or a commit key). The record tracks that: `startsAtOwnBoundary`,
-  false after a clear or a deletion past the record's start. Deleting it
-  then removes exactly those characters, wherever the host has the caret.
-  The keyboard appearing again or another field starts verified. A word
-  that began before the gesture, or that a host report interrupted, is
-  committed as typed.
+- **Superseded by "Owned words" (round 5).** Four earlier entries are
+  removed because the owned-word rule replaces them: "The record" (a record
+  cleared by any non-word character and matched against the run), "Cannot
+  account for" (a mismatched record gave all-none points and was still
+  checked), "Only a verified word is replaced" (the proxy had to show the
+  run, and a probe's reading was distrusted) and "After an unconfirmed caret
+  move, only our own word" (the round-4 exception, now always the rule).
+- **Return goes in alone (code review round 5, 2026-10-19).** The
+  correction is inserted first, then the commit key's text as its own
+  `insertText`, so a host that acts on `text == "\n"` (Send, Next) still
+  sees Return alone. This holds for every commit key.
 - **A layout change drops the points (code review, 2026-10-19).** When the
   letters layer's geometry changes between taps and the commit key (a resize,
   a rotation, the globe key shown or hidden), the record keeps its characters
@@ -2034,12 +2037,12 @@ left open:
   revert also needs the field identified, with the same identity as when the
   correction was made, and the anchor holding. Otherwise Delete is a plain
   Delete.
-- **Apostrophes.** The record matches the whole run, outer apostrophes
+- **Apostrophes.** The record holds the whole run, outer apostrophes
   included. Trailing apostrophes stay after the replacement. A curly
   apostrophe reaches the corrector as "'".
 - **Keep.** A result equal to the typed word ignoring case keeps the word.
   The corrector's result is lowercased before casing.
-- **Revert.** A revert also restores the run's record. Reverted words are
+- **Revert.** A revert also restores the word's record, owned. Reverted words are
   kept lowercased, and are checked before the corrector is asked (no
   `wordChecked`). "Any other key" includes Shift and layer keys. A swipe,
   dictation, a caret move, the trackpad, a field change and hiding also
