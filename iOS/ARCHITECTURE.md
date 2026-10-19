@@ -19,10 +19,12 @@ contract.
 
 | Name cited in code comments | Where the rule is now |
 | --- | --- |
-| "Typing model v2", "Typing model v2: immediate execution", "Typing model v3", "Typing model v4 and swipe typing" | [Typing model](#typing-model) |
-| "Candidate strip", "Swipe trace" | [Swipe typing](#swipe-typing) |
-| "Undo ownership v2", "Undo last dictation" | [Undo last dictation](#undo-last-dictation) |
-| "Trackpad safety", "Probes only where units can differ" | [Trackpad: units, probes and attribution](#trackpad-units-probes-and-attribution) |
+| "Typing model v2", "Typing model v2: immediate execution" | [Typing model](#typing-model); late gesture reports and echoes in [Editing core](#editing-core-editingcore); a key ending the gesture and the accepted residual in [Trackpad and keys](#trackpad-and-keys) |
+| "Typing model v3" | [Typing model](#typing-model) |
+| "Typing model v4 and swipe typing" | key timing in [Typing model](#typing-model); the swipe gesture, the decoding pipeline (its steps 1–5), insertion, the candidate strip and the trace in [Swipe typing](#swipe-typing) |
+| "Inserting a swiped word", "Candidate strip", "Swipe trace", "decoding pipeline" | [Swipe typing](#swipe-typing) |
+| "Undo ownership v2", "Undo last dictation" | [Undo last dictation](#undo-last-dictation); attribution in [Editing core](#editing-core-editingcore) |
+| "Trackpad safety", "Probes only where units can differ" | [Trackpad: units, probes and attribution](#trackpad-units-probes-and-attribution) and [Trackpad and keys](#trackpad-and-keys) |
 | "Measured Apple keyboard behavior" | [Trackpad: activation and motion](#trackpad-activation-and-motion) and [Delete key](#delete-key) |
 | "Field width profiles", "Field profile parameters", "Field geometry" | [Field profiles](#field-profiles) |
 | "Top row", "Insert last dictation" | [Top row](#top-row) |
