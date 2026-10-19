@@ -102,7 +102,8 @@ hold:
 
 - it is non-empty;
 - it has at most 300 scalars;
-- it has at most 8 words separated by U+0020;
+- splitting it at every U+0020 gives at most 8 fields, empty fields
+  included (so `a`, eight spaces and `b` is invalid);
 - it contains no control character (Cc);
 - `fold(key) == key`.
 

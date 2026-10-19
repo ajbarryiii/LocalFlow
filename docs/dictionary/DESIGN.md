@@ -102,7 +102,7 @@ accepted without a vocabulary (§3.3).
 | Strength presets | 0.5, 1, 1.41, 2, 2.83, 4, 5.66, 8 | `DictionaryValidation.presets` (`DictionaryEntry.swift:52`), `STRENGTH_PRESETS` (`lf-asr/src/dictionary.rs:27`) |
 | Entry capacity | 1000 | `DictionaryValidation.capacity` (`DictionaryEntry.swift:50`), `MAX_ENTRIES` (`lf-asr/src/dictionary.rs:16`) |
 | Ignore-list capacity | 1000 keys | `DictionaryValidation.ignoreCapacity` (`DictionaryEntry.swift:51`), `MAX_IGNORED` (`lf-asr/src/dictionary.rs:18`) |
-| Stored key | ≤ 300 scalars, ≤ 8 words (pin P6) | `DictionaryKey.isValid` (`DictionaryText.swift:106-118`), `valid_key` and `MAX_KEY_SCALARS` (`lf-asr/src/dictionary.rs:205-218`) |
+| Stored key | ≤ 300 scalars, ≤ 8 fields split at U+0020, empty fields included (pin P6) | `DictionaryKey.isValid` (`DictionaryText.swift:106-118`), `valid_key` and `MAX_KEY_SCALARS` (`lf-asr/src/dictionary.rs:205-218`) |
 
 Dictionary rules:
 
@@ -218,12 +218,18 @@ No other normalization is applied. Empty text encodes as U+2581 alone
 ### §1.4 Casing restoration
 
 Casing restoration runs on the raw transcript before post-processing
-(macros, formatting, Return). It runs on every dictation and on every
-verification re-decode, with the same entries the decode used.
+(macros, formatting, Return). It runs on every dictation on every platform.
 (`CasingRestorer`, `CasingRestorer.swift:4-5`;
-`LocalParakeetService.dictationResult` and `suggestCorrection`,
-`LocalParakeetService.swift:226-228,249-280`; the worker's `run`,
-`linux/crates/lf-daemon/src/worker.rs:427-429`)
+`LocalParakeetService.dictationResult`, `LocalParakeetService.swift:226-228`;
+the worker's `run`, `linux/crates/lf-daemon/src/worker.rs:427-429`)
+
+macOS and iOS also restore casing on every verification re-decode, with
+the same entries the decode used (`LocalParakeetService.suggestCorrection`,
+`LocalParakeetService.swift:249-280`). Linux compares the re-decode's raw
+text (`AsrRecognizer::redecode`,
+`linux/crates/lf-daemon/src/recognizer.rs:114-132`). Restoration keeps the
+fold of the text unchanged and norms fold case, so this does not change
+acceptance (§1.6.4) (inferred).
 
 - Only entries containing a scalar that folding changes take part.
   Lowercase-only entries are inert.
@@ -267,8 +273,11 @@ unit costs and the pinned backtrack order (pin P2).
 (`WordAlignment.align`, `CorrectionCandidates.swift:4-54`; `align`,
 `correction.rs:132-196`)
 
-**§1.5.4 Rewrite check.** If the longer side has at least 5 words and more
-than half of the operations are edits, there are no candidates. (in
+**§1.5.4 Rewrite check.** Let `longest` be the word count of the longer side
+(after §1.5.2) and `edits` the number of non-match alignment operations
+(substitutions, deletions and insertions). If `longest ≥ 5` and
+`2 · edits > longest`, there are no candidates. For example, `a b c d e` to
+`b c x y e` has 3 edits against `longest` 5, so it is rejected. (in
 `CorrectionCandidates.find`, `CorrectionCandidates.swift:107-109`;
 `REWRITE_MIN_WORDS`, `correction.rs:26-27,242-254`)
 
@@ -324,7 +333,8 @@ norms of the candidate surface. (`VerifyDecision.accepts`,
 `VerifyDecision.swift:39-40`; `Expected` and `Expected::new`,
 `correction.rs:328-346,383-392`)
 
-**§1.6.4 Acceptance.** For one re-decode `N` (after casing restoration),
+**§1.6.4 Acceptance.** For one re-decode `N` (casing-restored on macOS and
+iOS, raw on Linux; see §1.4),
 align `norms(N)` to `E` and set `lo = max(0, i − 2)` and
 `hi = min(|E|, i + |x| + 2)`. `N` is accepted when both hold:
 
@@ -406,11 +416,18 @@ is invented.
   pin P6, without repeats. Any other content is an error that quotes no
   content.
 - A change is written to a 0600 temporary file, synced, renamed over the
-  file, and the directory is synced. Only then is the change published. A
-  failed write changes nothing.
+  file, and the directory is synced. Only then is the change published.
+  - A failed write changes nothing.
+  - If only the directory sync fails, the rename is undone and the change
+    is refused (`error storage`). Memory never changes.
+  - If the rename cannot be undone, the file on disk may hold the refused
+    change. The store is marked broken, the daemon replies `error storage`
+    and stops, and its next start loads that file.
 
 (The `lf_daemon::dictionary` module doc and `MAX_FILE_BYTES`,
-`linux/crates/lf-daemon/src/dictionary.rs:2-23,38-40`)
+`linux/crates/lf-daemon/src/dictionary.rs:2-23,38-40`; `Store::recover` and
+`Store::is_broken`, `dictionary.rs:230-280`; test
+`a_failed_directory_sync_is_undone_and_refused`, `dictionary.rs:736-780`)
 
 ### §2.2 Snapshots
 
@@ -592,7 +609,8 @@ The session is released when:
 
 - a suggestion is claimed;
 - the watch's last check finishes;
-- the watch cannot start;
+- no field is captured: nothing within the 0.3 s deadline, or suggestions
+  were turned off meanwhile;
 - a new dictation starts;
 - the dictation is cancelled;
 - suggestions are turned off;
@@ -603,6 +621,11 @@ The session is released when:
 and `dictionaryDidChange`, `AppState.swift:2142-2169,2199-2209,2318-2323`;
 `LocalParakeetService.suggestCorrection`, `discardCorrectionSession` and
 `releaseCorrectionSession`, `LocalParakeetService.swift:244-301`)
+
+A field can be captured and the watch still fail to begin, for example
+because the paste no longer ends at the caret. Nothing is released early
+then: the audio stays until the 90 s expiry or one of the events above.
+(`CorrectionWatcher.start`, `CorrectionWatcher.swift:449-457`)
 
 ### §3.5 Correction watcher and suggestion presentation (macOS)
 
@@ -615,7 +638,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 
 | Watcher constant | Value | Source |
 |---|---|---|
-| Capture deadline (never delays the paste) | 0.3 s | `CorrectionWatcher.captureDeadline` and `capture` (`CorrectionWatcher.swift:389,423-446`) |
+| Capture deadline (the paste waits for the capture, at most this long) | 0.3 s | `CorrectionWatcher.captureDeadline` and `capture` (`CorrectionWatcher.swift:389,423-446`); `AppState.pasteAtCursorWhenShortcutReleased` (`AppState.swift:2142-2169`) |
 | Settle delay after the paste | 0.15 s | `CorrectionWatcher.settleDelay` and `start` (`CorrectionWatcher.swift:390,449-464`) |
 | Poll interval | 0.5 s | `CorrectionWatcher.pollInterval` (`CorrectionWatcher.swift:391`) |
 | Longest watch | 60 s | `CorrectionWatchSession.maxDuration` (`CorrectionWatcher.swift:99`) |
