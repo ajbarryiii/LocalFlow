@@ -1620,7 +1620,10 @@ fn requests_handed_to_a_stalled_control_loop_are_bounded() {
         lf_daemon::protocol::ErrorCode::Unavailable,
     ));
     let mut held = held.into_iter();
-    assert_eq!(reply(held.next().unwrap()), "localflow/1 error unavailable\n");
+    assert_eq!(
+        reply(held.next().unwrap()),
+        "localflow/1 error unavailable\n"
+    );
     // Its place is free: one more request is handed on, not refused.
     let late = send();
     let responders: Vec<_> = (0..MAX_PENDING).map(|_| next(&stalled)).collect();

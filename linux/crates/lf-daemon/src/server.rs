@@ -72,7 +72,6 @@ impl Drop for Slot {
 }
 
 impl Responder {
-
     pub fn send(mut self, reply: Reply) {
         if let Some(to) = self.0.take() {
             deliver(to, &reply);
