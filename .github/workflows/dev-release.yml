@@ -109,13 +109,13 @@ jobs:
             --keychain "$KEYCHAIN_PATH"
 
       # --- Build universal dev app ---
-      - name: Build universal
+      - name: Build
         run: make ARCH=arm64 CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Create universal DMG
+      - name: Create DMG
         run: make dmg ARCH=arm64 CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Sign universal DMG
+      - name: Sign DMG
         run: codesign --force --sign "$CODESIGN_IDENTITY" "build/LocalFlow Dev.dmg"
 
       - name: Notarize universal DMG

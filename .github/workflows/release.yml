@@ -121,13 +121,13 @@ jobs:
             --keychain "$KEYCHAIN_PATH"
 
       # --- Build universal ---
-      - name: Build universal
+      - name: Build
         run: make ARCH=arm64 APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Create universal DMG
+      - name: Create DMG
         run: make dmg ARCH=arm64 APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Sign universal DMG
+      - name: Sign DMG
         run: codesign --force --sign "$CODESIGN_IDENTITY" build/LocalFlow.dmg
 
       - name: Notarize universal DMG
