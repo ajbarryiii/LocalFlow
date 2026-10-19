@@ -590,8 +590,13 @@ recorded file is transcribed under the decision taken at stop
 (`AppState.takeStreamingDictation`, `AppState.swift:1608-1618`).
 
 Once audio is retained, it is dropped only by the releases below, by
-watcher abandonment, or by expiry. It is not dropped when trust is lost
-later.
+watcher abandonment, or by expiry. Nothing observes trust changes
+directly. A later loss of trust releases the audio when the watcher's next
+safety check finds it: the watch is abandoned and `onAbandon` calls
+`stopCorrectionSuggestions` (`CorrectionWatcher.poll`,
+`CorrectionWatcher.swift:504-520`; `AppState.swift:552-554`). The same
+happens when a reported edit's check finds trust missing
+(`AppState.handleCorrectionEdit`).
 
 - **What is kept.** The per-chunk encoder projections (frames × 640 f32),
   the snapshot, and the base text (§1.6.1).
@@ -746,7 +751,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 | Vocabulary file | `vocabulary.json` | `vocabulary.json` | `tokenizer.vocab`, with scores checked (§1.3) |
 | How corrections are found | Accessibility watcher on the pasted text (§3.5) | none: entries are added by hand | user-initiated `localflowctl correct` (§2.5) |
 | Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode that has at least one edit block against the unboosted transcript, where every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`, `Tests/StrengthProbeTests.swift`) | the strength verified from a correction |
-| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the encoder output is released when `LocalParakeetService.probeStrength` returns; the recorded samples and texts when the sheet closes (`iOS/ARCHITECTURE.md`, "Custom dictionary") | projection of the last typed dictation, 120 s (§2.4) |
+| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the recorded samples and the encoder output live only while the probe task runs (`StrengthProbeModel.done`, `iOS/App/DictionaryModel.swift:104-122`; `LocalParakeetService.probeStrength`); the finished result keeps only texts, shown until the sheet closes | projection of the last typed dictation, 120 s (§2.4) |
 | Candidates that failed at every strength | remembered per dictation (`ExhaustedCandidates`) | not applicable | not remembered (inferred: no such cache in `verify_with_clock`, `worker.rs`) |
 | Full dictionary | nothing verified or offered (`DictionarySuggestionFinder.find`) | not applicable | still verified; `dict-add` then fails with `full` (inferred: no capacity check in `submit_correction` or `verify_with_clock`) |
 | Phrase order before building the graph | first seen (`BiasGraph.phrases`) | first seen | sorted by token sequence (`phrases`); the graph does not depend on order (vectors `graph`, "G2 reversed") |
