@@ -1866,26 +1866,10 @@ mechanisms in the code can drop such a tap:
 This section amends "Typing model v4 and swipe typing". The counters, for
 TestFlight only, measure what is left.
 
-**Touchable backgrounds (2026-10-18, from the typing test).**
-- On build 29, after the bar change, LocalFlow still dropped 7.0 characters
-  per 100 against Apple's 1.3. Touch-downs still equalled characters typed,
-  and most drops were still on the top row.
-- The counters show only that the taps were not delivered, not why or
-  where. The suspected cause: in a keyboard extension, iOS reportedly ignores
-  a touch on a fully transparent point, even inside a view that would take it
-  (Apple Developer Forums 702798; the workaround there is a background with a
-  very low alpha). The key area and the bar were `.clear`. If that is the
-  cause, taps in the 12 pt row gaps, between keys, in the padding above the
-  top row and in the empty bar never reached the keyboard. Apple's own
-  keyboard is not an extension.
-- The key area, the bar's hosting view and the menu panel's view now have
-  `KeyAreaView.touchableBackground`: grey at 2% alpha (about 5 of 255 in an
-  8-bit alpha channel, clear of rounding to 0). Its look over the keyboard's
-  backdrop is expected to be negligible. While the trackpad runs, the bar
-  fades to 30%, so its tint can differ very slightly from the key area's.
-- Pending on the device: the typing test (does the drop rate fall?), and the
-  look in light mode, dark mode and trackpad mode. This cannot be
-  unit-tested.
+**Touchable backgrounds.** The fix that removed most dropped taps is its own
+section, "Touchable backgrounds (fix, 2026-10-18)" (merged from main, PR
+#35). Its typing-test numbers came from this branch's TestFlight builds 29
+and 30.
 
 **Reach above the keys.**
 - The key area also takes touches that land up to
@@ -2086,6 +2070,38 @@ keyboard.
 - **Privacy.** Attempts and the typed text stay in the app's memory and go
   when it quits. Nothing is stored or sent, and the passages are invented
   text. Remove this before the first production release, with the counters.
+### Touchable backgrounds (fix, 2026-10-18)
+
+**Why.** Fast typing dropped letters, mostly on the top row. The finding came
+from a TestFlight typing test on the soft key edges branch, which has
+TestFlight-only counters:
+- LocalFlow dropped 7.0 characters per 100 against 1.3 for Apple's keyboard.
+- In every attempt, the touch-downs the key area received equalled the
+  characters typed, so the dropped taps never reached `touchesBegan`.
+
+In a keyboard extension, iOS reportedly ignores a touch on a fully
+transparent point, even inside a view that would take it (Apple Developer
+Forums thread 702798; the workaround there is a background with a very low
+alpha). The key area, the bar and the menu panel were `.clear`, so taps in the
+12 pt row gaps, between keys, in the padding above the top row and in the
+empty bar never arrived. Apple's own keyboard is not an extension.
+
+**Fix.**
+- The key area, the bar's hosting view and the menu panel's hosting view use
+  `KeyAreaView.touchableBackground`: grey at 2% alpha. That is about 5 of 255
+  in an 8-bit alpha channel, clear of rounding to 0.
+- With the views touchable, a gap tap reaches the key area, whose nearest-key
+  hit testing already covers every point ("no dead gaps"). A tap in the
+  bar's empty space reaches the bar and does nothing, as intended.
+- A tap outside the menu panel's card can close it again: its
+  `Color.black.opacity(0.001)` tap area was likewise transparent.
+
+**Verified on the device** (TestFlight build 30, soft key edges branch, with
+this change added): the user reported the dropped taps essentially gone.
+This cannot be unit-tested. The look is expected to be unchanged, since 2%
+grey is not noticeable over the keyboard's backdrop. While the trackpad runs
+the bar fades to 30%, so its tint can differ very slightly from the key
+area's.
 
 ## Custom dictionary (contract, 2026-10-15)
 
