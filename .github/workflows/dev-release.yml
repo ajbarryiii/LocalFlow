@@ -21,6 +21,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # A release must ship the model; stop before any signing secrets are used.
+      - name: Check model bundle
+        run: make release-preflight
+
       - name: Resolve dev version
         id: version
         run: |
@@ -106,10 +110,10 @@ jobs:
 
       # --- Build universal dev app ---
       - name: Build universal
-        run: make ARCH=universal CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make ARCH=arm64 CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Create universal DMG
-        run: make dmg ARCH=universal CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make dmg ARCH=arm64 CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Sign universal DMG
         run: codesign --force --sign "$CODESIGN_IDENTITY" "build/LocalFlow Dev.dmg"
@@ -144,7 +148,7 @@ jobs:
           body: |
             Development build from `${{ github.sha }}`.
 
-            **[LocalFlow-Dev.dmg](https://github.com/ajbarryiii/LocalFlow/releases/download/${{ steps.version.outputs.tag }}/LocalFlow-Dev.dmg)** - Universal dev build for all Macs (Apple Silicon + Intel).
+            **[LocalFlow-Dev.dmg](https://github.com/ajbarryiii/LocalFlow/releases/download/${{ steps.version.outputs.tag }}/LocalFlow-Dev.dmg)** - Dev build for Apple Silicon Macs on macOS 26 or later.
           generate_release_notes: false
           make_latest: false
           prerelease: true
