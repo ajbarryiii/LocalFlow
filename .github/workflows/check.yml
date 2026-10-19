@@ -76,6 +76,10 @@ jobs:
       LF_SKIP_DBUS_TESTS: "1"
       LF_SKIP_COMPOSITOR_TESTS: "1"
       LF_SKIP_PIPEWIRE_TESTS: "1"
+      # nix develop nests its temporary directory under TMPDIR, and the runner
+      # default (under /home/runner/work/_temp) makes the daemon tests' socket
+      # paths longer than a Unix socket path may be.
+      TMPDIR: /tmp
 
     steps:
       - name: Check out repository
