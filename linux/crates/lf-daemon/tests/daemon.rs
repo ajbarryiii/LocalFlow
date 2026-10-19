@@ -1665,3 +1665,37 @@ fn presence_changes_during_a_cancel_reach_watchers() {
         "localflow/1 ok state=idle model=ready mic=absent"
     );
 }
+
+/// Starts of recordings cancelled while an earlier start still runs are
+/// never run: only the first (already running) and the last start reach
+/// the microphone.
+#[test]
+fn starts_of_recordings_cancelled_meanwhile_are_skipped() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rig = Rig::start(
+        "skip-cancelled",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let mut presses = vec![rig.send("press")];
+    start.wait_entered(1);
+    for _ in 0..3 {
+        assert_eq!(rig.cmd("cancel"), "state=idle model=ready note=cancelled");
+        presses.push(rig.send("press"));
+        assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    }
+    // Recordings 1 to 3 are cancelled, the fourth is starting.
+    start.open();
+    let last = presses.pop().unwrap();
+    assert_eq!(last.ok(), "state=recording mode=hold model=ready");
+    for p in presses {
+        assert_eq!(p.ok(), "state=idle model=ready note=cancelled");
+    }
+    assert_eq!(cap.state().starts, 2);
+    assert_eq!(rig.cmd("release"), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+}

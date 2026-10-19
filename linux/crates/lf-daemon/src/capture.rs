@@ -9,7 +9,9 @@
 //!
 //! Calls run in the order sent, each as the controller used to run it: a
 //! failed `start` or `stop` is followed by `cancel`, so a half-open stream
-//! is always closed. A capture that panics fails the call instead of taking
+//! is always closed. A `start` or `stop` for a recording already cancelled
+//! when the thread comes to it is skipped, so press-and-cancel bursts
+//! behind a slow start never reopen the microphone. A capture that panics fails the call instead of taking
 //! the thread down.
 //!
 //! Privacy: stopped audio is wrapped in [`Audio`] on the capture thread, so
@@ -19,6 +21,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
@@ -153,6 +156,10 @@ fn lock(m: &Mutex<Box<dyn AudioCapture>>) -> MutexGuard<'_, Box<dyn AudioCapture
 /// The capture thread, seen from the controller.
 pub struct CaptureThread {
     calls: Sender<(u64, Call)>,
+    /// The newest recording cancelled. Recordings are numbered in order
+    /// and only the current one is ever cancelled, so every recording up
+    /// to it is over.
+    cancelled: Arc<AtomicU64>,
     /// Shared with the thread, which holds the lock only during a call.
     capture: Arc<Mutex<Box<dyn AudioCapture>>>,
     /// Failures for calls the thread could not take (it is gone).
@@ -175,9 +182,15 @@ impl CaptureThread {
 
 impl CapturePort for CaptureThread {
     fn send(&mut self, generation: u64, call: Call) {
-        if call == Call::Start {
+        match call {
             // A new recording never shows the last one's level.
-            self.level.set(0.0);
+            Call::Start => self.level.set(0.0),
+            // Before sending, so the thread skips this recording's queued
+            // calls.
+            Call::Cancel => {
+                self.cancelled.fetch_max(generation, Ordering::AcqRel);
+            }
+            Call::Stop => {}
         }
         if self.calls.send((generation, call)).is_err()
             && let Some(done) = failed(call, "the audio capture thread has stopped")
@@ -238,6 +251,8 @@ pub fn spawn(
     let input = capture.input_available();
     let capture = Arc::new(Mutex::new(capture));
     let shared = Arc::clone(&capture);
+    let cancelled = Arc::new(AtomicU64::new(0));
+    let skip = Arc::clone(&cancelled);
     let (calls, queued) = mpsc::channel::<(u64, Call)>();
     let (done_tx, done) = mpsc::channel::<()>();
     let thread = std::thread::Builder::new()
@@ -245,6 +260,9 @@ pub fn spawn(
         .spawn(move || {
             let _done = done_tx;
             while let Ok((generation, call)) = queued.recv() {
+                if call != Call::Cancel && generation <= skip.load(Ordering::Acquire) {
+                    continue;
+                }
                 let result = run_guarded(&mut **lock(&shared), call);
                 if let Some(done) = result {
                     deliver(CaptureEvent { generation, done });
@@ -258,6 +276,7 @@ pub fn spawn(
     Ok((
         CaptureThread {
             calls,
+            cancelled,
             capture,
             failed: VecDeque::new(),
             level: Cell::new(0.0),

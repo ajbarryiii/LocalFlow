@@ -468,7 +468,7 @@ checklist.
 | cancel while idle | ignored |
 | capture fails to start or stop | capture cancelled, `error capture`, idle, session reset |
 | press, release, toggle or again while the microphone starts or stops | the request that made the call is answered when it returns; these wait, at most 32 (more get `error busy`), and are then handled in arrival order with their own stamps, as if they had arrived after the call; `status`, `watch` and text commands are answered at once |
-| cancel while the microphone starts or stops | at once: recording discarded (the stream is closed when the call returns), idle; the waiting requests are answered `note=cancelled` and have no effect |
+| cancel while the microphone starts or stops | at once: recording discarded (the stream is closed when the call returns; calls still queued for cancelled recordings are skipped), idle; the waiting requests are answered `note=cancelled` and have no effect |
 | press and release arrive out of order (each bind is its own process) | `localflowctl` stamps requests with `CLOCK_MONOTONIC` at start; a press stamped before an unmatched release is ignored, and a release stamped before the current hold's press is ignored; stamps from the future are treated as absent |
 | empty recording / under `min_recording_seconds` (0.3 s) | discarded before recognition (`note=empty` / `note=too-short`) |
 | `max_recording_seconds` (300 s) reached | stops and transcribes |
