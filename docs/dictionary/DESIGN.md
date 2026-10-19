@@ -406,7 +406,10 @@ is invented.
 
 - The dictionary is stored in `$XDG_DATA_HOME/localflow/dictionary.json`,
   shaped `{"version":1,"entries":[{"text":…,"strength":…}],"ignore":[…]}`.
-- The data directory is mode 0700.
+- A missing data directory is created with mode 0700. An existing one must
+  be a directory owned by the effective uid, with no group or other access,
+  so stricter modes are accepted. (`ensure_private_dir` and
+  `check_private_dir`, `linux/crates/lf-daemon/src/paths.rs:64-101`)
 - The file is opened with `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`. It must be
   a regular file owned by the effective uid, with mode exactly 0600, and
   at most 1 MiB. A missing file is an empty dictionary.
@@ -529,7 +532,10 @@ UserDefaults holds two keys (`DictionaryStorage`,
 | `custom_dictionary` | `{"entries":[{"strength":…,"text":…}],"version":1}` |
 | `custom_dictionary_ignore` | `{"ignore":[…],"version":1}` |
 
-Both are JSON with sorted keys, and each payload is at most 1 MiB.
+Both are JSON with sorted keys. Loading accepts each payload only up to
+1 MiB (`DictionaryStorage.maxBytes`). Saving does not check the size
+(`DictionaryStorage.encode`), so a full ignore list of long keys could save
+a payload that no longer loads (inferred).
 
 Loading validates everything:
 
@@ -571,9 +577,12 @@ correction work, and withdraws any visible suggestion.
 
 ### §3.4 Retained correction sessions (macOS)
 
-Audio is retained only while all of these hold: suggestions are on, the
-dictionary is readable, and Accessibility is trusted.
-(`AppState.retainsAudioForCorrection`, `AppState.swift:1584-1587`)
+A dictation's audio is retained only if all of these hold when its
+transcription starts: suggestions are on, the dictionary is readable, and
+Accessibility is trusted. These are checked once, at that point
+(`AppState.retainsAudioForCorrection`, `AppState.swift:1584-1587`). After
+that, retained audio is dropped only by the releases below, by watcher
+abandonment, or by expiry.
 
 - **What is kept.** The per-chunk encoder projections (frames × 640 f32),
   the snapshot, and the base text (§1.6.1).
@@ -728,7 +737,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 | Vocabulary file | `vocabulary.json` | `vocabulary.json` | `tokenizer.vocab`, with scores checked (§1.3) |
 | How corrections are found | Accessibility watcher on the pasted text (§3.5) | none: entries are added by hand | user-initiated `localflowctl correct` (§2.5) |
 | Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode whose every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`) | the strength verified from a correction |
-| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only, released when the sheet closes | projection of the last typed dictation, 120 s (§2.4) |
+| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the encoder output is released when `LocalParakeetService.probeStrength` returns; the recorded samples and texts when the sheet closes (`iOS/ARCHITECTURE.md`, "Custom dictionary") | projection of the last typed dictation, 120 s (§2.4) |
 | Candidates that failed at every strength | remembered per dictation (`ExhaustedCandidates`) | not applicable | not remembered (inferred: no such cache in `verify_with_clock`, `worker.rs`) |
 | Full dictionary | nothing verified or offered (`DictionarySuggestionFinder.find`) | not applicable | still verified; `dict-add` then fails with `full` (inferred: no capacity check in `submit_correction` or `verify_with_clock`) |
 | Phrase order before building the graph | first seen (`BiasGraph.phrases`) | first seen | sorted by token sequence (`phrases`); the graph does not depend on order (vectors `graph`, "G2 reversed") |
