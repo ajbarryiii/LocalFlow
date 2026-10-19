@@ -28,8 +28,11 @@ from behavior rather than stated by a comment, test or vector.
   plan` to `The plan` gives nothing, and so does `kubernetes` to
   `Kubernetes`.
 
-Sources: `Sources/Dictionary/CorrectionCandidates.swift:70-71,111-115,157-162`,
-`linux/crates/lf-dictation/src/correction.rs:227-230,256-259,307-314`.
+Sources: `DictionaryWord.stripped`, `inBlock` in `CorrectionCandidates.find` and
+`CorrectionCandidates.candidate`
+(`Sources/Dictionary/CorrectionCandidates.swift:70-71,111-115,157-162`);
+`correction_candidates`, its `is_edit` and `qualify`
+(`linux/crates/lf-dictation/src/correction.rs:227-230,256-259,307-314`).
 Tests: `testCandidateHandCases` (`Tests/DictionaryTests.swift:431-437`) and
 vectors `candidates`.
 
@@ -45,8 +48,9 @@ For example, `[a, b]` against `[c]` aligns as delete `a`, then substitute
 `b`→`c`. `[c]` against `[a, b]` aligns as insert `a`, then substitute
 `c`→`b`.
 
-Sources: `Sources/Dictionary/CorrectionCandidates.swift:4-54`,
-`linux/crates/lf-dictation/src/correction.rs:132-196`. Tests:
+Sources: `WordAlignment.align`
+(`Sources/Dictionary/CorrectionCandidates.swift:4-54`); `Op` and `align`
+(`linux/crates/lf-dictation/src/correction.rs:132-196`). Tests:
 `testCandidateHandCases` (`Tests/DictionaryTests.swift:460-464`),
 vectors `candidates` and `verify`.
 
@@ -61,8 +65,9 @@ decode.
 Example: `E = a b chart c d e f`, so the window is `[0, 5)`. The extra word
 `zz` before `E[5]` rejects the decode.
 
-Sources: `Sources/Dictionary/VerifyDecision.swift:44-55`,
-`linux/crates/lf-dictation/src/correction.rs:396-428`. Tests:
+Sources: `inWindow` in `VerifyDecision.accepts`
+(`Sources/Dictionary/VerifyDecision.swift:44-55`); `Expected::accepts`
+(`linux/crates/lf-dictation/src/correction.rs:396-428`). Tests:
 `testVerifyHandCases` (`Tests/DictionaryTests.swift:504-507`), vectors
 `verify`.
 
@@ -73,8 +78,8 @@ vocabulary pieces becomes a single `<unk>` (id 0). Runs separated by a
 piece stay separate: `tzzh` encodes as `[▁t, <unk>, h]` and `tzhz` as
 `[▁t, <unk>, h, <unk>]` in the test vocabulary.
 
-Sources: `Sources/Dictionary/BPEEncoder.swift:61-73`,
-`linux/crates/lf-asr/src/tokenizer.rs:130-137,196-206`. Tests:
+Sources: `BPEEncoder.encode` (`Sources/Dictionary/BPEEncoder.swift:61-73`);
+`Tokenizer::encode` (`linux/crates/lf-asr/src/tokenizer.rs:130-137,196-206`). Tests:
 `testEncoderHandCases` (`Tests/DictionaryTests.swift:108-110`), vectors
 `encode`.
 
@@ -85,8 +90,9 @@ category Lu. Swift uses `Unicode.Scalar.Properties.isUppercase` and Rust
 uses `char::is_uppercase`; both implement that property (inferred from
 their documentation). P1's casing test is the only user of this rule.
 
-Sources: `Sources/Dictionary/DictionaryText.swift:62-63`,
-`linux/crates/lf-dictation/src/correction.rs:311`. Tests: the §1.5 cases
+Sources: `DictionaryText.isUppercase`
+(`Sources/Dictionary/DictionaryText.swift:62-63`); `char::is_uppercase` in
+`qualify` (`linux/crates/lf-dictation/src/correction.rs:311`). Tests: the §1.5 cases
 in `testCandidateHandCases` (`Tests/DictionaryTests.swift:401`).
 
 ## P6: stored identity and ignore keys
@@ -111,10 +117,12 @@ Three rules follow:
 - Saving an entry or ignoring a key whose key fails P6 changes nothing.
 - Loading saved data with an invalid ignore key fails the whole load.
 
-Sources: `Sources/Dictionary/DictionaryText.swift:106-118`,
-`Sources/Dictionary/DictionaryEntry.swift:38-42,72-74,181-186`,
-`linux/crates/lf-asr/src/dictionary.rs:198-218`,
-`linux/crates/lf-daemon/src/dictionary.rs:12-15,177-181`. Tests:
+Sources: `DictionaryKey.isValid` (`Sources/Dictionary/DictionaryText.swift:106-118`);
+`DictionaryMutationError.invalidKey`, `DictionaryValidation.validate` and
+`DictionaryStorage.load` (`Sources/Dictionary/DictionaryEntry.swift:38-42,72-74,181-186`);
+`encodable` and `valid_key` (`linux/crates/lf-asr/src/dictionary.rs:198-218`);
+the `lf_daemon::dictionary` module doc and `Store::ignore`
+(`linux/crates/lf-daemon/src/dictionary.rs:12-15,177-181`). Tests:
 `testKeyValidity` (`Tests/DictionaryTests.swift:967-1008`),
 `Tests/DictionaryVectorTests.swift:130`, the `lf-daemon` dictionary tests
 (`dictionary.rs:563,785`), and vectors `keys` and `validation`.
@@ -125,8 +133,8 @@ The U+2581 prefix is added to empty text too, as SentencePiece does, so `""`
 encodes as `▁` alone. "Encodes without `<unk>`" also requires a non-empty
 result.
 
-Sources: `Sources/Dictionary/BPEEncoder.swift:44-45`,
-`linux/crates/lf-asr/src/tokenizer.rs:137-140`. Tests:
+Sources: `BPEEncoder.encode` (`Sources/Dictionary/BPEEncoder.swift:44-45`);
+`Tokenizer::encode` (`linux/crates/lf-asr/src/tokenizer.rs:137-140`). Tests:
 `testEncoderHandCases` (`Tests/DictionaryTests.swift:111-112`), and the first
 case of vectors `encode` (`""` encodes as id 63, `▁`).
 
@@ -147,9 +155,10 @@ Candidates are taken in text order:
 On Linux the controller passes every candidate to the worker, and the
 worker applies the filter and the cap.
 
-Sources: `Sources/Dictionary/VerifyDecision.swift:121-162`,
-`linux/crates/lf-daemon/src/worker.rs:321-386`,
-`linux/crates/lf-daemon/src/controller.rs:518-527`. Tests:
+Sources: `DictionarySuggestionFinder.find`
+(`Sources/Dictionary/VerifyDecision.swift:121-162`); `verify_with_clock`
+(`linux/crates/lf-daemon/src/worker.rs:321-386`); `submit_correction`
+(`linux/crates/lf-daemon/src/controller.rs:518-527`). Tests:
 `testVerificationOrder` (`Tests/DictionaryTests.swift:1010-1087`) and the
 `lf-daemon` worker tests with a mocked clock. Vectors `verify` describe the
 rule but leave ordering to these per-platform tests.
