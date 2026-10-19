@@ -26,7 +26,8 @@ enum AutocorrectEditorTests {
             ("outsideEditsCaretMovesAndFieldsClearTheRecord", testOutsideEditsCaretMovesAndFieldsClearTheRecord),
             ("correctionIsOneOwnEditBeforeTheKey", testCorrectionIsOneOwnEditBeforeTheKey),
             ("unverifiedCaretContextIsNotCorrected", testUnverifiedCaretContextIsNotCorrected),
-            ("anOwnedWordIsCorrectedWhileTheProxyLags", testAnOwnedWordIsCorrectedWhileTheProxyLags),
+            ("anOwnedWordTheProxyDoesNotShowIsNotCorrected", testAnOwnedWordTheProxyDoesNotShowIsNotCorrected),
+            ("charactersTheHostRejectedAreNeverDeleted", testCharactersTheHostRejectedAreNeverDeleted),
             ("callbackBetweenCommitKeyDownAndUpIsNotTrusted", testCallbackBetweenCommitKeyDownAndUpIsNotTrusted),
             ("aGestureOrReappearingDisownsTheWord", testAGestureOrReappearingDisownsTheWord),
             ("fieldsWithAutocorrectionOffAreNotCorrected", testFieldsWithAutocorrectionOffAreNotCorrected),
@@ -95,6 +96,19 @@ enum AutocorrectEditorTests {
         record.edited(deleted: 0, inserted: "q", point: p(1))
         record.clear()
         TestSupport.expectEqual(record, WordTapRecord())
+        // Shown by the host (final review): the reading ends with the word right after its separator, or is
+        // exactly the word at a field's start; nothing else, and never while unowned.
+        record.edited(deleted: 0, inserted: " te", point: p(1))
+        TestSupport.expect(record.isShown(before: "so te"), "the word after its space")
+        for reading in ["so t", "sote", "so te ", "te", "so tE", nil] as [String?] {
+            TestSupport.expect(!record.isShown(before: reading), "shown in \(reading ?? "nil")")
+        }
+        record.startOwned()
+        record.edited(deleted: 0, inserted: "ok", point: p(1))
+        TestSupport.expect(record.isShown(before: "ok"), "the word at the field's start")
+        TestSupport.expect(!record.isShown(before: "x ok"), "a field start with text before it")
+        record.clear()
+        TestSupport.expect(!record.isShown(before: ""), "an unowned record shown")
     }
 
     // MARK: Words
@@ -524,17 +538,59 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(rig.text, "teh the ")
     }
 
-    private static func testAnOwnedWordIsCorrectedWhileTheProxyLags() {
-        // The record is the word: a proxy that has not shown our edits yet changes nothing, since the deletions
-        // remove exactly the characters this keyboard typed, in order. (Round 1 declined to correct here; the owned
-        // word rule of round 5 makes the proxy's reading irrelevant.)
+    private static func testAnOwnedWordTheProxyDoesNotShowIsNotCorrected() {
+        // Final review (2026-10-19, P1): owned AND shown by the host. A proxy that has not shown our edits yet does
+        // not show the word, so it is committed as typed: a lagging proxy means a missed correction, never a wrong
+        // one. (This reverses round 5's "anOwnedWordIsCorrectedWhileTheProxyLags".)
         let rig = AutocorrectRig.typingASpace(after: "so")
         rig.document.host.editContextLagFrames = 3
         rig.tap("teh")
         TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
         rig.press(.space)
-        TestSupport.expectEqual(rig.text, "so the ")
-        TestSupport.expectEqual(rig.corrector.calls.last?.context, "so ")
+        TestSupport.expectEqual(rig.text, "so teh ")
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        // Once the proxy shows the word and the space before it, the word is corrected.
+        rig.document.host.editContextLagFrames = 0
+        for _ in 0 ..< 4 { rig.document.host.advanceFrame() }
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so teh the ")
+        TestSupport.expectEqual(rig.corrector.calls.last?.context, "so teh ")
+        // At a field's start the proxy must show nothing before the word.
+        let start = AutocorrectRig("", corrections: ["teh": "the"])
+        start.tap("teh")
+        start.document.host.hostInsert("x", at: 0)
+        start.document.host.refreshContext()
+        start.press(.space)
+        TestSupport.expectEqual(start.text, "xteh ")
+        TestSupport.expectEqual(start.corrector.calls.count, 0)
+    }
+
+    private static func testCharactersTheHostRejectedAreNeverDeleted() {
+        // Final review (2026-10-19, P1): a field capped at 12 characters keeps "prefix helll" of "prefix helllo".
+        // The record says "helllo"; the proxy shows "helll", so nothing is corrected, and the separator the
+        // correction would have deleted stays.
+        let rig = AutocorrectRig("prefix", corrections: ["helllo": "hello", "helll": "hello"])
+        rig.document.host.maxLength = 12
+        rig.press(.space)
+        rig.tap("helllo")
+        TestSupport.expectEqual(rig.text, "prefix helll")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "prefix helll")
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        // A rejected separator: the field is full, so the space never reaches it; room appears later (unreported)
+        // and the word goes in. The proxy shows the word but not the space the record expects before it.
+        let separator = AutocorrectRig("abcdefghijkl", corrections: ["teh": "the"])
+        separator.document.host.maxLength = 12
+        separator.press(.space)
+        TestSupport.expectEqual(separator.text, "abcdefghijkl")
+        separator.document.host.maxLength = nil
+        separator.document.host.hostDelete(0 ..< 1)
+        separator.document.host.refreshContext()
+        separator.tap("teh")
+        separator.press(.space)
+        TestSupport.expectEqual(separator.text, "bcdefghijklteh ")
+        TestSupport.expectEqual(separator.corrector.calls.count, 0)
     }
 
     private static func testLayoutChangeDropsTheRecordedPoints() {

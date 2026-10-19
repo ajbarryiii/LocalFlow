@@ -596,8 +596,12 @@ final class KeyboardEditor {
                    context: (reading: String, before: String, after: String))?
         typeInParts(field: field, now: now, recordEachDeletion: true) { [self] before in
             let text = before ?? ""
-            // Not over a selection, which the first deletion would remove instead.
-            let setup = document.hasSelection ? nil : autocorrect()
+            // Owned AND shown by the host: the proxy must show exactly the word after its separator (a host may
+            // have rejected characters, or not show our edits yet). A veto only: the deletions still come from
+            // the record. Not over a selection either, which the first deletion would remove instead.
+            let shown = wordTaps.isShown(before: document.contextBefore)
+            if !shown { wordTaps.clear() }
+            let setup = document.hasSelection || !shown ? nil : autocorrect()
             guard let correction = WordAutocorrect.correction(before: text, record: wordTaps, reverted: revertedWords,
                                                               setup: setup, checked: { onAutocorrectEvent?(.checked) })
             else {

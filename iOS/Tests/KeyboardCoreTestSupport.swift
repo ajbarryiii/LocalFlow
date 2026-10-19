@@ -191,13 +191,22 @@ struct FakeTextHost {
     }
 
     /// Inserts at the caret, replacing any selection.
+    /// The field holds at most this many characters (HTML `maxlength`, a native length limit): an insertion
+    /// keeps only the characters that fit, and the rest never reach the field. Nil: no limit.
+    var maxLength: Int?
+
     mutating func insertText(_ inserted: String) {
         applyQueuedAdjustments()
         edited()
         provisional = nil
         forgetShownCarets()
-        units.replaceSubrange(caret ..< caret + selectionLength, with: Array(inserted.utf16))
-        caret += inserted.utf16.count
+        var accepted = inserted
+        if let maxLength {
+            let room = max(maxLength - (text.count - selectionLength), 0)
+            accepted = String(inserted.prefix(room))
+        }
+        units.replaceSubrange(caret ..< caret + selectionLength, with: Array(accepted.utf16))
+        caret += accepted.utf16.count
         selectionLength = 0
     }
 

@@ -28,10 +28,13 @@ struct WordTapRecord: Equatable, Sendable {
 
     private(set) var entries: [Entry]
     private(set) var owned: Bool
+    /// The separator the owned word began right after; nil at a field's start (or when unowned).
+    private(set) var boundary: Character?
 
-    init(entries: [Entry] = [], owned: Bool = false) {
+    init(entries: [Entry] = [], owned: Bool = false, boundary: Character? = nil) {
         self.entries = entries
         self.owned = owned
+        self.boundary = owned ? boundary : nil
     }
 
     /// The apostrophes a word may hold (`tap/words.py`).
@@ -44,16 +47,29 @@ struct WordTapRecord: Equatable, Sendable {
     /// The word's characters, as typed.
     var text: String { String(entries.map(\.character)) }
 
+    /// Whether `before` (the proxy's text before the caret) shows the owned word as the editor typed it: it ends
+    /// with exactly the word, right after the separator the word began after, or is exactly the word at a
+    /// field's start. False for an unowned record, a missing reading, or any difference (a lagging proxy, a
+    /// host that rejected characters).
+    func isShown(before: String?) -> Bool {
+        guard owned, let before else { return false }
+        guard let boundary else { return before == text }
+        return before.hasSuffix(String(boundary) + text)
+    }
+
     /// Unowned and empty.
     mutating func clear() {
         entries = []
         owned = false
+        boundary = nil
     }
 
-    /// Owned and empty: the start of a field the editor saw empty.
-    mutating func startOwned() {
+    /// Owned and empty, right after `boundary` (the separator the editor typed), or at the start of a field the
+    /// editor saw empty (nil).
+    mutating func startOwned(after boundary: Character? = nil) {
         entries = []
         owned = true
+        self.boundary = boundary
     }
 
     /// An edit the editor made: `deleted` characters before the caret removed, then `inserted` typed, by a tap
@@ -66,7 +82,7 @@ struct WordTapRecord: Equatable, Sendable {
         }
         for (index, character) in zip(inserted.indices, inserted) {
             guard Self.isWordCharacter(character) else {
-                startOwned()
+                startOwned(after: character)
                 continue
             }
             let last = inserted.index(after: index) == inserted.endIndex

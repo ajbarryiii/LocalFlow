@@ -1904,11 +1904,22 @@ hiding and showing.
 - **Deletion.** Delete within the word removes its last characters. Deleting
   past the word's start, or any other edit, leaves no word owned until the
   keyboard's next own separator.
+- **Owned AND shown by the host (final review, 2026-10-19).** Ownership is
+  necessary, not sufficient: a host may reject typed characters (HTML
+  `maxlength`, a native length limit), so the record can hold more than
+  reached the field. A correction also needs the proxy's current
+  `documentContextBeforeInput` to end with exactly the owned word. If the
+  word did not start at the field's start, the character before it must be
+  the separator the keyboard typed; at a field's start, the reading must be
+  exactly the word. A missing, lagging or different reading vetoes the
+  correction: the commit key types as usual and the word is disowned. This
+  check only ever blocks a correction, and never adds one. **A lagging proxy
+  means a missed correction, never a wrong one.**
 - **Replacement.** The correction deletes exactly the word's characters the
-  keyboard typed (and any apostrophes after them), so it never touches text
-  the keyboard did not type, wherever the host has the caret. This makes
-  proxy lag, abandoned trackpad probes, stale readings after reappearing and
-  early host reports irrelevant to it.
+  keyboard typed (and any apostrophes after them), counted from the record,
+  so it never touches text the keyboard did not type, wherever the host has
+  the caret. Abandoned trackpad probes, stale readings after reappearing and
+  early host reports cannot make it delete anything else.
 - **Points.** A tap is recorded with the key it typed, after soft key edges
   decided it, so autocorrect needs the touch-down point whether or not soft
   key edges are on: with autocorrect on, letter taps carry their point
