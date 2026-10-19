@@ -1,9 +1,10 @@
 import Foundation
 
 /// Where an adjustment the keyboard issued should leave the caret, as the text right around it:
-/// the outcome a host callback must show to count as the keyboard's own (ARCHITECTURE.md, "Undo
-/// ownership v2": consumable expectations, never time windows). Held only while the adjustment is
-/// pending, in memory.
+/// the outcome a host callback must show to count as the keyboard's own (ARCHITECTURE.md, "Trackpad:
+/// units, probes and attribution": consumable expectations). Time never makes a callback the
+/// keyboard's own, but an expectation not reported within `syncTimeout` is retired
+/// (`TrackpadSession`). Held only while the adjustment is pending, in memory.
 struct CaretExpectation: Equatable, Sendable {
     /// Code units expected right before the caret, nearest last; nil when nothing is known.
     var before: [UInt16]?
