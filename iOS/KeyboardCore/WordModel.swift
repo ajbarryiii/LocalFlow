@@ -87,7 +87,8 @@ final class NGramWordModel: WordModel {
              Data(raw[40 ..< 72]))
         }
         let order = header[0], bits = header[1], ids = header[2]
-        guard order >= 1, bits >= 1, order * bits <= 63, header[3] == 0, ids <= 1 << bits else {
+        // Each factor bounded before the product, so a huge header cannot overflow.
+        guard (1 ... 63).contains(order), (1 ... 63).contains(bits), order * bits <= 63, header[3] == 0, ids <= 1 << bits else {
             throw WordFileError.unsupportedShape
         }
         guard hash == lexicon.hash, ids == lexicon.formCount + 4 else { throw WordFileError.lexiconMismatch }

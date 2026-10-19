@@ -389,10 +389,13 @@ final class WordLexicon: @unchecked Sendable {
             }
             var keys = 0
             for node in 0 ..< nodes {
-                let edges = u32(offsets.nodeEdges, node) ..< u32(offsets.nodeEdges, node + 1)
-                let list = u32(offsets.nodeForms, node) ..< u32(offsets.nodeForms, node + 1)
-                guard edges.lowerBound <= edges.upperBound, edges.upperBound <= nodes - 1,
-                      list.lowerBound <= list.upperBound, list.upperBound <= forms else { throw WordFileError.invalidStructure }
+                // The integers first: a range of decreasing bounds would trap.
+                let edgeStart = u32(offsets.nodeEdges, node), edgeEnd = u32(offsets.nodeEdges, node + 1)
+                let listStart = u32(offsets.nodeForms, node), listEnd = u32(offsets.nodeForms, node + 1)
+                guard edgeStart <= edgeEnd, edgeEnd <= nodes - 1, listStart <= listEnd, listEnd <= forms else {
+                    throw WordFileError.invalidStructure
+                }
+                let edges = edgeStart ..< edgeEnd, list = listStart ..< listEnd
                 // Breadth first: a node's children come after it, and a node without forms has a child.
                 guard edges.isEmpty || edges.lowerBound >= node, !(edges.isEmpty && list.isEmpty && node > 0) else {
                     throw WordFileError.invalidStructure

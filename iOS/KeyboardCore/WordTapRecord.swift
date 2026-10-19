@@ -42,6 +42,12 @@ struct WordTapRecord: Equatable, Sendable {
         entries = []
     }
 
+    /// The keys moved (a resize or rotation): the points no longer say which key a tap was near. The characters
+    /// stay; every point becomes none.
+    mutating func forgetPoints() {
+        for index in entries.indices { entries[index].point = nil }
+    }
+
     /// An edit the editor made: `deleted` characters before the caret removed, then `inserted` typed, by a tap
     /// at `point` (nil for none) or by a swipe.
     mutating func edited(deleted: Int, inserted: String, point: TapPoint? = nil, swiped: Bool = false) {

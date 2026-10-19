@@ -36,12 +36,17 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// A letter tap decided at touch-down, typed now (only while `softTapsEnabled`): the decided key, the
     /// touch-down point and the field, for autocorrect to record (ARCHITECTURE.md, "Word autocorrect").
     func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
+    /// The letters layer's geometry changed (a resize, a rotation or the globe key shown or hidden), not merely
+    /// the layer shown: touch-down points recorded before no longer match the keys.
+    func keyAreaChangedLetterGeometry(_ keyArea: KeyAreaView)
     /// A typing event happened (only while `countsEvents`; ARCHITECTURE.md, "Dropped taps: reach, skids and
     /// counters"), in these regions of the keys. TestFlight only.
     func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region])
 }
 
 extension KeyAreaViewDelegate {
+    func keyAreaChangedLetterGeometry(_ keyArea: KeyAreaView) {}
+
     func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction? {
         nil
     }
@@ -116,6 +121,9 @@ final class KeyAreaView: UIView {
     private var model = KeyTouchModel()
     private var keyViews: [KeyCapView] = []
     private var builtSize = CGSize.zero
+    /// The size and globe the letters layer was last laid out for (any layer's rebuild lays out the same
+    /// letters for them), to tell the delegate when that geometry changes.
+    private var letterGeometry: (size: CGSize, showsGlobe: Bool)?
     private let globeButton = GlobeButton(type: .system)
     private let callout = KeyCalloutView()
     private var keyHaptics: UIImpactFeedbackGenerator?
@@ -194,6 +202,10 @@ final class KeyAreaView: UIView {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let metrics = KeyboardMetrics(width: Double(bounds.width), height: Double(bounds.height))
         let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
+        if let previous = letterGeometry, previous.size != bounds.size || previous.showsGlobe != showsGlobe {
+            delegate?.keyAreaChangedLetterGeometry(self)
+        }
+        letterGeometry = (bounds.size, showsGlobe)
         // Held fingers follow the new keys before anything is drawn or typed from them.
         let effects = model.keysChanged(keys, layer: keyLayer)
         while keyViews.count < keys.count {

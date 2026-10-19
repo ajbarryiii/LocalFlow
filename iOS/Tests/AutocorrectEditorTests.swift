@@ -26,6 +26,9 @@ enum AutocorrectEditorTests {
             ("deleteRemovesTheLastTap", testDeleteRemovesTheLastTap),
             ("outsideEditsCaretMovesAndFieldsClearTheRecord", testOutsideEditsCaretMovesAndFieldsClearTheRecord),
             ("correctionIsOneOwnEditBeforeTheKey", testCorrectionIsOneOwnEditBeforeTheKey),
+            ("unverifiedCaretContextIsNotCorrected", testUnverifiedCaretContextIsNotCorrected),
+            ("proxyThatHasNotShownTheWordIsNotCorrected", testProxyThatHasNotShownTheWordIsNotCorrected),
+            ("layoutChangeDropsTheRecordedPoints", testLayoutChangeDropsTheRecordedPoints),
             ("deleteRightAfterRevertsAndRemembers", testDeleteRightAfterRevertsAndRemembers),
             ("heldDeleteRevertsThenRepeatsAsUsual", testHeldDeleteRevertsThenRepeatsAsUsual),
             ("revertRestoresTheTypedWordsTaps", testRevertRestoresTheTypedWordsTaps),
@@ -368,6 +371,72 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(lagging.text, "the world ")
     }
 
+    private static func testUnverifiedCaretContextIsNotCorrected() {
+        // Code review (2026-10-19, P1): a commit key that ends a trackpad probe whose outcome is unknown reads the
+        // proxy's text from before the probe landed. The host's caret may be elsewhere (here inside the emoji), so
+        // deleting the word from there would delete other text. The key types without a correction.
+        let original = "teh\u{1F44D}\u{1F3FD}"
+        let harness = KeyboardHarness(FakeTextHost(text: original, caret: 3, unit: .utf16, lagFrames: 3, callbackFrames: 3))
+        let corrector = FakeCorrector(["teh": "the"])
+        harness.editor.autocorrect = {
+            AutocorrectSetup(corrector: corrector, keys: AutocorrectRig.keys, params: .standard, secureTextEntry: false)
+        }
+        harness.gesture(dx: 10, events: 1)
+        TestSupport.expect(harness.trackpad.session?.hasOutstandingProbe == true, "no probe out")
+        harness.press(.space)
+        harness.settle()
+        TestSupport.expectEqual(corrector.calls.count, 0)
+        // Only the space went in (where the host had the caret; scalars, as a space can join the skin-tone modifier).
+        TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != " " })),
+                                original)
+        TestSupport.expectEqual(harness.document.text.unicodeScalars.filter { $0 == " " }.count, 1)
+        // Once the proxy has shown where the caret is, the next word is corrected again.
+        harness.press(.character("t"))
+        harness.press(.character("e"))
+        harness.press(.character("h"))
+        harness.settle()
+        harness.press(.space)
+        TestSupport.expectEqual(corrector.calls.count, 1)
+        TestSupport.expect(harness.document.text.hasPrefix("teh\u{1F44D} the"), "\(harness.document.text)")
+    }
+
+    private static func testProxyThatHasNotShownTheWordIsNotCorrected() {
+        // A proxy that lags our own edits does not show the word yet: its text before the caret is not verified,
+        // so the word is committed as typed.
+        let rig = AutocorrectRig("so ", corrections: ["teh": "the"])
+        rig.document.host.editContextLagFrames = 3
+        rig.tap("teh")
+        TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so teh ")
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        // Once it shows the word, the word is corrected.
+        rig.tap("teh")
+        for _ in 0 ..< 4 { rig.document.host.advanceFrame() }
+        TestSupport.expect(!rig.document.host.isContextStale, "the proxy never caught up")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so teh the ")
+    }
+
+    private static func testLayoutChangeDropsTheRecordedPoints() {
+        // Code review (2026-10-19, P2): points recorded in one layout mean nothing in another (a resize or a
+        // rotation). A layout change keeps the word's characters and drops their points; later taps have theirs.
+        var record = WordTapRecord()
+        record.edited(deleted: 0, inserted: "a", point: p(1))
+        record.edited(deleted: 0, inserted: "b", swiped: true)
+        record.forgetPoints()
+        TestSupport.expectEqual(record.entries, [WordTapRecord.Entry(character: "a", point: nil, swiped: false),
+                                                 WordTapRecord.Entry(character: "b", point: nil, swiped: true)])
+        let rig = AutocorrectRig("", corrections: [:])
+        rig.tap("hel", from: 0)
+        rig.editor.layoutChanged()
+        rig.tap("lo", from: 50)
+        rig.press(.space)
+        TestSupport.expectEqual(rig.corrector.calls[0].word, "hello")
+        TestSupport.expectEqual(rig.corrector.calls[0].points.map { $0.map { TapPoint(x: $0.x, y: $0.y) } },
+                                [nil, nil, nil, p(50), p(51)])
+    }
+
     // MARK: Revert
 
     private static func testDeleteRightAfterRevertsAndRemembers() {
@@ -581,7 +650,7 @@ final class FakeCorrector: WordCorrecting {
 
 /// The editor with autocorrect on (unless `enabled` is false) and a fake corrector, in a fake field. Taps type
 /// letters with invented points: consecutive x from `from`.
-private final class AutocorrectRig {
+final class AutocorrectRig {
     static let keys = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 402, height: KeyboardMetrics.regularHeight),
                                           showsGlobe: false)
 

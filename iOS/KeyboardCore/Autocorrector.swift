@@ -62,7 +62,7 @@ final class Autocorrector: WordCorrecting {
             lowest = constants.thresholdKnown
         }
         guard lowest != .infinity else { return word }
-        let limit = Self.limit(n, p)
+        let limit = limit(n, p)
         guard limit >= 0 else { return word }
         let candidates = lexicon.keys(within: limit, of: typed.codes)
         guard !candidates.isEmpty, let layout = layout(for: keys) else { return word }
@@ -125,7 +125,7 @@ final class Autocorrector: WordCorrecting {
     /// a key with characters other than a–z.
     func candidates(key: String, params: AutocorrectParams) -> [String] {
         guard let typed = Typed(key), typed.key == key else { return [] }
-        let limit = Self.limit(typed.codes.count, params)
+        let limit = limit(typed.codes.count, params)
         guard limit >= 0 else { return [] }
         return lexicon.keys(within: limit, of: typed.codes).map { candidate in
             String(decoding: candidate.codes.map { UInt8(ascii: "a") + UInt8($0) }, as: UTF8.self)
@@ -168,8 +168,11 @@ final class Autocorrector: WordCorrecting {
         (UInt8(ascii: "a") ... UInt8(ascii: "z")).contains(byte) || byte == apostrophe
     }
 
-    private static func limit(_ letters: Int, _ p: AutocorrectParams) -> Int {
-        letters <= p.shortLength ? p.maxEditsShort : p.maxEdits
+    /// The edit limit for a typed key of `letters` letters, at most letters + the longest key: no alignment
+    /// uses more edits (each typed letter inserted, each candidate letter omitted), so a larger limit is the
+    /// same limit, and bounding it keeps the buffers and their sizes finite.
+    private func limit(_ letters: Int, _ p: AutocorrectParams) -> Int {
+        min(letters <= p.shortLength ? p.maxEditsShort : p.maxEdits, letters + lexicon.longestKey)
     }
 
     /// Whether (score, frequency, form) ranks before the other: higher score, then higher frequency, then the
@@ -214,17 +217,22 @@ final class Autocorrector: WordCorrecting {
         let thresholdKnown: Double
         let thresholdApostrophe: Double
 
+        /// Nil for parameters the reference rejects, except insertion weights summing to more than 1 by at most
+        /// `AutocorrectManifest.weightSumTolerance` (rounding, which the manifest and the settings accept):
+        /// those are scaled to sum to 1, leaving no uniform share. The reference has no tolerance.
         init?(_ p: AutocorrectParams) {
-            guard p.wRepeat >= 0, p.wSlip >= 0, p.wRepeat + p.wSlip <= 1 else { return nil }
+            let sum = p.wRepeat + p.wSlip
+            guard p.wRepeat >= 0, p.wSlip >= 0, sum <= 1 + AutocorrectManifest.weightSumTolerance else { return nil }
+            let (wRepeat, wSlip, stray) = sum > 1 ? (p.wRepeat / sum, p.wSlip / sum, 0.0) : (p.wRepeat, p.wSlip, 1 - p.wRepeat - p.wSlip)
             let keep = 1 - p.pOmit - p.pInsert - p.pTranspose
             guard keep > 0, keep.isFinite, p.lmWeight.isFinite, !p.logOOV.isNaN else { return nil }
             match = log(keep)
             omit = Self.log0(p.pOmit)
             insert = Self.log0(p.pInsert)
             transpose = Self.log0(p.pTranspose)
-            logRepeat = Self.log0(p.wRepeat)
-            logSlip = Self.log0(p.wSlip)
-            logStrayWeight = Self.log0(1 - p.wRepeat - p.wSlip)
+            logRepeat = Self.log0(wRepeat)
+            logSlip = Self.log0(wSlip)
+            logStrayWeight = Self.log0(stray)
             thresholdOOV = Self.log0(p.marginOOV)
             thresholdKnown = Self.log0(p.marginKnown)
             thresholdApostrophe = Self.log0(p.marginApostrophe)

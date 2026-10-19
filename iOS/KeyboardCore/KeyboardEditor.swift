@@ -578,8 +578,9 @@ final class KeyboardEditor {
                    context: (reading: String, before: String, after: String))?
         type(field: field, now: now, recordEachDeletion: true) { [self] before in
             let text = before ?? ""
-            // Not over a selection, which the first deletion would remove instead.
-            let setup = document.hasSelection ? nil : autocorrect()
+            // Not over a selection, which the first deletion would remove instead, nor where the text before the
+            // caret is uncertain: the deletions would run wherever the host really has the caret.
+            let setup = document.hasSelection || !runIsVerified(before: text) ? nil : autocorrect()
             guard let correction = WordAutocorrect.correction(before: text, record: wordTaps, reverted: revertedWords,
                                                               setup: setup, checked: { onAutocorrectEvent?(.checked) })
             else { return resolve(action, before: before, at: timestamp) }
@@ -594,6 +595,18 @@ final class KeyboardEditor {
         guard let made else { return }
         pendingRevert = (anchor(made.inserted, made.context), made.correction)
         onAutocorrectEvent?(.corrected)
+    }
+
+    /// Whether the run of letters and apostrophes before the caret (as `before`, the editor's text, has it) is
+    /// verified: the proxy itself shows that same run now, and its reading is not one a key left unverified by
+    /// ending a gesture whose last adjustment's outcome is unknown (an abandoned probe or jump). A proxy that
+    /// has not shown our edits yet, or shows a landing the trackpad only predicted, does not verify it.
+    private func runIsVerified(before: String) -> Bool {
+        guard !trackpad.isActive else { return false }
+        let proxy = document.contextBefore
+        if case .some(let reading) = untrustedReading, reading == proxy { return false }
+        guard let run = WordAutocorrect.word(before: before)?.run else { return true }
+        return WordAutocorrect.word(before: proxy ?? "")?.run == run
     }
 
     /// A Delete right after an autocorrection, while the field still ends with it and nothing else has edited
@@ -614,6 +627,12 @@ final class KeyboardEditor {
         revertedWords.insert(pending.correction.word)
         onAutocorrectEvent?(.reverted)
         return true
+    }
+
+    /// The letters layer was laid out anew (a resize or rotation): the current word's recorded points belong to
+    /// the old geometry, so they become none; its characters stay.
+    func layoutChanged() {
+        wordTaps.forgetPoints()
     }
 
     /// The caret moved, the field changed or something else edited it: the word's taps and a pending revert

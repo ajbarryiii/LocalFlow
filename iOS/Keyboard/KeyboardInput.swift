@@ -574,6 +574,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.insertSwipe(candidates, field: field, now: now)
     }
 
+    /// Points recorded for autocorrect belong to the old keys (ARCHITECTURE.md, "Word autocorrect").
+    func keyAreaChangedLetterGeometry(_ keyArea: KeyAreaView) {
+        editor.layoutChanged()
+    }
+
     func keyArea(_ keyArea: KeyAreaView, counted event: TypingCounters.Event, in regions: [TypingCounters.Region]) {
         count(event, in: regions)
     }

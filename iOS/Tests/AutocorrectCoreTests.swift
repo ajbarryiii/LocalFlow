@@ -28,6 +28,8 @@ enum AutocorrectCoreTests {
             ("tiesGoToTheHigherFrequencyThenTheFirstForm", testTiesGoToTheHigherFrequencyThenTheFirstForm),
             ("invalidInputsKeepTheWord", testInvalidInputsKeepTheWord),
             ("correctionsAreDeterministic", testCorrectionsAreDeterministic),
+            ("insertionWeightsWithinRoundingAreNormalized", testInsertionWeightsWithinRoundingAreNormalized),
+            ("hugeEditLimitsAreTheirUsefulMaximum", testHugeEditLimitsAreTheirUsefulMaximum),
             ("lexiconMatchesTheReference", testLexiconMatchesTheReference),
             ("candidatesMatchTheReference", testCandidatesMatchTheReference),
             ("logProbsMatchTheReference", testLogProbsMatchTheReference),
@@ -36,6 +38,8 @@ enum AutocorrectCoreTests {
             ("forgetContextDropsCachedContexts", testForgetContextDropsCachedContexts),
             ("correctionsMatchTheReference", testCorrectionsMatchTheReference),
             ("lexiconFileIsValidated", testLexiconFileIsValidated),
+            ("lexiconWithDescendingOffsetsThrows", testLexiconWithDescendingOffsetsThrows),
+            ("modelHeadersWithHugeSizesThrow", testModelHeadersWithHugeSizesThrow),
             ("ngramFileIsValidated", testNGramFileIsValidated),
             ("lstmFileIsValidated", testLSTMFileIsValidated),
             ("benchmark", testBenchmark),
@@ -462,6 +466,33 @@ enum AutocorrectCoreTests {
         TestSupport.expectEqual(correct(corrector, "", "helo", nil, params { $0.marginOOV = .infinity }), "helo")
     }
 
+    private static func testInsertionWeightsWithinRoundingAreNormalized() {
+        // The manifest and the settings accept wRepeat + wSlip up to 1 + 1e-9 (rounding): such weights are
+        // scaled to sum to 1 (no uniform share), not rejected; a larger sum still keeps every word.
+        let corrector = make([("hello", 200)], ["hello": 0.5], unknown: 0.01)
+        let over = params { $0.wRepeat = 0.7; $0.wSlip = 0.300000000001 }
+        let sum = over.wRepeat + over.wSlip
+        let scaled = params { $0.wRepeat = over.wRepeat / sum; $0.wSlip = over.wSlip / sum }
+        for word in ["heello", "herllo", "helo"] {
+            TestSupport.expectEqual(correct(corrector, "", word, nil, over), "hello")
+            TestSupport.expectEqual(correct(corrector, "", word, nil, over), correct(corrector, "", word, nil, scaled))
+        }
+        TestSupport.expectEqual(correct(corrector, "", "heello", nil, params { $0.wRepeat = 0.7; $0.wSlip = 0.3 + 1e-6 }), "heello")
+    }
+
+    private static func testHugeEditLimitsAreTheirUsefulMaximum() {
+        // No alignment uses more edits than typed letters plus candidate letters, so any larger limit is that
+        // limit: Int.max neither traps nor changes a result.
+        let corrector = make([("hello", 200), ("help", 180), ("the", 250)], ["hello": 0.5, "help": 0.2, "the": 0.3])
+        for word in ["helo", "hlelo", "teh", "zz"] {
+            let huge = params { $0.maxEdits = .max; $0.maxEditsShort = .max }
+            let large = params { $0.maxEdits = 40; $0.maxEditsShort = 40 }
+            TestSupport.expectEqual(correct(corrector, "", word, nil, huge), correct(corrector, "", word, nil, large))
+            TestSupport.expectEqual(corrector.candidates(key: Autocorrector.key(of: word), params: huge),
+                                    corrector.candidates(key: Autocorrector.key(of: word), params: large))
+        }
+    }
+
     private static func testCorrectionsAreDeterministic() {
         var random = SplitMix64(seed: 3)
         let entries = [("hello", 200), ("help", 180), ("held", 150), ("the", 250), ("then", 200), ("there", 200)]
@@ -699,6 +730,45 @@ enum AutocorrectCoreTests {
         TestSupport.expectEqual(error(patched(valid, at: letters, [UInt8(ascii: "z")])), .invalidStructure)
         let formList = letters + padded(m - 1) + padded(4 * (m - 1)) + padded(4 * (m + 1))
         TestSupport.expectEqual(error(patched(valid, at: formList, [1, 0, 0, 0])), .invalidStructure)
+    }
+
+    private static func testLexiconWithDescendingOffsetsThrows() {
+        // node_edges and node_forms that start and end right but decrease in between: a bad file throws, it
+        // never traps. Lexicon "ab", "ac": nodes "", "a", "ab", "ac"; node_edges [0, 1, 3, 3, 3], node_forms
+        // [0, 0, 0, 1, 2].
+        let valid = AutocorrectTestFiles.lexicon([("ab", 10), ("ac", 20)])
+        func error(_ data: Data) -> WordFileError? { Self.error { _ = try WordLexicon(data: data) } }
+        TestSupport.expectEqual(error(valid), nil)
+        let text = 80 + 16 + 8 + 8  // form_offsets (3 u32), form_freqs (2), text (4), each padded to 8
+        let nodeEdges = text, nodeForms = nodeEdges + 24 + 8 + 16  // node_edges (5 u32), letters (3), children (3 u32)
+        func u32s(_ values: [UInt32]) -> [UInt8] { values.flatMap { withUnsafeBytes(of: $0.littleEndian) { Array($0) } } }
+        TestSupport.expectEqual(Array(valid[nodeEdges ..< nodeEdges + 20]), u32s([0, 1, 3, 3, 3]))
+        TestSupport.expectEqual(Array(valid[nodeForms ..< nodeForms + 20]), u32s([0, 0, 0, 1, 2]))
+        TestSupport.expectEqual(error(patched(valid, at: nodeEdges, u32s([0, 3, 1, 3, 3]))), .invalidStructure)
+        TestSupport.expectEqual(error(patched(valid, at: nodeForms, u32s([0, 0, 2, 1, 2]))), .invalidStructure)
+        TestSupport.expectEqual(error(patched(valid, at: nodeForms, u32s([0, 0, 0, 3, 2]))), .invalidStructure)
+        // A form offset past the text, and offsets decreasing.
+        TestSupport.expectEqual(error(patched(valid, at: 80, u32s([0, 9, 4]))), .invalidStructure)
+        TestSupport.expectEqual(error(patched(valid, at: 80, u32s([0, 3, 4]) + u32s([2]))), .invalidStructure)
+    }
+
+    private static func testModelHeadersWithHugeSizesThrow() {
+        // Header sizes whose products overflow throw rather than trap.
+        let ngram = AutocorrectFixtures.data(AutocorrectFixtures.ngramBase64)
+        let lstm = AutocorrectFixtures.data(AutocorrectFixtures.lstmBase64)
+        let huge: [UInt8] = [0xFF, 0xFF, 0xFF, 0xFF]
+        TestSupport.expectEqual(error { _ = try NGramWordModel(data: patched(patched(ngram, at: 8, huge), at: 12, huge), lexicon: fixtureLexicon) },
+                                .unsupportedShape)
+        TestSupport.expectEqual(error { _ = try NGramWordModel(data: patched(ngram, at: 8, huge), lexicon: fixtureLexicon) }, .unsupportedShape)
+        TestSupport.expectEqual(error { _ = try NGramWordModel(data: patched(ngram, at: 12, huge), lexicon: fixtureLexicon) }, .unsupportedShape)
+        TestSupport.expectEqual(error { _ = try NGramWordModel(data: patched(ngram, at: 72, huge + huge), lexicon: fixtureLexicon) },
+                                .unsupportedShape)
+        TestSupport.expectEqual(error { _ = try LSTMWordModel(data: patched(lstm, at: 8, huge), lexicon: fixtureLexicon) }, .unsupportedShape)
+        TestSupport.expectEqual(error { _ = try LSTMWordModel(data: patched(lstm, at: 12, huge), lexicon: fixtureLexicon) }, .unsupportedShape)
+        let lexicon = AutocorrectFixtures.data(AutocorrectFixtures.lexiconBase64)
+        for offset in [8, 12, 20] {
+            TestSupport.expect(error { _ = try WordLexicon(data: patched(lexicon, at: offset, huge)) } != nil, "lexicon header \(offset)")
+        }
     }
 
     private static func testNGramFileIsValidated() {

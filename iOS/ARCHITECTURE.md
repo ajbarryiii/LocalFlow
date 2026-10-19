@@ -1996,6 +1996,20 @@ left open:
   points none, and the word is still checked, as "Taps" says. The editor
   cannot account for the word only when text is selected (the commit key
   replaces the selection): then nothing is corrected.
+- **Only a verified word is replaced (code review, 2026-10-19).** The
+  replacement deletes the word from wherever the host has the caret, so the
+  word's whole run must be verified. That means the proxy itself shows that
+  same run before the caret now, and its reading is not one a key left
+  unverified by ending a gesture whose last adjustment's outcome is unknown
+  (an abandoned probe or jump). Otherwise (that reading, a probe still
+  unresolved, a proxy that has not shown our edits or the trackpad's
+  landing yet, or anything else that makes the text uncertain) the commit
+  key types without a correction.
+- **A layout change drops the points (code review, 2026-10-19).** When the
+  letters layer's geometry changes between taps and the commit key (a resize,
+  a rotation, the globe key shown or hidden), the record keeps its characters
+  and every recorded point becomes none. Points are never rebased. Taps after
+  the change record their points as usual.
 - **Apostrophes.** The record matches the whole run, outer apostrophes
   included. Trailing apostrophes stay after the replacement. A curly
   apostrophe reaches the corrector as "'".
