@@ -154,18 +154,32 @@ endif
 
 check: typecheck test validate
 
+# -warnings-as-errors does not promote every warning, and swiftc then exits 0.
+# Swift 6.4 leaves at least "conformance of 'X' to 'Sendable' is only available
+# in macOS N or newer" and "'M' was not imported by this file" as warnings:
+# they carry no diagnostic group, so neither -warnings-as-errors,
+# -Xfrontend -warnings-as-errors nor -Werror <group> can escalate them. Each
+# compile below keeps its diagnostics in a log, prints the log however swiftc
+# exits, and then fails if any warning is left.
+TYPECHECK_LOG = $(BUILD_DIR)/typecheck-diagnostics.log
+TEST_BUILD_LOG = $(BUILD_DIR)/test-build-diagnostics.log
+print_log_on_exit = trap 'cat "$(1)" >&2' EXIT;
+reject_warnings = if grep -Eq '(^|: )warning: ' "$(1)"; then echo "error: swiftc reported warnings (see above); every warning fails the check" >&2; exit 1; fi
+
 typecheck:
-	swiftc \
+	@mkdir -p "$(BUILD_DIR)"
+	$(call print_log_on_exit,$(TYPECHECK_LOG)) swiftc 2> "$(TYPECHECK_LOG)" \
 		-parse-as-library \
 		-typecheck \
 		-warnings-as-errors \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target $(ARCH)-apple-macosx13.0 \
 		$(SOURCES)
+	@$(call reject_warnings,$(TYPECHECK_LOG))
 
 test:
 	@mkdir -p "$(BUILD_DIR)"
-	swiftc \
+	$(call print_log_on_exit,$(TEST_BUILD_LOG)) swiftc 2> "$(TEST_BUILD_LOG)" \
 		-parse-as-library \
 		-warnings-as-errors \
 		-o "$(TEST_RUNNER)" \
@@ -173,6 +187,7 @@ test:
 		-target $(ARCH)-apple-macosx13.0 \
 		$(TEST_PRODUCTION_SOURCES) \
 		$(TEST_SOURCES)
+	@$(call reject_warnings,$(TEST_BUILD_LOG))
 	@$(TEST_RUNNER)
 	@python3 -m unittest discover -s Tests -p 'test_*.py'
 
