@@ -67,6 +67,8 @@ enum TrackpadSessionTests {
             ("guardWaitsForAWholeClusterBoundary", testGuardWaitsForAWholeClusterBoundary),
             ("guardRepairsOnlyFromALandedContext", testGuardRepairsOnlyFromALandedContext),
             ("edgeWatchRepairsOnlyFromALandedContext", testEdgeWatchRepairsOnlyFromALandedContext),
+            ("cancelledPairRepairIsFinished", testCancelledPairRepairIsFinished),
+            ("hidingFinishesAPairRepair", testHidingFinishesAPairRepair),
             ("contextBehindTheCaretIsNoNewSnapshot", testContextBehindTheCaretIsNoNewSnapshot),
             ("staleExpectationsAreRetired", testStaleExpectationsAreRetired),
             ("cancellingReleasesTheLaidOutText", testCancellingReleasesTheLaidOutText),
@@ -1323,6 +1325,74 @@ extension TrackpadSessionTests {
         for _ in 0 ..< 10 { field.advanceFrame() }
         TestSupport.expect(field.caretIsOnBoundary, "left inside the emoji at \(field.caret)")
         TestSupport.expectEqual(field.caret, 4)
+    }
+
+    fileprivate static func testCancelledPairRepairIsFinished() {
+        // A jump past the snapshot's end (+3) stops between the halves of 👍 in a hidden 👍🏽; the repair
+        // toward the travel (+1) lands between 👍 and 🏽, still inside the cluster. A cancellation while
+        // that repair is out (landed but not reported, still lagging, or on a host that never reports)
+        // watches it and finishes it to the cluster's edge in its direction: the caret never stays inside.
+        for (lag, callbacks) in [(0, 1), (3, 1), (0, nil), (3, 4)] as [(Int, Int?)] {
+            let label = "lag \(lag) callbacks \(callbacks.map(String.init) ?? "none")"
+            var host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16, window: 2,
+                                    lagFrames: lag, callbackFrames: callbacks)
+            var session = makeSession(host)
+            session.drag(dx: 0, dy: 20)
+            var time = 1.0
+            while host.adjustmentCount < 2, time < 2 {
+                runFrame(&session, host: &host, at: time)
+                time += 1.0 / 120
+            }
+            // The jump, then the repair out of the pair's middle.
+            TestSupport.expectEqual(host.adjustmentCount, 2)
+            TestSupport.expectEqual(host.caretOnceAdjusted, 4)
+            TestSupport.expectEqual(session.cancel(at: time), nil)
+            for _ in 0 ..< 240 where !session.isFinished(at: time) {
+                runFrame(&session, host: &host, at: time)
+                time += 1.0 / 120
+            }
+            for _ in 0 ..< 10 { host.advanceFrame() }
+            TestSupport.expect(session.isFinished(at: time), "not finished: \(label)")
+            TestSupport.expect(host.caretIsOnBoundary, "left inside the cluster at \(host.caret): \(label)")
+            TestSupport.expectEqual(host.caret, 6)
+        }
+    }
+
+    fileprivate static func testHidingFinishesAPairRepair() {
+        // The same repair out when the keyboard hides: the text-free session stays until the repair is
+        // finished, whether or not the hidden keyboard still hears the host's reports.
+        for deliversReports in [true, false] {
+            let document = FakeDocument(FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16,
+                                                     window: 2))
+            let controller = TrackpadController(host: document)
+            controller.parameters = .flat
+            controller.begin(layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
+            controller.move(dx: 0, dy: 20, timestamp: 1)
+            var time = 1.0
+            var hidden = false
+            func frame() {
+                time += 1.0 / 120
+                document.host.advanceFrame()
+                while let report = document.host.takeCallback() {
+                    guard !hidden || deliversReports else { continue }
+                    TestSupport.expect(controller.acknowledge(before: report.before, after: report.after),
+                                       "a report not explained")
+                }
+                controller.tick(at: time)
+            }
+            controller.tick(at: time)
+            while document.host.adjustmentCount < 2, time < 2 { frame() }
+            TestSupport.expectEqual(document.host.adjustmentCount, 2)
+            TestSupport.expectEqual(document.host.caret, 4)
+            controller.hide(at: time)
+            hidden = true
+            for _ in 0 ..< 240 where controller.isActive { frame() }
+            for _ in 0 ..< 10 { document.host.advanceFrame() }
+            TestSupport.expect(!controller.isActive, "the hidden session never ended")
+            TestSupport.expect(document.host.caretIsOnBoundary,
+                               "left inside the cluster at \(document.host.caret), reports \(deliversReports)")
+            TestSupport.expectEqual(document.host.caret, 6)
+        }
     }
 
     fileprivate static func testContextBehindTheCaretIsNoNewSnapshot() {
