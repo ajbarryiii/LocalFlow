@@ -721,8 +721,12 @@ detection on iOS: entries are added by hand.
   recognized", "recognized at ×n" (the decode contains the word, and every
   difference from the unboosted transcript is a block whose new side is
   exactly the word and whose old side has at most two words more), or "not
-  recognized". Nothing changes until the user taps "Use ×n". A check that has
-  started may finish in the background. It runs through
+  recognized". The samples and the encoder output are released when the check
+  finishes (`probeStrength` returns); the sheet keeps only the result (the
+  outcome and the unboosted and boosted texts) until it closes. Leaving the
+  foreground discards a recording in progress, and closing the sheet cancels
+  any work still running. Nothing changes until the user taps "Use ×n". A
+  check that has started may finish in the background. It runs through
   `TranscriptionEngine.withReadyRuntime` and is not reported as a dictation.
 - **Privacy.** Entries are user content: never logged, never in a bug report
   and never in the App Group. Test recordings follow invariant 1, and the
