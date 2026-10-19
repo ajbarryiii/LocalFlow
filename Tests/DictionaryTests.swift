@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 /// Contract tests for the custom dictionary (DESIGN v2 §1 and §3, pins P1-P5).

@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! SentencePiece vocabulary and detokenization, matching NeMo 3.0's RNNT
 //! decoding: SentencePiece `DecodeIds`, then one whitespace character removed
 //! before each punctuation mark the vocabulary contains

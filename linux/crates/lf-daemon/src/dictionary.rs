@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The custom dictionary: `$XDG_DATA_HOME/localflow/dictionary.json`.
 //!
 //! ```text

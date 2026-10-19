@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! Custom-dictionary text rules that run around recognition (LocalFlow
 //! DESIGN §1.4-§1.6 with the pinned interpretations P1-P5):
 //!

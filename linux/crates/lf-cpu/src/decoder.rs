@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! Parakeet TDT prediction network, joint network and greedy decoding on the CPU.
 //!
 //! Per emitted token the prediction network runs two LSTM layers (H = 640)

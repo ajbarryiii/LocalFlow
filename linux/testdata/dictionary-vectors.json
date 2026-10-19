@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": [
-    "Shared word-boosting test vectors, version 1 (LocalFlow DESIGN.md section 1 plus DESIGN-pins.md P1-P5). All text is invented. Consumed by Rust (linux/crates) and Swift (Tests/DictionaryTests.swift).",
+    "Shared word-boosting test vectors, version 1 (docs/dictionary/DESIGN.md section 1 plus docs/dictionary/DESIGN-pins.md P1-P5). All text is invented. Consumed by Rust (linux/crates) and Swift (Tests/DictionaryTests.swift).",
     "Strings are Unicode scalar sequences. Non-ASCII scalars are written as JSON \\u escapes so combining marks stay visible. Compare strings scalar by scalar, never with canonical equivalence (Swift: compare unicodeScalars).",
     "constants: alpha, context_score and depth_scaling of section 1.2; blank is the blank row; verify_strengths are tried in this order (section 1.6).",
     "vocab: synthetic pieces in rank order; the array index is the token id and the merge rank (lower merges first). Index 0 is <unk>, which encoding never produces as a merge. Build a test tokenizer straight from this list.",

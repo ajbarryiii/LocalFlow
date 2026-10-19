@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 /// SentencePiece BPE encoding over Unicode scalars (DESIGN §1.3, pin P4).

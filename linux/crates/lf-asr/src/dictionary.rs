@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The custom dictionary's shared text rules, entry validation and the bias
 //! graph built from entries (LocalFlow DESIGN §1.0-§1.2).
 //!

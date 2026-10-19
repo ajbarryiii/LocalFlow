@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The dictation state machine, driven by control commands and worker events
 //! on a single thread:
 //!
