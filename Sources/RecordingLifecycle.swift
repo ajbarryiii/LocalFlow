@@ -182,7 +182,8 @@ struct RecordingAttempts {
 
 /// What the app does at a dictation's cleanup points. AppState conforms, and
 /// runs the step lists below exactly as written, so tests with a recording
-/// fake see the real sequence.
+/// fake see the real sequence. Main actor: every action touches app state.
+@MainActor
 protocol DictationCleanupActions: AnyObject {
     /// End the correction watch, any running verification and retained audio.
     func stopCorrectionSuggestions()
@@ -194,6 +195,7 @@ protocol DictationCleanupActions: AnyObject {
     func cancelDiscardedCapture()
 }
 
+@MainActor
 enum DictationCleanupSteps {
     /// A dictation shortcut press was accepted (its start may still be
     /// delayed): correction work ends, so no verification result can present
