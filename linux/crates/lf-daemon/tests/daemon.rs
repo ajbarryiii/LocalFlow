@@ -107,6 +107,9 @@ fn cancel_during_transcription_types_nothing() {
     rig.wait_for("model=ready");
     rig.cmd("toggle");
     assert_eq!(rig.cmd("toggle"), "state=transcribing model=ready");
+    // The cancel must find the job transcribing: one cancelled before the
+    // worker takes it is skipped without recognition.
+    wait_until("transcription to begin", || rec.state().started == 1);
     // The control loop stays responsive while the worker is busy.
     let t = Instant::now();
     assert_eq!(

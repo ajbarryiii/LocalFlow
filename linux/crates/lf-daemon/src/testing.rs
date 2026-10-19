@@ -354,6 +354,8 @@ impl TextOutput for DiscardOutput {
 pub struct RecognizerState {
     /// Returned for every call; `None` fails.
     pub text: Option<String>,
+    /// Transcriptions begun (counted before `delay`).
+    pub started: usize,
     pub calls: usize,
     /// Number of samples in each call.
     pub lengths: Vec<usize>,
@@ -392,7 +394,11 @@ impl Recognizer for FakeRecognizer {
         dictionary: &Snapshot,
         retain: bool,
     ) -> Result<Recognized, String> {
-        let delay = self.state().delay;
+        let delay = {
+            let mut s = self.state();
+            s.started += 1;
+            s.delay
+        };
         std::thread::sleep(delay);
         let mut s = self.state();
         s.calls += 1;
