@@ -180,6 +180,7 @@ validate:
 	plutil -lint Info.plist FreeFlow.entitlements
 	@set -e; for script in $(SHELL_SCRIPTS); do bash -n "$$script"; done
 	@ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file) }' $(YAML_FILES)
+	@python3 -I scripts/check-shared-vectors.py
 
 icon: $(ICON_ICNS)
 

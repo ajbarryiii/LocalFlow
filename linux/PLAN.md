@@ -437,13 +437,14 @@ checklist.
   `==` is canonical equivalence, and `trimmingCharacters` trims `White_Space`.
 - The ICU regex is hand-matched: leftmost match, full case folding for the
   literals ("preß enter" matches), `\s` = `White_Space`, `\p{P}`.
-- `linux/testdata/dictation-vectors.json` holds 164 vectors: every Swift
-  test case (11 `process` cases and all 86 delimiter cases, `origin: swift`)
-  and 67 additional edge cases (`origin: rust-edge`: case, punctuation,
-  whitespace, empty, NBSP, combining marks, final sigma, ß, İ, emoji, CJK).
-  The `rust-edge` values follow documented Swift/ICU behaviour but have not
-  run on macOS. **Follow-up:** have `Tests/LocalDictationTests.swift` consume
-  the file (needs macOS CI).
+- `linux/testdata/dictation-vectors.json` holds 173 vectors: Swift test
+  cases (11 `process` cases, all 86 delimiter cases and 7 `prompt_tag`
+  cases, `origin: swift`) and 69 additional edge cases (`origin: rust-edge`:
+  case, punctuation, whitespace, empty, NBSP, combining marks, final sigma,
+  ß, İ, emoji, CJK, prompt-tag trimming). The `rust-edge` values follow
+  documented Swift/ICU behaviour. `Tests/DictationVectorTests.swift` runs
+  every case on macOS (`make check`), and `lf-dictation/tests/vectors.rs`
+  runs them in Rust.
 
 **`lf-daemon`** (`localflowd`, `localflowctl`):
 - **Commands → shortcut events** (port of `DictationShortcutSessionController`,

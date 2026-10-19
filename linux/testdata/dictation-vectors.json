@@ -1,5 +1,5 @@
 {
-  "description": "Shared test vectors for LocalDictationCore (Swift, Sources/LocalDictationCore.swift) and lf-dictation (Rust). Every vector is synthetic. origin=swift: ported from Tests/LocalDictationTests.swift, verified on macOS. origin=rust-edge: additional edge cases whose expected values follow documented Swift and ICU semantics; they are verified in Rust only until the Swift tests consume this file. A process vector checks only the expected fields it lists. Options default to true; macros default to none.",
+  "description": "Shared test vectors for LocalDictationCore (Swift, Sources/LocalDictationCore.swift) and lf-dictation (Rust). Every vector is synthetic. origin=swift: ported from Tests/LocalDictationTests.swift and Tests/SpokenNumberTests.swift. origin=rust-edge: additional edge cases whose expected values follow documented Swift and ICU semantics. Tests/DictationVectorTests.swift (macOS) and linux/crates/lf-dictation/tests/vectors.rs (Rust) both run every case. A process vector checks only the expected fields it lists. Options default to true; macros default to none.",
   "version": 1,
   "process": [
     {"input": "  Please translate this into French.  ", "expected": {"output": "Please translate this into French.", "press_enter": false, "used_macro": false}, "origin": "swift"},
@@ -171,5 +171,18 @@
     {"input": "a \u0345all caps on\n\u0301b all caps off", "expected": "a \u0345\u0301B", "origin": "rust-edge"},
     {"input": "  quote hi end quote  ", "expected": "\"hi\"", "expected_disabled": "quote hi end quote", "origin": "rust-edge"},
     {"input": " \n\t", "expected": "", "expected_disabled": "", "origin": "rust-edge"}
+  ],
+  "prompt_tag_comment": "Hold to Prompt: process(input, prompt_tag) with the same case schema as `process`; `prompt_tag` defaults to none. Expected fields may also include `added_prompt_tag` and `status`. `status` is LocalDictationResult.status, the macOS pipeline-history label; lf-dictation has no status string, so the Rust suite checks every field except `status`.",
+  "prompt_tag": [
+    {"input": "  Rename the helper.  ", "prompt_tag": "  [dictated]  ", "expected": {"raw": "Rename the helper.", "output": "[dictated] Rename the helper.", "press_enter": false, "used_macro": false, "added_prompt_tag": true, "status": "Local transcription; added prompt tag"}, "origin": "swift"},
+    {"input": "Rename the helper.", "expected": {"output": "Rename the helper.", "added_prompt_tag": false, "status": "Local transcription"}, "origin": "swift"},
+    {"input": "Rename the helper.", "prompt_tag": "   ", "expected": {"output": "Rename the helper.", "added_prompt_tag": false, "status": "Local transcription"}, "origin": "swift"},
+    {"input": "Run quote make check end quote, press enter.", "prompt_tag": "[dictated]", "expected": {"raw": "Run quote make check end quote", "output": "[dictated] Run \"make check\"", "press_enter": true, "added_prompt_tag": true, "status": "Local transcription; added prompt tag; detected press enter command"}, "origin": "swift"},
+    {"input": "Press enter.", "prompt_tag": "[dictated]", "expected": {"raw": "", "output": "", "press_enter": true, "added_prompt_tag": false, "status": "Local transcription; detected press enter command"}, "origin": "swift"},
+    {"input": "Blue bird", "macros": [{"command": "Blue bird", "payload": "Synthetic saved prompt."}], "prompt_tag": "[dictated]", "expected": {"output": "Synthetic saved prompt.", "used_macro": true, "added_prompt_tag": false, "status": "Local voice macro"}, "origin": "swift"},
+    {"input": "Set quote twenty five percent end quote, press enter.", "prompt_tag": "[dictated]", "expected": {"output": "[dictated] Set \"25%\"", "press_enter": true, "added_prompt_tag": true}, "origin": "swift"},
+    {"input": "Synthetic words", "spoken_delimiters_enabled": false, "prompt_tag": "[dictated]", "expected": {"output": "[dictated] Synthetic words", "added_prompt_tag": true}, "origin": "rust-edge"},
+    {"input": "   ", "prompt_tag": "[dictated]", "expected": {"raw": "", "output": "", "press_enter": false, "added_prompt_tag": false}, "origin": "rust-edge"},
+    {"input": "Synthetic.", "prompt_tag": "\t[voice  note]\n", "expected": {"output": "[voice  note] Synthetic.", "added_prompt_tag": true}, "origin": "rust-edge"}
   ]
 }

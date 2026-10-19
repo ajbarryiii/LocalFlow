@@ -40,11 +40,14 @@ fn macros(v: &Value) -> Vec<VoiceMacro> {
         .unwrap_or_default()
 }
 
-#[test]
-fn process_vectors() {
+/// Runs a section with the `process` case schema; `prompt_tag` defaults to
+/// none.
+fn run_process_section(section: &str, min_cases: usize) {
     let v = vectors();
-    let cases = v["process"].as_array().expect("process array");
-    assert!(cases.len() >= 40);
+    let cases = v[section]
+        .as_array()
+        .unwrap_or_else(|| panic!("{section} array"));
+    assert!(cases.len() >= min_cases, "{section} vectors are incomplete");
     let mut failures = Vec::new();
     for (i, case) in cases.iter().enumerate() {
         let input = string(case, "input");
@@ -53,25 +56,46 @@ fn process_vectors() {
             spoken_delimiters: flag(case, "spoken_delimiters_enabled"),
             spoken_numbers: flag(case, "spoken_numbers_enabled"),
         };
-        let result = process(&input, &macros(case), options, None);
+        let tag = case
+            .get("prompt_tag")
+            .map(|t| t.as_str().expect("prompt_tag string"));
+        let result = process(&input, &macros(case), options, tag);
         let expected = case["expected"].as_object().expect("expected object");
-        assert!(!expected.is_empty(), "case {i} checks nothing");
+        assert!(!expected.is_empty(), "{section}[{i}] checks nothing");
         for (key, want) in expected {
             let ok = match key.as_str() {
                 "raw" => want.as_str() == Some(result.raw_transcript.as_str()),
                 "output" => want.as_str() == Some(result.output.as_str()),
                 "press_enter" => want.as_bool() == Some(result.should_press_enter),
                 "used_macro" => want.as_bool() == Some(result.used_macro),
-                other => panic!("case {i}: unknown expected field {other}"),
+                "added_prompt_tag" => want.as_bool() == Some(result.added_prompt_tag),
+                // `LocalDictationResult.status` is the macOS pipeline-history
+                // label; lf-dictation has no status string. The Swift suite
+                // checks it.
+                "status" => {
+                    assert!(want.is_string(), "{section}[{i}]: status must be a string");
+                    true
+                }
+                other => panic!("{section}[{i}]: unknown expected field {other}"),
             };
             if !ok {
                 failures.push(format!(
-                    "process[{i}] {input:?}: {key} expected {want}, got {result:?}"
+                    "{section}[{i}] {input:?}: {key} expected {want}, got {result:?}"
                 ));
             }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn process_vectors() {
+    run_process_section("process", 40);
+}
+
+#[test]
+fn prompt_tag_vectors() {
+    run_process_section("prompt_tag", 10);
 }
 
 #[test]

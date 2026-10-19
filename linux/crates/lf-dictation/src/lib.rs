@@ -4,9 +4,8 @@
 //!
 //! Dictated instructions are always text; nothing here interprets them beyond
 //! the fixed commands below. The behaviour is pinned by the shared vectors in
-//! `linux/testdata/dictation-vectors.json`. The prompt tag (Hold to Prompt)
-//! is not in those vectors, since the Swift on `main` lacks it; its unit
-//! tests port `runPromptTagTests` from the Swift branch that adds it.
+//! `linux/testdata/dictation-vectors.json`, which the Swift tests also run;
+//! its `prompt_tag` section pins the prompt tag (Hold to Prompt).
 
 pub mod correction;
 mod delimiters;
