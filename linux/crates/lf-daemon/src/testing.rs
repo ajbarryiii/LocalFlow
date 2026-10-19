@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use lf_asr::Projection;
@@ -31,6 +31,11 @@ pub struct CaptureState {
     pub fail_stop: bool,
     /// How long `start` blocks, like a device waking up.
     pub start_delay: Duration,
+    /// Holds `start` (before it does anything) until the gate opens; see
+    /// [`FakeCapture::gate_start`].
+    pub start_gate: Option<Gate>,
+    /// Likewise for `stop`.
+    pub stop_gate: Option<Gate>,
     /// Reported by `input_available`; change it with
     /// [`FakeCapture::set_input`].
     pub input: Option<bool>,
@@ -53,6 +58,70 @@ impl std::fmt::Debug for Notify {
     }
 }
 
+/// Holds [`FakeCapture`] calls until opened, so a test can act while one
+/// runs, like a device that takes its time. Clones share state.
+#[derive(Clone, Default)]
+pub struct Gate(Arc<(Mutex<GateState>, Condvar)>);
+
+#[derive(Default)]
+struct GateState {
+    entered: usize,
+    open: bool,
+}
+
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = lock(&self.0.0);
+        write!(f, "Gate(entered {}, open {})", s.entered, s.open)
+    }
+}
+
+impl Gate {
+    /// A held call gives up waiting after this long, so a failed test
+    /// cannot leave a thread blocked for ever.
+    const LIMIT: Duration = Duration::from_secs(30);
+
+    /// Waits until `calls` calls have reached the gate. Panics after 10 s.
+    pub fn wait_entered(&self, calls: usize) {
+        let (m, cv) = &*self.0;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut s = lock(m);
+        while s.entered < calls {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "{calls} calls never reached the gate");
+            s = cv
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Lets the held calls, and every later one, go on.
+    pub fn open(&self) {
+        let (m, cv) = &*self.0;
+        lock(m).open = true;
+        cv.notify_all();
+    }
+
+    fn pass(&self) {
+        let (m, cv) = &*self.0;
+        let deadline = Instant::now() + Self::LIMIT;
+        let mut s = lock(m);
+        s.entered += 1;
+        cv.notify_all();
+        while !s.open {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            s = cv
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+
 /// Returns preset samples. Clones share state.
 #[derive(Clone, Default)]
 pub struct FakeCapture(pub Arc<Mutex<CaptureState>>);
@@ -66,6 +135,20 @@ impl FakeCapture {
 
     pub fn state(&self) -> MutexGuard<'_, CaptureState> {
         lock(&self.0)
+    }
+
+    /// Holds every later `start` until the returned gate opens.
+    pub fn gate_start(&self) -> Gate {
+        let gate = Gate::default();
+        self.state().start_gate = Some(gate.clone());
+        gate
+    }
+
+    /// Holds every later `stop` until the returned gate opens.
+    pub fn gate_stop(&self) -> Gate {
+        let gate = Gate::default();
+        self.state().stop_gate = Some(gate.clone());
+        gate
     }
 
     /// Changes the reported microphone presence and notifies the watcher
@@ -97,7 +180,13 @@ impl AudioCapture for FakeCapture {
     }
 
     fn start(&mut self) -> Result<(), IoError> {
-        let delay = self.state().start_delay;
+        let (delay, gate) = {
+            let s = self.state();
+            (s.start_delay, s.start_gate.clone())
+        };
+        if let Some(gate) = gate {
+            gate.pass();
+        }
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
@@ -115,6 +204,10 @@ impl AudioCapture for FakeCapture {
     }
 
     fn stop(&mut self) -> Result<Vec<f32>, IoError> {
+        let gate = self.state().stop_gate.clone();
+        if let Some(gate) = gate {
+            gate.pass();
+        }
         let mut s = self.state();
         if !s.recording {
             return Err(IoError("not recording".into()));

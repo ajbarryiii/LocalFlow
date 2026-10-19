@@ -5,8 +5,12 @@
 //! - A lock file in the same directory (`flock`) allows one daemon per user.
 //! - Every connection's peer credentials (`SO_PEERCRED`) must show the same
 //!   uid as the daemon.
-//! - Connections are served one at a time, in accept order, so a press is
-//!   handled before the release that follows it. Each gets a short deadline.
+//! - Connections are read one at a time, in accept order, and each request
+//!   is handed to the control loop with its connection, so a press is
+//!   handled before the release that follows it. Each gets a short deadline
+//!   to send its request. The socket thread never waits for a reply: the
+//!   control loop answers through a [`Responder`], at once or, for a request
+//!   that waits for the microphone, once the capture call is done.
 //! - A `watch` connection is handed to the control loop once its request is
 //!   read and a watcher place is reserved (see `crate::watch`), so watchers
 //!   never hold up other commands; over the cap it is refused here.
@@ -30,8 +34,62 @@ use crate::watch::Admission;
 /// Time a client has to send its request line. Connections are served one at
 /// a time, so this bounds how long a stalled client delays the next command.
 pub const REQUEST_DEADLINE: Duration = Duration::from_millis(250);
-/// Time the control loop has to answer.
-pub const REPLY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Where a request's reply goes. Answering never blocks; a responder
+/// dropped unanswered answers `error unavailable` (the control loop
+/// stopped).
+pub struct Responder(Option<To>);
+
+enum To {
+    Channel(Sender<Reply>),
+    Client(UnixStream),
+}
+
+impl Responder {
+    /// Answers on the client's connection, then closes it.
+    pub fn client(stream: UnixStream) -> Responder {
+        Responder(Some(To::Client(stream)))
+    }
+
+    pub fn send(mut self, reply: Reply) {
+        if let Some(to) = self.0.take() {
+            deliver(to, &reply);
+        }
+    }
+}
+
+impl From<Sender<Reply>> for Responder {
+    fn from(tx: Sender<Reply>) -> Responder {
+        Responder(Some(To::Channel(tx)))
+    }
+}
+
+impl Drop for Responder {
+    fn drop(&mut self) {
+        if let Some(to) = self.0.take() {
+            deliver(to, &Reply::Error(ErrorCode::Unavailable));
+        }
+    }
+}
+
+/// A reply line (at most a few KiB) always fits a fresh connection's send
+/// buffer, so a client that is reading gets it in one write. One that has
+/// gone or does not take it loses it: the write never waits.
+fn deliver(to: To, reply: &Reply) {
+    if let Reply::Error(code) = reply {
+        crate::debug!("control request rejected: {}", code.name());
+    }
+    match to {
+        To::Channel(tx) => {
+            let _ = tx.send(reply.clone());
+        }
+        To::Client(stream) => {
+            if !crate::watch::send_now(&stream, reply.to_line().as_bytes()) {
+                crate::debug!("control reply dropped: the client is gone or not reading");
+            }
+        }
+    }
+}
 
 pub struct Server {
     listener: UnixListener,
@@ -204,7 +262,12 @@ fn handle(mut stream: UnixStream, events: &Sender<Event>, admission: &Arc<Admiss
                     }
                 }
             }
-            Ok(req) => (dispatch(req, events), false),
+            Ok(req) => {
+                // If the control loop has stopped, the responder comes back
+                // with the event and, dropped, answers `error unavailable`.
+                let _ = events.send(Event::Request(req, Responder::client(stream)));
+                return;
+            }
             Err(code) => (Reply::Error(code), false),
         },
         Err(code) => (Reply::Error(code), code != ErrorCode::Timeout),
@@ -227,15 +290,6 @@ fn handle(mut stream: UnixStream, events: &Sender<Event>, admission: &Arc<Admiss
             }
         }
     }
-}
-
-fn dispatch(req: crate::protocol::Request, events: &Sender<Event>) -> Reply {
-    let (tx, rx) = mpsc::channel();
-    if events.send(Event::Request(req, tx)).is_err() {
-        return Reply::Error(ErrorCode::Unavailable);
-    }
-    rx.recv_timeout(REPLY_DEADLINE)
-        .unwrap_or(Reply::Error(ErrorCode::Unavailable))
 }
 
 /// Reads one `\n`-terminated line of at most `MAX_TEXT_LINE` bytes (newline
