@@ -71,7 +71,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
             onAction: { [weak self] in self?.setMenu(visible: false) },
             onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) }))
-        bar.view.backgroundColor = .clear
+        bar.view.backgroundColor = KeyAreaView.touchableBackground
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false
         addChild(bar)
@@ -282,7 +282,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
                 client: client, chrome: chrome,
                 onClose: { [weak self] in self?.setMenu(visible: false) },
                 onToggleLayout: { [weak self] in self?.toggleFieldLayout() }))
-            panel.view.backgroundColor = .clear
+            panel.view.backgroundColor = KeyAreaView.touchableBackground
             panel.safeAreaRegions = []
             panel.view.translatesAutoresizingMaskIntoConstraints = false
             addChild(panel)

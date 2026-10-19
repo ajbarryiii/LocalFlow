@@ -1866,6 +1866,22 @@ mechanisms in the code can drop such a tap:
 This section amends "Typing model v4 and swipe typing". The counters, for
 TestFlight only, measure what is left.
 
+**Touchable backgrounds (2026-10-18, from the typing test).**
+- On build 29, after the bar change, LocalFlow still dropped 7.0 characters
+  per 100 against Apple's 1.3. Touch-downs still equalled characters typed,
+  and most drops were still on the top row.
+- In a keyboard extension, iOS ignores a touch on a fully transparent point,
+  even inside a view that would take it (Apple Developer Forums 702798; the
+  workaround there is a background with a very low alpha). The key area and
+  the bar were `.clear`. So every tap in the 12 pt row gaps, between keys, in
+  the padding above the top row, and in the empty bar never reached the
+  keyboard. Apple's own keyboard is not an extension and is not affected.
+- The key area, the bar's hosting view and the menu panel's view now have
+  `KeyAreaView.touchableBackground`: grey at 2% alpha (about 5 of 255 in an
+  8-bit alpha channel, clear of rounding to 0). It is not visible over the
+  keyboard's backdrop.
+- Verify on the device with the typing test. This cannot be unit-tested.
+
 **Reach above the keys.**
 - The key area also takes touches that land up to
   `KeyboardMetrics.reachAboveKeys(compact:)` above it. That is the strip of
