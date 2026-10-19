@@ -1574,3 +1574,91 @@ fn shutdown_during_a_slow_start_closes_the_microphone() {
     let s = cap.state();
     assert_eq!((s.starts, s.cancels, s.recording), (1, 1, false));
 }
+
+/// Requests handed to the control loop hold their connections until
+/// answered, so they are bounded: with a control loop that answers nothing,
+/// `MAX_PENDING` wait and the next is refused `error busy` by the socket
+/// thread at once; answering one makes room again.
+#[test]
+fn requests_handed_to_a_stalled_control_loop_are_bounded() {
+    use lf_daemon::daemon::Event;
+    use lf_daemon::server::{MAX_PENDING, Server};
+    use lf_daemon::watch::{Admission, MAX_WATCHERS};
+    use std::sync::Arc;
+
+    let dir = TempDir::new("stalled-loop");
+    private_dir(&runtime_dir(&dir));
+    let server = Arc::new(Server::bind(&runtime_dir(&dir)).unwrap());
+    let (events, stalled) = std::sync::mpsc::channel();
+    let serving = {
+        let server = Arc::clone(&server);
+        std::thread::spawn(move || server.serve(&events, &Admission::new(MAX_WATCHERS)))
+    };
+    let send = || {
+        let mut s = UnixStream::connect(server.socket_path()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(b"localflow/1 status\n").unwrap();
+        s
+    };
+    let reply = |mut s: UnixStream| {
+        let mut r = String::new();
+        s.read_to_string(&mut r).unwrap();
+        r
+    };
+    let held: Vec<_> = (0..MAX_PENDING).map(|_| send()).collect();
+    assert_eq!(reply(send()), "localflow/1 error busy\n");
+
+    let next = |rx: &std::sync::mpsc::Receiver<Event>| match rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a request")
+    {
+        Event::Request(_, responder) => responder,
+        _ => panic!("not a request"),
+    };
+    let first = next(&stalled);
+    first.send(lf_daemon::protocol::Reply::Error(
+        lf_daemon::protocol::ErrorCode::Unavailable,
+    ));
+    let mut held = held.into_iter();
+    assert_eq!(reply(held.next().unwrap()), "localflow/1 error unavailable\n");
+    // Its place is free: one more request is handed on, not refused.
+    let late = send();
+    let responders: Vec<_> = (0..MAX_PENDING).map(|_| next(&stalled)).collect();
+    drop(responders);
+    assert_eq!(reply(late), "localflow/1 error unavailable\n");
+    for s in held {
+        assert_eq!(reply(s), "localflow/1 error unavailable\n");
+    }
+    server.stop();
+    serving.join().unwrap();
+}
+
+/// A change of microphone presence while `cancel` holds the capture
+/// reaches watchers as soon as the cancel returns.
+#[test]
+fn presence_changes_during_a_cancel_reach_watchers() {
+    let cap = speech();
+    let rig = Rig::start(
+        "presence-cancel",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let mut w = rig.watch();
+    assert_eq!(
+        w.line(),
+        "localflow/1 ok state=idle model=ready mic=unknown"
+    );
+    rig.cmd("press");
+    let gate = cap.gate_cancel();
+    assert_eq!(rig.cmd("cancel"), "state=idle model=ready note=cancelled");
+    gate.wait_entered(1);
+    cap.set_input(Some(false));
+    gate.open();
+    let lines = w.until("mic=absent");
+    assert_eq!(
+        lines.last().unwrap(),
+        "localflow/1 ok state=idle model=ready mic=absent"
+    );
+}

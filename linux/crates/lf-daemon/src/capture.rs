@@ -35,10 +35,13 @@ pub enum Call {
     Cancel,
 }
 
-/// The result of a `Start` or `Stop` call (`Cancel` has none).
+/// The result of a call.
 pub enum Done {
     Started(Result<(), IoError>),
     Stopped(Result<Audio, IoError>),
+    /// Carries nothing; it wakes the control loop, so readings answered
+    /// from the cache while the call held the capture are taken again.
+    Cancelled,
 }
 
 pub struct CaptureEvent {
@@ -83,7 +86,7 @@ fn run(capture: &mut dyn AudioCapture, call: Call) -> Option<Done> {
         }
         Call::Cancel => {
             capture.cancel();
-            None
+            Some(Done::Cancelled)
         }
     }
 }

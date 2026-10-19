@@ -36,6 +36,8 @@ pub struct CaptureState {
     pub start_gate: Option<Gate>,
     /// Likewise for `stop`.
     pub stop_gate: Option<Gate>,
+    /// Likewise for `cancel`.
+    pub cancel_gate: Option<Gate>,
     /// Reported by `input_available`; change it with
     /// [`FakeCapture::set_input`].
     pub input: Option<bool>,
@@ -151,6 +153,13 @@ impl FakeCapture {
         gate
     }
 
+    /// Holds every later `cancel` until the returned gate opens.
+    pub fn gate_cancel(&self) -> Gate {
+        let gate = Gate::default();
+        self.state().cancel_gate = Some(gate.clone());
+        gate
+    }
+
     /// Changes the reported microphone presence and notifies the watcher
     /// registered with `watch_input`, like a device being plugged in or out.
     pub fn set_input(&self, input: Option<bool>) {
@@ -222,6 +231,10 @@ impl AudioCapture for FakeCapture {
     }
 
     fn cancel(&mut self) {
+        let gate = self.state().cancel_gate.clone();
+        if let Some(gate) = gate {
+            gate.pass();
+        }
         let mut s = self.state();
         if s.recording {
             s.cancels += 1;

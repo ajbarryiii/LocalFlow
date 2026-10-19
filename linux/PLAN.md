@@ -529,7 +529,9 @@ checklist.
   within 250 ms. Connections are read one at a time in accept order and
   handed, with the request, to the control loop, which writes the reply
   (`MSG_DONTWAIT`; a client that has gone loses it), so the socket thread
-  never waits for a reply. That
+  never waits for a reply. At most 64 requests are handed on unanswered
+  (each holds its connection); more get `error busy` from the socket
+  thread. That
   does not guarantee a press is handled before its release, because
   Hyprland starts a separate `localflowctl` process for each; the `at=`
   stamp restores the order (see the table), except when the later process
@@ -657,7 +659,7 @@ Codex, then merged. After the merge:
 Residual risks:
 - A capture thread that hangs inside PipeWire is detached after 2 s. It keeps its (in-memory) audio until it ends, when its buffers are wiped.
 - Spectrum, features and encoder activations stay in `lf-asr`'s reusable workspace until the next dictation (the raw waveform copies are zeroed).
-- Cancel no longer waits for PipeWire: capture calls run on their own thread, and `status`, `watch` and the timers are served while a start or stop runs (bounded by 3 s and 2 s in `lf-pipewire`). Cancel while typing still waits for one compositor call (up to 2 s), and `status` still waits for the control loop. Requests waiting for a capture call are bounded (32); the listen backlog is the kernel's.
+- Cancel no longer waits for PipeWire: capture calls run on their own thread, and `status`, `watch` and the timers are served while a start or stop runs (bounded by 3 s and 2 s in `lf-pipewire`). Cancel while typing still waits for one compositor call (up to 2 s), and `status` still waits for the control loop. Requests waiting for a capture call are bounded (32), as are requests handed to the control loop and not yet answered (64); the listen backlog is the kernel's.
 - Not yet run live: microphone capture, typing and modifier behaviour on the Hyprland session, and journald output. See `README.md` and the "Desktop I/O" section.
 
 ## Open items

@@ -22,7 +22,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,11 @@ use crate::watch::Admission;
 /// Time a client has to send its request line. Connections are served one at
 /// a time, so this bounds how long a stalled client delays the next command.
 pub const REQUEST_DEADLINE: Duration = Duration::from_millis(250);
+/// Requests handed to the control loop and not yet answered. Each holds
+/// its connection, so a stalled control loop could otherwise collect any
+/// number of descriptors; past this many the socket thread answers
+/// `error busy` at once.
+pub const MAX_PENDING: usize = 64;
 
 /// Where a request's reply goes. Answering never blocks; a responder
 /// dropped unanswered answers `error unavailable` (the control loop
@@ -42,14 +47,31 @@ pub struct Responder(Option<To>);
 
 enum To {
     Channel(Sender<Reply>),
-    Client(UnixStream),
+    /// The place is given back once the reply is written.
+    Client(UnixStream, Slot),
+}
+
+/// One of the [`MAX_PENDING`] places.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(pending: &Arc<AtomicUsize>) -> Option<Slot> {
+        pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_PENDING).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(Arc::clone(pending)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Responder {
-    /// Answers on the client's connection, then closes it.
-    pub fn client(stream: UnixStream) -> Responder {
-        Responder(Some(To::Client(stream)))
-    }
 
     pub fn send(mut self, reply: Reply) {
         if let Some(to) = self.0.take() {
@@ -83,7 +105,7 @@ fn deliver(to: To, reply: &Reply) {
         To::Channel(tx) => {
             let _ = tx.send(reply.clone());
         }
-        To::Client(stream) => {
+        To::Client(stream, _slot) => {
             if !crate::watch::send_now(&stream, reply.to_line().as_bytes()) {
                 crate::debug!("control reply dropped: the client is gone or not reading");
             }
@@ -97,6 +119,8 @@ pub struct Server {
     /// Held while the server exists; the flock is the instance lock.
     _lock: File,
     stopping: AtomicBool,
+    /// Requests handed on and not yet answered (see [`MAX_PENDING`]).
+    pending: Arc<AtomicUsize>,
 }
 
 impl Server {
@@ -159,6 +183,7 @@ impl Server {
             socket_path,
             _lock: lock,
             stopping: AtomicBool::new(false),
+            pending: Arc::default(),
         })
     }
 
@@ -174,7 +199,7 @@ impl Server {
                 return;
             }
             match conn {
-                Ok(stream) => handle(stream, events, admission),
+                Ok(stream) => handle(stream, events, admission, &self.pending),
                 Err(_) if self.stopping.load(Ordering::Acquire) => return,
                 Err(e) => {
                     crate::warn!("control socket accept failed: {e}");
@@ -224,7 +249,12 @@ pub fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
     Ok(cred.uid)
 }
 
-fn handle(mut stream: UnixStream, events: &Sender<Event>, admission: &Arc<Admission>) {
+fn handle(
+    mut stream: UnixStream,
+    events: &Sender<Event>,
+    admission: &Arc<Admission>,
+    pending: &Arc<AtomicUsize>,
+) {
     match peer_uid(&stream) {
         Ok(uid) if uid == paths::euid() => {}
         Ok(uid) => {
@@ -262,12 +292,17 @@ fn handle(mut stream: UnixStream, events: &Sender<Event>, admission: &Arc<Admiss
                     }
                 }
             }
-            Ok(req) => {
-                // If the control loop has stopped, the responder comes back
-                // with the event and, dropped, answers `error unavailable`.
-                let _ = events.send(Event::Request(req, Responder::client(stream)));
-                return;
-            }
+            Ok(req) => match Slot::take(pending) {
+                Some(slot) => {
+                    // If the control loop has stopped, the responder comes
+                    // back with the event and, dropped, answers
+                    // `error unavailable`.
+                    let to = To::Client(stream, slot);
+                    let _ = events.send(Event::Request(req, Responder(Some(to))));
+                    return;
+                }
+                None => (Reply::Error(ErrorCode::Busy), false),
+            },
             Err(code) => (Reply::Error(code), false),
         },
         Err(code) => (Reply::Error(code), code != ErrorCode::Timeout),
