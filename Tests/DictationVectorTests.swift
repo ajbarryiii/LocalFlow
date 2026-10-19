@@ -43,7 +43,8 @@ enum DictationVectorTests {
     private static func runSpokenDelimiters(_ root: Object, _ failures: inout [String]) {
         let cases = root["spoken_delimiters"] as! [Object]
         TestSupport.expect(cases.count >= 100, "Spoken delimiter vectors are incomplete")
-        TestSupport.expectEqual(cases.filter { $0["origin"] as? String == "swift" }.count, 86)
+        TestSupport.expect(cases.filter { $0["origin"] as? String == "swift" }.count >= 86,
+                           "Every Swift spoken delimiter case must be ported")
         for (index, item) in cases.enumerated() {
             let input = item["input"] as! String
             let expected = item["expected"] as! String

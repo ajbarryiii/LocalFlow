@@ -71,11 +71,13 @@ pub fn process(
 ) -> DictationResult {
     let mut raw = swift::trim(transcript);
     let mut should_press_enter = false;
+    // The match is applied even when it starts inside a `Character` (after a
+    // Prepend scalar such as U+0600): on macOS 15 and later,
+    // `Range(match.range, in: raw)` accepts any Unicode scalar boundary and
+    // `removeSubrange` removes exactly those scalars. The match start is
+    // always a scalar boundary, so slicing at it is that behaviour.
     if options.press_enter
         && let Some(start) = press_enter::trailing_match_start(raw)
-        // `Range(match.range, in: raw)` is nil when the match starts inside a
-        // `Character`; Swift then leaves the transcript alone.
-        && swift::is_grapheme_boundary(raw, start)
     {
         raw = swift::trim(&raw[..start]);
         should_press_enter = true;

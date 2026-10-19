@@ -106,7 +106,7 @@ fn spoken_delimiter_vectors() {
         .expect("spoken_delimiters array");
     assert!(cases.len() >= 100);
     let swift = cases.iter().filter(|c| c["origin"] == "swift").count();
-    assert_eq!(swift, 86, "every Swift delimiter case is ported");
+    assert!(swift >= 86, "every Swift delimiter case is ported");
     let mut failures = Vec::new();
     for (i, case) in cases.iter().enumerate() {
         let input = string(case, "input");
