@@ -129,12 +129,12 @@ enum KeyboardLayoutTests {
     private static func testReachAboveTheKeysIsTheBarBelowItsControls() {
         // ARCHITECTURE.md, "Dropped taps": the key area takes the strip of the bar below its controls, half the
         // difference of their heights (the controls are centred in the bar).
-        TestSupport.expectEqual(KeyboardMetrics.barHeight, 54)
+        TestSupport.expectEqual(KeyboardMetrics.barHeight, 48)
         TestSupport.expectEqual(KeyboardMetrics.barControlHeight, 38)
-        TestSupport.expectEqual(KeyboardMetrics.compactBarHeight, 44)
+        TestSupport.expectEqual(KeyboardMetrics.compactBarHeight, 40)
         TestSupport.expectEqual(KeyboardMetrics.compactBarControlHeight, 32)
-        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: false), 8)
-        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: true), 6)
+        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: false), 5)
+        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: true), 4)
         // A touch there is the top-row key below it, in every layer, portrait and landscape.
         for (width, height, compact) in [(402.0, KeyboardMetrics.regularHeight, false), (874, KeyboardMetrics.compactHeight, true)] {
             let reach = KeyboardMetrics.reachAboveKeys(compact: compact)
@@ -205,10 +205,10 @@ enum KeyboardLayoutTests {
         TestSupport.expect(goes(start.x - 0.5, start.y - 0.5), "just outside the Start capsule's corner")
         // Outside the bar, nothing.
         TestSupport.expect(!goes(150, -1) && !goes(150, bar + 1), "outside the bar")
-        // No frames yet: only the strip below the controls (8 pt in portrait, 6 in landscape).
-        TestSupport.expect(goes(150, bar - 7.5, []) && !goes(150, bar - 8.5, []), "portrait strip without frames")
+        // No frames yet: only the strip below the controls (5 pt in portrait, 4 in landscape).
+        TestSupport.expect(goes(150, bar - 4.5, []) && !goes(150, bar - 5.5, []), "portrait strip without frames")
         let compactBar = KeyboardMetrics.compactBarHeight
-        TestSupport.expect(goes(150, compactBar - 5.5, compact: true, []) && !goes(150, compactBar - 6.5, compact: true, []),
+        TestSupport.expect(goes(150, compactBar - 3.5, compact: true, []) && !goes(150, compactBar - 4.5, compact: true, []),
                            "landscape strip without frames")
     }
 

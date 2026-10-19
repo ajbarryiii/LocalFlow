@@ -59,8 +59,8 @@ struct KeyboardMetrics: Equatable, Sendable {
     static let compactHeight: Double = 162
 
     /// The dictation bar above the keys, and its controls, centred in it (ARCHITECTURE.md, "Top row").
-    static let barHeight: Double = 54
-    static let compactBarHeight: Double = 44
+    static let barHeight: Double = 48
+    static let compactBarHeight: Double = 40
     static let barControlHeight: Double = 38
     static let compactBarControlHeight: Double = 32
 

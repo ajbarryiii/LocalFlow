@@ -1890,8 +1890,12 @@ TestFlight only, measure what is left.
 **Reach above the keys.**
 - The key area also takes touches that land up to
   `KeyboardMetrics.reachAboveKeys(compact:)` above it. That is the strip of
-  the bar below its controls: (bar height − control height) / 2, 8 pt in
-  portrait (54 − 38) and 6 pt in landscape (44 − 32).
+  the bar below its controls: (bar height − control height) / 2, 5 pt in
+  portrait (48 − 38) and 4 pt in landscape (40 − 32).
+- The bar is 48 pt tall in portrait and 40 pt in landscape. It was 54 and 44 pt
+  until a user decision on 2026-10-18 removed about 1 mm of empty space
+  above the Start capsule, and the keyboard is 6 pt shorter (4 pt in
+  landscape). The controls keep their size.
 - Such a touch is an ordinary key touch, and its nearest key is in the top
   row. The bar's controls keep their full size.
 - The bar and control heights are `KeyboardMetrics` constants
