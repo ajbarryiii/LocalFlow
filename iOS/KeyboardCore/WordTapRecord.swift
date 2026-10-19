@@ -26,9 +26,14 @@ struct WordTapRecord: Equatable, Sendable {
     }
 
     private(set) var entries: [Entry]
+    /// The record began right after a character the editor typed that is not part of a word (a space, a commit
+    /// key): every character of the run is then one the editor typed there. False after `clear`, and once a
+    /// deletion reaches past the record's start.
+    private(set) var startsAtOwnBoundary: Bool
 
-    init(entries: [Entry] = []) {
+    init(entries: [Entry] = [], startsAtOwnBoundary: Bool = false) {
         self.entries = entries
+        self.startsAtOwnBoundary = startsAtOwnBoundary
     }
 
     /// The apostrophes a word may hold (`tap/words.py`).
@@ -40,6 +45,7 @@ struct WordTapRecord: Equatable, Sendable {
 
     mutating func clear() {
         entries = []
+        startsAtOwnBoundary = false
     }
 
     /// The keys moved (a resize or rotation): the points no longer say which key a tap was near. The characters
@@ -51,10 +57,12 @@ struct WordTapRecord: Equatable, Sendable {
     /// An edit the editor made: `deleted` characters before the caret removed, then `inserted` typed, by a tap
     /// at `point` (nil for none) or by a swipe.
     mutating func edited(deleted: Int, inserted: String, point: TapPoint? = nil, swiped: Bool = false) {
+        if deleted > entries.count { startsAtOwnBoundary = false }
         entries.removeLast(min(max(deleted, 0), entries.count))
         for (index, character) in zip(inserted.indices, inserted) {
             guard Self.isWordCharacter(character) else {
                 entries = []
+                startsAtOwnBoundary = true
                 continue
             }
             let last = inserted.index(after: index) == inserted.endIndex

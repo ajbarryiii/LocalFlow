@@ -112,6 +112,10 @@ final class KeyboardEditor {
     /// The last autocorrection while a Delete can still revert it: where its edit (the replacement and the
     /// commit key) left the caret, the text it replaced, and the record to restore.
     private var pendingRevert: (anchor: SwipeAnchor, correction: WordAutocorrect.Correction)?
+    /// A trackpad gesture has moved (or may have moved) the caret since the keyboard appeared in this field,
+    /// and nothing has confirmed where the host has it. From then on only a word this keyboard typed whole,
+    /// after a separator it also typed, is corrected (`WordTapRecord.startsAtOwnBoundary`).
+    private var caretUnconfirmed = false
 
     /// Where a swiped word's own edit (an insertion or a replacement), or an autocorrection's, left the caret,
     /// as this keyboard knows it. The proxy may show the edit late and with no callback, so it is checked against both the
@@ -161,6 +165,7 @@ final class KeyboardEditor {
         // from before ends here.
         trackpad.appeared()
         core.reset()
+        caretUnconfirmed = false
         swipe = nil
         pendingSpace = nil
         forgetWord()
@@ -178,6 +183,7 @@ final class KeyboardEditor {
     func hide(now: TimeInterval) {
         trackpad.hide(at: now)
         core.hide()
+        caretUnconfirmed = false
         swipe = nil
         pendingSpace = nil
         forgetWord()
@@ -230,6 +236,7 @@ final class KeyboardEditor {
     /// Another field (or none): nothing from the old one applies here.
     private func fieldChanged() {
         trackpad.fieldChanged()
+        caretUnconfirmed = false
         swipe = nil
         pendingSpace = nil
         forgetWord()
@@ -580,7 +587,7 @@ final class KeyboardEditor {
             let text = before ?? ""
             // Not over a selection, which the first deletion would remove instead, nor where the text before the
             // caret is uncertain: the deletions would run wherever the host really has the caret.
-            let setup = document.hasSelection || !runIsVerified(before: text) ? nil : autocorrect()
+            let setup = document.hasSelection || !runIsVerified(before: text) || !runIsOurs(before: text) ? nil : autocorrect()
             guard let correction = WordAutocorrect.correction(before: text, record: wordTaps, reverted: revertedWords,
                                                               setup: setup, checked: { onAutocorrectEvent?(.checked) })
             else { return resolve(action, before: before, at: timestamp) }
@@ -612,6 +619,16 @@ final class KeyboardEditor {
         return WordAutocorrect.word(before: proxy ?? "")?.run == run
     }
 
+    /// After a gesture whose landing nothing has confirmed (`caretUnconfirmed`; a report that arrives in the
+    /// meantime, such as WebKit's report of an adjustment as issued, confirms nothing), whether the run before
+    /// the caret is wholly characters this keyboard typed after a separator it also typed: deleting it then
+    /// removes exactly those characters, wherever the host has the caret. Always true otherwise.
+    private func runIsOurs(before: String) -> Bool {
+        guard caretUnconfirmed else { return true }
+        guard let run = WordAutocorrect.word(before: before)?.run else { return true }
+        return wordTaps.startsAtOwnBoundary && wordTaps.entries(matching: run) != nil
+    }
+
     /// A Delete right after an autocorrection, while the field still ends with it and nothing else has edited
     /// it: the replacement and its commit key give way to the typed word, the caret right after it, and the word
     /// is never corrected again in this keyboard instance. False (nothing done) otherwise; the pending revert
@@ -627,7 +644,8 @@ final class KeyboardEditor {
         }
         guard reverted else { return false }
         swipe = nil
-        wordTaps = WordTapRecord(entries: pending.correction.record)
+        wordTaps = WordTapRecord(entries: pending.correction.record,
+                                 startsAtOwnBoundary: pending.correction.recordStartsAtOwnBoundary)
         revertedWords.insert(pending.correction.word)
         onAutocorrectEvent?(.reverted)
         return true
@@ -709,6 +727,7 @@ final class KeyboardEditor {
         swipe = nil
         pendingSpace = nil
         forgetWord()
+        caretUnconfirmed = true
         userEdit()
         tail.forget()
         untrustedReading = nil

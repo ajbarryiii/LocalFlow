@@ -8,6 +8,8 @@ struct AutocorrectSetup {
     var keys: [PlacedKey]
     var params: AutocorrectParams
     var secureTextEntry: Bool
+    /// The field turned autocorrection off (`autocorrectionType == .no`): its input stays literal.
+    var autocorrectionDisabled = false
 }
 
 /// The word decisions of autocorrect, pure (ARCHITECTURE.md, "Word autocorrect"): which keys commit a word,
@@ -73,6 +75,8 @@ enum WordAutocorrect {
         var typed: String
         var replacement: String
         var record: [WordTapRecord.Entry]
+        /// Whether that record began after a separator the editor typed (`WordTapRecord.startsAtOwnBoundary`).
+        var recordStartsAtOwnBoundary = false
     }
 
     /// The correction for the word ending `before` (the text before the caret as the editor knows it) at a
@@ -81,7 +85,7 @@ enum WordAutocorrect {
     /// session, or when the corrector keeps it. `checked` is called when the corrector is asked.
     static func correction(before: String, record: WordTapRecord, reverted: Set<String>, setup: AutocorrectSetup?,
                            checked: () -> Void = {}) -> Correction? {
-        guard let setup, !setup.secureTextEntry, let found = word(before: before) else { return nil }
+        guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, let found = word(before: before) else { return nil }
         let run = Array(found.run)
         let word = String(run[found.word])
         let matched = record.entries(matching: found.run)
@@ -100,6 +104,7 @@ enum WordAutocorrect {
         let cased = cased(corrected, like: word)
         guard cased != word else { return nil }
         let tail = String(run[found.word.upperBound...])
-        return Correction(word: lowered, typed: word + tail, replacement: cased + tail, record: matched ?? [])
+        return Correction(word: lowered, typed: word + tail, replacement: cased + tail, record: matched ?? [],
+                          recordStartsAtOwnBoundary: matched != nil && record.startsAtOwnBoundary)
     }
 }

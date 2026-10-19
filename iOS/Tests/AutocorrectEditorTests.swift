@@ -28,6 +28,9 @@ enum AutocorrectEditorTests {
             ("correctionIsOneOwnEditBeforeTheKey", testCorrectionIsOneOwnEditBeforeTheKey),
             ("unverifiedCaretContextIsNotCorrected", testUnverifiedCaretContextIsNotCorrected),
             ("proxyThatHasNotShownTheWordIsNotCorrected", testProxyThatHasNotShownTheWordIsNotCorrected),
+            ("callbackBetweenCommitKeyDownAndUpIsNotTrusted", testCallbackBetweenCommitKeyDownAndUpIsNotTrusted),
+            ("aWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped", testAWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped),
+            ("fieldsWithAutocorrectionOffAreNotCorrected", testFieldsWithAutocorrectionOffAreNotCorrected),
             ("layoutChangeDropsTheRecordedPoints", testLayoutChangeDropsTheRecordedPoints),
             ("layoutChangeDropsThePointsARevertRestores", testLayoutChangeDropsThePointsARevertRestores),
             ("returnNeverArmsARevert", testReturnNeverArmsARevert),
@@ -393,14 +396,107 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != " " })),
                                 original)
         TestSupport.expectEqual(harness.document.text.unicodeScalars.filter { $0 == " " }.count, 1)
-        // Once the proxy has shown where the caret is, the next word is corrected again.
+        // Later words this keyboard types whole, after a separator it typed, are corrected again (code review round
+        // 4: after an unconfirmed gesture that is the only kind; "aWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped").
+        for letter in ["t", "e", "h"] { harness.press(.character(letter)) }
+        harness.press(.space)
+        harness.settle()
+        for letter in ["t", "e", "h"] { harness.press(.character(letter)) }
+        harness.press(.space)
+        TestSupport.expectEqual(corrector.calls.count, 1)
+        TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != "\u{1F3FD}" })),
+                                "teh\u{1F44D} teh the ")
+    }
+
+    private static func testCallbackBetweenCommitKeyDownAndUpIsNotTrusted() {
+        // Code review round 4 (2026-10-19, P1): Space touches down and ends a trackpad probe; WebKit's report of the
+        // adjustment as issued arrives while Space is held and shows the old caret; Space then types at release.
+        // That report verifies nothing about where the host has the caret, so the word is not corrected.
+        let original = "teh\u{1F44D}\u{1F3FD}x"
+        var reproduced = 0
+        for callbackFrames in 1 ... 6 {
+            for dx in [10.0, 20.0, 30.0] {
+                var host = FakeTextHost(text: original, caret: 3, unit: .grapheme, callbackFrames: callbackFrames)
+                host.reportsAsIssuedFirst = true
+                let harness = KeyboardHarness(host)
+                let corrector = FakeCorrector(["teh": "the"])
+                harness.editor.autocorrect = {
+                    AutocorrectSetup(corrector: corrector, keys: AutocorrectRig.keys, params: .standard, secureTextEntry: false)
+                }
+                harness.gesture(dx: dx, events: 1)
+                guard harness.trackpad.session?.hasOutstandingProbe == true else { continue }
+                let space = harness.touchDown(.space)
+                let before = harness.outcomes.count
+                for _ in 0 ..< 8 where harness.outcomes.count == before { harness.frame() }
+                guard harness.outcomes.count > before else { continue }
+                reproduced += 1
+                harness.touchUp(space)
+                harness.settle()
+                let label = "frames \(callbackFrames) dx \(dx): \(harness.document.text)"
+                TestSupport.expect(corrector.calls.isEmpty, label)
+                TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != " " })),
+                                        original)
+            }
+        }
+        TestSupport.expect(reproduced > 0, "no configuration had a report between Space's touch-down and release")
+    }
+
+    private static func testAWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped() {
+        // Conservative rule (code review round 4): after a trackpad gesture, only a word whose whole run this
+        // keyboard typed after a separator it also typed is corrected: deleting it removes only those characters,
+        // wherever the host has the caret. A word that began before the gesture is committed as typed.
+        let harness = KeyboardHarness(FakeTextHost(text: "so teh", unit: .utf16))
+        let corrector = FakeCorrector(["teh": "the", "tehx": "then", "tehxx": "then"])
+        harness.editor.autocorrect = {
+            AutocorrectSetup(corrector: corrector, keys: AutocorrectRig.keys, params: .standard, secureTextEntry: false)
+        }
+        harness.gesture(dx: 0, events: 1)
+        harness.settle()
+        harness.press(.character("x"))
+        harness.press(.space)
+        TestSupport.expectEqual(corrector.calls.count, 0)
+        TestSupport.expectEqual(harness.document.text, "so tehx ")
+        // The next word, typed whole after that space, is corrected.
         harness.press(.character("t"))
         harness.press(.character("e"))
         harness.press(.character("h"))
-        harness.settle()
         harness.press(.space)
+        TestSupport.expectEqual(harness.document.text, "so tehx the ")
+        // Deleting back past that space brings the earlier text into the run again. (The layer keys forget the
+        // pending revert, so the deletions are single characters.)
+        harness.press(.layer(.numbers))
+        harness.press(.layer(.letters))
+        harness.press(.delete)
+        harness.press(.delete)
+        harness.press(.delete)
+        harness.press(.delete)
+        harness.press(.delete)
+        harness.press(.character("x"))
+        harness.press(.space)
+        TestSupport.expectEqual(harness.document.text, "so tehxx ")
         TestSupport.expectEqual(corrector.calls.count, 1)
-        TestSupport.expect(harness.document.text.hasPrefix("teh\u{1F44D} the"), "\(harness.document.text)")
+        // A new field, or the keyboard appearing again, starts verified.
+        harness.hide()
+        harness.show()
+        harness.press(.delete)
+        harness.press(.space)
+        TestSupport.expectEqual(harness.document.text, "so then ")
+    }
+
+    private static func testFieldsWithAutocorrectionOffAreNotCorrected() {
+        // Code review round 4 (2026-10-19, P2): a field that turns autocorrection off (`autocorrectionType == .no`,
+        // SwiftUI's `.autocorrectionDisabled()`) keeps its literal input.
+        let rig = AutocorrectRig("", corrections: ["teh": "the"])
+        rig.autocorrectionDisabled = true
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "teh ")
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        TestSupport.expectEqual(rig.events, [])
+        rig.autocorrectionDisabled = false
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "teh the ")
     }
 
     private static func testProxyThatHasNotShownTheWordIsNotCorrected() {
@@ -728,6 +824,7 @@ final class AutocorrectRig {
     var params = AutocorrectParams.standard
     var enabled = true
     var secure = false
+    var autocorrectionDisabled = false
     var autocapitalization: AutocapitalizationMode = .none
     private(set) var events: [WordAutocorrect.Event] = []
     private var time: TimeInterval = 100
@@ -742,7 +839,8 @@ final class AutocorrectRig {
         editor.autocapitalization = { [unowned self] in self.autocapitalization }
         editor.autocorrect = { [unowned self] in
             guard self.enabled else { return nil }
-            return AutocorrectSetup(corrector: self.corrector, keys: Self.keys, params: self.params, secureTextEntry: self.secure)
+            return AutocorrectSetup(corrector: self.corrector, keys: Self.keys, params: self.params, secureTextEntry: self.secure,
+                                    autocorrectionDisabled: self.autocorrectionDisabled)
         }
         editor.onAutocorrectEvent = { [unowned self] in self.events.append($0) }
         editor.reset(numeric: false)

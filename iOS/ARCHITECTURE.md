@@ -1877,7 +1877,10 @@ corrected when:
 - it was swiped (the swipe decoder already chose a lexicon word), or it holds
   a character other than a–z, A–Z and apostrophes;
 - it was reverted earlier in this keyboard session ("Revert" below);
-- the editor cannot account for every character of it (see "Taps").
+- the editor cannot account for every character of it (see "Taps");
+- the field turns autocorrection off (`autocorrectionType == .no`, as
+  SwiftUI's `.autocorrectionDisabled()` does): its input stays literal
+  (code review round 4, 2026-10-19). `.default` and `.yes` are corrected.
 
 **Taps.** For each character of the current word the keyboard records the
 touch-down point of the tap that typed it (key-area points), or none (a
@@ -2005,6 +2008,18 @@ left open:
   unresolved, a proxy that has not shown our edits or the trackpad's
   landing yet, or anything else that makes the text uncertain) the commit
   key types without a correction.
+- **After an unconfirmed caret move, only our own word (code review round 4,
+  2026-10-19).** A host report can arrive between a commit key's touch-down
+  (which ends a trackpad probe) and its release. WebKit's report of an
+  adjustment as issued shows the old caret and confirms nothing. So once a
+  trackpad gesture has begun in this field, a word is corrected only if
+  this keyboard typed its whole run right after a separator it also typed
+  (a space or a commit key). The record tracks that: `startsAtOwnBoundary`,
+  false after a clear or a deletion past the record's start. Deleting it
+  then removes exactly those characters, wherever the host has the caret.
+  The keyboard appearing again or another field starts verified. A word
+  that began before the gesture, or that a host report interrupted, is
+  committed as typed.
 - **A layout change drops the points (code review, 2026-10-19).** When the
   letters layer's geometry changes between taps and the commit key (a resize,
   a rotation, the globe key shown or hidden), the record keeps its characters

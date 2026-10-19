@@ -345,7 +345,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
         return AutocorrectSetup(corrector: autocorrect.corrector,
                                 keys: KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe),
                                 params: settings.autocorrectParams(over: autocorrect.preset),
-                                secureTextEntry: proxy?.isSecureTextEntry == true)
+                                secureTextEntry: proxy?.isSecureTextEntry == true,
+                                autocorrectionDisabled: proxy?.autocorrectionType == .no)
     }
 
     /// With the TestFlight counters on: words checked, corrected and reverted. Counts only; a word has no
