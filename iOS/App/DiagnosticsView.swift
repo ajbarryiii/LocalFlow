@@ -433,8 +433,14 @@ private struct AutocorrectSection: View {
                                      }),
                range: 0 ... 3, step: 0.05, text: Self.odds(setting.value(in: params)), identifier: identifier)
             .disabled(infinite)
+        // A remembered finite value may be a preset's, outside the slider's range: clamp it, so the stored
+        // override always takes it and the keyboard uses what is shown.
         Toggle("\(title): ∞", isOn: Binding(get: { setting.value(in: params) == .infinity },
-                                             set: { on in setting.set(on ? .infinity : finite.wrappedValue, in: &params) }))
+                                             set: { on in
+                                                 let range = setting.range
+                                                 let odds = min(max(finite.wrappedValue, range.lowerBound), range.upperBound)
+                                                 setting.set(on ? .infinity : odds, in: &params)
+                                             }))
             .accessibilityIdentifier(identifier + "Infinite")
     }
 
