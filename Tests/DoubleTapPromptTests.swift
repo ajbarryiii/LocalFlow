@@ -834,25 +834,3 @@ enum DoubleTapPromptTests {
         }
     }
 }
-
-/// Records what a cleanup step list did, in order, with optional effects.
-@MainActor
-private final class RecordingCleanup: DictationCleanupActions {
-    var log: [String] = []
-    var onStopCorrections: () -> Void = {}
-    var onWithdraw: () -> Void = {}
-
-    func stopCorrectionSuggestions() {
-        log.append("stopCorrections")
-        onStopCorrections()
-    }
-
-    func withdrawDictionarySuggestion() {
-        log.append("withdraw")
-        onWithdraw()
-    }
-
-    func invalidateRecordingAttempt() { log.append("invalidate") }
-
-    func cancelDiscardedCapture() { log.append("cancelCapture") }
-}
