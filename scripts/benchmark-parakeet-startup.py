@@ -19,6 +19,16 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 ARMS = ("all", "fifteen-first", "fifteen-background")
+# Matches the app's Makefile: Apple Silicon, macOS 26 deployment target, and the
+# new Accelerate headers for the decoder's CBLAS calls.
+SWIFT_TARGET_FLAGS = ["-target", "arm64-apple-macosx26.0", "-Xcc", "-DACCELERATE_NEW_LAPACK"]
+
+
+def swift_sources():
+    # The Parakeet service uses the shared dictionary types, so both are compiled.
+    shared = [path for directory in ("Sources/Parakeet", "Sources/Dictionary")
+              for path in sorted((REPO / directory).glob("*.swift"))]
+    return [*shared, REPO / "scripts/parakeet-startup-benchmark.swift"]
 
 
 def verify_bundle(directory):
@@ -103,9 +113,8 @@ def main():
         return completed.stdout, metrics
 
     sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
-    sources = sorted((REPO / "Sources/Parakeet").glob("*.swift"))
     run(["swiftc", "-parse-as-library", "-O", "-warnings-as-errors", "-sdk", sdk,
-         "-target", "arm64-apple-macosx13.0", *sources, REPO / "scripts/parakeet-startup-benchmark.swift", "-o", executable], 180)
+         *SWIFT_TARGET_FLAGS, *swift_sources(), "-o", executable], 180)
     speech = output / "invented-speech.aiff"
     run(["say", "-v", "Samantha", "-r", "260", "-o", speech,
          "The blue lantern is beside the green notebook."], 60)
