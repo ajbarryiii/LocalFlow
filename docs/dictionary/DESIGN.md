@@ -577,12 +577,21 @@ correction work, and withdraws any visible suggestion.
 
 ### §3.4 Retained correction sessions (macOS)
 
-A dictation's audio is retained only if all of these hold when its
-transcription starts: suggestions are on, the dictionary is readable, and
-Accessibility is trusted. These are checked once, at that point
-(`AppState.retainsAudioForCorrection`, `AppState.swift:1584-1587`). After
-that, retained audio is dropped only by the releases below, by watcher
-abandonment, or by expiry.
+A dictation's audio is retained only if all of these hold: suggestions are
+on, the dictionary is readable, and Accessibility is trusted
+(`AppState.retainsAudioForCorrection`, `AppState.swift:1584-1587`).
+
+The conditions are evaluated at recording stop (`AppState.stopAndTranscribe`,
+`AppState.swift:1717-1723`). A streaming transcription also evaluated them
+at recording start (`AppState.beginStreamingDictation`,
+`AppState.swift:1593-1600`). If the retention decision or the dictionary
+revision differs at stop, the streaming session is cancelled and the
+recorded file is transcribed under the decision taken at stop
+(`AppState.takeStreamingDictation`, `AppState.swift:1608-1618`).
+
+Once audio is retained, it is dropped only by the releases below, by
+watcher abandonment, or by expiry. It is not dropped when trust is lost
+later.
 
 - **What is kept.** The per-chunk encoder projections (frames × 640 f32),
   the snapshot, and the base text (§1.6.1).
@@ -736,7 +745,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 | Storage | two UserDefaults keys (§3.2) | the same keys in the host app's UserDefaults, never the App Group | one 0600 file with entries and ignore list (§2.1) |
 | Vocabulary file | `vocabulary.json` | `vocabulary.json` | `tokenizer.vocab`, with scores checked (§1.3) |
 | How corrections are found | Accessibility watcher on the pasted text (§3.5) | none: entries are added by hand | user-initiated `localflowctl correct` (§2.5) |
-| Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode whose every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`) | the strength verified from a correction |
+| Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode that has at least one edit block against the unboosted transcript, where every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`, `Tests/StrengthProbeTests.swift`) | the strength verified from a correction |
 | Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the encoder output is released when `LocalParakeetService.probeStrength` returns; the recorded samples and texts when the sheet closes (`iOS/ARCHITECTURE.md`, "Custom dictionary") | projection of the last typed dictation, 120 s (§2.4) |
 | Candidates that failed at every strength | remembered per dictation (`ExhaustedCandidates`) | not applicable | not remembered (inferred: no such cache in `verify_with_clock`, `worker.rs`) |
 | Full dictionary | nothing verified or offered (`DictionarySuggestionFinder.find`) | not applicable | still verified; `dict-add` then fails with `full` (inferred: no capacity check in `submit_correction` or `verify_with_clock`) |
