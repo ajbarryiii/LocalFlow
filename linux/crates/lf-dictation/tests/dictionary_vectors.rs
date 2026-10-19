@@ -2,8 +2,8 @@
 //! for casing restoration, correction candidates and verification. The
 //! Swift app consumes the same file.
 
-use lf_asr::dictionary::DictionaryEntry;
-use lf_asr::tokenizer::Tokenizer;
+use lf_text::dictionary::DictionaryEntry;
+use lf_text::tokenizer::Tokenizer;
 use lf_dictation::correction::{
     Candidate, CandidateKind, apply_casing, correction_candidates, verify_decision,
 };

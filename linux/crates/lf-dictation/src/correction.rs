@@ -13,10 +13,10 @@
 
 use std::ops::Range;
 
-use lf_asr::dictionary::{
+use lf_text::dictionary::{
     DictionaryEntry, fold, is_edge_punct, is_word_char, strip_edge_punct, validate, words,
 };
-use lf_asr::tokenizer::Tokenizer;
+use lf_text::tokenizer::Tokenizer;
 
 /// Longest text (UTF-8 bytes) a correction is examined for.
 pub const MAX_CORRECTION_BYTES: usize = 4096;

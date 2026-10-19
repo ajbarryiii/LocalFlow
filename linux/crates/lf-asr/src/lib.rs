@@ -1,5 +1,10 @@
 //! Native CPU speech-to-text for the ternary Parakeet TDT 0.6B v2 export:
 //! 16 kHz mono f32 samples in, text out.
+//!
+//! The dictionary text rules and the BPE tokenizer live in the leaf crate
+//! `lf-text`; [`dictionary`] and [`tokenizer`] re-export them and add the
+//! model-dependent parts. The re-exports below let callers load and run a
+//! model without depending on `lf-cpu` or `lf-model` themselves.
 
 pub mod config;
 pub mod dictionary;
@@ -12,6 +17,9 @@ use std::time::Instant;
 
 use lf_cpu::ThreadPool;
 pub use lf_cpu::bias::BiasGraph;
+pub use lf_cpu::cpu_supported;
+pub use lf_cpu::decoder::Storage as DecoderStorage;
+pub use lf_model::Export;
 use lf_model::{Error, Result};
 
 pub use encoder::{Precision, Timings};
@@ -128,7 +136,11 @@ impl Transcriber {
             ..Default::default()
         };
         let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
-        let text = self.model.tokenizer.decode(&tokens)?;
+        let text = self
+            .model
+            .tokenizer
+            .decode(&tokens)
+            .map_err(tokenizer::text_error)?;
         Ok(Transcript {
             text,
             tokens,

@@ -15,13 +15,11 @@ path = "src/bin/localflowctl.rs"
 
 [dependencies]
 lf-asr.workspace = true
-lf-cpu.workspace = true
 lf-dictation = { path = "../lf-dictation" }
 lf-io-api.workspace = true
 lf-media = { path = "../lf-media" }
 lf-pipewire = { path = "../lf-pipewire" }
 lf-wayland = { path = "../lf-wayland" }
-lf-model.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"

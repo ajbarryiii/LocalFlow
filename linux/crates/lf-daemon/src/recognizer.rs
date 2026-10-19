@@ -138,13 +138,13 @@ pub const WARM_UP_SECONDS: usize = 30;
 
 pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> RecognizerFactory {
     Box::new(move || {
-        if !lf_cpu::cpu_supported() {
+        if !lf_asr::cpu_supported() {
             return Err("this CPU lacks AVX-512 F/BW/VNNI/VBMI".into());
         }
         let start = Instant::now();
-        let exp = lf_model::Export::open(&export)
+        let exp = lf_asr::Export::open(&export)
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
-        let model = lf_asr::Model::load(&exp, lf_cpu::decoder::Storage::F16)
+        let model = lf_asr::Model::load(&exp, lf_asr::DecoderStorage::F16)
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
         drop(exp);
         let mut transcriber = lf_asr::Transcriber::new(model, &cpus, precision.to_asr());

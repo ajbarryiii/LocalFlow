@@ -7,6 +7,10 @@
 //! `linux/testdata/dictation-vectors.json`. The prompt tag (Hold to Prompt)
 //! is not in those vectors, since the Swift on `main` lacks it; its unit
 //! tests port `runPromptTagTests` from the Swift branch that adds it.
+//!
+//! [`correction`] (custom dictionary) uses the dictionary text rules and the
+//! BPE tokenizer from the leaf crate `lf-text`; this crate does not depend on
+//! the recognition stack (`lf-asr`, `lf-cpu`, `lf-model`).
 
 pub mod correction;
 mod delimiters;
