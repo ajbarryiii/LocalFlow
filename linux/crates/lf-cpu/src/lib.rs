@@ -2,6 +2,12 @@
 //!
 //! Every ternary GEMM computes `Y[t][o] = scale[o] * sum_i code(o, i) * X[t][i]`
 //! for `T` frames, `K` inputs and `O` outputs, with row-major `X` and `Y`.
+//!
+//! Every `unsafe` block carries a `// SAFETY:` comment naming the precondition
+//! it relies on and where it is established, and every `unsafe fn` documents
+//! its contract under `# Safety`; clippy enforces both.
+
+#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod attention;
 pub mod barrier;
@@ -75,8 +81,11 @@ pub struct Scratch {
     leased: std::sync::atomic::AtomicBool,
 }
 
-// Buffers are only reachable through a lease, and each pool thread only
-// touches its own index.
+// SAFETY: buffers are only reachable through `lease` (which reads their
+// lengths while holding the exclusive lease) and `ScratchLease::get`, whose
+// contract gives each buffer index at most one live reference. The `leased`
+// flag admits one lease at a time, so no two threads ever touch one buffer at
+// once, and `AlignedBuf` (a `Vec`) is `Send`.
 unsafe impl Sync for Scratch {}
 
 impl Scratch {
@@ -108,6 +117,9 @@ impl Scratch {
         );
         for b in &self.bufs {
             assert!(
+                // SAFETY: this call holds the lease (the `swap` above), and
+                // references from `ScratchLease::get` cannot outlive their
+                // lease, so no mutable reference to any buffer is live.
                 unsafe { (*b.get()).len() } >= min_bytes,
                 "scratch buffer too small"
             );
@@ -122,9 +134,13 @@ pub struct ScratchLease<'a> {
 
 impl ScratchLease<'_> {
     /// # Safety
-    /// Only the thread running pool index `idx` may call this, once per job.
+    /// Only the thread running pool index `idx` may call this, once per job:
+    /// no other reference to buffer `idx` may be live while the returned one
+    /// is. (An `idx` past the buffers panics.)
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get(&self, idx: usize) -> &mut AlignedBuf {
+        // SAFETY: the caller contract makes this the only live reference to
+        // buffer `idx`, and the lease keeps every other kernel out of `bufs`.
         unsafe { &mut *self.scratch.bufs[idx].get() }
     }
 }
@@ -147,7 +163,13 @@ impl<T> Clone for SendPtr<T> {
     }
 }
 impl<T> Copy for SendPtr<T> {}
+// SAFETY: a `SendPtr` is only an address. Every dereference is an `unsafe`
+// block at the use site that argues why pool threads touch disjoint elements
+// or are ordered by `ThreadPool::run` and `SpinBarrier`. Every pointee type in
+// this crate is `Send` (`f32`, `u8`, `Partial`, `Panels`, and `T: Send` in
+// `ops::for_each_row_mut`).
 unsafe impl<T> Send for SendPtr<T> {}
+// SAFETY: as for `Send`: sharing the wrapper only shares the address.
 unsafe impl<T> Sync for SendPtr<T> {}
 
 impl<T> SendPtr<T> {

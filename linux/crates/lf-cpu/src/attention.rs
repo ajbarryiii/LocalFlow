@@ -61,7 +61,9 @@ pub fn pack_positions(
     let threads = pool.threads();
     pool.run(&|idx| {
         for h in split_range(heads, threads, idx) {
-            // Each head's panels are written by exactly one work item.
+            // SAFETY: `out` was resized to `heads` entries and `h < heads`. Heads
+            // are split by `split_range`, so each `Panels` gets exactly one `&mut`,
+            // and `pool.run` returns before `out` is used again.
             unsafe { (*op.get().add(h)).pack_rows(&p[h * dk..], rows, dk, d) };
         }
     });
@@ -167,7 +169,12 @@ pub fn rel_pos_attention_with(
             for item in split_range(heads * items, threads, idx) {
                 let (h, what) = (item / items, item % items);
                 let col = h * dk;
-                // Each (head, what) item owns disjoint buffers.
+                // SAFETY: each `(head, what)` item runs on one thread and touches
+                // only its own buffers. `qu` and `qv` hold `n = heads * t * dk`
+                // values and head `h < heads` uses `h * t * dk..(h + 1) * t * dk`;
+                // `ws.k` and `ws.v`, and `ws.p` whenever `items == 4`, were resized
+                // to `heads` entries, so each `Panels` gets one `&mut`. `pool.run`
+                // returns before `ws` is used again.
                 unsafe {
                     match what {
                         0 => {
@@ -232,7 +239,9 @@ pub fn rel_pos_attention_with(
             }
             gemm_serial(&scores, m, tpad, &ws.v[h], 0..ws.v[h].panels(), &mut o, dk);
             for r in 0..m {
-                // Rows i0..i1 of head h's columns belong to this unit only.
+                // SAFETY: `i0 + r < t` and `h < heads`, so the `dk` values at
+                // `(i0 + r) * d + h * dk` lie within `out` (`t * d`, checked). Rows
+                // `i0..i1` of head `h`'s columns belong to this unit only.
                 let dst = unsafe {
                     std::slice::from_raw_parts_mut(op.get().add((i0 + r) * d + h * dk), dk)
                 };
