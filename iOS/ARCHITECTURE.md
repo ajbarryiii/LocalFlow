@@ -1698,6 +1698,39 @@ are never logged, stored or sent, and nothing is learned from them.
 Return at release or rollover. Each edit is asserted right after the event
 that typed it.
 
+### Touchable backgrounds (fix, 2026-10-18)
+
+**Why.** Fast typing dropped letters, mostly on the top row. The finding came
+from a TestFlight typing test on the soft key edges branch, which has
+TestFlight-only counters:
+- LocalFlow dropped 7.0 characters per 100 against 1.3 for Apple's keyboard.
+- In every attempt, the touch-downs the key area received equalled the
+  characters typed, so the dropped taps never reached `touchesBegan`.
+
+In a keyboard extension, iOS reportedly ignores a touch on a fully
+transparent point, even inside a view that would take it (Apple Developer
+Forums thread 702798; the workaround there is a background with a very low
+alpha). The key area, the bar and the menu panel were `.clear`, so taps in the
+12 pt row gaps, between keys, in the padding above the top row and in the
+empty bar never arrived. Apple's own keyboard is not an extension.
+
+**Fix.**
+- The key area, the bar's hosting view and the menu panel's hosting view use
+  `KeyAreaView.touchableBackground`: grey at 2% alpha. That is about 5 of 255
+  in an 8-bit alpha channel, clear of rounding to 0.
+- With the views touchable, a gap tap reaches the key area, whose nearest-key
+  hit testing already covers every point ("no dead gaps"). A tap in the
+  bar's empty space reaches the bar and does nothing, as intended.
+- A tap outside the menu panel's card can close it again: its
+  `Color.black.opacity(0.001)` tap area was likewise transparent.
+
+**Verified on the device** (TestFlight build 30, soft key edges branch, with
+this change added): the user reported the dropped taps essentially gone.
+This cannot be unit-tested. The look is expected to be unchanged, since 2%
+grey is not noticeable over the keyboard's backdrop. While the trackpad runs
+the bar fades to 30%, so its tint can differ very slightly from the key
+area's.
+
 ## Custom dictionary (contract, 2026-10-15)
 
 The macOS custom dictionary (`Sources/Dictionary`, the fixed bonus with a

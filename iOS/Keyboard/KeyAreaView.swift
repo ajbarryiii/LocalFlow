@@ -96,11 +96,16 @@ final class KeyAreaView: UIView {
 
     private var placedKeys: [PlacedKey] { model.keys }
 
+    /// In a keyboard extension iOS ignores touches on fully transparent points, so taps in the gaps between keys,
+    /// the padding and the bar would never arrive. Not transparent, at 2% alpha (about 5 of 255), and not
+    /// noticeable over the keyboard's backdrop (ARCHITECTURE.md, "Touchable backgrounds").
+    static let touchableBackground = UIColor(white: 0.5, alpha: 0.02)
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isMultipleTouchEnabled = true
         clipsToBounds = false
-        backgroundColor = .clear
+        backgroundColor = Self.touchableBackground
         globeButton.setImage(UIImage(systemName: "globe", withConfiguration: UIImage.SymbolConfiguration(pointSize: 19)),
                              for: .normal)
         globeButton.tintColor = .label
