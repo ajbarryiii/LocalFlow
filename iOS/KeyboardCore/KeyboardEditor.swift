@@ -80,8 +80,8 @@ final class KeyboardEditor {
     /// shows.
     private var swipe: (strip: SwipeStrip, edit: ExpectedDocument.ID)? {
         didSet {
-            if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() }
             releaseSwipeEdits()
+            if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() }
         }
     }
     /// The space owed before the next tapped letter or digit after a swiped word ("Space before a tapped
@@ -93,9 +93,13 @@ final class KeyboardEditor {
     /// Each swiped word's own edit (an insertion or a replacement) and where it left the caret, as this
     /// keyboard knows it, with the word as its witness. The proxy may show the edit late and with no
     /// callback, so a reading may confirm it or still lag it (`holds`). Kept only while the strip or the
-    /// pending space refers to it, with no time limit (neither has one): at most two, a replacement's
-    /// being recorded before the word it replaces is let go.
+    /// pending space refers to it, with no time limit (neither has one). Whenever it is consulted (and when
+    /// the strip is reported changed) it holds at most one record, the one both refer to; two exist only
+    /// for the moment a new word's edit is recorded and the old one is not yet let go.
     private var swipeEdits = ExpectedDocument(capacity: 2, lifetime: .infinity)
+
+    /// How many swiped words' edits are recorded now: at most one between calls. For tests.
+    var swipeEditCount: Int { swipeEdits.expectations.count }
 
     init(document: TextDocument, trackpad: TrackpadController) {
         core = EditingCore(document: document)
@@ -369,8 +373,9 @@ final class KeyboardEditor {
             return
         }
         let placed = recordSwipeEdit(of: strip.insertedWord, context, now: now)
-        swipe = (strip, placed)
+        // The pending space first, so the old word's edit is let go before the strip is reported changed.
         pendingSpace = placed
+        swipe = (strip, placed)
         observeShownSwipeEdits(now: now)
     }
 
@@ -398,8 +403,8 @@ final class KeyboardEditor {
             return
         }
         let placed = recordSwipeEdit(of: new, context, now: now)
-        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed)
         pendingSpace = placed
+        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed)
         observeShownSwipeEdits(now: now)
     }
 
@@ -451,6 +456,7 @@ final class KeyboardEditor {
     /// caret positions with identical visible context, and a caret moved between them in the moment before
     /// the host reports it, pass; the worst outcome is an undoable edit to an identical word at a line end.
     private func holds(_ edit: ExpectedDocument.ID, now: TimeInterval) -> Bool {
+        assert(swipeEditCount <= 1, "The strip and the pending space refer to at most one recorded edit")
         guard core.documentID == document.documentID, !document.hasSelection, let word = swipeEdits[edit]?.witness,
               currentBefore?.hasSuffix(word) == true else { return false }
         switch swipeEdits.verdict(of: edit, for: proxyReading, generation: core.generation, now: now) {
@@ -461,6 +467,7 @@ final class KeyboardEditor {
 
     /// Marks each recorded edit the proxy now shows: its reading before the edit is retired for good.
     private func observeShownSwipeEdits(now: TimeInterval) {
+        assert(swipeEditCount <= 1, "The strip and the pending space refer to at most one recorded edit")
         guard swipeEdits.expectations.contains(where: { !$0.shown }) else { return }
         swipeEdits.observe(proxyReading, generation: core.generation, now: now)
     }
