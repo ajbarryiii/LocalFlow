@@ -246,6 +246,10 @@ pub struct PackedDecoder {
 
 impl PackedDecoder {
     pub fn new(p: &DecoderParams, storage: Storage) -> Self {
+        // `decode` indexes `table0` with `vocab - 1` and argmax tokens, so the
+        // vocabulary must hold at least the blank token; `DecoderParams` has
+        // public fields, so a hand-built one can have `vocab == 0`.
+        assert!(p.vocab > 0, "the vocabulary must include blank");
         let h = p.hidden;
         assert!(h.is_multiple_of(16), "hidden size must be a multiple of 16");
         let lstm_sb = h / 16;
@@ -374,9 +378,6 @@ impl PackedDecoder {
         bias: Option<&BiasGraph>,
     ) -> Vec<(usize, usize)> {
         assert!(crate::cpu_supported(), "AVX-512 required");
-        // `decode_thread` indexes `table0` with `vocab - 1` and argmax tokens;
-        // see the UNVERIFIED note where it is called.
-        debug_assert!(self.vocab > 0, "the vocabulary must include blank");
         let n = pool.threads();
         let h = self.hidden;
         let jp = self.joint_padded();
@@ -400,16 +401,12 @@ impl PackedDecoder {
         let barrier = SpinBarrier::new(n);
         let result = Mutex::new(Vec::new());
         pool.run(&|idx| {
-            // SAFETY: AVX-512 F was asserted, `enc_proj` covers `frames * jp`, and
-            // every scheduled frame and token was validated above. `pool.run`
-            // runs this once for every `idx < n` concurrently, with the same
-            // arguments, `state` built for `n` threads and `barrier` for `n`.
-            // SAFETY: UNVERIFIED: the contract also needs `vocab >= 1`. Nothing
-            // enforces it for a `PackedDecoder` built from hand-made
-            // `DecoderParams` (`from_export` guarantees `vocab >= 2`), and the
-            // `debug_assert!` above checks it in debug builds only; with
-            // `vocab == 0` a release build wraps `vocab - 1` and reads past
-            // `table0`.
+            // SAFETY: AVX-512 F was asserted, `vocab >= 1` is asserted by
+            // `PackedDecoder::new` (the only constructor), `enc_proj` covers
+            // `frames * jp`, and every scheduled frame and token was validated
+            // above. `pool.run` runs this once for every `idx < n` concurrently,
+            // with the same arguments, `state` built for `n` threads and
+            // `barrier` for `n`.
             let emitted = unsafe {
                 self.decode_thread(idx, n, &state, &barrier, enc_proj, frames, schedule, bias)
             };
@@ -463,7 +460,7 @@ impl PackedDecoder {
         let mut bonus = vec![0.0f32; bias_rows.len()];
 
         // SAFETY: AVX-512 F (caller contract). `token < vocab`: it is `blank =
-        // vocab - 1` (`vocab >= 1` by contract), an argmax row below `vocab` (or
+        // vocab - 1` (`vocab >= 1`: `PackedDecoder::new`), an argmax row below `vocab` (or
         // 0 if no logit beat -inf), or a scheduled token below `vocab - 1`; so
         // the `table0` row `token * 4 * h` exists (`table0` is `[vocab][4h]`).
         // This thread's `sb < h / 16` index superblocks of `w0` and `w1_*`
@@ -1188,6 +1185,16 @@ pub mod reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand-built decoder without even the blank token must be rejected at
+    /// construction: decoding indexes its embedding table with `vocab - 1`.
+    #[test]
+    #[should_panic(expected = "the vocabulary must include blank")]
+    fn empty_vocabulary_is_rejected() {
+        let mut p = DecoderParams::random(2, 16, 16, 16, 1);
+        p.vocab = 0;
+        PackedDecoder::new(&p, Storage::F32);
+    }
 
     fn encoder_frames(frames: usize, dim: usize, seed: u64) -> Vec<f32> {
         let mut rng = SplitMix64::new(seed);
