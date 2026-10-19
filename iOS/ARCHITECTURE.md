@@ -1870,17 +1870,22 @@ TestFlight only, measure what is left.
 - On build 29, after the bar change, LocalFlow still dropped 7.0 characters
   per 100 against Apple's 1.3. Touch-downs still equalled characters typed,
   and most drops were still on the top row.
-- In a keyboard extension, iOS ignores a touch on a fully transparent point,
-  even inside a view that would take it (Apple Developer Forums 702798; the
-  workaround there is a background with a very low alpha). The key area and
-  the bar were `.clear`. So every tap in the 12 pt row gaps, between keys, in
-  the padding above the top row, and in the empty bar never reached the
-  keyboard. Apple's own keyboard is not an extension and is not affected.
+- The counters show only that the taps were not delivered, not why or
+  where. The suspected cause: in a keyboard extension, iOS reportedly ignores
+  a touch on a fully transparent point, even inside a view that would take it
+  (Apple Developer Forums 702798; the workaround there is a background with a
+  very low alpha). The key area and the bar were `.clear`. If that is the
+  cause, taps in the 12 pt row gaps, between keys, in the padding above the
+  top row and in the empty bar never reached the keyboard. Apple's own
+  keyboard is not an extension.
 - The key area, the bar's hosting view and the menu panel's view now have
   `KeyAreaView.touchableBackground`: grey at 2% alpha (about 5 of 255 in an
-  8-bit alpha channel, clear of rounding to 0). It is not visible over the
-  keyboard's backdrop.
-- Verify on the device with the typing test. This cannot be unit-tested.
+  8-bit alpha channel, clear of rounding to 0). Its look over the keyboard's
+  backdrop is expected to be negligible. While the trackpad runs, the bar
+  fades to 30%, so its tint can differ very slightly from the key area's.
+- Pending on the device: the typing test (does the drop rate fall?), and the
+  look in light mode, dark mode and trackpad mode. This cannot be
+  unit-tested.
 
 **Reach above the keys.**
 - The key area also takes touches that land up to

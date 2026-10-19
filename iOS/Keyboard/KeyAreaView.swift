@@ -130,9 +130,10 @@ final class KeyAreaView: UIView {
 
     private var placedKeys: [PlacedKey] { model.keys }
 
-    /// In a keyboard extension iOS ignores touches on fully transparent points, so the gaps between keys, the
-    /// padding and the bar would drop taps before any view saw them. This is invisible over the keyboard's
-    /// backdrop, but not transparent: 2% alpha, about 5 of 255 (ARCHITECTURE.md, "Touchable backgrounds").
+    /// In a keyboard extension iOS reportedly ignores touches on fully transparent points, the suspected cause
+    /// of taps in the gaps between keys, the padding and the bar never arriving. Not transparent, at 2% alpha
+    /// (about 5 of 255), and expected to look the same over the keyboard's backdrop; both are pending on the
+    /// device (ARCHITECTURE.md, "Touchable backgrounds").
     static let touchableBackground = UIColor(white: 0.5, alpha: 0.02)
 
     override init(frame: CGRect) {
