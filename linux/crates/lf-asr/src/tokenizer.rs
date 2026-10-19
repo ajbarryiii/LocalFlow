@@ -20,8 +20,8 @@ pub fn from_vocab_file(
         )));
     }
     if let Some(cv) = config_vocab {
-        let same = cv.len() == pieces.len()
-            && cv.iter().zip(&pieces).all(|(a, b)| a.as_str() == Some(b));
+        let same =
+            cv.len() == pieces.len() && cv.iter().zip(&pieces).all(|(a, b)| a.as_str() == Some(b));
         if !same {
             return Err(Error(
                 "tokenizer.vocab disagrees with the config vocabulary".into(),

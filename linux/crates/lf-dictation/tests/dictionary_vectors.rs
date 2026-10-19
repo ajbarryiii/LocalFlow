@@ -2,11 +2,11 @@
 //! for casing restoration, correction candidates and verification. The
 //! Swift app consumes the same file.
 
-use lf_text::dictionary::DictionaryEntry;
-use lf_text::tokenizer::Tokenizer;
 use lf_dictation::correction::{
     Candidate, CandidateKind, apply_casing, correction_candidates, verify_decision,
 };
+use lf_text::dictionary::DictionaryEntry;
+use lf_text::tokenizer::Tokenizer;
 use serde_json::Value;
 
 fn vectors() -> Value {
