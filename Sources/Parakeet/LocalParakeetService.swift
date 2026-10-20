@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import AVFoundation
 import CoreML
 import Foundation

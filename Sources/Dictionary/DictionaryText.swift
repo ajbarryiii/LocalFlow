@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 /// Text units shared by every dictionary algorithm (DESIGN §1.0). Characters

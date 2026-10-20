@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! Word boosting (contextual biasing) for greedy TDT decoding.
 //!
 //! A [`BiasGraph`] is an Aho-Corasick automaton over token ids: a trie of

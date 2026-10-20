@@ -1,6 +1,7 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
-/// Contract tests for the custom dictionary (DESIGN v2 §1 and §3, pins P1-P5).
+/// Contract tests for the custom dictionary (DESIGN v2 §1 and §3, pins P1-P8).
 /// All text is invented. The shared vectors live in linux/testdata and are
 /// found relative to this file.
 enum DictionaryTests {
