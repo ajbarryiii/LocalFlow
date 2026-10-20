@@ -30,16 +30,30 @@ pub fn gemm(
     let lease = scratch.lease(threads, scratch_bytes());
     let yp = SendPtr(y.as_mut_ptr());
     pool.run(&|idx| {
+        // SAFETY: `pool.run` calls this closure once per index, so this thread
+        // is the only user of buffer `idx` under this lease.
         let tile = unsafe { lease.get(idx) }.as_mut_ptr().cast::<f32>();
         for b in split_range(w.blocks(), threads, idx) {
             let mut kb = 0;
             while kb < k {
                 let kc = KC.min(k - kb);
+                // SAFETY: AVX-512 F was asserted on entry. `kb` and `kc` are
+                // multiples of 4 (`PackedTernary::new` makes `k % 4 == 0`, and
+                // `KC % 4 == 0`), so quads `kb / 4..(kb + kc) / 4` lie within the
+                // block's `k / 4`; the `kc * 64` floats written fit this thread's
+                // 64-byte aligned tile of `scratch_bytes()`, checked by `lease`.
                 unsafe { x86::expand_block(w.block(b), kb / 4, kc / 4, tile) };
                 let last = kb + kc == k;
                 let mut t0 = 0;
                 while t0 < t {
                     let rows = MR.min(t - t0);
+                    // SAFETY: AVX-512 F was asserted on entry, and the tile holds
+                    // `kc * 64` expanded floats. Rows `t0..t0 + rows` of `x` (stride
+                    // `k`) and `y` (stride `o`) lie within the `t * k` and `t * o`
+                    // checked on entry; columns `b * 64..b * 64 + 64` lie within `o`
+                    // and `w.scale()` (`PackedTernary::new`: `o % 64 == 0`,
+                    // `scale.len() == o`). Threads own whole blocks `b`, so their
+                    // `y` columns are disjoint.
                     unsafe {
                         x86::kernel_for(rows)(
                             tile,
@@ -86,14 +100,22 @@ mod x86 {
     }
 
     /// Expands quads `q0..q0 + nq` of one block into `[4 * nq][64]` floats.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F, `src` must hold at least
+    /// `(q0 + nq) * 64` bytes, and `dst` must be 64-byte aligned and valid for
+    /// writes of `4 * nq * 64` floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn expand_block(src: &[u8], q0: usize, nq: usize, dst: *mut f32) {
         let mut table = [0.0f32; 16];
         table[1] = 1.0;
         table[2] = -1.0;
+        // SAFETY: `table` is a local array of 16 floats.
         let table = unsafe { _mm512_loadu_ps(table.as_ptr()) };
         let three = _mm512_set1_epi32(3);
         for ql in 0..nq {
+            // SAFETY: `q0 + ql < q0 + nq`, so the 64 bytes lie within `src`
+            // (caller contract).
             let c = unsafe { _mm512_loadu_si512(src.as_ptr().add((q0 + ql) * 64).cast()) };
             let lanes = [
                 _mm512_extracti32x4_epi32::<0>(c),
@@ -109,12 +131,20 @@ mod x86 {
                         three,
                     );
                     let vals = _mm512_permutexvar_ps(f, table);
+                    // SAFETY: the offset is a multiple of 16 floats and ends by
+                    // `4 * nq * 64`, so the aligned store stays inside `dst`.
                     unsafe { _mm512_store_ps(dst.add((4 * ql + k4) * 64 + v * 16), vals) };
                 }
             }
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F. `tile` must be 64-byte aligned with
+    /// `kc * 64` readable floats; `x` must be readable at `r * ldx + i` for
+    /// `r < R`, `i < kc`; `y` must be valid for reads and writes of 64 floats
+    /// at each `r * ldy` for `r < R`, with no other thread accessing them;
+    /// `scale` must be null or point to 64 readable floats.
     #[target_feature(enable = "avx512f")]
     unsafe fn kernel<const R: usize>(
         tile: *const f32,
@@ -128,9 +158,12 @@ mod x86 {
     ) {
         let mut acc = [[_mm512_setzero_ps(); 4]; R];
         for k in 0..kc {
+            // SAFETY: `k < kc`, so row `k` lies inside the tile.
             let wp = unsafe { tile.add(k * 64) };
+            // SAFETY: 16 floats of tile row `k`, 64-byte aligned (`v * 16 < 64`).
             let w: [__m512; 4] = std::array::from_fn(|v| unsafe { _mm512_load_ps(wp.add(v * 16)) });
             for r in 0..R {
+                // SAFETY: `r < R` and `k < kc` (caller contract).
                 let b = _mm512_set1_ps(unsafe { *x.add(r * ldx + k) });
                 for v in 0..4 {
                     acc[r][v] = _mm512_fmadd_ps(w[v], b, acc[r][v]);
@@ -139,14 +172,19 @@ mod x86 {
         }
         for r in 0..R {
             for v in 0..4 {
+                // SAFETY: `r < R` and `v * 16 < 64` (caller contract).
                 let p = unsafe { y.add(r * ldy + v * 16) };
                 let mut out = acc[r][v];
                 if accumulate {
+                    // SAFETY: `p` points at 16 of row `r`'s 64 readable floats.
                     out = _mm512_add_ps(out, unsafe { _mm512_loadu_ps(p) });
                 }
                 if !scale.is_null() {
+                    // SAFETY: a non-null `scale` has 64 floats (caller contract).
                     out = _mm512_mul_ps(out, unsafe { _mm512_loadu_ps(scale.add(v * 16)) });
                 }
+                // SAFETY: `p` points at 16 of row `r`'s 64 floats, which only this
+                // thread accesses (caller contract).
                 unsafe { _mm512_storeu_ps(p, out) };
             }
         }

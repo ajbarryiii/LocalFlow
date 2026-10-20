@@ -296,8 +296,17 @@ pub fn gemm(
             // every thread of the group finished that before it reached the
             // barrier of chunk `chunk - 1`, which this thread has passed.
             debug_assert!(nbuf == 2 || chunk == 0);
+            // SAFETY: `groups_for` makes `fg` divide `threads`, so `gi = idx / tg <
+            // fg`, and `ensure` gave table `gi` at least `plan.table_bytes()`, i.e.
+            // `nbuf * half` floats; buffer `chunk % nbuf` starts inside it.
             let tab = unsafe { tables[gi].get().add((chunk % nbuf) * half) };
-            // Each thread writes only its own input groups' tables.
+            // SAFETY: AVX-512 F was asserted on entry. Frames `f0..f0 + nf` lie in
+            // this group's part of `0..t`, and `x` holds `t * k` values (checked).
+            // `tab` is 64-byte aligned (`half` is a multiple of 16 floats) with
+            // `half` floats, enough for `nf <= fc` frames of all `gp` groups. Each
+            // thread writes only its own input groups' tables (`split_range`),
+            // other frame groups use other tables, and the buffer is free (see
+            // above); nobody reads it before the barrier below.
             unsafe {
                 x86::build_tables(x.add(f0 * k), k, nf, split_range(gp, tg, ti), gp, mf, tab)
             };
@@ -311,6 +320,12 @@ pub fn gemm(
                     let nb = bpp.min(blocks - b0);
                     let nv = nb * 4;
                     for pb in 0..nb {
+                        // SAFETY: AVX-512 F/BW/VBMI were asserted on entry, and
+                        // `b0 + pb < blocks`, so `w.block(b0 + pb)` has `quads * 64`
+                        // bytes. With `stride = nv * 64` and `vbase =
+                        // pb * 4 <= nv - 4`, the writes end by `ng * nv * 64 <=
+                        // kc_groups * panel_vectors * 64 = tile_bytes`, the size
+                        // `ensure` gave every thread's own 64-byte aligned tile.
                         unsafe {
                             x86::expand_block(
                                 w.block(b0 + pb),
@@ -326,6 +341,15 @@ pub fn gemm(
                     let mut fl = 0;
                     while fl < nf {
                         let rows = mf.min(nf - fl);
+                        // SAFETY: AVX-512 F was asserted on entry. The tile holds
+                        // groups `g0..g0 + ng` for `nv` vectors. `fl % mf == 0`, so
+                        // frames `fl..fl + rows` form one `mf`-frame block of the
+                        // tables, all written by this group before the barrier;
+                        // `tab_stride = mf * 16` keeps every load 64-byte aligned.
+                        // `y` rows `f0 + fl..f0 + fl + rows` are below `t` and columns
+                        // `b0 * 64..b0 * 64 + nv * 16` below `o = w.scale().len()`
+                        // (`t * o` checked on entry). Frame groups own disjoint
+                        // frames and their threads disjoint panels.
                         unsafe {
                             x86::kernel_for(nv, rows)(
                                 tile,
@@ -429,6 +453,12 @@ mod x86 {
     /// Tables for `nf` frames (`x` at the chunk's first frame, `k` per row)
     /// and the input groups in `groups`, stored at
     /// `tab[((f / mf * gp + g) * mf + f % mf) * 16]`. Inputs past `k` count as zero.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `x` must be readable for `nf` rows of
+    /// `k` floats (stride `k`); `groups.end <= gp`; `tab` must be 64-byte
+    /// aligned and valid for writes of `nf.div_ceil(mf) * mf * gp * 16` floats,
+    /// and no other thread may access the entries of `groups` meanwhile.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn build_tables(
         x: *const f32,
@@ -439,6 +469,7 @@ mod x86 {
         mf: usize,
         tab: *mut f32,
     ) {
+        // SAFETY: each `DIGITS[i]` is a constant array of 16 floats.
         let d: [__m512; 3] =
             std::array::from_fn(|i| unsafe { _mm512_loadu_ps(DIGITS[i].as_ptr()) });
         // Groups wholly inside `k` need no bounds checks.
@@ -447,21 +478,33 @@ mod x86 {
             let fb = f0 / mf;
             let n = mf.min(nf - f0);
             for g in groups.start..full {
+                // SAFETY: `fb < nf.div_ceil(mf)` and `g < gp`, inside `tab`.
                 let out = unsafe { tab.add((fb * gp + g) * mf * 16) };
                 for fi in 0..n {
+                    // SAFETY: `f0 + fi < nf` and `g < full <= k / 3`, so inputs
+                    // `3 * g..3 * g + 3` lie in that frame's row.
                     let p = unsafe { x.add((f0 + fi) * k + 3 * g) };
+                    // SAFETY: input `3 * g` of the row (see above).
                     let s = _mm512_mul_ps(_mm512_set1_ps(unsafe { *p }), d[0]);
+                    // SAFETY: input `3 * g + 1 < k` of the row.
                     let s = _mm512_fmadd_ps(_mm512_set1_ps(unsafe { *p.add(1) }), d[1], s);
+                    // SAFETY: input `3 * g + 2 < k` of the row.
                     let s = _mm512_fmadd_ps(_mm512_set1_ps(unsafe { *p.add(2) }), d[2], s);
+                    // SAFETY: `fi < n <= mf`, so the 16 floats stay in group `g`'s
+                    // block entry; offsets are multiples of 16 floats, keeping the
+                    // aligned store aligned.
                     unsafe { _mm512_store_ps(out.add(fi * 16), s) };
                 }
             }
             for g in full..groups.end {
+                // SAFETY: `fb < nf.div_ceil(mf)` and `g < gp`, inside `tab`.
                 let out = unsafe { tab.add((fb * gp + g) * mf * 16) };
                 for fi in 0..n {
+                    // SAFETY: `f0 + fi < nf`, so the row start is inside `x`.
                     let row = unsafe { x.add((f0 + fi) * k) };
                     let v = |i: usize| {
                         if 3 * g + i < k {
+                            // SAFETY: input `3 * g + i < k` of the row.
                             _mm512_set1_ps(unsafe { *row.add(3 * g + i) })
                         } else {
                             _mm512_setzero_ps()
@@ -470,6 +513,7 @@ mod x86 {
                     let s = _mm512_mul_ps(v(0), d[0]);
                     let s = _mm512_fmadd_ps(v(1), d[1], s);
                     let s = _mm512_fmadd_ps(v(2), d[2], s);
+                    // SAFETY: as for the full groups above.
                     unsafe { _mm512_store_ps(out.add(fi * 16), s) };
                 }
             }
@@ -481,6 +525,12 @@ mod x86 {
     /// goes to `dst[gl * stride + (vbase + v) * TILE_VEC]` as 16 i32: `|v|` in
     /// bits 0..4 (all `vpermps` reads) and the sign of `v` in bits 7..32.
     /// Quads past `quads` count as zero.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F, BW and VBMI. `src` must hold at least
+    /// `quads * 64` bytes. `dst` must be 64-byte aligned, `stride` a multiple
+    /// of 64 with `(vbase + 4) * 64 <= stride`, and `dst` valid for writes of
+    /// `ng * stride` bytes that no other thread accesses.
     #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
     pub unsafe fn expand_block(
         src: &[u8],
@@ -492,11 +542,14 @@ mod x86 {
         dst: *mut u8,
     ) {
         debug_assert!(g0.is_multiple_of(4) && ng.is_multiple_of(4));
+        // SAFETY: `PATTERN` is a constant array of 64 bytes.
         let lut = unsafe { _mm512_loadu_si512(PATTERN.as_ptr().cast()) };
         let low2 = _mm512_set1_epi8(0x03);
         let low4 = _mm512_set1_epi8(0x0f);
         let load = |q: usize| {
             if q < quads {
+                // SAFETY: `q < quads`, so the 64 bytes lie within `src` (caller
+                // contract).
                 unsafe { _mm512_loadu_si512(src.as_ptr().add(q * 64).cast()) }
             } else {
                 _mm512_setzero_si512()
@@ -531,11 +584,16 @@ mod x86 {
                     _mm512_extracti32x4_epi32::<2>(bytes),
                     _mm512_extracti32x4_epi32::<3>(bytes),
                 ];
+                // SAFETY: `4 * m + j < ng`, so the group's row lies inside the
+                // `ng * stride` bytes of `dst`.
                 let base = unsafe { dst.add((4 * m + j) * stride) };
                 for (v, &lane) in lanes.iter().enumerate() {
                     // Sign extension keeps |v| in bits 0..4 and smears the sign
                     // from bit 7 to bit 31.
                     let index = _mm512_cvtepi8_epi32(lane);
+                    // SAFETY: `(vbase + v + 1) * 64 <= stride`, so the 64 bytes stay
+                    // in this group's row; offsets are multiples of 64, keeping the
+                    // aligned store aligned (caller contract).
                     unsafe { _mm512_store_si512(base.add((vbase + v) * TILE_VEC).cast(), index) };
                 }
             }
@@ -543,6 +601,14 @@ mod x86 {
     }
 
     /// `F` frames x `V` vectors of accumulators over `ng` groups.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `tile` must be 64-byte aligned with
+    /// `ng * V * 64` readable bytes. `tab` must be 64-byte aligned, `tab_stride`
+    /// a multiple of 16, and 16 floats readable at `g * tab_stride + f * 16`
+    /// for `g < ng`, `f < F`. `y` must be valid for reads and writes of
+    /// `V * 16` floats at each `f * ldy` for `f < F`, with no other thread
+    /// accessing them; `scale` must be null or point to `V * 16` readable floats.
     #[target_feature(enable = "avx512f")]
     unsafe fn kernel<const V: usize, const F: usize>(
         tile: *const u8,
@@ -558,11 +624,15 @@ mod x86 {
         let one = _mm512_set1_epi32(1.0f32.to_bits() as i32);
         let mut acc = [[_mm512_setzero_ps(); V]; F];
         for g in 0..ng {
+            // SAFETY: `g < ng` (caller contract).
             let tb = unsafe { tab.add(g * tab_stride) };
+            // SAFETY: `f < F`; aligned and readable by the caller contract.
             let tables: [__m512; F] =
                 std::array::from_fn(|f| unsafe { _mm512_load_ps(tb.add(f * 16)) });
+            // SAFETY: `g < ng`, inside the tile.
             let tp = unsafe { tile.add(g * V * TILE_VEC) };
             for v in 0..V {
+                // SAFETY: `v < V`, 64 aligned bytes of group `g`'s tile row.
                 let index = unsafe { _mm512_load_si512(tp.add(v * TILE_VEC).cast()) };
                 // 0xEA: (a & b) | c, i.e. the sign bit of the index on 1.0.
                 let sign =
@@ -575,14 +645,19 @@ mod x86 {
         }
         for f in 0..F {
             for v in 0..V {
+                // SAFETY: `f < F` and `v < V` (caller contract).
                 let p = unsafe { y.add(f * ldy + v * 16) };
                 let mut out = acc[f][v];
                 if accumulate {
+                    // SAFETY: 16 of frame `f`'s `V * 16` readable floats.
                     out = _mm512_add_ps(out, unsafe { _mm512_loadu_ps(p) });
                 }
                 if !scale.is_null() {
+                    // SAFETY: a non-null `scale` has `V * 16` floats (caller contract).
                     out = _mm512_mul_ps(out, unsafe { _mm512_loadu_ps(scale.add(v * 16)) });
                 }
+                // SAFETY: 16 of frame `f`'s `V * 16` floats, which only this thread
+                // accesses (caller contract).
                 unsafe { _mm512_storeu_ps(p, out) };
             }
         }

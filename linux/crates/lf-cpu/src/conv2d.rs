@@ -56,6 +56,10 @@ pub fn conv0_dw(
             let r1 = (2 * (b - 1) + 2).min(t1);
             for r in r0..r1 {
                 for f in 0..f1 {
+                    // SAFETY: AVX-512 F, `feat` (`t0 * f0`) and the `w0`/`b0`
+                    // lengths were checked on entry. `r1 - r0 <= 2 * CHUNK_OUT + 1`
+                    // and `f < f1`, so the 256 floats written stay inside this
+                    // thread's own `tile`.
                     unsafe {
                         x86::conv0_point(
                             feat.as_ptr(),
@@ -72,6 +76,11 @@ pub fn conv0_dw(
             }
             for t in a..b {
                 for f in 0..f2 {
+                    // SAFETY: the kernel reads only tile rows `r0..r1` (all written
+                    // above) at columns below `f1`, inside `tile`; the `w2`/`b2`
+                    // lengths were checked. `t < t2` and `f < f2` keep the 256
+                    // floats written inside `out` (`t2 * f2 * 256`, checked), and
+                    // output rows `a..b` belong to this thread's chunk only.
                     unsafe {
                         x86::dw_point(
                             tile.as_ptr(),
@@ -113,6 +122,11 @@ pub fn depthwise_s2(
     pool.run(&|idx| {
         for r in split_range(to, threads, idx) {
             for c in 0..fo {
+                // SAFETY: AVX-512 F, `input` (`t * f * 256`) and the `w`/`b`
+                // lengths were checked on entry, and the kernel reads only rows
+                // below `t` and columns below `f`. `r < to` and `c < fo` keep the
+                // write inside `out` (`to * fo * 256`, checked); output row `r`
+                // belongs to this thread only.
                 unsafe {
                     x86::dw_point(
                         input.as_ptr(),
@@ -140,6 +154,11 @@ mod x86 {
     const V: usize = CHANNELS / 16;
 
     /// One output position of conv0 (single input channel) followed by ReLU.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `feat` must be readable for `t0 * f0`
+    /// floats, `w` for `9 * 256` and `b` for 256; `out` must be valid for
+    /// writes of 256 floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn conv0_point(
         feat: *const f32,
@@ -151,6 +170,10 @@ mod x86 {
         b: *const f32,
         out: *mut f32,
     ) {
+        // SAFETY: taps outside `0..t0` x `0..f0` are skipped (the wrapping `-1`
+        // is out of range too), so `feat` reads stay below `t0 * f0`; `w` reads
+        // stay below `9 * 256`, `b` reads below 256 and `out` writes below 256
+        // (caller contract).
         unsafe {
             let mut acc: [__m512; V] = std::array::from_fn(|v| _mm512_loadu_ps(b.add(v * 16)));
             for dt in 0..3 {
@@ -179,6 +202,12 @@ mod x86 {
 
     /// One output position of a depthwise 3x3 stride-2 convolution. `input`
     /// holds rows `row0..row1` of a `[rows][fi][256]` tensor; other rows are zero.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `input` must be readable for
+    /// `(row1 - row0) * fi_len * 256` floats, `w` for `9 * 256` and `b` for
+    /// 256; `out` must be valid for writes of 256 floats that no other thread
+    /// accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn dw_point(
         input: *const f32,
@@ -191,6 +220,10 @@ mod x86 {
         b: *const f32,
         out: *mut f32,
     ) {
+        // SAFETY: taps outside rows `row0..row1` and columns `0..fi_len` are
+        // skipped (the wrapping `-1` is out of range too), so `input` reads stay
+        // below `(row1 - row0) * fi_len * 256`; `w`, `b` and `out` stay within
+        // the sizes in the caller contract.
         unsafe {
             let mut acc: [__m512; V] = std::array::from_fn(|v| _mm512_loadu_ps(b.add(v * 16)));
             for dt in 0..3 {

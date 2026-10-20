@@ -9,6 +9,7 @@
 pub mod log;
 
 pub mod backends;
+pub mod capture;
 pub mod config;
 pub mod controller;
 pub mod daemon;

@@ -54,6 +54,9 @@ SHELL_SCRIPTS = $(shell find .github/scripts .agents/skills -name '*.sh' -type f
 YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
 RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
+# macOS 26 deprecates the legacy CBLAS declarations the Parakeet decoder calls;
+# the new LAPACK headers keep the same 32-bit signatures.
+ACCELERATE_FLAGS = -Xcc -DACCELERATE_NEW_LAPACK
 PARAKEET_BUNDLE_DIR ?=
 SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
 PARAKEET_BUNDLE_STAMP = $(BUILD_DIR)/parakeet-bundle-selection
@@ -85,40 +88,22 @@ ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 endif
 
-.PHONY: all check clean run icon dmg codesign-dmg notarize test typecheck validate
+.PHONY: all check clean run icon dmg codesign-dmg notarize release-preflight test typecheck validate
 
 all: parakeet-selection $(APP_EXECUTABLE_TARGET)
 
 $(APP_EXECUTABLE_TARGET): $(SOURCES) Info.plist $(ICON_ICNS) $(PARAKEET_BUNDLE_STAMP) $(wildcard Resources/Parakeet/*) Resources/Attribution.txt LICENSE scripts/label-localflow-model.py
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
-ifeq ($(ARCH),universal)
-	swiftc \
-		-parse-as-library \
-		$(SWIFT_OPTIMIZATION) \
-		-o "$(MACOS_DIR)/$(APP_NAME)-arm64" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target arm64-apple-macosx13.0 \
-		$(SOURCES)
-	swiftc \
-		-parse-as-library \
-		$(SWIFT_OPTIMIZATION) \
-		-o "$(MACOS_DIR)/$(APP_NAME)-x86_64" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target x86_64-apple-macosx13.0 \
-		$(SOURCES)
-	lipo -create -output "$(MACOS_DIR)/$(APP_NAME)" \
-		"$(MACOS_DIR)/$(APP_NAME)-arm64" \
-		"$(MACOS_DIR)/$(APP_NAME)-x86_64"
-	@rm "$(MACOS_DIR)/$(APP_NAME)-arm64" "$(MACOS_DIR)/$(APP_NAME)-x86_64"
-else
+ifneq ($(ARCH),arm64)
+	$(error LocalFlow builds for Apple Silicon only; set ARCH=arm64 (got "$(ARCH)"))
+endif
 	swiftc \
 		-parse-as-library \
 		$(SWIFT_OPTIMIZATION) \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
 		-sdk $(shell xcrun --show-sdk-path) \
-		-target $(ARCH)-apple-macosx13.0 \
+		-target $(ARCH)-apple-macosx26.0 $(ACCELERATE_FLAGS) \
 		$(SOURCES)
-endif
 	@cp Info.plist "$(CONTENTS)/"
 	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
@@ -152,6 +137,19 @@ endif
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
+# Release builds must ship the model. Without PARAKEET_BUNDLE_DIR the app
+# bundle is built without Resources/Parakeet and every dictation fails.
+release-preflight:
+	@if [ -z "$(strip $(PARAKEET_BUNDLE_DIR))" ]; then \
+		echo "release-preflight: PARAKEET_BUNDLE_DIR is not set; a release build must include the model bundle." >&2; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PARAKEET_BUNDLE_DIR)/bundle.json" ]; then \
+		echo "release-preflight: PARAKEET_BUNDLE_DIR has no bundle.json; point it at a prepared model bundle." >&2; \
+		exit 1; \
+	fi
+	@echo "release-preflight: model bundle found."
+
 check: typecheck test validate
 
 typecheck:
@@ -160,7 +158,7 @@ typecheck:
 		-typecheck \
 		-warnings-as-errors \
 		-sdk $(shell xcrun --show-sdk-path) \
-		-target $(ARCH)-apple-macosx13.0 \
+		-target $(ARCH)-apple-macosx26.0 $(ACCELERATE_FLAGS) \
 		$(SOURCES)
 
 test:
@@ -170,7 +168,7 @@ test:
 		-warnings-as-errors \
 		-o "$(TEST_RUNNER)" \
 		-sdk $(shell xcrun --show-sdk-path) \
-		-target $(ARCH)-apple-macosx13.0 \
+		-target $(ARCH)-apple-macosx26.0 $(ACCELERATE_FLAGS) \
 		$(TEST_PRODUCTION_SOURCES) \
 		$(TEST_SOURCES)
 	@$(TEST_RUNNER)
@@ -180,6 +178,7 @@ validate:
 	plutil -lint Info.plist FreeFlow.entitlements
 	@set -e; for script in $(SHELL_SCRIPTS); do bash -n "$$script"; done
 	@ruby -e 'require "yaml"; ARGV.each { |file| YAML.load_file(file) }' $(YAML_FILES)
+	@python3 -I scripts/check-shared-vectors.py
 
 icon: $(ICON_ICNS)
 
