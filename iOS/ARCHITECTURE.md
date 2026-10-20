@@ -1173,10 +1173,7 @@ Values measured on Apple's keyboard, device values first
 - **Cancel during a surrogate-pair repair.** A repair out of a surrogate
   pair's middle that is still out when the gesture is cancelled or the
   keyboard hides is watched the same way, and a caret it leaves inside the
-  cluster goes on to the cluster's edge in the repair's direction. This lands
-  with the pull request on branch `ios/trackpad-pair-repair-cancel`. Until
-  that merges, a cancel or hide in that one-frame window can leave the caret
-  inside the cluster.
+  cluster goes on to the cluster's edge in the repair's direction.
 - **Known limits.** Hosts whose reports arrive later than `syncTimeout` are
   outside these guarantees: a probe resolved by timeout may learn the wrong
   unit, and a jump on such a host can stop inside a hidden cluster.
