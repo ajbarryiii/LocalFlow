@@ -11,6 +11,7 @@ enum DictionaryTests {
         testValidation()
         testDictionaryRules()
         testStorage()
+        testStorageCapacity()
         testGraphHandCases()
         testDecisionHandCases()
         testSurfacesAndBuild()
@@ -226,6 +227,34 @@ enum DictionaryTests {
         let tooMany = "{\"version\":1,\"entries\":[" + (0...DictionaryValidation.capacity)
             .map { "{\"text\":\"w\($0)x\",\"strength\":1}" }.joined(separator: ",") + "]}"
         TestSupport.expect(load(tooMany, nil) == .failure(.unreadable), "More than 1000 entries is corrupt")
+    }
+
+    /// Whatever `encode` writes must load again (DESIGN §3.2). The ignore list
+    /// is the payload that can grow past 1 MiB: 1000 keys of 300 scalars (pin
+    /// P6) of 4-byte scalars. Entries are at most 1000 of 100 scalars.
+    private static func testStorageCapacity() {
+        // U+20000 and its neighbours are letters (Lo) with no case mapping, so
+        // a run of them is its own fold, and each is 4 bytes of UTF-8.
+        func key(_ i: Int) -> DictionaryKey {
+            DictionaryKey(folded: [Unicode.Scalar(0x20000 + i)!]
+                + Array(repeating: Unicode.Scalar(0x20000)!, count: DictionaryKey.maxScalars - 1))
+        }
+        var dictionary = CustomDictionary()
+        for i in 0..<DictionaryValidation.capacity {
+            TestSupport.expect(dictionary.upsert(DictionaryEntry(text: "w\(i)x", strength: 1)) == nil, "Entries fill up")
+        }
+        for i in 0..<DictionaryValidation.ignoreCapacity {
+            TestSupport.expect(dictionary.addIgnore(key(i)) == nil, "The ignore list fills up with the longest keys")
+        }
+        let stored = DictionaryStorage.encode(dictionary)
+        TestSupport.expect(stored.ignore.count > 1 << 20, "The longest ignore list is over 1 MiB")
+        TestSupport.expect(stored.entries.count <= DictionaryStorage.maxBytes && stored.ignore.count <= DictionaryStorage.maxBytes,
+                           "Saved payloads stay within the load cap")
+        guard case .success(let reloaded) = DictionaryStorage.load(entriesData: stored.entries, ignoreData: stored.ignore,
+                                                                    encoder: nil) else {
+            fatalError("A full dictionary must load again")
+        }
+        TestSupport.expect(reloaded == dictionary, "A full dictionary round-trips")
     }
 
     // MARK: - §1.2 graph (hand cases, mandatory)
