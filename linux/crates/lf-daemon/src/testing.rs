@@ -468,7 +468,30 @@ pub fn synthetic_tokenizer() -> Tokenizer {
     Tokenizer::from_pieces(pieces).expect("synthetic vocabulary")
 }
 
-/// A private temporary directory (mode 0700), removed on drop.
+/// A Unix socket path must fit `sockaddr_un::sun_path`: 108 bytes on Linux,
+/// with the terminating NUL.
+const SUN_PATH_MAX: usize = 107;
+
+/// The longest socket path a rig binds below its [`TempDir`]: the daemon's
+/// control socket under a runtime directory named `run`
+/// (`/run/localflow/ctl.sock`).
+const SOCKET_ROOM: usize =
+    "/run/".len() + crate::paths::APP_DIR.len() + 1 + crate::paths::SOCKET_NAME.len();
+
+/// Where a temporary directory named `name` is created: `temp` (the
+/// process's temporary directory), unless the control socket below the new
+/// directory would not fit `sun_path`; then `/tmp`. CI runners and `nix
+/// develop` nest long temporary directories.
+fn temp_parent(temp: PathBuf, name: &str) -> PathBuf {
+    if temp.as_os_str().len() + 1 + name.len() + SOCKET_ROOM <= SUN_PATH_MAX {
+        temp
+    } else {
+        PathBuf::from("/tmp")
+    }
+}
+
+/// A private temporary directory (mode 0700), removed on drop, with room
+/// below it for the daemon's control socket (see [`temp_parent`]).
 pub struct TempDir(PathBuf);
 
 impl TempDir {
@@ -477,11 +500,12 @@ impl TempDir {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
-        let path = std::env::temp_dir().join(format!(
+        let name = format!(
             "lf-daemon-{tag}-{}-{}-{nanos}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let path = temp_parent(std::env::temp_dir(), &name).join(name);
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -498,5 +522,26 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_directories_leave_room_for_the_control_socket() {
+        // The longest name that still fits stays where TMPDIR says; one byte
+        // more moves the directory to /tmp.
+        let room = SUN_PATH_MAX - SOCKET_ROOM - "/n".len();
+        let fits = PathBuf::from(format!("/{}", "d".repeat(room - 1)));
+        assert_eq!(temp_parent(fits.clone(), "n"), fits);
+        let long = PathBuf::from(format!("/{}", "d".repeat(room)));
+        assert_eq!(temp_parent(long, "n"), PathBuf::from("/tmp"));
+
+        // Whatever TMPDIR is, a rig's socket path fits.
+        let t = TempDir::new("room");
+        assert!(t.path().as_os_str().len() + SOCKET_ROOM <= SUN_PATH_MAX);
+        assert!(t.path().is_dir());
     }
 }
