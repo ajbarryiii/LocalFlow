@@ -548,8 +548,8 @@ version = "0.1.0"
 dependencies = [
  "lf-cpu",
  "lf-model",
+ "lf-text",
  "serde_json",
- "unicode-properties",
 ]
 
 [[package]]
@@ -578,11 +578,9 @@ version = "0.1.0"
 dependencies = [
  "claxon",
  "lf-asr",
- "lf-cpu",
  "lf-dictation",
  "lf-io-api",
  "lf-media",
- "lf-model",
  "lf-pipewire",
  "lf-wayland",
  "libc",
@@ -595,7 +593,7 @@ dependencies = [
 name = "lf-dictation"
 version = "0.1.0"
 dependencies = [
- "lf-asr",
+ "lf-text",
  "serde_json",
  "unicode-normalization",
  "unicode-properties",
@@ -631,6 +629,14 @@ dependencies = [
  "lf-io-api",
  "libc",
  "pipewire",
+]
+
+[[package]]
+name = "lf-text"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "unicode-properties",
 ]
 
 [[package]]

@@ -247,6 +247,10 @@ pub struct PackedDecoder {
 
 impl PackedDecoder {
     pub fn new(p: &DecoderParams, storage: Storage) -> Self {
+        // `decode` indexes `table0` with `vocab - 1` and argmax tokens, so the
+        // vocabulary must hold at least the blank token; `DecoderParams` has
+        // public fields, so a hand-built one can have `vocab == 0`.
+        assert!(p.vocab > 0, "the vocabulary must include blank");
         let h = p.hidden;
         assert!(h.is_multiple_of(16), "hidden size must be a multiple of 16");
         let lstm_sb = h / 16;
@@ -333,6 +337,12 @@ impl PackedDecoder {
                 let (sb, tb) = (u % sbs, u / sbs);
                 let t0 = tb * 6;
                 let rows = 6.min(frames - t0);
+                // SAFETY: AVX-512 F was asserted on entry. `sb < jp / 64`, a
+                // superblock of `w_enc` (`[jp / 64][enc_dim][64]`) and `b_enc` (`jp`)
+                // as packed by `new`. `t0 < frames` and `rows <= frames - t0`, so
+                // input rows lie in `enc` (`frames * enc_dim`, checked) and output
+                // rows in `out` (`frames * jp`). Units `(sb, tb)` are distinct, so
+                // threads write disjoint 64-column blocks.
                 unsafe {
                     x86::gemm_rows(
                         &self.w_enc,
@@ -392,6 +402,12 @@ impl PackedDecoder {
         let barrier = SpinBarrier::new(n);
         let result = Mutex::new(Vec::new());
         pool.run(&|idx| {
+            // SAFETY: AVX-512 F was asserted, `vocab >= 1` is asserted by
+            // `PackedDecoder::new` (the only constructor), `enc_proj` covers
+            // `frames * jp`, and every scheduled frame and token was validated
+            // above. `pool.run` runs this once for every `idx < n` concurrently,
+            // with the same arguments, `state` built for `n` threads and
+            // `barrier` for `n`.
             let emitted = unsafe {
                 self.decode_thread(idx, n, &state, &barrier, enc_proj, frames, schedule, bias)
             };
@@ -402,6 +418,16 @@ impl PackedDecoder {
         result.into_inner().unwrap()
     }
 
+    /// One pool thread's share of [`Self::decode`].
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. Exactly `n` threads, one per `idx < n`,
+    /// must run this concurrently with otherwise identical arguments, so that
+    /// all take the same decisions and meet at the same barriers. `st` must
+    /// come from `DecodeState::new(n, hidden, joint_padded)` and `barrier` from
+    /// `SpinBarrier::new(n)`. `enc_proj` must hold `frames * joint_padded`
+    /// values, every scheduled frame must be below `frames` and every
+    /// scheduled token below `vocab - 1`. `vocab` must be at least 1.
     #[allow(clippy::too_many_arguments)]
     unsafe fn decode_thread(
         &self,
@@ -434,6 +460,20 @@ impl PackedDecoder {
         };
         let mut bonus = vec![0.0f32; bias_rows.len()];
 
+        // SAFETY: AVX-512 F (caller contract). `token < vocab`: it is `blank =
+        // vocab - 1` (`vocab >= 1`: `PackedDecoder::new`), an argmax row below `vocab` (or
+        // 0 if no logit beat -inf), or a scheduled token below `vocab - 1`; so
+        // the `table0` row `token * 4 * h` exists (`table0` is `[vocab][4h]`).
+        // This thread's `sb < h / 16` index superblocks of `w0` and `w1_*`
+        // (`[h / 16][h][64]`), 64 values of the `table0` row and of `b1` (`4h`),
+        // and 16 values of the `h`-value `c*`/`h*` buffers; pred `sb < jp / 64`
+        // index `w_pred`, `b_pred` and `g` (`jp`). Phases are ordered by
+        // `barrier`: threads write only their own superblocks' slices, read
+        // whole vectors only after the barrier that follows their writes, and
+        // `h*_in`/`h*_out` are different buffers (`parity`) whose reads in the
+        // previous step ended before a barrier this thread has passed. All
+        // threads call `step` at the same points because they reduce the same
+        // partials to the same decisions.
         let step = |token: usize, parity: usize| unsafe {
             let (h0_in, h0_out) = (st.h0[parity].get(), st.h0[1 - parity].get());
             let (h1_in, h1_out) = (st.h1[parity].get(), st.h1[1 - parity].get());
@@ -500,6 +540,15 @@ impl PackedDecoder {
                 g.bonuses(bias_state, bias_rows.start, &mut bonus);
             }
             // Joint: z = relu(enc_proj[frame] + g); logits for this thread's rows.
+            // SAFETY: AVX-512 F (caller contract). `frame < frames` (the loop
+            // condition, or a validated scheduled frame), so `enc_proj` row
+            // `frame` has `jp` values; `g` and this thread's `z` hold `jp` values
+            // (`jp % 64 == 0`), and `g` was completed before the last barrier of
+            // the previous `step`. Superblocks `sb < out_rows.div_ceil(64)` lie in
+            // `w_out` (`[..][joint][64]`) and `b_out`; `z` has `jp >= joint`
+            // inputs and `logits` 64 outputs. `partial[idx]` (`idx < n`) is this
+            // thread's slot; every thread finished reading it before the second
+            // barrier of the previous decision.
             unsafe {
                 x86::relu_add(
                     enc_proj.as_ptr().add(frame * jp),
@@ -563,6 +612,9 @@ impl PackedDecoder {
             // Every thread reduces the same partials in index order (first max wins).
             let mut best = Partial::NONE;
             for i in 0..n {
+                // SAFETY: `i < n` partial slots; every thread wrote its slot
+                // before the barrier above, and none writes again before the
+                // barrier below.
                 let p = unsafe { *st.partial.get().add(i) };
                 if bias.is_some() {
                     if p.tok_score > best.tok_score {
@@ -708,6 +760,9 @@ impl DecodeState {
     }
 }
 
+// SAFETY: the fields are owned buffers and `SendPtr`s into them, which are
+// already `Sync`; `decode_thread`'s barrier protocol orders every access
+// through those pointers across threads.
 unsafe impl Sync for DecodeState {}
 
 #[cfg(target_arch = "x86_64")]
@@ -718,6 +773,11 @@ mod x86 {
     use std::arch::x86_64::*;
 
     trait Elem: Copy {
+        /// Loads 16 values at `p` as f32.
+        ///
+        /// # Safety
+        /// The CPU must support AVX-512 F, and `p` must be readable for 16
+        /// values.
         unsafe fn load16(p: *const Self) -> __m512;
     }
 
@@ -725,6 +785,7 @@ mod x86 {
         #[inline]
         #[target_feature(enable = "avx512f")]
         unsafe fn load16(p: *const f32) -> __m512 {
+            // SAFETY: 16 readable floats at `p` (trait contract).
             unsafe { _mm512_loadu_ps(p) }
         }
     }
@@ -733,12 +794,17 @@ mod x86 {
         #[inline]
         #[target_feature(enable = "avx512f")]
         unsafe fn load16(p: *const u16) -> __m512 {
+            // SAFETY: 16 readable `u16`s (32 bytes) at `p` (trait contract).
             unsafe { _mm512_cvtph_ps(_mm256_loadu_si256(p.cast())) }
         }
     }
 
     /// Sum over `k` of superblock weights `[k][64]` times `x[k]`, two k at a time
     /// so eight independent FMA chains hide latency.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F; `w` must be readable for `k * 64`
+    /// values and `x` for `k` floats.
     #[inline]
     #[target_feature(enable = "avx512f")]
     unsafe fn dot64<E: Elem>(w: *const E, k: usize, x: *const f32) -> [__m512; 4] {
@@ -746,18 +812,24 @@ mod x86 {
         let mut i = 0;
         while i + 2 <= k {
             for u in 0..2 {
+                // SAFETY: `i + u < k` (caller contract).
                 let xb = _mm512_set1_ps(unsafe { *x.add(i + u) });
+                // SAFETY: `i + u < k`, so weight row `i + u` lies inside `w`.
                 let wp = unsafe { w.add((i + u) * SB) };
                 for v in 0..4 {
+                    // SAFETY: 16 of weight row `i + u`'s 64 values.
                     a[u][v] = _mm512_fmadd_ps(unsafe { E::load16(wp.add(v * 16)) }, xb, a[u][v]);
                 }
             }
             i += 2;
         }
         if i < k {
+            // SAFETY: `i < k` (caller contract).
             let xb = _mm512_set1_ps(unsafe { *x.add(i) });
+            // SAFETY: `i < k`, so weight row `i` lies inside `w`.
             let wp = unsafe { w.add(i * SB) };
             for v in 0..4 {
+                // SAFETY: 16 of weight row `i`'s 64 values.
                 a[0][v] = _mm512_fmadd_ps(unsafe { E::load16(wp.add(v * 16)) }, xb, a[0][v]);
             }
         }
@@ -768,8 +840,14 @@ mod x86 {
         w[sb * k * SB..].as_ptr()
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F; `w` must hold superblock `sb` of
+    /// `k * 64` values (`(sb + 1) * k * 64` in all), and `x` must be readable
+    /// for `k` floats.
     #[target_feature(enable = "avx512f")]
     unsafe fn dot_weights(w: &Weights, sb: usize, k: usize, x: *const f32) -> [__m512; 4] {
+        // SAFETY: `superblock` points at superblock `sb`, which has `k * 64`
+        // values (caller contract); `x` has `k` floats.
         unsafe {
             match w {
                 Weights::F32(v) => dot64(superblock(v, sb, k), k, x),
@@ -780,6 +858,12 @@ mod x86 {
 
     /// One LSTM superblock (16 hidden units, gates i, f, g, o): pre-activations from
     /// `wa * xa (+ wb * xb) + bias`, then the cell and hidden updates for those units.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `wa` (and `wb`) must hold superblock
+    /// `sb` of `k * 64` values, `xa` (and `xb`) must be readable for `k`
+    /// floats and `bias` for 64. `c` must be valid for reads and writes and
+    /// `h_out` for writes of 16 floats, with no other thread accessing them.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn lstm_superblock(
         wa: &Weights,
@@ -792,6 +876,8 @@ mod x86 {
         c: *mut f32,
         h_out: *mut f32,
     ) {
+        // SAFETY: the weight, input and `bias` reads and the 16-float `c` and
+        // `h_out` accesses are exactly those the caller contract covers.
         unsafe {
             let mut g = dot_weights(wa, sb, k, xa);
             if let (Some(wb), Some(xb)) = (wb, xb) {
@@ -815,6 +901,13 @@ mod x86 {
 
     /// `rows` input rows (stride `ldx`) times superblock `sb` of `w` (`[k][64]`) plus bias,
     /// written to `out` (stride `ldo`, 64 values per row).
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `w` must hold superblock `sb` of
+    /// `k * 64` values; `x` must be readable at `r * ldx + i` for `r < rows`,
+    /// `i < k`; `bias` must be readable for 64 floats; `out` must be valid for
+    /// writes of 64 floats at each `r * ldo` for `r < rows`, with no other
+    /// thread accessing them.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn gemm_rows(
         w: &Weights,
@@ -827,6 +920,8 @@ mod x86 {
         ldo: usize,
         bias: *const f32,
     ) {
+        // SAFETY: `superblock` points at superblock `sb`, which has `k * 64`
+        // values; the other pointers are passed on under this contract.
         unsafe {
             match w {
                 Weights::F32(v) => {
@@ -839,6 +934,8 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// As [`gemm_rows`], with `w` readable for `k * 64` values.
     #[target_feature(enable = "avx512f")]
     unsafe fn gemm_dispatch<E: Elem>(
         w: *const E,
@@ -850,6 +947,9 @@ mod x86 {
         ldo: usize,
         bias: *const f32,
     ) {
+        // SAFETY: the one-row path reads `k * 64` weights, `k` inputs and 64
+        // `bias` floats and writes 64 `out` floats; the others pass the same
+        // contract to `gemm_r` with `R = rows`.
         unsafe {
             match rows {
                 1 => {
@@ -871,6 +971,8 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// As [`gemm_rows`] with `rows = R`, and `w` readable for `k * 64` values.
     #[inline]
     #[target_feature(enable = "avx512f")]
     unsafe fn gemm_r<E: Elem, const R: usize>(
@@ -884,9 +986,12 @@ mod x86 {
     ) {
         let mut acc = [[_mm512_setzero_ps(); 4]; R];
         for i in 0..k {
+            // SAFETY: `i < k`, so weight row `i` lies inside `w`.
             let wp = unsafe { w.add(i * SB) };
+            // SAFETY: 16 of weight row `i`'s 64 values.
             let wv: [__m512; 4] = std::array::from_fn(|v| unsafe { E::load16(wp.add(v * 16)) });
             for r in 0..R {
+                // SAFETY: `r < R` and `i < k` (caller contract).
                 let xb = _mm512_set1_ps(unsafe { *x.add(r * ldx + i) });
                 for v in 0..4 {
                     acc[r][v] = _mm512_fmadd_ps(wv[v], xb, acc[r][v]);
@@ -895,17 +1000,26 @@ mod x86 {
         }
         for r in 0..R {
             for v in 0..4 {
+                // SAFETY: 16 of `bias`'s 64 floats.
                 let b = unsafe { _mm512_loadu_ps(bias.add(v * 16)) };
+                // SAFETY: 16 of row `r`'s 64 output floats, which only this thread
+                // accesses (caller contract).
                 unsafe { _mm512_storeu_ps(out.add(r * ldo + v * 16), _mm512_add_ps(acc[r][v], b)) };
             }
         }
     }
 
     /// `z = max(a + b, 0)` over `n` (a multiple of 16) values.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F and `n` must be a multiple of 16. `a`
+    /// and `b` must be readable for `n` floats, and `z` valid for writes of
+    /// `n` floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn relu_add(a: *const f32, b: *const f32, z: *mut f32, n: usize) {
         let zero = _mm512_setzero_ps();
         for i in (0..n).step_by(16) {
+            // SAFETY: `i + 16 <= n` (`n % 16 == 0`), inside all three buffers.
             unsafe {
                 let s = _mm512_add_ps(_mm512_loadu_ps(a.add(i)), _mm512_loadu_ps(b.add(i)));
                 _mm512_storeu_ps(z.add(i), _mm512_max_ps(s, zero));
@@ -1072,6 +1186,16 @@ pub mod reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand-built decoder without even the blank token must be rejected at
+    /// construction: decoding indexes its embedding table with `vocab - 1`.
+    #[test]
+    #[should_panic(expected = "the vocabulary must include blank")]
+    fn empty_vocabulary_is_rejected() {
+        let mut p = DecoderParams::random(2, 16, 16, 16, 1);
+        p.vocab = 0;
+        PackedDecoder::new(&p, Storage::F32);
+    }
 
     fn encoder_frames(frames: usize, dim: usize, seed: u64) -> Vec<f32> {
         let mut rng = SplitMix64::new(seed);

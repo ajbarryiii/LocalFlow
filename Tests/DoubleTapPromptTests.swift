@@ -20,7 +20,7 @@ enum DoubleTapPromptTests {
         testStampsKeepEventTimeState()
         testQueuedRecordingWork()
         testDiscardedAudioIsDeleted()
-        testDelayedTapStillEndsCorrections()
+        MainActor.assumeIsolated { testDelayedTapStillEndsCorrections() }
         testCaptureStateIsPerAttempt()
         testCancelBeforeBackgroundStartEnters()
         testStaleFailureCannotHitNextCapture()
@@ -30,7 +30,7 @@ enum DoubleTapPromptTests {
         testFailedSetupLeavesNextStartAlone()
         testReleaseAndPressArriveBeforeHandling()
         testManualRecordingVoidsTap()
-        testSuggestionDuringDelayedStart()
+        MainActor.assumeIsolated { testSuggestionDuringDelayedStart() }
         testQueuedInputInterruptionsStayInOrder()
         testDiscardedStartNeverPublishesRecording()
     }
@@ -517,6 +517,7 @@ enum DoubleTapPromptTests {
     /// #5: a tap released before the shortcut start delay never started a
     /// recording, but its discard still ends any correction watch and releases
     /// retained audio, as starting would have.
+    @MainActor
     private static func testDelayedTapStillEndsCorrections() {
         let delayed = RecordingCleanup()
         DictationCleanupSteps.discardTooShortHold(isRecording: false, delayed)
@@ -705,6 +706,7 @@ enum DoubleTapPromptTests {
     /// Review 4 #3: with a start delay, a press while verification is pending;
     /// the verification result arrives during the delay; a quick release.
     /// No suggestion may be shown, and none may remain.
+    @MainActor
     private static func testSuggestionDuringDelayedStart() {
         let word = DictionarySuggestion(word: "Kubernetes", strength: 1, kind: .replace)
         var gate = SuggestionPresentationGate()
@@ -831,25 +833,4 @@ enum DoubleTapPromptTests {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
     }
-}
-
-/// Records what a cleanup step list did, in order, with optional effects.
-private final class RecordingCleanup: DictationCleanupActions {
-    var log: [String] = []
-    var onStopCorrections: () -> Void = {}
-    var onWithdraw: () -> Void = {}
-
-    func stopCorrectionSuggestions() {
-        log.append("stopCorrections")
-        onStopCorrections()
-    }
-
-    func withdrawDictionarySuggestion() {
-        log.append("withdraw")
-        onWithdraw()
-    }
-
-    func invalidateRecordingAttempt() { log.append("invalidate") }
-
-    func cancelDiscardedCapture() { log.append("cancelCapture") }
 }

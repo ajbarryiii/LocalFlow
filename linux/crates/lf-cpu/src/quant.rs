@@ -97,10 +97,18 @@ impl QuantizedActs {
         pool.run(&|idx| {
             for t in split_range(rows, threads, idx) {
                 let row = &x[t * k..(t + 1) * k];
-                // Each thread writes disjoint frames; both buffers hold at least `rows`.
+                // SAFETY: `t < rows`, and `self.q` holds `scale.len() * n * k >=
+                // rows * n * k` bytes (`with_capacity` and the resize above keep
+                // the two lengths in step). `split_range` gives each frame to one
+                // thread, so the slices are disjoint, and `pool.run` returns
+                // before `self.q` is used again.
                 let out = unsafe { std::slice::from_raw_parts_mut(q.get().add(t * n * k), n * k) };
+                // SAFETY: `t < rows <= self.scale.len()`, and frame `t` belongs to
+                // this thread only.
                 let scale = unsafe { &mut *s.get().add(t) };
                 let ok = if vector {
+                    // SAFETY: `vector` implies `cpu_supported()` (AVX-512 F and BW)
+                    // and `k % 16 == 0`; `row` has `k` values and `out` `n * k`.
                     unsafe { avx512::quantize_row(row, n, out, scale) }
                 } else {
                     quantize_row_scalar(row, n, out, scale)
@@ -163,6 +171,9 @@ mod avx512 {
     use super::{WEIGHTS, too_small};
     use std::arch::x86_64::*;
 
+    /// # Safety
+    /// The CPU must support AVX-512 F and BW, `x.len()` must be a multiple of
+    /// 16, and `out` must hold at least `n * x.len()` bytes.
     #[target_feature(enable = "avx512f,avx512bw")]
     pub unsafe fn quantize_row(x: &[f32], n: usize, out: &mut [u8], scale: &mut f32) -> bool {
         let k = x.len();
@@ -171,6 +182,7 @@ mod avx512 {
         let inf = _mm512_set1_ps(f32::INFINITY);
         let mut non_finite: __mmask16 = 0;
         for i in (0..k).step_by(16) {
+            // SAFETY: `k % 16 == 0` (caller contract), so `i + 16 <= k`.
             let a = _mm512_abs_ps(unsafe { _mm512_loadu_ps(p.add(i)) });
             // "Not less than infinity, or unordered": infinities and NaNs.
             non_finite |= _mm512_cmp_ps_mask::<_CMP_NLT_UQ>(a, inf);
@@ -191,6 +203,7 @@ mod avx512 {
         let offset = _mm512_set1_epi32(128);
         let o = out.as_mut_ptr();
         for i in (0..k).step_by(16) {
+            // SAFETY: `k % 16 == 0` (caller contract), so `i + 16 <= k`.
             let mut r = unsafe { _mm512_loadu_ps(p.add(i)) };
             for (c, &wt) in WEIGHTS.iter().enumerate().take(n) {
                 let mult = _mm512_set1_ps(inv * wt);
@@ -201,6 +214,8 @@ mod avx512 {
                 let q = _mm512_min_epi32(_mm512_max_epi32(q, lo), hi);
                 r = _mm512_fnmadd_ps(_mm512_cvtepi32_ps(q), step, r);
                 let bytes = _mm512_cvtepi32_epi8(_mm512_add_epi32(q, offset));
+                // SAFETY: `c < n` and `i + 16 <= k`, so the 16 bytes end by
+                // `n * k <= out.len()` (caller contract).
                 unsafe { _mm_storeu_si128(o.add(c * k + i).cast(), bytes) };
             }
         }
@@ -231,6 +246,8 @@ mod tests {
             let (mut a, mut b) = (vec![0u8; n * 1024], vec![0u8; n * 1024]);
             let (mut sa, mut sb) = (0.0, 0.0);
             quantize_row_scalar(&x, n, &mut a, &mut sa);
+            // SAFETY: `cpu_supported()` was checked above, 1024 is a multiple
+            // of 16, and `b` holds `n * 1024` bytes.
             unsafe { avx512::quantize_row(&x, n, &mut b, &mut sb) };
             assert_eq!(sa, sb);
             assert_eq!(a, b, "components {n}");

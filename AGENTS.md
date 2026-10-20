@@ -67,6 +67,8 @@ git diff --check
 
 `make check` performs a full Swift type-check, compiles and runs deterministic
 tests, validates plist files, and parses repository shell scripts and YAML.
+It also fails if any `linux/testdata/*.json` vectors file is not referenced by
+name from both `Tests/` and `linux/crates/`.
 
 A full app build is usually unnecessary. When a compile-and-bundle check is
 material to the change, use:

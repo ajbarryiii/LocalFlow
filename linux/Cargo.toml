@@ -12,6 +12,7 @@ publish = false
 lf-model = { path = "crates/lf-model" }
 lf-cpu = { path = "crates/lf-cpu" }
 lf-asr = { path = "crates/lf-asr" }
+lf-text = { path = "crates/lf-text" }
 lf-io-api = { path = "crates/lf-io-api" }
 libc = "0.2"
 serde_json = "1"

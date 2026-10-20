@@ -38,7 +38,9 @@ struct SwipeStrip: Equatable, Sendable {
 ///   with no callback, so for `contextWatch` after each one the shift follows it every frame.
 /// - **Swiped words** (`insertSwipe`) go in like a key, with a leading space and the shift's case; the
 ///   candidate strip that follows (`swipeStrip`) can replace the word only while nothing else has
-///   edited the field (`EditingCore.generation`) and the text before the caret still ends with it.
+///   edited the field (`EditingCore.generation`) and the text before the caret still ends with it. The
+///   swiped word's edit is recorded in an `ExpectedDocument`, which tells a lagging proxy from a changed
+///   field.
 /// Context is read in memory only; the typing tail and the strip are dropped on hiding.
 final class KeyboardEditor {
     /// How long after an own edit the shift keeps following the proxy, which may show the edit late and
@@ -74,31 +76,30 @@ final class KeyboardEditor {
 
     /// The strip shown after a swipe, nil when closed.
     var swipeStrip: SwipeStrip? { swipe?.strip }
-    /// The strip, and where its word left the caret. Held in memory only while the strip shows.
-    private var swipe: (strip: SwipeStrip, anchor: SwipeAnchor)? {
-        didSet { if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() } }
+    /// The strip, and the edit that put its word in (`swipeEdits`). Held in memory only while the strip
+    /// shows.
+    private var swipe: (strip: SwipeStrip, edit: ExpectedDocument.ID)? {
+        didSet {
+            releaseSwipeEdits()
+            if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() }
+        }
     }
     /// The space owed before the next tapped letter or digit after a swiped word ("Space before a tapped
-    /// word"), and where the word left the caret. Separate from the strip, which Shift and layer keys close
+    /// word"), and the edit that put the word in. Separate from the strip, which Shift and layer keys close
     /// while this survives them. In memory only.
-    private var pendingSpace: SwipeAnchor?
-
-    /// Where a swiped word's own edit (an insertion or a replacement) left the caret, as this keyboard
-    /// knows it. The proxy may show the edit late and with no callback, so it is checked against both the
-    /// reading before the edit and the text the edit left (`holds`).
-    private struct SwipeAnchor {
-        var word: String
-        var documentID: UUID?
-        var generation: Int
-        /// What the proxy read before the edit: one that has not shown the edit yet still reads this.
-        var readingBefore: String
-        /// The text before the caret the edit left (the text before it, then the word) and after it.
-        var expectedBefore: String
-        var expectedAfter: String
-        /// The proxy has been seen showing the edit: from then on the reading before it is an older state of
-        /// the field (the host may have undone the edit without a report yet), never a lagging proxy.
-        var shown = false
+    private var pendingSpace: ExpectedDocument.ID? {
+        didSet { releaseSwipeEdits() }
     }
+    /// Each swiped word's own edit (an insertion or a replacement) and where it left the caret, as this
+    /// keyboard knows it, with the word as its witness. The proxy may show the edit late and with no
+    /// callback, so a reading may confirm it or still lag it (`holds`). Kept only while the strip or the
+    /// pending space refers to it, with no time limit (neither has one). Whenever it is consulted (and when
+    /// the strip is reported changed) it holds at most one record, the one both refer to; two exist only
+    /// for the moment a new word's edit is recorded and the old one is not yet let go.
+    private var swipeEdits = ExpectedDocument(capacity: 2, lifetime: .infinity)
+
+    /// How many swiped words' edits are recorded now: at most one between calls. For tests.
+    var swipeEditCount: Int { swipeEdits.expectations.count }
 
     init(document: TextDocument, trackpad: TrackpadController) {
         core = EditingCore(document: document)
@@ -190,7 +191,7 @@ final class KeyboardEditor {
         tail.proxyChanged(before: document.contextBefore)
         if hadModel, tail.known == nil { typing.resetTiming() }
         updateAutomaticShift()
-        observeShownSwipeEdits()
+        observeShownSwipeEdits(now: now)
         return outcome
     }
 
@@ -220,7 +221,7 @@ final class KeyboardEditor {
     /// field identified when the key was pressed (nil if none was).
     func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
         // Every key sees whether the proxy now shows a swiped word, before anything changes.
-        observeShownSwipeEdits()
+        observeShownSwipeEdits(now: now)
         // VoiceOver's delete is the strip's first deletion like the held delete key's.
         if action == .delete, deleteSwipedWord(field: field, now: now) { return }
         // Any other key action closes the strip, typed or refused.
@@ -229,7 +230,7 @@ final class KeyboardEditor {
         // keep that space pending; every other key ends it.
         let spaced: Bool
         if case .character(let character) = action, let first = character.first, first.isLetter || first.isNumber {
-            spaced = pendingSpaceApplies()
+            spaced = pendingSpaceApplies(now: now)
         } else {
             spaced = false
         }
@@ -310,7 +311,7 @@ final class KeyboardEditor {
     func service(now: TimeInterval) {
         guard let until = contextWatchUntil else { return }
         if now >= until { contextWatchUntil = nil }
-        observeShownSwipeEdits()
+        observeShownSwipeEdits(now: now)
         guard !trackpad.isActive else { return }
         let shift = typing.shift
         applyAutomaticShift()
@@ -349,7 +350,7 @@ final class KeyboardEditor {
         let words = candidates.map(\.word).filter { !$0.isEmpty }
         guard !words.isEmpty else { return }
         var strip: SwipeStrip?
-        var context: (reading: String, before: String, after: String)?
+        var context: SwipeEditContext?
         let typed = type(field: field, now: now) { [self] before in
             let space = Self.swipeNeedsSpace(before: before) ? " " : ""
             let shift = swipeShift(after: (before ?? "") + space)
@@ -361,7 +362,8 @@ final class KeyboardEditor {
             // A one-shot shift is consumed as by a typed letter.
             typing.didTypeCharacter(cased[0])
             strip = SwipeStrip(candidates: cased, inserted: 0)
-            context = (document.contextBefore ?? "", (before ?? "") + space + cased[0], document.contextAfter ?? "")
+            context = SwipeEditContext(reading: proxyReading, deleted: 0, inserted: space + cased[0],
+                                       before: (before ?? "") + space + cased[0])
             return (0, space + cased[0])
         }
         guard typed, let strip, let context else {
@@ -370,10 +372,11 @@ final class KeyboardEditor {
             pendingSpace = nil
             return
         }
-        let placed = anchor(strip.insertedWord, context)
-        swipe = (strip, placed)
+        let placed = recordSwipeEdit(of: strip.insertedWord, context, now: now)
+        // The pending space first, so the old word's edit is let go before the strip is reported changed.
         pendingSpace = placed
-        observeShownSwipeEdits()
+        swipe = (strip, placed)
+        observeShownSwipeEdits(now: now)
     }
 
     /// A tap on the strip's candidate `index`: it replaces the inserted word, but only while nothing else
@@ -381,7 +384,7 @@ final class KeyboardEditor {
     /// does nothing and the strip closes.
     func chooseSwipeCandidate(at index: Int, now: TimeInterval) {
         guard let shown = swipe else { return }
-        guard let strip = currentSwipe() else {
+        guard let strip = currentSwipe(now: now) else {
             swipe = nil
             pendingSpace = nil
             return
@@ -389,19 +392,20 @@ final class KeyboardEditor {
         guard strip.candidates.indices.contains(index), index != strip.inserted else { return }
         let old = strip.insertedWord.count
         let new = strip.candidates[index]
-        var context: (reading: String, before: String, after: String)?
-        let replaced = type(field: shown.anchor.documentID, now: now, recordEachDeletion: true) { [self] before in
-            context = (document.contextBefore ?? "", String((before ?? "").dropLast(old)) + new, document.contextAfter ?? "")
+        var context: SwipeEditContext?
+        let replaced = type(field: swipeEdits[shown.edit]?.documentID, now: now, recordEachDeletion: true) { [self] before in
+            context = SwipeEditContext(reading: proxyReading, deleted: old, inserted: new,
+                                       before: String((before ?? "").dropLast(old)) + new)
             return (old, new)
         }
         guard replaced, let context else {
             swipe = nil
             return
         }
-        let placed = anchor(new, context)
-        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed)
+        let placed = recordSwipeEdit(of: new, context, now: now)
         pendingSpace = placed
-        observeShownSwipeEdits()
+        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed)
+        observeShownSwipeEdits(now: now)
     }
 
     /// Closes the strip and ends a pending space (the trackpad began, even without a gesture).
@@ -410,73 +414,82 @@ final class KeyboardEditor {
         pendingSpace = nil
     }
 
-    /// The anchor of `word`, just typed by an edit made on `context` (the proxy's reading before it, and
-    /// the text before and after the caret it left).
-    private func anchor(_ word: String, _ context: (reading: String, before: String, after: String)) -> SwipeAnchor {
-        SwipeAnchor(word: word, documentID: document.documentID, generation: core.generation,
-                    readingBefore: context.reading, expectedBefore: context.before, expectedAfter: context.after)
+    /// A swiped word's edit as it is typed: the proxy's reading before it, the graphemes it deletes and the
+    /// text it inserts, and the text before the caret it leaves (the text before it, then the word).
+    private struct SwipeEditContext {
+        var reading: ExpectedDocument.Reading
+        var deleted: Int
+        var inserted: String
+        var before: String
     }
 
-    /// Whether the caret is still where the anchored edit left it: the same field, no edit by anything else
-    /// since (an own edit's report never counts), nothing selected, the text before the caret ending with
-    /// the word, and the proxy showing the text after the caret the edit left, and before it either the
-    /// text the edit left (`showsEdit`) or, only until the proxy has been seen showing the edit, exactly its
-    /// reading before the edit (it lags). A caret moved without a report yet (perhaps after another copy of
-    /// the word), or the edit undone by the host before its report, fails.
-    private func holds(_ anchor: SwipeAnchor) -> Bool {
-        guard document.documentID == anchor.documentID, core.documentID == anchor.documentID,
-              core.generation == anchor.generation, !document.hasSelection,
-              (document.contextAfter ?? "") == anchor.expectedAfter,
-              currentBefore?.hasSuffix(anchor.word) == true else { return false }
-        if !anchor.shown, (document.contextBefore ?? "") == anchor.readingBefore { return true }
-        return showsEdit(anchor)
+    /// What the proxy reads now.
+    private var proxyReading: ExpectedDocument.Reading {
+        ExpectedDocument.Reading(documentID: document.documentID, before: document.contextBefore,
+                                 after: document.contextAfter)
     }
 
-    /// The proxy shows the text the anchored edit left around the caret. Before the caret, the text it
-    /// shows and the text the edit left may each be the longer one: hosts show a window of the field (often
+    /// Records the edit that just typed `word` on `context` (the text after the caret unchanged).
+    private func recordSwipeEdit(of word: String, _ context: SwipeEditContext, now: TimeInterval) -> ExpectedDocument.ID {
+        swipeEdits.record(deleting: context.deleted, inserting: context.inserted, on: context.reading,
+                          leaving: (context.before, context.reading.after), witness: word,
+                          generation: core.generation, at: now)
+    }
+
+    /// Forgets every swiped word's edit that neither the strip nor the pending space refers to.
+    private func releaseSwipeEdits() {
+        swipeEdits.removeAll(keeping: Set([swipe?.edit, pendingSpace].compactMap { $0 }))
+    }
+
+    /// Whether the caret is still where the recorded edit left it: the same field, no edit by anything
+    /// else since (an own edit's report never counts; `EditingCore.generation`), nothing selected, the text
+    /// before the caret ending with the word, and the proxy showing the text after the caret the edit left,
+    /// and before it either the text the edit left (confirmed) or, only until the proxy has been seen
+    /// showing the edit, exactly its reading before the edit (pending: it lags). A caret moved without a
+    /// report yet (perhaps after another copy of the word), or the edit undone by the host before its
+    /// report, fails (contradicted).
+    ///
+    /// Confirmation uses `ExpectedDocument`'s window rule: before the caret, the text the proxy shows and
+    /// the text the edit left may each be the longer one, since hosts show a window of the field (often
     /// from a line or sentence start), and the editor's own copy is bounded. Accepted residual risk (strict
     /// equality would turn the strip and the pending space off after any line break in such hosts): two
     /// caret positions with identical visible context, and a caret moved between them in the moment before
     /// the host reports it, pass; the worst outcome is an undoable edit to an identical word at a line end.
-    private func showsEdit(_ anchor: SwipeAnchor) -> Bool {
-        guard document.documentID == anchor.documentID, (document.contextAfter ?? "") == anchor.expectedAfter else {
-            return false
+    private func holds(_ edit: ExpectedDocument.ID, now: TimeInterval) -> Bool {
+        assert(swipeEditCount <= 1, "The strip and the pending space refer to at most one recorded edit")
+        guard core.documentID == document.documentID, !document.hasSelection, let word = swipeEdits[edit]?.witness,
+              currentBefore?.hasSuffix(word) == true else { return false }
+        switch swipeEdits.verdict(of: edit, for: proxyReading, generation: core.generation, now: now) {
+        case .pending, .confirmed: return true
+        case .contradicted, nil: return false
         }
-        let before = document.contextBefore ?? ""
-        guard !before.isEmpty, before.hasSuffix(anchor.word) else { return false }
-        return before.hasSuffix(anchor.expectedBefore) || anchor.expectedBefore.hasSuffix(before)
     }
 
-    /// Marks each anchored edit the proxy now shows: its reading before the edit is retired for good.
-    private func observeShownSwipeEdits() {
-        if var current = swipe, !current.anchor.shown, showsEdit(current.anchor) {
-            current.anchor.shown = true
-            swipe = current
-        }
-        if var pending = pendingSpace, !pending.shown, showsEdit(pending) {
-            pending.shown = true
-            pendingSpace = pending
-        }
+    /// Marks each recorded edit the proxy now shows: its reading before the edit is retired for good.
+    private func observeShownSwipeEdits(now: TimeInterval) {
+        assert(swipeEditCount <= 1, "The strip and the pending space refer to at most one recorded edit")
+        guard swipeEdits.expectations.contains(where: { !$0.shown }) else { return }
+        swipeEdits.observe(proxyReading, generation: core.generation, now: now)
     }
 
     /// Whether the pending space still applies, checked as the strip's word is.
-    private func pendingSpaceApplies() -> Bool {
-        observeShownSwipeEdits()
+    private func pendingSpaceApplies(now: TimeInterval) -> Bool {
+        observeShownSwipeEdits(now: now)
         guard let pendingSpace else { return false }
-        return holds(pendingSpace)
+        return holds(pendingSpace, now: now)
     }
 
     /// The strip, while its word can still be replaced or deleted whole (`holds`).
-    private func currentSwipe() -> SwipeStrip? {
-        observeShownSwipeEdits()
-        guard let swipe, holds(swipe.anchor) else { return nil }
+    private func currentSwipe(now: TimeInterval) -> SwipeStrip? {
+        observeShownSwipeEdits(now: now)
+        guard let swipe, holds(swipe.edit, now: now) else { return nil }
         return swipe.strip
     }
 
     /// The strip's first deletion: the whole swiped word, not the space before it. False (nothing
     /// deleted) when the word can no longer be deleted whole or the press is refused.
     private func deleteSwipedWord(field: UUID?, now: TimeInterval) -> Bool {
-        guard let strip = currentSwipe() else { return false }
+        guard let strip = currentSwipe(now: now) else { return false }
         let count = strip.insertedWord.count
         let deleted = type(field: field, now: now, recordEachDeletion: true) { [self] _ in
             typing.didDelete()

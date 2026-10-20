@@ -117,7 +117,8 @@ private struct PendingClipboardRestore {
     let writtenTranscript: String
 }
 
-final class AppState: ObservableObject, DictationCleanupActions, @unchecked Sendable {
+@MainActor
+final class AppState: ObservableObject, DictationCleanupActions {
     private enum ActiveAudioInterruption {
         case muted(previouslyMuted: Bool)
     }
@@ -544,13 +545,21 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             }
         }
         overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, action in
-            self?.handleDictionarySuggestionAction(suggestion, action)
+            // Sent from the overlay's suggestion buttons, on the main thread.
+            MainActor.assumeIsolated {
+                self?.handleDictionarySuggestionAction(suggestion, action)
+            }
         }
+        // CorrectionWatcher delivers both callbacks on the main queue.
         correctionWatcher.onEdit = { [weak self] edit, isLast, watch in
-            self?.handleCorrectionEdit(edit, isLast: isLast, watch: watch)
+            MainActor.assumeIsolated {
+                self?.handleCorrectionEdit(edit, isLast: isLast, watch: watch)
+            }
         }
         correctionWatcher.onAbandon = { [weak self] in
-            self?.stopCorrectionSuggestions()
+            MainActor.assumeIsolated {
+                self?.stopCorrectionSuggestions()
+            }
         }
 
         // Clear any stale recording flag left over from an unclean exit.
@@ -573,7 +582,10 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     }
 
     deinit {
-        removeAudioDeviceObservers()
+        // Nonisolated, but the last reference is gone: nothing else touches the observers.
+        for observer in audioDeviceObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
         AppState.writeRecordingStateFlag(false)
     }
 
@@ -703,7 +715,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     ///
     /// Path: `~/Library/Application Support/LocalFlow/is-recording`
     /// (or `LocalFlow Dev/is-recording` when running the dev bundle).
-    static func recordingStateFlagURL() -> URL {
+    nonisolated static func recordingStateFlagURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appName = AppName.supportDirectoryName
         return appSupport.appendingPathComponent("\(appName)/is-recording")
@@ -711,7 +723,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
 
     /// Serial queue that owns every flag-file I/O so the recording
     /// start/stop hot path never blocks on disk.
-    private static let recordingStateFlagQueue = DispatchQueue(
+    private nonisolated static let recordingStateFlagQueue = DispatchQueue(
         label: "com.ajbarryiii.localflow.recording-state-flag"
     )
 
@@ -720,7 +732,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     /// I/O never adds latency to recording start/stop. Failures are
     /// swallowed — this is advisory IPC and must never interrupt the
     /// recording pipeline.
-    static func writeRecordingStateFlag(_ recording: Bool) {
+    nonisolated static func writeRecordingStateFlag(_ recording: Bool) {
         let timestamp = recording ? String(Date().timeIntervalSince1970) : nil
         recordingStateFlagQueue.async {
             let url = recordingStateFlagURL()
@@ -831,7 +843,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             return
         }
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.hasAccessibility = AXIsProcessTrusted()
                 if self.hasAccessibility {
@@ -868,7 +880,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     if granted {
                         self?.refreshAvailableMicrophones()
                     }
@@ -931,7 +943,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         availableMicrophones = AudioDevice.availableInputDevices()
     }
 
-    private func refreshAvailableMicrophonesIfNeeded() {
+    func refreshAvailableMicrophonesIfNeeded() {
         guard needsMicrophoneRefreshAfterRecording else { return }
         refreshAvailableMicrophones()
     }
@@ -940,17 +952,20 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         removeAudioDeviceObservers()
 
         let notificationCenter = NotificationCenter.default
-        let refreshOnAudioDeviceChange: (Notification) -> Void = { [weak self] notification in
+        let refreshOnAudioDeviceChange: @Sendable (Notification) -> Void = { [weak self] notification in
             guard let device = notification.object as? AVCaptureDevice,
                   device.hasMediaType(.audio) else {
                 return
             }
-            self?.refreshAvailableMicrophones()
+            // Delivered on the main queue (queue: .main below), so already on the main actor.
+            MainActor.assumeIsolated {
+                self?.refreshAvailableMicrophones()
+            }
         }
 
         audioDeviceObservers.append(
             notificationCenter.addObserver(
-                forName: .AVCaptureDeviceWasConnected,
+                forName: AVCaptureDevice.wasConnectedNotification,
                 object: nil,
                 queue: .main,
                 using: refreshOnAudioDeviceChange
@@ -958,7 +973,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         )
         audioDeviceObservers.append(
             notificationCenter.addObserver(
-                forName: .AVCaptureDeviceWasDisconnected,
+                forName: AVCaptureDevice.wasDisconnectedNotification,
                 object: nil,
                 queue: .main,
                 using: refreshOnAudioDeviceChange
@@ -1075,21 +1090,26 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     func startHotkeyMonitoring() {
         shouldMonitorHotkeys = true
         hotkeyManager.onShortcutEventDetail = { [weak self] event, releaseOrigin in
-            // Stamp the event as it arrives (the event tap runs on the main run
-            // loop), before the hop to the main queue: monotonic time, whether the
-            // app was idle, and the interruption count, so later state changes or
-            // cancellations are not mistaken for the state at the event.
+            // Stamp the event as it arrives, before the hop to the main queue:
+            // monotonic time, whether the app was idle, and the interruption count,
+            // so later state changes or cancellations are not mistaken for the state
+            // at the event.
             let time = ProcessInfo.processInfo.systemUptime
-            guard let self else { return }
-            // Idle by event order: a hold whose release already arrived counts as ended.
-            let appIdle = Thread.isMainThread && DoubleTapPromptDetector.appIdleAtArrival(
-                transcribing: self.isTranscribing, sessionMode: self.shortcutSessionController.activeMode,
-                recordingOrStarting: self.isRecording || self.pendingShortcutStartMode != nil,
-                holdReleasesInFlight: self.holdReleasesInFlight)
-            if event == .holdDeactivated { self.holdReleasesInFlight += 1 }
-            let stamp = self.doubleTapPrompt.stamp(at: time, appIdle: appIdle, releaseOrigin: releaseOrigin)
-            DispatchQueue.main.async { [weak self] in
-                self?.handleShortcutEvent(event, stamp: stamp)
+            // The event tap's run-loop source is on the main run loop
+            // (GlobalShortcutBackend adds it to CFRunLoopGetMain), and HotkeyManager
+            // calls back synchronously from it, so this runs on the main actor.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Idle by event order: a hold whose release already arrived counts as ended.
+                let appIdle = DoubleTapPromptDetector.appIdleAtArrival(
+                    transcribing: self.isTranscribing, sessionMode: self.shortcutSessionController.activeMode,
+                    recordingOrStarting: self.isRecording || self.pendingShortcutStartMode != nil,
+                    holdReleasesInFlight: self.holdReleasesInFlight)
+                if event == .holdDeactivated { self.holdReleasesInFlight += 1 }
+                let stamp = self.doubleTapPrompt.stamp(at: time, appIdle: appIdle, releaseOrigin: releaseOrigin)
+                DispatchQueue.main.async { [weak self] in
+                    self?.handleShortcutEvent(event, stamp: stamp)
+                }
             }
         }
         // A backend reset or a monitoring restart voids a pending double-tap even
@@ -1099,7 +1119,10 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             DispatchQueue.main.async { self?.doubleTapPrompt.interruptInput() }
         }
         hotkeyManager.onEscapeKeyPressed = { [weak self] in
-            self?.handleEscapeKeyPress() ?? false
+            // Called synchronously from the event tap on the main run loop, as above.
+            MainActor.assumeIsolated {
+                self?.handleEscapeKeyPress() ?? false
+            }
         }
         restartHotkeyMonitoring()
     }
@@ -1253,71 +1276,95 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
 
     func cancelDiscardedCapture() {
         guard isRecording else { return }
-        audioRecorder.onRecordingReady = nil
-        audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        cancelRecordingInitializationTimer()
-        cancelStreamingDictation()
-        isRecording = false
-        errorMessage = nil
-        debugStatusMessage = "Idle"
-        statusText = "Ready"
-        overlayManager.dismiss()
-        audioRecorder.cancelRecording()
-        restoreAudioInterruptionIfNeeded()
-        endCriticalDictationActivity()
-        refreshAvailableMicrophonesIfNeeded()
+        DictationCleanupSteps.discardCapture(self)
     }
 
     private func cancelToggleShortcutSession() {
         guard pendingShortcutStartMode == .toggle || activeRecordingTriggerMode == .toggle else { return }
-
-        cancelPendingShortcutStart()
-        shortcutSessionController.reset()
-        activeRecordingTriggerMode = nil
-        audioRecorder.onRecordingReady = nil
-        audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        cancelRecordingInitializationTimer()
-        cancelStreamingDictation()
-        isRecording = false
-        errorMessage = nil
-        debugStatusMessage = "Cancelled"
-        statusText = "Cancelled"
-        overlayManager.dismiss()
-        audioRecorder.cancelRecording()
-        restoreAudioInterruptionIfNeeded()
-        endCriticalDictationActivity()
-        refreshAvailableMicrophonesIfNeeded()
-        if !isRecording && !isTranscribing && statusText == "Cancelled" {
-            scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
-        }
+        DictationCleanupSteps.cancelToggleSession(self)
     }
 
     private func cancelTranscription() {
         guard isTranscribing else { return }
         doubleTapPrompt.interrupt()
+        DictationCleanupSteps.cancelTranscription(self)
+    }
 
-        transcriptionTask?.cancel()
-        transcriptionTask = nil
-        stopCorrectionSuggestions()
+    // MARK: Dictation cleanup actions (run by DictationCleanupSteps)
+
+    func endShortcutSession() {
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
+    }
+
+    func stopShortcutMonitor() {
+        hotkeyManager.stop()
+    }
+
+    func detachRecorderCallbacks() {
+        audioRecorder.onRecordingReady = nil
+        audioRecorder.onRecordingFailure = nil
+        audioLevelCancellable?.cancel()
+        audioLevelCancellable = nil
+    }
+
+    func markNotRecording() {
         isRecording = false
-        isTranscribing = false
-        errorMessage = nil
-        debugStatusMessage = "Cancelled"
-        statusText = "Cancelled"
-        overlayManager.dismiss()
+    }
+
+    func cancelRecorderCapture() {
+        audioRecorder.cancelRecording()
+    }
+
+    func cleanUpRecorderFiles() {
         audioRecorder.cleanup()
+    }
+
+    func cancelTranscriptionTask() {
+        transcriptionTask?.cancel()
+        transcriptionTask = nil
+    }
+
+    func finishTranscriptionTask() {
+        transcriptionTask = nil
+    }
+
+    func markNotTranscribing() {
+        isTranscribing = false
+    }
+
+    func deleteTranscribingAudio() {
         if let transcribingAudioFileName {
             Self.deleteAudioFile(transcribingAudioFileName)
             self.transcribingAudioFileName = nil
         }
-        endCriticalDictationActivity()
-        refreshAvailableMicrophonesIfNeeded()
+    }
+
+    func forgetTranscribingAudio() {
+        transcribingAudioFileName = nil
+    }
+
+    func showStatus(_ status: DictationCleanupStatus) {
+        switch status {
+        case .ready:
+            errorMessage = nil
+            debugStatusMessage = "Idle"
+            statusText = "Ready"
+        case .cancelled:
+            errorMessage = nil
+            debugStatusMessage = "Cancelled"
+            statusText = "Cancelled"
+        case .failed(let message):
+            errorMessage = message
+            statusText = "Error"
+        }
+    }
+
+    func dismissOverlay() {
+        overlayManager.dismiss()
+    }
+
+    func scheduleReadyStatusAfterCancel() {
         if !isRecording && !isTranscribing && statusText == "Cancelled" {
             scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
         }
@@ -1334,23 +1381,25 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             return
         }
 
-        pendingShortcutStartTask = Task { [weak self] in
+        pendingShortcutStartTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             } catch {
                 return
             }
 
-            await MainActor.run { [weak self] in
-                guard let self, let pendingMode = self.pendingShortcutStartMode else { return }
-                self.pendingShortcutStartTask = nil
-                self.pendingShortcutStartMode = nil
-                self.startRecording(triggerMode: pendingMode)
-            }
+            guard let self, let pendingMode = self.pendingShortcutStartMode else { return }
+            self.pendingShortcutStartTask = nil
+            self.pendingShortcutStartMode = nil
+            self.startRecording(triggerMode: pendingMode)
         }
     }
 
-    private func cancelPendingShortcutStart(resetMode: Bool = true) {
+    func cancelPendingShortcutStart() {
+        cancelPendingShortcutStart(resetMode: true)
+    }
+
+    private func cancelPendingShortcutStart(resetMode: Bool) {
         pendingShortcutStartTask?.cancel()
         pendingShortcutStartTask = nil
         if resetMode {
@@ -1396,7 +1445,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
 
             prepareForMicrophonePermissionPrompt(triggerMode: triggerMode)
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     guard let strongSelf = self else { return }
                     let pendingTriggerMode = strongSelf.pendingMicrophonePermissionTriggerMode
                     strongSelf.pendingMicrophonePermissionTriggerMode = nil
@@ -1445,15 +1494,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     ) {
         isAwaitingMicrophonePermission = true
         pendingMicrophonePermissionTriggerMode = triggerMode
-        hotkeyManager.stop()
-        shortcutSessionController.reset()
-        activeRecordingTriggerMode = nil
-        cancelRecordingInitializationTimer()
-        audioRecorder.onRecordingReady = nil
-        audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        overlayManager.dismiss()
+        DictationCleanupSteps.awaitMicrophonePermission(self)
     }
 
     private func applyAudioInterruptionIfNeeded() {
@@ -1467,7 +1508,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         }
     }
 
-    private func restoreAudioInterruptionIfNeeded() {
+    func restoreAudioInterruptionIfNeeded() {
         guard let activeAudioInterruption else { return }
         self.activeAudioInterruption = nil
 
@@ -1485,7 +1526,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         automaticTerminationDisabled = true
     }
 
-    private func endCriticalDictationActivity() {
+    func endCriticalDictationActivity() {
         guard automaticTerminationDisabled else { return }
         ProcessInfo.processInfo.enableAutomaticTermination("LocalFlow dictation in progress")
         automaticTerminationDisabled = false
@@ -1508,13 +1549,16 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         recordingInitializationTimer = initTimer
         initTimer.schedule(deadline: .now() + 0.2)
         initTimer.setEventHandler { [weak self] in
-            guard let self, !overlayShown, self.recordingAttempts.isCurrent(attempt) else { return }
-            overlayShown = true
-            os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
-            self.clearPendingOverlayDismissToken()
-            self.overlayManager.showInitializing(
-                mode: self.activeRecordingTriggerMode ?? triggerMode
-            )
+            // The timer source targets the main queue.
+            MainActor.assumeIsolated {
+                guard let self, !overlayShown, self.recordingAttempts.isCurrent(attempt) else { return }
+                overlayShown = true
+                os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
+                self.clearPendingOverlayDismissToken()
+                self.overlayManager.showInitializing(
+                    mode: self.activeRecordingTriggerMode ?? triggerMode
+                )
+            }
         }
         initTimer.resume()
 
@@ -1554,12 +1598,15 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         // Reserve the capture ticket here, before dispatching: a cancel from now on
         // (a discarded tap) voids this start wherever its work then is.
         let captureTicket = audioRecorder.reserveCapture()
+        // AudioRecorder is not Sendable, but startRecording is built to run off the
+        // main thread: its capture state is behind its session queue and locks.
+        nonisolated(unsafe) let recorder = audioRecorder
         // Start engine on background thread so UI isn't blocked
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
-                try self.audioRecorder.startRecording(deviceUID: deviceUID, ticket: captureTicket, sampleSink: sampleSink)
+                try recorder.startRecording(deviceUID: deviceUID, ticket: captureTicket, sampleSink: sampleSink)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 DispatchQueue.main.async { [self] in
                     guard self.recordingAttempts.isCurrent(attempt), self.isRecording,
@@ -1567,7 +1614,10 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
                         .receive(on: DispatchQueue.main)
                         .sink { [weak self] level in
-                            self?.overlayManager.updateAudioLevel(level)
+                            // Received on the main queue.
+                            MainActor.assumeIsolated {
+                                self?.overlayManager.updateAudioLevel(level)
+                            }
                         }
                 }
             } catch {
@@ -1600,7 +1650,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     }
 
     /// The recording is discarded or failed: its audio and partial result go.
-    private func cancelStreamingDictation() {
+    func cancelStreamingDictation() {
         streamingDictation?.session.cancel()
         streamingDictation = nil
     }
@@ -1618,8 +1668,8 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     }
 
     /// The session's result; without one, or after any failure but cancellation,
-    /// the recorded file exactly as before.
-    private static func transcribeDictation(fileURL: URL, streaming: ParakeetStreamingSession?, dictionary: DictionarySnapshot,
+    /// the recorded file exactly as before. Nonisolated: it runs off the main actor.
+    private nonisolated static func transcribeDictation(fileURL: URL, streaming: ParakeetStreamingSession?, dictionary: DictionarySnapshot,
                                             retainForCorrection: Bool) async throws -> TranscriptionResult {
         if let streaming {
             do { return try await streaming.finish() } catch { try Task.checkCancellation() }
@@ -1629,29 +1679,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     }
 
     private func handleRecordingFailure(_ error: Error) {
-        cancelRecordingInitializationTimer()
-        audioRecorder.onRecordingReady = nil
-        audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        cancelStreamingDictation()
-        audioRecorder.cleanup()
-        restoreAudioInterruptionIfNeeded()
-        isRecording = false
-        isTranscribing = false
-        transcriptionTask?.cancel()
-        transcriptionTask = nil
-        if let transcribingAudioFileName {
-            Self.deleteAudioFile(transcribingAudioFileName)
-            self.transcribingAudioFileName = nil
-        }
-        activeRecordingTriggerMode = nil
-        shortcutSessionController.reset()
-        endCriticalDictationActivity()
-        errorMessage = formattedRecordingStartError(error)
-        statusText = "Error"
-        overlayManager.dismiss()
-        refreshAvailableMicrophonesIfNeeded()
+        DictationCleanupSteps.recordingFailed(message: formattedRecordingStartError(error), self)
     }
 
     private func formattedRecordingStartError(_ error: Error) -> String {
@@ -1723,61 +1751,46 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         let streaming = takeStreamingDictation(dictionary: dictionary, retainForCorrection: retainForCorrection)
         // Any cancel or dictionary edit after this point makes the result ineligible.
         let watchGeneration = correctionWatcher.currentGeneration
-        cancelPendingShortcutStart()
-        cancelRecordingInitializationTimer()
-        shortcutSessionController.reset()
-        activeRecordingTriggerMode = nil
-        audioRecorder.onRecordingReady = nil
-        audioRecorder.onRecordingFailure = nil
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
+        DictationCleanupSteps.stopCaptureForTranscription(self)
         lastRawTranscript = ""
         lastOutputTranscript = ""
         lastTranscriptionStatus = ""
         debugStatusMessage = "Preparing audio"
-        isRecording = false
-        restoreAudioInterruptionIfNeeded()
         isTranscribing = true
         statusText = "Preparing audio..."
         errorMessage = nil
         playAlertSound(named: "Pop")
         overlayManager.showTranscribing()
         audioRecorder.stopRecording { [weak self] fileURL in
-            guard let self else { streaming?.cancel(); return }
-            guard let fileURL else {
-                streaming?.cancel()
-                self.isTranscribing = false
-                self.audioRecorder.cleanup()
-                self.endCriticalDictationActivity()
-                self.errorMessage = "No audio recorded"
-                self.statusText = "Error"
-                self.overlayManager.dismiss()
-                self.refreshAvailableMicrophonesIfNeeded()
-                return
-            }
-            guard self.isTranscribing else {
-                streaming?.cancel()
-                self.audioRecorder.cleanup()
-                self.refreshAvailableMicrophonesIfNeeded()
-                return
-            }
-            let savedAudio = Self.saveAudioFile(from: fileURL)
-            let input = savedAudio?.fileURL ?? fileURL
-            self.transcribingAudioFileName = savedAudio?.fileName
-            self.statusText = "Transcribing locally..."
-            self.debugStatusMessage = "Transcribing audio"
-            self.transcriptionTask?.cancel()
-            self.transcriptionTask = Task {
-                do {
-                    // Read off the main thread, alongside transcription, so it never delays it.
-                    async let audioSeconds = Self.audioDuration(of: input)
-                    // Casing restoration runs inside, before LocalDictationCore.
-                    let transcription = try await Self.transcribeDictation(
-                        fileURL: input, streaming: streaming, dictionary: dictionary, retainForCorrection: retainForCorrection)
-                    let raw = transcription.text
-                    try Task.checkCancellation()
-                    let seconds = await audioSeconds
-                    await MainActor.run {
+            // AudioRecorder calls back on the main queue, so this runs on the main actor.
+            MainActor.assumeIsolated {
+                guard let self else { streaming?.cancel(); return }
+                guard let fileURL else {
+                    streaming?.cancel()
+                    DictationCleanupSteps.noAudioRecorded(self)
+                    return
+                }
+                guard self.isTranscribing else {
+                    streaming?.cancel()
+                    DictationCleanupSteps.recordingStoppedAfterCancel(self)
+                    return
+                }
+                let savedAudio = Self.saveAudioFile(from: fileURL)
+                let input = savedAudio?.fileURL ?? fileURL
+                self.transcribingAudioFileName = savedAudio?.fileName
+                self.statusText = "Transcribing locally..."
+                self.debugStatusMessage = "Transcribing audio"
+                self.transcriptionTask?.cancel()
+                self.transcriptionTask = Task { @MainActor in
+                    do {
+                        // Read off the main thread, alongside transcription, so it never delays it.
+                        async let audioSeconds = Self.audioDuration(of: input)
+                        // Casing restoration runs inside, before LocalDictationCore.
+                        let transcription = try await Self.transcribeDictation(
+                            fileURL: input, streaming: streaming, dictionary: dictionary, retainForCorrection: retainForCorrection)
+                        let raw = transcription.text
+                        try Task.checkCancellation()
+                        let seconds = await audioSeconds
                         guard self.isTranscribing else { return }
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
                                                                pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
@@ -1789,66 +1802,54 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                         self.lastTranscriptionStatus = result.status
                         self.recordPipelineHistoryEntry(rawTranscript: result.rawTranscript, transcript: result.output,
                                                         status: result.status, audioFileName: savedAudio?.fileName)
-                        self.transcriptionTask = nil
-                        self.transcribingAudioFileName = nil
                         self.lastTranscript = result.output
-                        self.isTranscribing = false
-                        self.endCriticalDictationActivity()
-                        self.debugStatusMessage = "Done"
                         let completionStatus = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
                         let enterStatus = "Pressed Enter"
-                        self.clearPendingOverlayDismissToken()
-                        if !self.showPostTranscriptionUpdateReminderIfNeeded() { self.overlayManager.dismiss() }
-                        if result.output.isEmpty {
-                            if let id = transcription.dictationID { LocalParakeetService.shared.releaseCorrectionSession(dictationID: id) }
-                            self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
-                            if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
-                        } else {
-                            self.statusText = completionStatus
-                            let pendingRestore = self.writeTranscriptToPasteboard(result.output)
-                            self.pasteAtCursorWhenShortcutReleased(
-                                correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID,
-                                                         snapshotRevision: dictionary.revision,
-                                                         watchGeneration: watchGeneration)
-                            ) {
-                                if result.shouldPressEnter {
-                                    self.pressEnterAfterPaste { self.restoreClipboardIfNeeded(pendingRestore) }
-                                } else {
-                                    self.restoreClipboardIfNeeded(pendingRestore)
+                        DictationCleanupSteps.finishTranscription(self) {
+                            self.debugStatusMessage = "Done"
+                            self.clearPendingOverlayDismissToken()
+                            if !self.showPostTranscriptionUpdateReminderIfNeeded() { self.overlayManager.dismiss() }
+                            if result.output.isEmpty {
+                                if let id = transcription.dictationID { LocalParakeetService.shared.releaseCorrectionSession(dictationID: id) }
+                                self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
+                                if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
+                            } else {
+                                self.statusText = completionStatus
+                                let pendingRestore = self.writeTranscriptToPasteboard(result.output)
+                                self.pasteAtCursorWhenShortcutReleased(
+                                    correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID,
+                                                             snapshotRevision: dictionary.revision,
+                                                             watchGeneration: watchGeneration)
+                                ) {
+                                    if result.shouldPressEnter {
+                                        self.pressEnterAfterPaste { self.restoreClipboardIfNeeded(pendingRestore) }
+                                    } else {
+                                        self.restoreClipboardIfNeeded(pendingRestore)
+                                    }
                                 }
                             }
+                            // After the paste is triggered, so the counter never delays it. Count spoken
+                            // words: macros can expand the output and commands remove words.
+                            if let seconds {
+                                self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
+                                                           seconds: seconds)
+                            }
                         }
-                        // After the paste is triggered, so the counter never delays it. Count spoken
-                        // words: macros can expand the output and commands remove words.
-                        if let seconds {
-                            self.dictationStats.record(words: DictationStats.wordCount(result.rawTranscript),
-                                                       seconds: seconds)
-                        }
-                        self.audioRecorder.cleanup()
-                        self.refreshAvailableMicrophonesIfNeeded()
                         self.scheduleReadyStatusReset(after: 3, matching: [completionStatus, "Nothing to transcribe", enterStatus])
-                    }
-                } catch is CancellationError {
-                    await MainActor.run {
-                        self.transcriptionTask = nil
-                        self.endCriticalDictationActivity()
-                    }
-                } catch {
-                    await MainActor.run {
+                    } catch is CancellationError {
+                        DictationCleanupSteps.transcriptionCancelled(self)
+                    } catch {
                         guard self.isTranscribing else { return }
-                        self.transcriptionTask = nil
-                        self.transcribingAudioFileName = nil
                         let message = self.formattedTranscriptionError(error)
                         self.errorMessage = message
-                        self.isTranscribing = false
-                        self.endCriticalDictationActivity()
-                        self.statusText = "Error"
-                        self.overlayManager.showError(message)
-                        self.lastTranscriptionStatus = "Error: \(message)"
-                        self.recordPipelineHistoryEntry(rawTranscript: "", transcript: "", status: self.lastTranscriptionStatus,
-                                                        audioFileName: savedAudio?.fileName)
-                        self.audioRecorder.cleanup()
-                        self.refreshAvailableMicrophonesIfNeeded()
+                        DictationCleanupSteps.finishTranscription(self) {
+                            self.statusText = "Error"
+                            self.overlayManager.showError(message)
+                            self.lastTranscriptionStatus = "Error: \(message)"
+                            self.recordPipelineHistoryEntry(rawTranscript: "", transcript: "",
+                                                            status: self.lastTranscriptionStatus,
+                                                            audioFileName: savedAudio?.fileName)
+                        }
                     }
                 }
             }
@@ -1868,7 +1869,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
     }
 
     /// Reads only the file header. Called off the main thread during transcription.
-    private static func audioDuration(of url: URL) -> TimeInterval? {
+    private nonisolated static func audioDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
         return Double(file.length) / file.fileFormat.sampleRate
     }
@@ -1908,7 +1909,10 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
             let base = 0.3 + 0.2 * sin(phase)
             let noise = Float.random(in: -0.15...0.15)
             let level = min(max(Float(base) + noise, 0.0), 1.0)
-            self.overlayManager.updateAudioLevel(level)
+            // Scheduled on the main run loop (from the main actor), so it fires there.
+            MainActor.assumeIsolated {
+                self.overlayManager.updateAudioLevel(level)
+            }
         }
     }
 
@@ -1924,7 +1928,6 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         pendingOverlayDismissToken = nil
     }
 
-    @MainActor
     private func showPostTranscriptionUpdateReminderIfNeeded() -> Bool {
         if debugShowsUpdateReminderAfterDictation {
             showDebugUpdateAvailableOverlay()
@@ -1948,7 +1951,6 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         return true
     }
 
-    @MainActor
     func showDebugUpdateAvailableOverlay() {
         let updateManager = UpdateManager.shared
         let version = updateManager.latestReleaseVersion.isEmpty ? "9.9.9" : updateManager.latestReleaseVersion
@@ -1966,7 +1968,6 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         }
     }
 
-    @MainActor
     private func handleUpdateOverlayPressed() {
         clearPendingOverlayDismissToken()
         overlayManager.dismiss()
@@ -2156,14 +2157,17 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
                 return
             }
             self.correctionWatcher.capture(expecting: correction.watchGeneration) { [weak self] capture in
-                guard let self else { return }
-                self.pasteAtCursor()
-                if let capture, self.isCorrectionSuggestionsEnabled {
-                    self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
-                } else {
-                    LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
+                // CorrectionWatcher completes a capture on the main queue.
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.pasteAtCursor()
+                    if let capture, self.isCorrectionSuggestionsEnabled {
+                        self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
+                    } else {
+                        LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
+                    }
+                    completion?()
                 }
-                completion?()
             }
         }
     }
@@ -2351,7 +2355,7 @@ final class AppState: ObservableObject, DictationCleanupActions, @unchecked Send
         }
     }
 
-    private func cancelRecordingInitializationTimer() {
+    func cancelRecordingInitializationTimer() {
         recordingInitializationTimer?.cancel()
         recordingInitializationTimer = nil
     }
