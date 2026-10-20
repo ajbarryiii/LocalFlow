@@ -6,6 +6,10 @@
 //! the fixed commands below. The behaviour is pinned by the shared vectors in
 //! `linux/testdata/dictation-vectors.json`, which the Swift tests also run;
 //! its `prompt_tag` section pins the prompt tag (Hold to Prompt).
+//!
+//! [`correction`] (custom dictionary) uses the dictionary text rules and the
+//! BPE tokenizer from the leaf crate `lf-text`; this crate does not depend on
+//! the recognition stack (`lf-asr`, `lf-cpu`, `lf-model`).
 
 pub mod correction;
 mod delimiters;

@@ -431,6 +431,11 @@ checklist.
 
 **`lf-dictation`** ports `Sources/LocalDictationCore.swift`: trailing
 "press enter", whole-phrase voice macros and `SpokenDelimiterFormatter`.
+- Layering: its custom-dictionary rules use the leaf crate `lf-text` (the
+  dictionary text rules and the SentencePiece BPE tokenizer), not `lf-asr`,
+  so it does not pull in the model or the AVX-512 kernels. `lf-asr`
+  re-exports `lf-text` and adds the model-specific parts (loading the
+  vocabulary from an export, the bias graph).
 - Swift `String` semantics are emulated explicitly: `Character` is a grapheme
   cluster, `isWhitespace`/`isPunctuation` look at the first scalar,
   `lowercased()`/`uppercased()` map per scalar (no final-sigma rule),
