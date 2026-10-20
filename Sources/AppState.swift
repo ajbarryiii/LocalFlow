@@ -380,6 +380,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private var debugOverlayTimer: Timer?
     private var recordingInitializationTimer: DispatchSourceTimer?
     private var transcriptionTask: Task<Void, Never>?
+    /// Advanced when a transcription task is created and when one is cancelled,
+    /// so a task that was cancelled or replaced finishes without touching the
+    /// state of a newer dictation.
+    private var transcriptionGeneration: UInt64 = 0
     /// The recording's transcription while it is recorded, with the dictionary
     /// revision and retention it began with. Nil: the file is transcribed after.
     private var streamingDictation: (session: ParakeetStreamingSession, dictionaryRevision: UInt64, retainForCorrection: Bool)?
@@ -1322,6 +1326,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func cancelTranscriptionTask() {
         transcriptionTask?.cancel()
         transcriptionTask = nil
+        transcriptionGeneration &+= 1
     }
 
     func finishTranscriptionTask() {
@@ -1780,6 +1785,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 self.statusText = "Transcribing locally..."
                 self.debugStatusMessage = "Transcribing audio"
                 self.transcriptionTask?.cancel()
+                self.transcriptionGeneration &+= 1
+                let generation = self.transcriptionGeneration
                 self.transcriptionTask = Task { @MainActor in
                     do {
                         // Read off the main thread, alongside transcription, so it never delays it.
@@ -1790,7 +1797,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         let raw = transcription.text
                         try Task.checkCancellation()
                         let seconds = await audioSeconds
-                        guard self.isTranscribing else { return }
+                        // A cancel during that await, then a newer dictation, must not take this result.
+                        guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
                         let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
                                                                pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
                                                                spokenDelimitersEnabled: self.isSpokenDelimitersEnabled,
@@ -1836,9 +1844,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         }
                         self.scheduleReadyStatusReset(after: 3, matching: [completionStatus, "Nothing to transcribe", enterStatus])
                     } catch is CancellationError {
+                        // Whoever cancelled or replaced this task already cleaned up, and a
+                        // newer dictation may have begun: only an unprompted cancellation
+                        // of the current task ends it here.
+                        guard self.transcriptionGeneration == generation else { return }
                         DictationCleanupSteps.transcriptionCancelled(self)
                     } catch {
-                        guard self.isTranscribing else { return }
+                        guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
                         let message = self.formattedTranscriptionError(error)
                         self.errorMessage = message
                         DictationCleanupSteps.finishTranscription(self) {
