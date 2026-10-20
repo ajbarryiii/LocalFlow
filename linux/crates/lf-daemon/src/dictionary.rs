@@ -639,8 +639,10 @@ mod tests {
         // vocabulary, so the ignore list alone takes the file past 1 MiB.
         let t = TempDir::new("dict-full");
         let s = setting(&t);
-        let mut almost = Dictionary::default();
-        almost.ignore = full.ignore[..MAX_IGNORED - 1].to_vec();
+        let almost = Dictionary {
+            entries: Vec::new(),
+            ignore: full.ignore[..MAX_IGNORED - 1].to_vec(),
+        };
         write_file(&s, std::str::from_utf8(&serialize(&almost)).unwrap());
         let mut store = Store::open(&s).unwrap();
         store.ignore(&full.ignore[MAX_IGNORED - 1]).unwrap();
