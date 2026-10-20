@@ -23,6 +23,17 @@ final class SwipeStripModel: ObservableObject {
     }
 }
 
+/// The offer to never correct a reverted word (ARCHITECTURE.md, "Word autocorrect", Never correct), published only
+/// when it appears, changes or goes. Its word stays in memory and goes with the offer.
+@MainActor
+final class NeverCorrectPromptModel: ObservableObject {
+    @Published private(set) var offer: NeverCorrectOffer?
+
+    func show(_ offer: NeverCorrectOffer?) {
+        if self.offer != offer { self.offer = offer }
+    }
+}
+
 /// Where the bar's controls are, in the bar's coordinates (`DictationBarView` reports them as they lay out and
 /// forgets them as they go), so the key area can take every other touch in the bar (ARCHITECTURE.md, "Reach
 /// above the keys"). Read on touches; never published, so it re-renders nothing.
@@ -53,13 +64,15 @@ private extension View {
 
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
 /// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
-/// candidate strip instead while it shows), and the Start capsule on the right, which becomes a red
+/// candidate strip instead while it shows, and over both a revert's "Never correct" offer unless dictation's
+/// own UI is up), and the Start capsule on the right, which becomes a red
 /// Stop capsule with live level bars while recording. It renders `KeyboardDictationClient.state` and
 /// the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
     @ObservedObject var swipe: SwipeStripModel
+    @ObservedObject var neverCorrect: NeverCorrectPromptModel
     /// Where its controls are, for the key area.
     let controls: BarControlFrames
     var onMenu: () -> Void
@@ -67,6 +80,8 @@ struct DictationBarView: View {
     var onAction: () -> Void
     /// A candidate of the strip was tapped.
     var onCandidate: (Int) -> Void
+    /// The "Never correct" offer was tapped.
+    var onNeverCorrect: () -> Void
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
@@ -89,7 +104,14 @@ struct DictationBarView: View {
             .barControl("menu", in: controls)
 
             Group {
-                if let strip = swipe.strip {
+                if let offer = neverCorrect.offer,
+                   NeverCorrectOffer.barShows(offer, dictationInProgress: state.mode.isInProgress, dictationUndoShown: state.canUndo) {
+                    NeverCorrectChip(word: offer.typed, height: height - 8) {
+                        onAction()
+                        onNeverCorrect()
+                    }
+                    .barControl("neverCorrect", in: controls)
+                } else if let strip = swipe.strip {
                     CandidateStrip(strip: strip, height: height - 8) { index in
                         onAction()
                         onCandidate(index)
@@ -224,6 +246,34 @@ private struct CandidateStrip: View {
                 .accessibilityIdentifier("lf.swipe.candidate.\(index)")
             }
         }
+    }
+}
+
+/// "Never correct “word”": the word in the field after a revert, shown in full where it fits and shortened in the
+/// middle where it does not.
+private struct NeverCorrectChip: View {
+    let word: String
+    let height: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Never correct \u{201C}\(word)\u{201D}", systemImage: "text.badge.checkmark")
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .frame(height: height)
+                .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
+                .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel("Never correct \(word)")
+        .accessibilityHint("Autocorrect leaves this word alone from now on")
+        .accessibilityIdentifier("lf.neverCorrect")
     }
 }
 

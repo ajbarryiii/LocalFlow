@@ -275,6 +275,12 @@ private struct AutocorrectSection: View {
     @State private var finiteApostrophe = 100.0
     /// Where the spelling weight's slider returns when its switch turns on.
     @State private var finiteSpelling = 0.1
+    /// The words the user asked the keyboard never to correct, in the App Group (ARCHITECTURE.md, "Word
+    /// autocorrect", Never correct): only their count is read here, never the words.
+    private static let neverCorrectStore = LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:))
+    @State private var neverCorrectCount = 0
+    /// The keyboard may store a word while the app is in the background: the count is read again on return.
+    @Environment(\.scenePhase) private var scenePhase
 
     private static let fallbackModels = ["unigram", "ngram", "lstm"]
     private static let fallbackPresets = ["balanced", "conservative"]
@@ -323,12 +329,23 @@ private struct AutocorrectSection: View {
             }
             .disabled(!hasOverrides)
             .accessibilityIdentifier("diagnostics.autocorrectReset")
+            // Always enabled (with a store): the count can be stale, and a clear also removes a corrupt file or a
+            // staging file a crashed write left, which read as no words.
+            Button("Forget never-correct words (\(neverCorrectCount))", role: .destructive) {
+                Self.neverCorrectStore?.clear()
+                neverCorrectCount = Self.neverCorrectStore?.load().count ?? 0
+            }
+            .disabled(Self.neverCorrectStore == nil)
+            .accessibilityIdentifier("diagnostics.autocorrectForgetNeverCorrect")
         } header: {
             Text("Autocorrect (experimental)")
         } footer: {
-            Text("At space, Return or . , ! ? ; : the word before it may be replaced by a likelier one, from where your taps landed and the words before it. Delete right after a correction puts your word back, and it is not corrected again until the keyboard restarts. A margin is the odds a correction needs; at ∞ that kind is never replaced. The unknown-word probability is how likely a word outside the lexicon is. Repeat and slip weights split a stray letter between a doubled letter and a neighbour key. Spelling errors weighs misspellings typed as aimed (\"recieve\"); off, only finger slips count. Sliders apply to the next word; the switch, model and preset the next time the keyboard appears. Needs Full Access. Words and taps stay in the keyboard's memory and are never stored or sent.")
+            Text("At space, Return or . , ! ? ; : the word before it may be replaced by a likelier one, from where your taps landed and the words before it. Delete right after a correction (or choosing your word on the strip) puts your word back, and it is not corrected again until the keyboard restarts; tap \"Never correct\" in the keyboard's top row then to keep it that way. The keyboard keeps up to 1,000 such words on this iPhone, not in backups, until you forget them here (it picks that up the next time it appears). A margin is the odds a correction needs; at ∞ that kind is never replaced. The unknown-word probability is how likely a word outside the lexicon is. Repeat and slip weights split a stray letter between a doubled letter and a neighbour key. Spelling errors weighs misspellings typed as aimed (\"recieve\"); off, only finger slips count. Sliders apply to the next word; the switch, model and preset the next time the keyboard appears. Needs Full Access. Other words and taps stay in the keyboard's memory and are never stored or sent.")
         }
         .onAppear(perform: load)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { neverCorrectCount = Self.neverCorrectStore?.load().count ?? 0 }
+        }
         .onChange(of: enabled) { _, value in
             if value != settings?.autocorrectEnabled { settings?.autocorrectEnabled = value }
         }
@@ -372,6 +389,7 @@ private struct AutocorrectSection: View {
     /// The settings as the keyboard reads them, over the bundle's presets.
     private func load() {
         enabled = settings?.autocorrectEnabled ?? false
+        neverCorrectCount = Self.neverCorrectStore?.load().count ?? 0
         model = resolvedModel
         preset = resolvedPreset(model: model)
         showMerged()
@@ -507,10 +525,12 @@ private struct TypingCountersSection: View {
         (.swipe, "Became a swipe"), (.skid, "Skid typed as a tap"), (.swipeEmpty, "Swipe typed nothing"),
         (.softTap, "Soft taps"), (.softLetter, "Soft tap: other letter"), (.softSpace, "Soft tap: space"),
         (.wordChecked, "Words checked"), (.wordCorrected, "Words corrected"), (.wordReverted, "Corrections reverted"),
-        (.wordChosen, "Suggestions chosen"),
+        (.wordChosen, "Suggestions chosen"), (.neverCorrectOffered, "Never correct offered"),
+        (.neverCorrectAccepted, "Never correct tapped"),
     ]
     /// Events without a position (`TypingCounters.wordRegions`): only their total is shown.
-    private static let unplaced: Set<TypingCounters.Event> = [.wordChecked, .wordCorrected, .wordReverted, .wordChosen]
+    private static let unplaced: Set<TypingCounters.Event> = [.wordChecked, .wordCorrected, .wordReverted, .wordChosen,
+                                                              .neverCorrectOffered, .neverCorrectAccepted]
     private static let regions: [(TypingCounters.Region, String)] = [
         (.row1, "Top"), (.row2, "2nd"), (.row3, "3rd"), (.row4, "Bottom"), (.left, "Left"), (.right, "Right"),
     ]

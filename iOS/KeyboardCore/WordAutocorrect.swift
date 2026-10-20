@@ -17,9 +17,10 @@ struct AutocorrectSetup {
 /// case. `KeyboardEditor` applies them.
 enum WordAutocorrect {
     /// Events for the TestFlight counters: a word was given to the corrector, replaced, or put back (by a Delete
-    /// or by choosing it on the strip), or another word was chosen on the strip after a commit key.
+    /// or by choosing it on the strip), or another word was chosen on the strip after a commit key; a revert offered
+    /// to never correct its word, and the user accepted.
     enum Event: Equatable, Sendable {
-        case checked, corrected, reverted, chosen
+        case checked, corrected, reverted, chosen, offered, neverCorrected
     }
 
     /// The characters that commit a word, from any layer, besides space and Return.
@@ -94,17 +95,17 @@ enum WordAutocorrect {
     /// corrector. The record is the word: nothing is read from the field but the context before it (`before`, the
     /// text before the caret as the editor knows it, for the word model only). Nil without a setup, in a secure
     /// field or one that turns autocorrection off, for an unowned record or one without a letter, or for a word
-    /// holding other characters or reverted in this keyboard session. `checked` is called when the corrector is
-    /// asked.
-    static func review(before: String, record: WordTapRecord, reverted: Set<String>, setup: AutocorrectSetup?,
-                       checked: () -> Void = {}) -> Review? {
+    /// holding other characters, reverted in this keyboard session, or one the user asked never to correct
+    /// (`neverCorrect`). `checked` is called when the corrector is asked.
+    static func review(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
+                       setup: AutocorrectSetup?, checked: () -> Void = {}) -> Review? {
         guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, record.owned,
               let found = word(before: record.text) else { return nil }
         let entries = record.entries
         let word = String(entries[found.word].map(\.character))
         guard isCorrectable(word) else { return nil }
         let lowered = correctorWord(word)
-        guard !reverted.contains(lowered) else { return nil }
+        guard !reverted.contains(lowered), !neverCorrect.contains(lowered) else { return nil }
         let points: [(x: Double, y: Double)?] = entries[found.word].map { $0.point.map { (x: $0.x, y: $0.y) } }
         // The text before the word, when the editor's text ends with it (it always should); none otherwise.
         let leading = entries.count - found.word.lowerBound

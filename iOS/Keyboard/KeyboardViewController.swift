@@ -15,6 +15,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private lazy var input = KeyboardInput(controller: self, keyArea: keyArea)
     private let chrome = KeyboardChrome()
     private let swipeStrip = SwipeStripModel()
+    private let neverCorrect = NeverCorrectPromptModel()
     private let barControls = BarControlFrames()
     private var bar: UIHostingController<DictationBarView>?
     private var menuPanel: UIHostingController<MenuPanelView>?
@@ -63,14 +64,19 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             guard let self else { return }
             swipeStrip.show(input.swipeStrip)
         }
+        input.onNeverCorrectOfferChanged = { [weak self] in
+            guard let self else { return }
+            neverCorrect.show(input.neverCorrectOffer)
+        }
         // Swipe typing comes on once its bundle has loaded off the main thread.
         input.loadSwipeEngine()
 
         let bar = UIHostingController(rootView: DictationBarView(
-            client: client, chrome: chrome, swipe: swipeStrip, controls: barControls,
+            client: client, chrome: chrome, swipe: swipeStrip, neverCorrect: neverCorrect, controls: barControls,
             onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
             onAction: { [weak self] in self?.setMenu(visible: false) },
-            onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) }))
+            onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) },
+            onNeverCorrect: { [weak self] in self?.input.acceptNeverCorrect() }))
         bar.view.backgroundColor = KeyAreaView.touchableBackground
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false
@@ -124,6 +130,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // So are autocorrect, its model and preset (ARCHITECTURE.md, "Word autocorrect"); the parameters at each word.
         input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false, model: settings?.autocorrectModel,
                                    preset: settings?.autocorrectPreset)
+        // The words never to correct, from the App Group (which `fieldSettings` already needs Full Access for).
+        input.configureNeverCorrect(store: settings?.autocorrectEnabled == true
+                                    ? LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:)) : nil)
         // TestFlight only (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
         input.configureTypingCounters(enabled: settings?.typingCountersEnabled ?? false)
         client.start()

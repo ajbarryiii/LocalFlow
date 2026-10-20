@@ -65,6 +65,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     var onTouchRateMeasured: ((Double, Double) -> Void)?
     /// The candidate strip opened, changed or closed (`swipeStrip`). Never called while it stays closed.
     var onSwipeStripChanged: (() -> Void)?
+    /// The offer to never correct a reverted word appeared, changed or went (`neverCorrectOffer`).
+    var onNeverCorrectOfferChanged: (() -> Void)?
     /// The swipe engine, once loaded (`loadSwipeEngine`); nil keeps swipe typing off.
     private var swipeEngine: SwipeEngine? {
         didSet { updateTouchModes() }
@@ -105,6 +107,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         editor.onTrackpadFinished = { [weak self] _ in self?.trackpadFinished() }
         editor.onFieldChanged = { [weak self] field in self?.fieldChanged(to: field) }
         editor.onSwipeStripChanged = { [weak self] in self?.onSwipeStripChanged?() }
+        editor.onNeverCorrectOfferChanged = { [weak self] in self?.onNeverCorrectOfferChanged?() }
         editor.autocorrect = { [weak self] in self?.autocorrectSetup() }
         editor.onAutocorrectEvent = { [weak self] event in self?.countAutocorrect(event) }
         keyArea.currentField = { [weak controller] in controller?.textDocumentProxy.documentIdentifierIfAvailable }
@@ -337,6 +340,20 @@ final class KeyboardInput: KeyAreaViewDelegate {
         return LoadedAutocorrect(manifest: manifest, name: name, corrector: corrector)
     }
 
+    /// The keyboard appeared: the store of words never to correct (ARCHITECTURE.md, "Word autocorrect", Never
+    /// correct), nil while autocorrect is off or without Full Access. Its words replace those in memory.
+    func configureNeverCorrect(store: NeverCorrectStore?) {
+        editor.useNeverCorrectStore(store)
+    }
+
+    /// The offer a revert made, nil when none.
+    var neverCorrectOffer: NeverCorrectOffer? { editor.neverCorrectOffer }
+
+    /// The user tapped the offer: its word is never corrected again.
+    func acceptNeverCorrect() {
+        editor.acceptNeverCorrect()
+    }
+
     /// The corrector and its inputs at a commit key: only with the model loaded and the App Group's settings
     /// (Full Access); the parameter overrides are read now. The editor declines in a secure field.
     private func autocorrectSetup() -> AutocorrectSetup? {
@@ -349,7 +366,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
                                 autocorrectionDisabled: proxy?.autocorrectionType == .no)
     }
 
-    /// With the TestFlight counters on: words checked, corrected and reverted. Counts only; a word has no
+    /// With the TestFlight counters on: words checked, corrected and reverted, strip choices, and never-correct
+    /// offers shown and accepted. Counts only; a word has no
     /// position, so each counts once in the bottom row (`TypingCounters.wordRegions`).
     private func countAutocorrect(_ event: WordAutocorrect.Event) {
         switch event {
@@ -357,6 +375,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
         case .corrected: count(.wordCorrected, in: TypingCounters.wordRegions)
         case .reverted: count(.wordReverted, in: TypingCounters.wordRegions)
         case .chosen: count(.wordChosen, in: TypingCounters.wordRegions)
+        case .offered: count(.neverCorrectOffered, in: TypingCounters.wordRegions)
+        case .neverCorrected: count(.neverCorrectAccepted, in: TypingCounters.wordRegions)
         }
     }
 

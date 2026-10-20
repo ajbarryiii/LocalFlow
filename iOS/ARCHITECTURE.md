@@ -492,7 +492,9 @@ The keyboard can read these, so they live in App Group `UserDefaults`
   counts written by the keyboard (TestFlight only; see "Dropped taps: reach,
   skids and counters")
 
-No transcript history is stored.
+No transcript history is stored. The words the user asked autocorrect never to
+correct are a file in the App Group, not a setting ("Word autocorrect", Never
+correct).
 
 ## Host app (App/, HostCore/)
 
@@ -1877,7 +1879,8 @@ corrected when:
   swipe (the swipe decoder already chose a lexicon word), or anything
   between that could have moved the caret;
 - it holds a character other than a–z, A–Z and apostrophes;
-- it was reverted earlier in this keyboard session ("Revert" below);
+- it was reverted earlier in this keyboard session ("Revert" below), or the
+  user asked never to correct it ("Never correct" below);
 - text is selected (the commit key replaces the selection);
 - the field turns autocorrection off (`autocorrectionType == .no`, as
   SwiftUI's `.autocorrectionDisabled()` does): its input stays literal
@@ -2020,7 +2023,8 @@ or moved in between, replaces the corrected word and its commit key with the
 typed word (the caret right after it; it deletes only what the keyboard
 inserted) and remembers the typed word as reverted
 for the rest of the keyboard session (in memory). Any other key forgets the
-pending revert.
+pending revert. A revert alone never stores the word: the top row offers to
+("Never correct" below), and only that tap persists it.
 
 **Suggestion strip (contract change, 2026-10-20; requested by the owner).**
 On the device, many plainly misspelled words were left alone: the
@@ -2052,6 +2056,80 @@ place of the bar's chips:
   character (or reverts a correction), never the whole word: the whole-word
   deletion is the swipe strip's only.
 - Counted as "Suggestions chosen" with the other word counters.
+
+**Never correct (contract change, 2026-10-20; requested by the owner 2026-10-20:
+persisted only on the user's explicit tap).** A reverted word (a name, a
+nickname) was corrected again in every new keyboard session. Storing every
+revert would keep words the user only reverted once, so a revert offers to keep
+the word instead, and nothing is stored unless the user accepts:
+- **The offer** (`KeyboardEditor.neverCorrectOffer`): right after a revert (a
+  Delete right after a correction, or the typed word chosen on the commit
+  strip), the top row shows a chip, `Never correct “Kanye”`: the word as typed,
+  without trailing apostrophes. Only with a store bound (autocorrect on and
+  Full Access when the keyboard appeared) and a word the store can keep (below).
+- **Where:** the middle of the top row, the slot of the dictation Undo chip and
+  the status line, and over the candidate strip, which after a strip revert
+  stays open underneath (the editor keeps it; it shows again only if the offer
+  goes without anything else closing it). Dictation's own UI wins
+  (`NeverCorrectOffer.barShows`): while a dictation is starting, recording or
+  transcribing, or its Undo chip shows, the offer is not shown (it still ends as
+  below).
+- **Accepting** (`acceptNeverCorrect`) adds the word to the store, makes the
+  words in memory what the store now holds, ends the offer and closes the
+  strip (its choice made). The word is then never corrected or offered, in this
+  instance and every later one, in any case, and the corrector is not asked.
+- **Ending without storing:** any key action (a Delete after the revert, Shift
+  and layer keys included), another strip choice (the correction chosen back),
+  a swipe, dictation or its undo, the trackpad, a caret move or outside edit,
+  another field, and hiding. A rotation and the host's echoes of the revert do
+  not end it. No timeout: the dictation Undo chip has none either, and an offer
+  left on screen is harmless.
+- **The store** (`NeverCorrectStore`, Shared): one JSON file,
+  `{"schema": 1, "words": [...]}`, least recently added first, at
+  `<App Group container>/Library/Application Support/LocalFlowAutocorrect/never-correct-words.json`.
+  The App Group because autocorrect (so a revert, so the offer) already needs
+  Full Access, which is what lets the keyboard write there, and the app can then
+  count and clear it directly; `Application Support` because the system may
+  purge `Caches`. The directory is created excluded from backup (best effort, as
+  for the dictation store), so the words stay on this iPhone. Data protection
+  class A on devices: while locked a read gives no words and a write fails,
+  leaving the file as it was.
+- **Bounds:** at most 1,000 words; adding one past that drops the least
+  recently added (adding a stored word again makes it the most recent). Only
+  words as the corrector sees them: 1–48 characters of lowercase a–z and `'`,
+  starting and ending with a letter. A longer word is reverted for the session
+  as before, without an offer.
+- **Robust:** writes go to a staging file renamed over the file (a reader sees
+  the old or the new list); a failed write leaves the file as it was, and the
+  words in memory still hold the accepted word. A missing, unreadable, corrupt
+  or oversized (over 256 KB) file, or another schema, reads as no words, and the
+  next accepted word replaces it; invalid or repeated entries in a valid file
+  are dropped. A write first reads the file, so a clear made since is kept.
+- **Serialized (code review, 2026-10-20):** an add (its read, change and
+  write) and a clear each hold an exclusive advisory `flock` on
+  `Library/Application Support/.never-correct.lock`, beside the store's
+  directory so a clear (which removes the directory) keeps it. The app and
+  the keyboard open the same file in the App Group, so a clear never lands
+  between an add's read and its write, and a cleared word comes back only
+  with a new tap. Held for one small read and write, never across a
+  suspension; if the lock file cannot be opened the operation runs unlocked.
+  Reads take no lock.
+  Staging files a crashed write left (older than a minute) go at the next write.
+- **Loading:** the keyboard binds the store (`useNeverCorrectStore`) each time
+  it appears with autocorrect on, which loads the words and replaces those in
+  memory; with autocorrect off or without Full Access it binds none, and holds
+  none of them.
+- **Clearing:** Diagnostics, in the autocorrect section, has "Forget
+  never-correct words (N)", with N the stored count (the app reads only the
+  count, never the words), read when the section appears and each time the
+  app becomes active. It is always enabled, since the count can be stale and a
+  clear also removes a corrupt or staging file that reads as no words. It
+  removes the store's directory. The keyboard is the
+  file's only writer and the app only removes it; a keyboard instance still in
+  memory picks the clear up the next time it appears (its own session reverts
+  still hold until the instance ends, as before).
+- Counted as "Never correct offered" and "Never correct tapped" with the other
+  word counters.
 
 **Bundle.** The files ride in the swipe bundle like the tap models, listed with
 their SHA-256 in `bundle.json`, and an optional `autocorrect` section:
@@ -2094,8 +2172,9 @@ shown only when the bundle has spelling tables) and a reset. Out-of-range or
 malformed values read as the preset's.
 
 **Counters (TestFlight).** With `typingCountersEnabled`, the keyboard also
-counts words checked, words corrected, corrections reverted, and suggestions
-chosen on the strip. Counts only, no text.
+counts words checked, words corrected, corrections reverted, suggestions
+chosen on the strip, and "Never correct" offers shown and tapped
+(`neverCorrectOffered`, `neverCorrectAccepted`). Counts only, no text.
 
 **Performance.** The selected model loads off the main thread when the keyboard
 appears; until then words commit as typed. A correction runs on the main
@@ -2103,9 +2182,16 @@ thread at the commit key and should take a few milliseconds; the word model
 caches by sentence context.
 
 **Privacy (amends invariant 5).** The context, the word, its points, the
-strip's words and the reverted words stay in the instance's memory, are dropped when the keyboard
+strip's words, the reverted words and a "Never correct" offer stay in the instance's memory, are dropped when the keyboard
 hides (the reverted words when the keyboard instance ends), and are never
-logged, stored, sent or learned from. The models are fixed.
+logged, stored, sent or learned from, with one exception approved by the owner
+2026-10-20: a word the user explicitly taps "Never correct" for is stored on
+this iPhone only, in the never-correct store ("Never correct" above: the App
+Group's `Library/Application Support/LocalFlowAutocorrect/`, excluded from
+backup, class A protection, at most 1,000 words of at most 48 characters),
+until the user clears it in Diagnostics. Nothing else is stored, no word is
+logged or sent, the app reads only the count, and the counters stay counts.
+The models are fixed.
 
 **Resolved in the keyboard integration (2026-10-19).** Points the text above
 left open:
@@ -2166,7 +2252,8 @@ left open:
   tables' domain): a named file that is missing or invalid means no
   corrector, as for the other files. Its SHA-256 is in `files`, checked by
   the build like every bundle file.
-- **Counters.** `wordChecked`, `wordCorrected` and `wordReverted` have no
+- **Counters.** `wordChecked`, `wordCorrected`, `wordReverted`, `wordChosen`,
+  `neverCorrectOffered` and `neverCorrectAccepted` have no
   position. Each counts once in `row4`, and Diagnostics shows only their
   totals.
 

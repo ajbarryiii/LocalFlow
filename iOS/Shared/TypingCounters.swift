@@ -28,6 +28,9 @@ struct TypingCounters: Equatable, Sendable {
         /// strip) reverted; another word chosen on the strip after a commit key (ARCHITECTURE.md, "Word
         /// autocorrect"). Counted in `wordRegions`.
         case wordChecked, wordCorrected, wordReverted, wordChosen
+        /// A revert offered to never correct its word; the user tapped the offer (ARCHITECTURE.md, "Word
+        /// autocorrect", Never correct). Counted in `wordRegions`.
+        case neverCorrectOffered, neverCorrectAccepted
     }
 
     /// The row of the nearest key (`row1` at the top; lower rows count as `row4`), and `left` or `right`
