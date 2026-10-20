@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -42,6 +43,16 @@ class StartupBenchmarkTests(unittest.TestCase):
             write()
             with self.assertRaises(ValueError):
                 benchmark.verify_bundle(directory)
+
+    def test_compile_flags_type_check_the_shared_parakeet_sources(self):
+        # The benchmark builds the shared Parakeet sources with its own flags, so
+        # they must stay valid for the app's deployment target.
+        sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
+        result = subprocess.run(
+            ["swiftc", "-parse-as-library", "-typecheck", "-warnings-as-errors", "-sdk", sdk,
+             *benchmark.SWIFT_TARGET_FLAGS, *benchmark.swift_sources()],
+            capture_output=True, text=True, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
 
 
 if __name__ == "__main__":

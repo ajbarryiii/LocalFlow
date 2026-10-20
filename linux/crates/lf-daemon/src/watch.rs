@@ -338,7 +338,7 @@ fn can_receive(stream: &UnixStream) -> bool {
 
 /// Writes all of `line` at once or reports failure. Never blocks, and never
 /// raises SIGPIPE.
-fn send_now(stream: &UnixStream, line: &[u8]) -> bool {
+pub(crate) fn send_now(stream: &UnixStream, line: &[u8]) -> bool {
     loop {
         // SAFETY: send on a valid descriptor from a buffer of `line.len()`
         // valid bytes.

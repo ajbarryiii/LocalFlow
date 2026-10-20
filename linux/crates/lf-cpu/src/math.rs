@@ -79,6 +79,9 @@ mod tests {
             let mut lane = [0.0f32; 16];
             lane[..chunk.len()].copy_from_slice(chunk);
             let mut res = [0.0f32; 16];
+            // SAFETY: `lane` and `res` are local arrays of 16 floats, and the
+            // only caller (`accurate_against_f64`) returns early unless
+            // `cpu_supported()`, so `f` and the intrinsics have AVX-512 F.
             unsafe { _mm512_storeu_ps(res.as_mut_ptr(), f(_mm512_loadu_ps(lane.as_ptr()))) };
             out[i * 16..i * 16 + chunk.len()].copy_from_slice(&res[..chunk.len()]);
         }

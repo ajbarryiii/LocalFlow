@@ -107,6 +107,9 @@ fn cancel_during_transcription_types_nothing() {
     rig.wait_for("model=ready");
     rig.cmd("toggle");
     assert_eq!(rig.cmd("toggle"), "state=transcribing model=ready");
+    // The cancel must find the job transcribing: one cancelled before the
+    // worker takes it is skipped without recognition.
+    wait_until("transcription to begin", || rec.state().started == 1);
     // The control loop stays responsive while the worker is busy.
     let t = Instant::now();
     assert_eq!(
@@ -1326,4 +1329,373 @@ fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
     let _ = child.wait();
     handle.shutdown();
     handle.join().unwrap();
+}
+
+// Capture calls run on their own thread: the control loop keeps serving
+// while the microphone starts or stops. The gates hold the fake's `start` or
+// `stop` until the test opens them.
+
+/// `status`, new watchers and a request sent after the press are all
+/// answered while `start` and then `stop` are held; the press and release
+/// replies wait for their own call and are what they always were, and a
+/// watcher sees the same states as with an instant microphone.
+#[test]
+fn status_and_watchers_are_served_while_the_capture_starts_and_stops() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let stop = cap.gate_stop();
+    let rec = FakeRecognizer::returning("Synthetic.");
+    let rig = Rig::start("slow-capture", cap.clone(), factory(rec), settings(), false);
+    let mut w = rig.watch();
+    let idle = "localflow/1 ok state=idle model=ready mic=unknown";
+    assert_eq!(w.line(), idle);
+
+    let press = rig.send("press");
+    start.wait_entered(1);
+    // Starting reads as the state before the call, as before this change.
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    assert_eq!(rig.watch().line(), idle);
+    start.open();
+    assert_eq!(press.ok(), "state=recording mode=hold model=ready");
+
+    let release = rig.send("release");
+    stop.wait_entered(1);
+    assert_eq!(rig.cmd("status"), "state=recording mode=hold model=ready");
+    stop.open();
+    assert_eq!(release.ok(), "state=transcribing model=ready");
+    let lines = w.until("state=idle");
+    assert_eq!(
+        common::states(&lines),
+        ["recording", "transcribing", "typing", "idle"]
+    );
+    assert_eq!(rig.output.text(), "Synthetic. ");
+}
+
+/// A release that arrives while the microphone is still starting waits for
+/// it, then stops the recording at once.
+#[test]
+fn a_release_during_a_slow_start_stops_once_the_microphone_is_ready() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rec = FakeRecognizer::returning("Synthetic.");
+    let rig = Rig::start(
+        "release-early",
+        cap.clone(),
+        factory(rec),
+        settings(),
+        false,
+    );
+    let press = rig.send("press");
+    start.wait_entered(1);
+    let release = rig.send("release");
+    // Answered after the release was handed on: the release waits.
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    assert_eq!(cap.state().stops, 0);
+    start.open();
+    assert_eq!(press.ok(), "state=recording mode=hold model=ready");
+    assert_eq!(release.ok(), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+    let s = cap.state();
+    assert_eq!(
+        (s.starts, s.stops, s.cancels, s.recording),
+        (1, 1, 0, false)
+    );
+}
+
+/// A start that fails after a while answers the press `error capture`; the
+/// release waiting behind it then matches no recording, as when it used to
+/// arrive after the failed press.
+#[test]
+fn a_failed_slow_start_answers_the_press_and_the_waiting_release() {
+    let cap = speech();
+    let start = cap.gate_start();
+    cap.state().fail_start = true;
+    let rig = Rig::start(
+        "fail-slow",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let press = rig.send("press");
+    start.wait_entered(1);
+    let release = rig.send("release");
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    start.open();
+    assert_eq!(press.raw(), "localflow/1 error capture\n");
+    assert_eq!(release.ok(), "state=idle model=ready note=ignored");
+    // The half-open stream was closed.
+    assert!(!cap.state().recording);
+    assert_eq!(cap.state().cancels, 1);
+
+    cap.state().fail_start = false;
+    rig.cmd("press");
+    assert_eq!(rig.cmd("release"), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+}
+
+/// Cancel never waits for the microphone: it answers at once, so does the
+/// press it cancelled, and the stream is closed once `start` returns.
+#[test]
+fn cancel_during_a_slow_start_answers_at_once_and_discards() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rec = FakeRecognizer::returning("Synthetic.");
+    let rig = Rig::start(
+        "cancel-start",
+        cap.clone(),
+        factory(rec.clone()),
+        settings(),
+        false,
+    );
+    let press = rig.send("press");
+    start.wait_entered(1);
+    assert_eq!(rig.cmd("cancel"), "state=idle model=ready note=cancelled");
+    assert_eq!(press.ok(), "state=idle model=ready note=cancelled");
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    start.open();
+    wait_until("the cancelled start to be closed", || {
+        let s = cap.state();
+        s.starts == 1 && s.cancels == 1 && !s.recording
+    });
+    // Nothing was recorded, and the next dictation works.
+    assert_eq!(rig.cmd("press"), "state=recording mode=hold model=ready");
+    assert_eq!(rig.cmd("release"), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rec.state().calls, 1);
+    assert_eq!(cap.state().starts, 2);
+}
+
+/// A press while the microphone stops waits for the stop, then is handled
+/// like any press while transcribing.
+#[test]
+fn a_press_during_a_slow_stop_waits_then_counts_as_busy() {
+    let cap = speech();
+    let rig = Rig::start(
+        "press-stopping",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    rig.cmd("press");
+    let stop = cap.gate_stop();
+    let release = rig.send("release");
+    stop.wait_entered(1);
+    let press = rig.send("press");
+    assert_eq!(rig.cmd("status"), "state=recording mode=hold model=ready");
+    stop.open();
+    assert_eq!(release.ok(), "state=transcribing model=ready");
+    assert_eq!(press.ok(), "state=transcribing model=ready note=ignored");
+    rig.wait_for("state=idle");
+    assert_eq!(cap.state().starts, 1);
+}
+
+/// At most `MAX_WAITING` requests wait for a capture call; the next one is
+/// refused at once with `error busy` (as a full listen backlog used to
+/// refuse a connection), and the waiting ones run in arrival order.
+#[test]
+fn requests_waiting_for_the_capture_are_bounded_and_kept_in_order() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rig = Rig::start(
+        "waiting-cap",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let press = rig.send("press");
+    start.wait_entered(1);
+    // First a release, then presses: replayed in this order, the release
+    // stops the recording and the presses find it transcribing.
+    let release = rig.send("release");
+    let presses: Vec<_> = (1..lf_daemon::controller::MAX_WAITING)
+        .map(|_| rig.send("press"))
+        .collect();
+    assert_eq!(rig.raw(b"localflow/1 press\n"), "localflow/1 error busy\n");
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    start.open();
+    assert_eq!(press.ok(), "state=recording mode=hold model=ready");
+    assert_eq!(release.ok(), "state=transcribing model=ready");
+    for p in presses {
+        assert_eq!(p.ok(), "state=transcribing model=ready note=ignored");
+    }
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+}
+
+/// A client that hangs up before its (waiting) reply costs nothing: the
+/// reply is dropped, the request still took effect, and the daemon goes on.
+#[test]
+fn a_client_gone_before_its_reply_is_ignored() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rig = Rig::start(
+        "reply-gone",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    drop(rig.send("press"));
+    start.wait_entered(1);
+    assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    start.open();
+    rig.wait_for("state=recording mode=hold");
+    assert_eq!(rig.cmd("release"), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+}
+
+/// Stopping the daemon while the microphone starts answers the press,
+/// closes the stream once `start` returns and waits for that before the
+/// daemon is gone.
+#[test]
+fn shutdown_during_a_slow_start_closes_the_microphone() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let mut rig = Rig::start(
+        "shutdown-start",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let press = rig.send("press");
+    start.wait_entered(1);
+    let handle = rig.handle.take().unwrap();
+    handle.shutdown();
+    assert_eq!(press.ok(), "state=idle model=ready note=cancelled");
+    start.open();
+    handle.join().unwrap();
+    let s = cap.state();
+    assert_eq!((s.starts, s.cancels, s.recording), (1, 1, false));
+}
+
+/// Requests handed to the control loop hold their connections until
+/// answered, so they are bounded: with a control loop that answers nothing,
+/// `MAX_PENDING` wait and the next is refused `error busy` by the socket
+/// thread at once; answering one makes room again.
+#[test]
+fn requests_handed_to_a_stalled_control_loop_are_bounded() {
+    use lf_daemon::daemon::Event;
+    use lf_daemon::server::{MAX_PENDING, Server};
+    use lf_daemon::watch::{Admission, MAX_WATCHERS};
+    use std::sync::Arc;
+
+    let dir = TempDir::new("stalled-loop");
+    private_dir(&runtime_dir(&dir));
+    let server = Arc::new(Server::bind(&runtime_dir(&dir)).unwrap());
+    let (events, stalled) = std::sync::mpsc::channel();
+    let serving = {
+        let server = Arc::clone(&server);
+        std::thread::spawn(move || server.serve(&events, &Admission::new(MAX_WATCHERS)))
+    };
+    let send = || {
+        let mut s = UnixStream::connect(server.socket_path()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(b"localflow/1 status\n").unwrap();
+        s
+    };
+    let reply = |mut s: UnixStream| {
+        let mut r = String::new();
+        s.read_to_string(&mut r).unwrap();
+        r
+    };
+    let held: Vec<_> = (0..MAX_PENDING).map(|_| send()).collect();
+    assert_eq!(reply(send()), "localflow/1 error busy\n");
+
+    let next = |rx: &std::sync::mpsc::Receiver<Event>| match rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a request")
+    {
+        Event::Request(_, responder) => responder,
+        _ => panic!("not a request"),
+    };
+    let first = next(&stalled);
+    first.send(lf_daemon::protocol::Reply::Error(
+        lf_daemon::protocol::ErrorCode::Unavailable,
+    ));
+    let mut held = held.into_iter();
+    assert_eq!(
+        reply(held.next().unwrap()),
+        "localflow/1 error unavailable\n"
+    );
+    // Its place is free: one more request is handed on, not refused.
+    let late = send();
+    let responders: Vec<_> = (0..MAX_PENDING).map(|_| next(&stalled)).collect();
+    drop(responders);
+    assert_eq!(reply(late), "localflow/1 error unavailable\n");
+    for s in held {
+        assert_eq!(reply(s), "localflow/1 error unavailable\n");
+    }
+    server.stop();
+    serving.join().unwrap();
+}
+
+/// A change of microphone presence while `cancel` holds the capture
+/// reaches watchers as soon as the cancel returns.
+#[test]
+fn presence_changes_during_a_cancel_reach_watchers() {
+    let cap = speech();
+    let rig = Rig::start(
+        "presence-cancel",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let mut w = rig.watch();
+    assert_eq!(
+        w.line(),
+        "localflow/1 ok state=idle model=ready mic=unknown"
+    );
+    rig.cmd("press");
+    let gate = cap.gate_cancel();
+    assert_eq!(rig.cmd("cancel"), "state=idle model=ready note=cancelled");
+    gate.wait_entered(1);
+    cap.set_input(Some(false));
+    gate.open();
+    let lines = w.until("mic=absent");
+    assert_eq!(
+        lines.last().unwrap(),
+        "localflow/1 ok state=idle model=ready mic=absent"
+    );
+}
+
+/// Starts of recordings cancelled while an earlier start still runs are
+/// never run: only the first (already running) and the last start reach
+/// the microphone.
+#[test]
+fn starts_of_recordings_cancelled_meanwhile_are_skipped() {
+    let cap = speech();
+    let start = cap.gate_start();
+    let rig = Rig::start(
+        "skip-cancelled",
+        cap.clone(),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let mut presses = vec![rig.send("press")];
+    start.wait_entered(1);
+    for _ in 0..3 {
+        assert_eq!(rig.cmd("cancel"), "state=idle model=ready note=cancelled");
+        presses.push(rig.send("press"));
+        assert_eq!(rig.cmd("status"), "state=idle model=ready");
+    }
+    // Recordings 1 to 3 are cancelled, the fourth is starting.
+    start.open();
+    let last = presses.pop().unwrap();
+    assert_eq!(last.ok(), "state=recording mode=hold model=ready");
+    for p in presses {
+        assert_eq!(p.ok(), "state=idle model=ready note=cancelled");
+    }
+    assert_eq!(cap.state().starts, 2);
+    assert_eq!(rig.cmd("release"), "state=transcribing model=ready");
+    rig.wait_for("state=idle");
+    assert_eq!(rig.output.text(), "Synthetic. ");
 }

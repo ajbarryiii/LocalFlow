@@ -32,13 +32,27 @@ pub fn gemm(
     let lease = scratch.lease(threads, scratch_bytes(k));
     let yp = SendPtr(y.as_mut_ptr());
     pool.run(&|idx| {
+        // SAFETY: `pool.run` calls this closure once per index, so this thread
+        // is the only user of buffer `idx` under this lease.
         let tile = unsafe { lease.get(idx) }.as_mut_ptr();
         for b in split_range(w.blocks(), threads, idx) {
+            // SAFETY: AVX-512 F/BW/VBMI were asserted on entry. `w.block(b)` has
+            // `k / 4 * 64` bytes, and the expansion writes `k * 64` bytes, which
+            // is `scratch_bytes(k)`, the size `lease` checked for this thread's
+            // 64-byte aligned tile.
             unsafe { x86::expand_block(w.block(b), tile) };
             let mut t0 = 0;
             while t0 < t {
                 let rows = mt.min(t - t0);
                 let kernel = x86::kernel_for(n, rows);
+                // SAFETY: AVX-512 F/BW/VNNI were asserted on entry, and the tile
+                // holds block `b`, with `k % 4 == 0` (`qa.cols() == w.cols()`).
+                // `QuantizedActs` keeps `q()` at `t * n * k` bytes and `scale()` at
+                // `t` values, so frames `t0..t0 + rows` (`n * rows` component rows)
+                // are readable. `y` rows `t0..t0 + rows` lie within the `t * o`
+                // checked on entry, and columns `b * 64..b * 64 + 64` within `o`,
+                // `w.scale()` and `w.row_sum()` (`PackedTernary::new`). Threads own
+                // whole blocks `b`, so their `y` columns are disjoint.
                 unsafe {
                     kernel(
                         tile,
@@ -88,6 +102,11 @@ mod x86 {
     }
 
     /// Expands one block of packed codes (`quads * 64` bytes) into the s8 tile.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F, BW and VBMI, and `dst` must be 64-byte
+    /// aligned and valid for writes of `src.len() / 64 * 256` bytes that no
+    /// other thread accesses.
     #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
     pub unsafe fn expand_block(src: &[u8], dst: *mut u8) {
         // Byte p of vector v takes code byte (v * 16 + p / 4), then field p % 4 of it.
@@ -104,17 +123,24 @@ mod x86 {
             lut[lane * 16 + 1] = 1;
             lut[lane * 16 + 2] = 0xff; // -1
         }
+        // SAFETY: each `idx[v]` is a local array of 64 bytes.
         let idx: [__m512i; 4] =
             std::array::from_fn(|v| unsafe { _mm512_loadu_si512(idx[v].as_ptr().cast()) });
+        // SAFETY: `ctrl` is a local array of 64 bytes.
         let ctrl = unsafe { _mm512_loadu_si512(ctrl.as_ptr().cast()) };
+        // SAFETY: `lut` is a local array of 64 bytes.
         let lut = unsafe { _mm512_loadu_si512(lut.as_ptr().cast()) };
         let three = _mm512_set1_epi8(3);
         for (q, chunk) in src.as_chunks::<64>().0.iter().enumerate() {
+            // SAFETY: `chunk` is a `[u8; 64]`.
             let c = unsafe { _mm512_loadu_si512(chunk.as_ptr().cast()) };
             for (v, &iv) in idx.iter().enumerate() {
                 let x = _mm512_permutexvar_epi8(iv, c);
                 let x = _mm512_and_si512(_mm512_multishift_epi64_epi8(ctrl, x), three);
                 let x = _mm512_shuffle_epi8(lut, x);
+                // SAFETY: `q < src.len() / 64` and `v < 4`, so the 64 bytes end by
+                // `src.len() / 64 * 256`; the offset is a multiple of 64, keeping
+                // the aligned store aligned (caller contract).
                 unsafe { _mm512_store_si512(dst.add(q * 256 + v * 64).cast(), x) };
             }
         }
@@ -127,6 +153,9 @@ mod x86 {
     #[target_feature(enable = "avx512f,avx512vnni")]
     fn dpbusd(acc: __m512i, a: __m512i, b: __m512i) -> __m512i {
         let mut out = acc;
+        // SAFETY: a register-only instruction (`nomem`, `nostack`), and this
+        // function's `#[target_feature]` makes every caller guarantee AVX-512
+        // VNNI.
         unsafe {
             std::arch::asm!(
                 "vpdpbusd {acc}, {a}, {b}",
@@ -140,6 +169,14 @@ mod x86 {
     }
 
     /// `R = N * frames` accumulator rows of four 16-lane vectors.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F, BW and VNNI. `tile` must be a 64-byte
+    /// aligned expanded block of `k * 64` bytes; `q` must be readable for
+    /// `R * k` bytes (`R` component rows of stride `k`); `scale` and `row_sum`
+    /// must have 64 readable values and `frame_scale` `R / N`; `y` must be
+    /// valid for writes of 64 floats at each `m * ldy` for `m < R / N`, with no
+    /// other thread accessing them.
     #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
     unsafe fn kernel<const N: usize, const R: usize>(
         tile: *const u8,
@@ -153,10 +190,14 @@ mod x86 {
     ) {
         let mut acc = [[_mm512_setzero_si512(); 4]; R];
         for kq in 0..k / 4 {
+            // SAFETY: `kq < k / 4`, so quad `kq`'s 256 bytes lie inside the tile.
             let wp = unsafe { tile.add(kq * 256) };
+            // SAFETY: 64 aligned bytes of quad `kq` (`v * 64 < 256`).
             let w: [__m512i; 4] =
                 std::array::from_fn(|v| unsafe { _mm512_load_si512(wp.add(v * 64).cast()) });
             for r in 0..R {
+                // SAFETY: `r < R` and `4 * kq + 4 <= k`, so the four bytes lie in
+                // component row `r` (caller contract); the read is unaligned.
                 let a = _mm512_set1_epi32(unsafe {
                     q.add(r * k + 4 * kq).cast::<i32>().read_unaligned()
                 });
@@ -166,8 +207,10 @@ mod x86 {
             }
         }
         for v in 0..4 {
+            // SAFETY: 16 of `row_sum`'s 64 values (caller contract).
             let offset =
                 _mm512_slli_epi32::<7>(unsafe { _mm512_loadu_si512(row_sum.add(v * 16).cast()) });
+            // SAFETY: 16 of `scale`'s 64 values (caller contract).
             let sc = unsafe { _mm512_loadu_ps(scale.add(v * 16)) };
             for m in 0..R / N {
                 let mut sum = _mm512_setzero_ps();
@@ -175,8 +218,11 @@ mod x86 {
                     let d = _mm512_cvtepi32_ps(_mm512_sub_epi32(acc[m * N + c][v], offset));
                     sum = _mm512_fmadd_ps(d, _mm512_set1_ps(INV[c]), sum);
                 }
+                // SAFETY: `m < R / N` (caller contract).
                 let fs = _mm512_set1_ps(unsafe { *frame_scale.add(m) });
                 let out = _mm512_mul_ps(_mm512_mul_ps(sum, sc), fs);
+                // SAFETY: 16 of frame `m`'s 64 output floats, which only this
+                // thread accesses (caller contract).
                 unsafe { _mm512_storeu_ps(y.add(m * ldy + v * 16), out) };
             }
         }
