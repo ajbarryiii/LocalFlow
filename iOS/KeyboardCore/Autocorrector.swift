@@ -20,6 +20,7 @@ import Foundation
 /// - The best form (ties: higher frequency, then alphabetically first) replaces the word only if it beats
 ///   keep by log(margin): `marginOOV` for a word outside the lexicon; for a lexicon word `marginApostrophe`
 ///   when the best has the typed key, else `marginKnown`.
+/// - Suggestions (the strip after a commit key) rank the same scores without a margin.
 ///
 /// Where the reference raises (taps of the wrong count, a word with characters other than a–z and
 /// apostrophes, invalid parameters, keys without a letter pitch), this keeps the word. Main thread only:
@@ -62,41 +63,19 @@ final class Autocorrector: WordCorrecting {
             lowest = constants.thresholdKnown
         }
         guard lowest != .infinity else { return word }
-        let limit = limit(n, p)
-        guard limit >= 0 else { return word }
-        let candidates = lexicon.keys(within: limit, of: typed.codes)
-        guard !candidates.isEmpty, let layout = layout(for: keys) else { return word }
-
-        let table = touchTable(typed: typed, points: points, layout: layout)
-        let inserted = insertions(table: table, rows: n, layout: layout, constants: constants)
+        guard let search = search(typed, points: points, keys: keys, params: p, constants: constants) else { return word }
         let words = Self.sentenceWords(context)
-        var keep = Double(n) * constants.match + Self.pairwiseSum((0 ..< n).map { table[$0 * 26 + typed.codes[$0]] })
+        var keep = Double(n) * constants.match + Self.pairwiseSum((0 ..< n).map { search.table[$0 * 26 + typed.codes[$0]] })
         keep += p.lmWeight * (model.logProbs(context: words, words: [known ? word : Self.unknown]).first ?? -.infinity)
         if !known { keep += p.logOOV }
 
-        let channel = Channel(typed: typed.codes, edits: limit + 1, longest: candidates.map(\.codes.count).max() ?? 0, table: table,
-                              inserted: inserted, constants: constants)
-        let bar = keep + lowest
-        var ids: [Int] = []
-        var scores: [Double] = []
-        for candidate in candidates {
-            let score = channel.score(candidate.codes)
-            // A model log probability is at most 0, so a channel below keep + the lowest threshold cannot win.
-            guard score.isFinite else { continue }
-            if p.lmWeight >= 0, !(score >= bar - 1e-9 * (1 + abs(bar))) { continue }
-            for id in lexicon.formIDs(ofNode: candidate.node) {
-                ids.append(id)
-                scores.append(score)
-            }
-        }
-        guard !ids.isEmpty else { return word }
-        let forms = ids.map(lexicon.form(at:))
-        let logProbs = model.logProbs(context: words, words: forms)
-        guard logProbs.count == forms.count else { return word }
+        // A model log probability is at most 0, so a channel below keep + the lowest threshold cannot win.
+        guard let scored = scoredForms(search, words: words, params: p, bar: p.lmWeight >= 0 ? keep + lowest : nil)
+        else { return word }
+        let (ids, forms, scores) = scored
         var best = -1
         var bestFrequency = 0
         for index in forms.indices {
-            scores[index] += p.lmWeight * logProbs[index]
             let frequency = lexicon.frequency(ofFormAt: ids[index])
             if best < 0 || Self.precedes(scores[index], frequency, forms[index], scores[best], bestFrequency, forms[best]) {
                 best = index
@@ -113,6 +92,22 @@ final class Autocorrector: WordCorrecting {
         }
         guard forms[best] != word, scores[best].isFinite, scores[best] - keep >= threshold else { return word }
         return forms[best]
+    }
+
+    func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params: AutocorrectParams, limit: Int) -> [String] {
+        guard limit > 0, let typed = Typed(word), points.count == typed.bytes.count, !lexicon.contains(word) else { return [] }
+        let n = typed.codes.count
+        guard n >= params.minLength, n > 0, let constants = Constants(params),
+              let search = search(typed, points: points, keys: keys, params: params, constants: constants),
+              let scored = scoredForms(search, words: Self.sentenceWords(context), params: params, bar: nil)
+        else { return [] }
+        let (ids, forms, scores) = scored
+        let frequencies = ids.map(lexicon.frequency(ofFormAt:))
+        let ranked = forms.indices.filter { scores[$0].isFinite }.sorted {
+            Self.precedes(scores[$0], frequencies[$0], forms[$0], scores[$1], frequencies[$1], forms[$1])
+        }
+        return ranked.prefix(limit).map { forms[$0] }
     }
 
     /// Drops the word model's caches of sentence contexts. The corrector itself keeps no context or word
@@ -161,6 +156,51 @@ final class Autocorrector: WordCorrecting {
     }
 
     // MARK: Pieces
+
+    /// The typed key's candidate keys within its edit limit, its taps' touch table and the channel that scores
+    /// a candidate; nil (the word kept) for a negative limit, no candidate, or keys without a letters layout.
+    private struct Search {
+        let candidates: [(node: Int, codes: [Int])]
+        let table: [Double]
+        let channel: Channel
+    }
+
+    private func search(_ typed: Typed, points: [(x: Double, y: Double)?], keys: [PlacedKey], params p: AutocorrectParams,
+                        constants: Constants) -> Search? {
+        let n = typed.codes.count
+        let limit = limit(n, p)
+        guard limit >= 0 else { return nil }
+        let candidates = lexicon.keys(within: limit, of: typed.codes)
+        guard !candidates.isEmpty, let layout = layout(for: keys) else { return nil }
+        let table = touchTable(typed: typed, points: points, layout: layout)
+        let inserted = insertions(table: table, rows: n, layout: layout, constants: constants)
+        let channel = Channel(typed: typed.codes, edits: limit + 1, longest: candidates.map(\.codes.count).max() ?? 0, table: table,
+                              inserted: inserted, constants: constants)
+        return Search(candidates: candidates, table: table, channel: channel)
+    }
+
+    /// Every form of the candidates with a finite channel (that reaches `bar`, when given), with its id, scored
+    /// channel + `lmWeight` × its model log probability given `words`; nil when there is none or the model fails.
+    private func scoredForms(_ search: Search, words: [String], params p: AutocorrectParams,
+                             bar: Double?) -> (ids: [Int], forms: [String], scores: [Double])? {
+        var ids: [Int] = []
+        var scores: [Double] = []
+        for candidate in search.candidates {
+            let score = search.channel.score(candidate.codes)
+            guard score.isFinite else { continue }
+            if let bar, !(score >= bar - 1e-9 * (1 + abs(bar))) { continue }
+            for id in lexicon.formIDs(ofNode: candidate.node) {
+                ids.append(id)
+                scores.append(score)
+            }
+        }
+        guard !ids.isEmpty else { return nil }
+        let forms = ids.map(lexicon.form(at:))
+        let logProbs = model.logProbs(context: words, words: forms)
+        guard logProbs.count == forms.count else { return nil }
+        for index in forms.indices { scores[index] += p.lmWeight * logProbs[index] }
+        return (ids, forms, scores)
+    }
 
     private static let apostrophe = UInt8(ascii: "'")
 

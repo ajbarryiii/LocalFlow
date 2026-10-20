@@ -188,8 +188,9 @@ private struct Middle: View {
     }
 }
 
-/// Up to three swipe candidates side by side, as on Apple's predictive bar; the one in the field now is
-/// emphasized. A tap replaces the inserted word (the editor decides whether it still can).
+/// Up to three candidates side by side (a swipe's, or autocorrect's after a commit key), as on Apple's
+/// predictive bar; the one in the field now is emphasized. A tap replaces the inserted word (the editor
+/// decides whether it still can).
 private struct CandidateStrip: View {
     let strip: SwipeStrip
     let height: CGFloat

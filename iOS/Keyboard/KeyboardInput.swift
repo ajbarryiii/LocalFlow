@@ -356,10 +356,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
         case .checked: count(.wordChecked, in: TypingCounters.wordRegions)
         case .corrected: count(.wordCorrected, in: TypingCounters.wordRegions)
         case .reverted: count(.wordReverted, in: TypingCounters.wordRegions)
+        case .chosen: count(.wordChosen, in: TypingCounters.wordRegions)
         }
     }
 
-    /// The candidate strip after a swipe, nil when closed.
+    /// The candidate strip after a swipe or an autocorrect commit, nil when closed.
     var swipeStrip: SwipeStrip? { editor.swipeStrip }
 
     /// A tap on the strip's candidate `index`.

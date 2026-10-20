@@ -45,6 +45,12 @@ enum AutocorrectEditorTests {
             ("revertedWordsOutlastHiding", testRevertedWordsOutlastHiding),
             ("nothingChangesWithAutocorrectOff", testNothingChangesWithAutocorrectOff),
             ("tapsCarryTheirTouchDownPointThroughTheKeyArea", testTapsCarryTheirTouchDownPointThroughTheKeyArea),
+            ("aCorrectionOffersTheTypedWordAndSuggestions", testACorrectionOffersTheTypedWordAndSuggestions),
+            ("aKeptWordWithSuggestionsOffersThem", testAKeptWordWithSuggestionsOffersThem),
+            ("noStripWithoutAChoice", testNoStripWithoutAChoice),
+            ("choosingReplacesTheWordBeforeTheCommitKey", testChoosingReplacesTheWordBeforeTheCommitKey),
+            ("choosingTheTypedWordRevertsTheCorrection", testChoosingTheTypedWordRevertsTheCorrection),
+            ("theCommitStripClosesAndRefusesLikeTheSwipeStrip", testTheCommitStripClosesAndRefusesLikeTheSwipeStrip),
         ]
     }
 
@@ -881,6 +887,187 @@ enum AutocorrectEditorTests {
         TestSupport.expect(plain == kept, "\(plain) differs from \(kept)")
     }
 
+    // MARK: The strip after a commit key
+
+    private static func testACorrectionOffersTheTypedWordAndSuggestions() {
+        // The typed word, the correction (in the field), then the best other suggestion: three words at most.
+        let rig = AutocorrectRig.typingASpace(after: "so", alternatives: ["teh": ["the", "ten", "tea"]])
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so the ")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["teh", "the", "ten"], inserted: 1))
+        // The corrector is asked for suggestions with the correction's inputs.
+        TestSupport.expectEqual(rig.corrector.suggestionCalls.count, 1)
+        let asked = rig.corrector.suggestionCalls[0], corrected = rig.corrector.calls[0]
+        TestSupport.expectEqual(asked.call.word, corrected.word)
+        TestSupport.expectEqual(asked.call.context, corrected.context)
+        TestSupport.expectEqual(asked.call.points.map { $0.map { TapPoint(x: $0.x, y: $0.y) } },
+                                corrected.points.map { $0.map { TapPoint(x: $0.x, y: $0.y) } })
+        TestSupport.expectEqual(asked.call.params, corrected.params)
+        TestSupport.expectEqual(asked.limit, SwipeStrip.limit)
+        // Every word takes the typed word's case and trailing apostrophes.
+        let cased = AutocorrectRig("", corrections: ["teh": "the"], alternatives: ["teh": ["ten"]])
+        cased.tap("Teh'")
+        cased.press(.character(","))
+        TestSupport.expectEqual(cased.text, "The',")
+        TestSupport.expectEqual(cased.strip, SwipeStrip(candidates: ["Teh'", "The'", "Ten'"], inserted: 1))
+        // A correction without other suggestions still offers the typed word.
+        let alone = AutocorrectRig("", corrections: ["teh": "the"])
+        alone.tap("teh")
+        alone.press(.space)
+        TestSupport.expectEqual(alone.strip, SwipeStrip(candidates: ["teh", "the"], inserted: 1))
+    }
+
+    private static func testAKeptWordWithSuggestionsOffersThem() {
+        let rig = AutocorrectRig.typingASpace(after: "hi", alternatives: ["wrld": ["world", "would", "wild"]])
+        rig.tap("wrld")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "hi wrld ")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["wrld", "world", "would"], inserted: 0))
+        TestSupport.expectEqual(rig.events, [.checked])
+        // Every commit key but Return, which may move focus.
+        for (key, text) in [(KeyAction.character("."), "."), (.character("?"), "?"), (.returnKey, "\n")] {
+            let other = AutocorrectRig("", corrections: [:], alternatives: ["wrld": ["world"]])
+            other.tap("wrld")
+            other.press(key)
+            TestSupport.expectEqual(other.text, "wrld" + text)
+            TestSupport.expectEqual(other.strip, key == .returnKey ? nil : SwipeStrip(candidates: ["wrld", "world"], inserted: 0))
+        }
+        let corrected = AutocorrectRig("", corrections: ["teh": "the"], alternatives: ["teh": ["ten"]])
+        corrected.tap("teh")
+        corrected.press(.returnKey)
+        TestSupport.expectEqual(corrected.text, "the\n")
+        TestSupport.expectEqual(corrected.strip, nil)
+    }
+
+    private static func testNoStripWithoutAChoice() {
+        // Kept with no suggestion (the corrector gives none for a lexicon word): the strip stays closed.
+        let rig = AutocorrectRig.typingASpace(after: "hi", corrections: [:])
+        var changes = 0
+        rig.editor.onSwipeStripChanged = { changes += 1 }
+        rig.tap("there")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.strip, nil)
+        TestSupport.expectEqual(changes, 0)
+        // Nothing is asked where the corrector is not: autocorrect off, a secure field, a field that turns
+        // autocorrection off, a swiped word, a word with other characters, a reverted word.
+        func asked(_ configure: (AutocorrectRig) -> Void, _ type: (AutocorrectRig) -> Void) -> Int {
+            let rig = AutocorrectRig("", corrections: ["teh": "the"], alternatives: ["teh": ["the"], "wrld": ["world"], "café": ["cafe"]])
+            configure(rig)
+            type(rig)
+            TestSupport.expectEqual(rig.strip, nil)
+            return rig.corrector.suggestionCalls.count
+        }
+        TestSupport.expectEqual(asked({ $0.enabled = false }, { $0.tap("wrld"); $0.press(.space) }), 0)
+        TestSupport.expectEqual(asked({ $0.secure = true }, { $0.tap("wrld"); $0.press(.space) }), 0)
+        TestSupport.expectEqual(asked({ $0.autocorrectionDisabled = true }, { $0.tap("wrld"); $0.press(.space) }), 0)
+        TestSupport.expectEqual(asked({ _ in }, { $0.swipe(["wrld"]); $0.press(.space) }), 0)
+        TestSupport.expectEqual(asked({ _ in }, { $0.tap("café"); $0.press(.space) }), 0)
+        TestSupport.expectEqual(asked({ _ in }, { $0.tap("teh"); $0.press(.space); $0.heldDelete(); $0.press(.space) }), 1)
+    }
+
+    private static func testChoosingReplacesTheWordBeforeTheCommitKey() {
+        let rig = AutocorrectRig.typingASpace(after: "hi", alternatives: ["wrld": ["world", "would"]])
+        rig.tap("wrld")
+        rig.press(.character(","))
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "hi world,")
+        TestSupport.expectEqual(rig.document.host.caret, 9)
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["wrld", "world", "would"], inserted: 1))
+        rig.choose(2)
+        TestSupport.expectEqual(rig.text, "hi would,")
+        rig.choose(0)
+        TestSupport.expectEqual(rig.text, "hi wrld,")
+        // Choosing the word already in the field does nothing.
+        rig.choose(0)
+        TestSupport.expectEqual(rig.text, "hi wrld,")
+        TestSupport.expectEqual(rig.events, [.checked, .chosen, .chosen, .chosen])
+        TestSupport.expect(rig.editor.revertedWords.isEmpty, "a kept word chosen back is not reverted")
+        // The next word is still this keyboard's own: corrected at its commit key.
+        rig.press(.space)
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "hi wrld, the ")
+        // A choice ends the pending revert: Delete then deletes one character.
+        let chosen = AutocorrectRig.typingASpace(after: "so", alternatives: ["teh": ["the", "ten"]])
+        chosen.tap("teh")
+        chosen.press(.space)
+        chosen.choose(2)
+        TestSupport.expectEqual(chosen.text, "so ten ")
+        chosen.heldDelete()
+        TestSupport.expectEqual(chosen.text, "so ten")
+        TestSupport.expect(chosen.editor.revertedWords.isEmpty, "a Delete after a choice reverted")
+        TestSupport.expectEqual(chosen.events, [.checked, .corrected, .chosen])
+    }
+
+    private static func testChoosingTheTypedWordRevertsTheCorrection() {
+        let rig = AutocorrectRig.typingASpace(after: "so", alternatives: ["teh": ["the"]])
+        rig.tap("Teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so The ")
+        rig.choose(0)
+        TestSupport.expectEqual(rig.text, "so Teh ")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["Teh", "The"], inserted: 0))
+        TestSupport.expectEqual(rig.editor.revertedWords, ["teh"])
+        TestSupport.expectEqual(rig.events, [.checked, .corrected, .reverted])
+        // Never corrected or offered again in this keyboard instance.
+        rig.tap("teh")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "so Teh teh ")
+        TestSupport.expectEqual(rig.strip, nil)
+        TestSupport.expectEqual(rig.corrector.calls.count, 1)
+        TestSupport.expectEqual(rig.corrector.suggestionCalls.count, 1)
+        // Choosing the correction back is a choice, and undoes the revert.
+        let back = AutocorrectRig("", corrections: ["teh": "the"])
+        back.tap("teh")
+        back.press(.space)
+        back.choose(0)
+        back.choose(1)
+        TestSupport.expectEqual(back.text, "the ")
+        TestSupport.expectEqual(back.events, [.checked, .corrected, .reverted, .chosen])
+        TestSupport.expect(back.editor.revertedWords.isEmpty, "the correction chosen back stays reverted")
+    }
+
+    private static func testTheCommitStripClosesAndRefusesLikeTheSwipeStrip() {
+        let alternatives = ["wrld": ["world"]]
+        // Any key closes it; a Delete deletes one character (not the whole word, as after a swipe).
+        let typed = AutocorrectRig("", corrections: [:], alternatives: alternatives)
+        typed.tap("wrld")
+        typed.press(.space)
+        typed.tap("a")
+        TestSupport.expectEqual(typed.strip, nil)
+        let deleted = AutocorrectRig("", corrections: [:], alternatives: alternatives)
+        deleted.tap("wrld")
+        deleted.press(.space)
+        deleted.heldDelete()
+        TestSupport.expectEqual(deleted.text, "wrld")
+        TestSupport.expectEqual(deleted.strip, nil)
+        // After a correction, Delete reverts and closes it.
+        let reverted = AutocorrectRig("", corrections: ["teh": "the"], alternatives: ["teh": ["ten"]])
+        reverted.tap("teh")
+        reverted.press(.space)
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "teh")
+        TestSupport.expectEqual(reverted.strip, nil)
+        // An outside edit closes it; a field changed without a report yet refuses the choice and closes it.
+        let outside = AutocorrectRig("", corrections: [:], alternatives: alternatives)
+        outside.tap("wrld")
+        outside.press(.space)
+        outside.document.hostInserts("A ", at: 0)
+        outside.pump()
+        TestSupport.expectEqual(outside.strip, nil)
+        let moved = AutocorrectRig("", corrections: [:], alternatives: alternatives)
+        moved.tap("wrld")
+        moved.press(.space)
+        moved.document.host.hostInsert("wrld ", at: 0)
+        moved.document.host.moveCaret(to: 5)
+        moved.document.host.refreshContext()
+        moved.choose(1)
+        TestSupport.expectEqual(moved.text, "wrld wrld ")
+        TestSupport.expectEqual(moved.strip, nil)
+        TestSupport.expectEqual(moved.events, [.checked])
+    }
+
     // MARK: Through the key area
 
     private static func testTapsCarryTheirTouchDownPointThroughTheKeyArea() {
@@ -910,7 +1097,7 @@ enum AutocorrectEditorTests {
     }
 }
 
-/// A corrector that maps words as told and remembers every call.
+/// A corrector that maps words and suggests words as told and remembers every call.
 final class FakeCorrector: WordCorrecting {
     struct Call {
         var context: String
@@ -921,16 +1108,25 @@ final class FakeCorrector: WordCorrecting {
     }
 
     var corrections: [String: String]
+    var alternatives: [String: [String]]
     private(set) var calls: [Call] = []
+    private(set) var suggestionCalls: [(call: Call, limit: Int)] = []
 
-    init(_ corrections: [String: String]) {
+    init(_ corrections: [String: String], alternatives: [String: [String]] = [:]) {
         self.corrections = corrections
+        self.alternatives = alternatives
     }
 
     func correct(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                  params: AutocorrectParams) -> String {
         calls.append(Call(context: context, word: word, points: points, keys: keys, params: params))
         return corrections[word] ?? word
+    }
+
+    func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params: AutocorrectParams, limit: Int) -> [String] {
+        suggestionCalls.append((Call(context: context, word: word, points: points, keys: keys, params: params), limit))
+        return Array((alternatives[word] ?? []).prefix(limit))
     }
 
     func forgetContext() {}
@@ -953,13 +1149,14 @@ final class AutocorrectRig {
     private(set) var events: [WordAutocorrect.Event] = []
     private var time: TimeInterval = 100
 
-    init(_ text: String, corrections: [String: String], editCallbackDelay: Int? = nil, documentID: UUID? = UUID()) {
+    init(_ text: String, corrections: [String: String], alternatives: [String: [String]] = [:], editCallbackDelay: Int? = nil,
+         documentID: UUID? = UUID()) {
         document = FakeDocument(FakeTextHost(text: text), documentID: documentID)
         document.editCallbackDelay = editCallbackDelay
         let trackpad = TrackpadController(host: document)
         trackpad.parameters = .flat
         editor = KeyboardEditor(document: document, trackpad: trackpad)
-        corrector = FakeCorrector(corrections)
+        corrector = FakeCorrector(corrections, alternatives: alternatives)
         editor.autocapitalization = { [unowned self] in self.autocapitalization }
         editor.autocorrect = { [unowned self] in
             guard self.enabled else { return nil }
@@ -973,8 +1170,9 @@ final class AutocorrectRig {
     var text: String { document.text }
 
     /// A field holding `text` the keyboard did not type, then a space it typed: the next word is its own.
-    static func typingASpace(after text: String, corrections: [String: String] = ["teh": "the"]) -> AutocorrectRig {
-        let rig = AutocorrectRig(text, corrections: corrections)
+    static func typingASpace(after text: String, corrections: [String: String] = ["teh": "the"],
+                             alternatives: [String: [String]] = [:]) -> AutocorrectRig {
+        let rig = AutocorrectRig(text, corrections: corrections, alternatives: alternatives)
         rig.press(.space)
         return rig
     }
@@ -1002,6 +1200,13 @@ final class AutocorrectRig {
     func heldDelete(_ unit: DeleteRepeat.Unit = .character) {
         editor.heldDelete(unit, field: document.documentID, now: tick())
     }
+
+    /// A tap on the strip's word `index`.
+    func choose(_ index: Int) {
+        editor.chooseSwipeCandidate(at: index, now: tick())
+    }
+
+    var strip: SwipeStrip? { editor.swipeStrip }
 
     func swipe(_ words: [String]) {
         let candidates = words.enumerated().map { SwipeCandidate(word: $1, score: -Double($0)) }

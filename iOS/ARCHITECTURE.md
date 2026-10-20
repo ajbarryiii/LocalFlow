@@ -1968,6 +1968,37 @@ inserted) and remembers the typed word as reverted
 for the rest of the keyboard session (in memory). Any other key forgets the
 pending revert.
 
+**Suggestion strip (contract change, 2026-10-20; requested by the owner).**
+On the device, many plainly misspelled words were left alone: the
+conservative margins keep a word unless the evidence is overwhelming, and
+the channel models finger slips, not spelling ("definately", "recieved").
+So after a commit key other than Return (which may move focus), the
+candidate strip used after a swipe shows what autocorrect considered, in
+place of the bar's chips:
+- **Its words:** the typed word first, then the correction (if any), then the
+  corrector's suggestions, up to three, each in the typed word's case with
+  its trailing apostrophes. The word in the field is emphasized.
+- **When:** only when there is a choice: a correction was made, or the word
+  is outside the lexicon and has suggestions. A lexicon word kept as typed
+  shows no strip, so ordinary typing keeps the chips.
+- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms ranked
+  exactly as the correction ranks its candidates (channel + `lmWeight` ×
+  model log probability; ties to the higher frequency, then the first
+  form), with no margin. None for a lexicon word, or where the corrector
+  keeps the word without looking. The best suggestion is the correction
+  whenever there is one.
+- **A choice** replaces the word and puts the commit key's text back after
+  it, under the swipe strip's conditions (same field, nothing else edited
+  it, the text before the caret still ends with it); otherwise the tap does
+  nothing and the strip closes. Choosing the typed word over a correction is
+  a revert (it is remembered as one); choosing the correction back undoes
+  that. A choice ends the pending revert. The next word is still the
+  keyboard's own.
+- **Closing:** any key closes it, as after a swipe. Delete deletes one
+  character (or reverts a correction), never the whole word: the whole-word
+  deletion is the swipe strip's only.
+- Counted as "Suggestions chosen" with the other word counters.
+
 **Bundle.** The files ride in the swipe bundle like the tap models, listed with
 their SHA-256 in `bundle.json`, and an optional `autocorrect` section:
 - `format` 1
@@ -2004,16 +2035,16 @@ and `margin_apostrophe` 1–1000 on a log scale with an "∞" switch; `lm_weight
 reset. Out-of-range or malformed values read as the preset's.
 
 **Counters (TestFlight).** With `typingCountersEnabled`, the keyboard also
-counts words checked, words corrected, and corrections reverted. Counts only,
-no text.
+counts words checked, words corrected, corrections reverted, and suggestions
+chosen on the strip. Counts only, no text.
 
 **Performance.** The selected model loads off the main thread when the keyboard
 appears; until then words commit as typed. A correction runs on the main
 thread at the commit key and should take a few milliseconds; the word model
 caches by sentence context.
 
-**Privacy (amends invariant 5).** The context, the word, its points and the
-reverted words stay in the instance's memory, are dropped when the keyboard
+**Privacy (amends invariant 5).** The context, the word, its points, the
+strip's words and the reverted words stay in the instance's memory, are dropped when the keyboard
 hides (the reverted words when the keyboard instance ends), and are never
 logged, stored, sent or learned from. The models are fixed.
 

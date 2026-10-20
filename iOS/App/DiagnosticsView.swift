@@ -480,9 +480,10 @@ private struct TypingCountersSection: View {
         (.swipe, "Became a swipe"), (.skid, "Skid typed as a tap"), (.swipeEmpty, "Swipe typed nothing"),
         (.softTap, "Soft taps"), (.softLetter, "Soft tap: other letter"), (.softSpace, "Soft tap: space"),
         (.wordChecked, "Words checked"), (.wordCorrected, "Words corrected"), (.wordReverted, "Corrections reverted"),
+        (.wordChosen, "Suggestions chosen"),
     ]
     /// Events without a position (`TypingCounters.wordRegions`): only their total is shown.
-    private static let unplaced: Set<TypingCounters.Event> = [.wordChecked, .wordCorrected, .wordReverted]
+    private static let unplaced: Set<TypingCounters.Event> = [.wordChecked, .wordCorrected, .wordReverted, .wordChosen]
     private static let regions: [(TypingCounters.Region, String)] = [
         (.row1, "Top"), (.row2, "2nd"), (.row3, "3rd"), (.row4, "Bottom"), (.left, "Left"), (.right, "Right"),
     ]

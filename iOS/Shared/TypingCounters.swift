@@ -24,9 +24,10 @@ struct TypingCounters: Equatable, Sendable {
         case swipeEmpty
         /// A tap soft key edges predicted; of those, one that typed another letter, or a space.
         case softTap, softLetter, softSpace
-        /// A word autocorrect checked at a commit key; of those, one it replaced; a replacement a Delete reverted
-        /// (ARCHITECTURE.md, "Word autocorrect"). Counted in `wordRegions`.
-        case wordChecked, wordCorrected, wordReverted
+        /// A word autocorrect checked at a commit key; of those, one it replaced; a replacement a Delete (or the
+        /// strip) reverted; another word chosen on the strip after a commit key (ARCHITECTURE.md, "Word
+        /// autocorrect"). Counted in `wordRegions`.
+        case wordChecked, wordCorrected, wordReverted, wordChosen
     }
 
     /// The row of the nearest key (`row1` at the top; lower rows count as `row4`), and `left` or `right`

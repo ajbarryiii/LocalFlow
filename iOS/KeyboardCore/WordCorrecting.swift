@@ -8,6 +8,12 @@ import Foundation
 protocol WordCorrecting: AnyObject {
     func correct(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                  params: AutocorrectParams) -> String
+    /// The suggestion strip's words for the same inputs: up to `limit` lexicon forms, lowercase, best first,
+    /// ranked as `correct` ranks its candidates (channel plus weighted model log probability; ties to the higher
+    /// frequency, then the first form) but with no margin, any finite score. None for a word in the lexicon, or
+    /// one `correct` keeps without looking (invalid inputs, a key shorter than `minLength`).
+    func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params: AutocorrectParams, limit: Int) -> [String]
     /// Drops every cache that holds context or words (the keyboard calls it when it hides). Results after it
     /// are the same as before.
     func forgetContext()

@@ -16,9 +16,10 @@ struct AutocorrectSetup {
 /// which word is before the caret, whether it may be corrected, the corrector's inputs and the correction's
 /// case. `KeyboardEditor` applies them.
 enum WordAutocorrect {
-    /// Events for the TestFlight counters: a word was given to the corrector, replaced, or put back.
+    /// Events for the TestFlight counters: a word was given to the corrector, replaced, or put back (by a Delete
+    /// or by choosing it on the strip), or another word was chosen on the strip after a commit key.
     enum Event: Equatable, Sendable {
-        case checked, corrected, reverted
+        case checked, corrected, reverted, chosen
     }
 
     /// The characters that commit a word, from any layer, besides space and Return.
@@ -76,14 +77,27 @@ enum WordAutocorrect {
         var record: WordTapRecord
     }
 
-    /// The correction for the owned word in `record` at a commit key, or nil to commit it as typed. The record
-    /// is the word: nothing is read from the field but the context before it (`before`, the text before the
-    /// caret as the editor knows it, for the word model only). Nil without a setup, in a secure field or one
-    /// that turns autocorrection off, for an unowned record or one without a letter, for a word holding other
-    /// characters or reverted in this keyboard session, or when the corrector keeps it. `checked` is called when
-    /// the corrector is asked.
-    static func correction(before: String, record: WordTapRecord, reverted: Set<String>, setup: AutocorrectSetup?,
-                           checked: () -> Void = {}) -> Correction? {
+    /// What a commit key does with the owned word: its correction, if any, and the strip's words to choose from
+    /// after it. The words replace `typed`, each cased as the typed word and followed by its trailing apostrophes:
+    /// the typed word first, then the correction, then the corrector's suggestions, at most `SwipeStrip.limit`
+    /// and only when there is a choice (none for a lexicon word the corrector keeps).
+    struct Review: Equatable {
+        var correction: Correction?
+        var typed: String
+        var choices: [String]
+
+        /// The index of the word the commit leaves in the field.
+        var inserted: Int { correction == nil ? 0 : 1 }
+    }
+
+    /// The review of the owned word in `record` at a commit key, or nil to commit it as typed without asking the
+    /// corrector. The record is the word: nothing is read from the field but the context before it (`before`, the
+    /// text before the caret as the editor knows it, for the word model only). Nil without a setup, in a secure
+    /// field or one that turns autocorrection off, for an unowned record or one without a letter, or for a word
+    /// holding other characters or reverted in this keyboard session. `checked` is called when the corrector is
+    /// asked.
+    static func review(before: String, record: WordTapRecord, reverted: Set<String>, setup: AutocorrectSetup?,
+                       checked: () -> Void = {}) -> Review? {
         guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, record.owned,
               let found = word(before: record.text) else { return nil }
         let entries = record.entries
@@ -98,10 +112,19 @@ enum WordAutocorrect {
         checked()
         let corrected = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                 params: setup.params)
-        guard !corrected.isEmpty, corrected.lowercased() != lowered else { return nil }
-        let cased = cased(corrected, like: word)
-        guard cased != word else { return nil }
+        let suggested = setup.corrector.suggestions(context: context, word: lowered, points: points, keys: setup.keys,
+                                                    params: setup.params, limit: SwipeStrip.limit)
         let tail = String(entries[found.word.upperBound...].map(\.character))
-        return Correction(word: lowered, typed: word + tail, replacement: cased + tail, record: record)
+        let typed = word + tail
+        var correction: Correction?
+        if !corrected.isEmpty, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
+            correction = Correction(word: lowered, typed: typed, replacement: cased(corrected, like: word) + tail, record: record)
+        }
+        var choices = [typed]
+        for choice in (correction.map { [$0.replacement] } ?? []) + suggested.map({ cased($0, like: word) + tail })
+        where choices.count < SwipeStrip.limit && !choices.contains(choice) {
+            choices.append(choice)
+        }
+        return Review(correction: correction, typed: typed, choices: choices.count > 1 ? choices : [])
     }
 }

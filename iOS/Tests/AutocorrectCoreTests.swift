@@ -28,6 +28,8 @@ enum AutocorrectCoreTests {
             ("tiesGoToTheHigherFrequencyThenTheFirstForm", testTiesGoToTheHigherFrequencyThenTheFirstForm),
             ("invalidInputsKeepTheWord", testInvalidInputsKeepTheWord),
             ("correctionsAreDeterministic", testCorrectionsAreDeterministic),
+            ("suggestionsRankTheCandidatesWithoutAMargin", testSuggestionsRankTheCandidatesWithoutAMargin),
+            ("suggestionsMatchABruteForceRanking", testSuggestionsMatchABruteForceRanking),
             ("insertionWeightsWithinRoundingAreNormalized", testInsertionWeightsWithinRoundingAreNormalized),
             ("hugeEditLimitsAreTheirUsefulMaximum", testHugeEditLimitsAreTheirUsefulMaximum),
             ("lexiconMatchesTheReference", testLexiconMatchesTheReference),
@@ -172,8 +174,26 @@ enum AutocorrectCoreTests {
     /// decision and how close it is to a floating-point tie (cases closer than 1e-6 are skipped).
     static func referenceCorrect(entries: [String: Int], model: WordModel, p: AutocorrectParams, context: String, typed: String,
                                  taps: [(x: Double, y: Double)?]) -> (String, Double) {
+        guard let reference = referenceScores(entries: entries, model: model, p: p, context: context, typed: typed, taps: taps)
+        else { return (typed, 0) }
+        let (keep, scored) = reference
+        guard !scored.isEmpty else { return (typed, .infinity) }
+        let (score, form) = scored[0]
+        var gap = scored.dropFirst().filter { $0.1 != form }.map { score - $0.0 }.min() ?? .infinity
+        if form == typed { return (typed, gap) }
         let key = Autocorrector.key(of: typed)
-        guard key.count >= p.minLength else { return (typed, 0) }
+        let margin = entries[typed] == nil ? p.marginOOV : Autocorrector.key(of: form) == key ? p.marginApostrophe : p.marginKnown
+        let threshold = margin > 0 ? log(margin) : -.infinity
+        gap = min(gap, abs(score - keep - threshold))
+        return (score - keep >= threshold ? form : typed, gap)
+    }
+
+    /// The contract's keep score and every candidate form's score, ranked (higher score, then higher frequency,
+    /// then the first form); nil for a key shorter than `minLength`.
+    static func referenceScores(entries: [String: Int], model: WordModel, p: AutocorrectParams, context: String, typed: String,
+                                taps: [(x: Double, y: Double)?]) -> (keep: Double, scored: [(Double, String)])? {
+        let key = Autocorrector.key(of: typed)
+        guard key.count >= p.minLength else { return nil }
         let letters = Array("abcdefghijklmnopqrstuvwxyz")
         let decoder = TapDecoder(touch: touch, rule: TapDecoder.Rule(centre: 1, margin: 1, maxSurprise: nil))
         let points = zip(typed, taps).filter { $0.0 != "'" }.map(\.1)
@@ -245,19 +265,12 @@ enum AutocorrectCoreTests {
             let ch = channel(Array(cand))
             for form in forms { scored.append((ch + p.lmWeight * model.logProbs(context: words, words: [form])[0], form)) }
         }
-        guard !scored.isEmpty else { return (typed, .infinity) }
         scored.sort { a, b in
             if a.0 != b.0 { return a.0 > b.0 }
             if entries[a.1]! != entries[b.1]! { return entries[a.1]! > entries[b.1]! }
             return a.1.utf8.lexicographicallyPrecedes(b.1.utf8)
         }
-        let (score, form) = scored[0]
-        var gap = scored.dropFirst().filter { $0.1 != form }.map { score - $0.0 }.min() ?? .infinity
-        if form == typed { return (typed, gap) }
-        let margin = entries[typed] == nil ? p.marginOOV : Autocorrector.key(of: form) == key ? p.marginApostrophe : p.marginKnown
-        let threshold = margin > 0 ? log(margin) : -.infinity
-        gap = min(gap, abs(score - keep - threshold))
-        return (score - keep >= threshold ? form : typed, gap)
+        return (keep, scored)
     }
 
     /// A tap aimed at a key's centre with Gaussian noise of `sigma` letter pitches (Box–Muller).
@@ -464,6 +477,78 @@ enum AutocorrectCoreTests {
         TestSupport.expectEqual(corrector.correct(context: "", word: "helo", points: centreTaps("helo"), keys: [], params: .standard), "helo")
         // An infinite margin never replaces; none lower than keep's score does.
         TestSupport.expectEqual(correct(corrector, "", "helo", nil, params { $0.marginOOV = .infinity }), "helo")
+    }
+
+    private static func testSuggestionsRankTheCandidatesWithoutAMargin() {
+        let corrector = make([("hello", 200), ("help", 150), ("held", 120), ("cat", 220)],
+                             ["hello": 0.4, "help": 0.2, "held": 0.1, "cat": 0.3])
+        func suggest(_ word: String, _ limit: Int = 3, _ p: AutocorrectParams = .standard,
+                     _ points: [(x: Double, y: Double)?]? = nil) -> [String] {
+            corrector.suggestions(context: "", word: word, points: points ?? centreTaps(word), keys: keys, params: p, limit: limit)
+        }
+        // A margin no correction clears still leaves the candidates, best first; "cat" is beyond the edit limit.
+        let never = params { $0.marginOOV = .infinity }
+        TestSupport.expectEqual(correct(corrector, "", "helo", nil, never), "helo")
+        let all = suggest("helo", 3, never)
+        TestSupport.expectEqual(all.first, "hello")
+        TestSupport.expectEqual(Set(all), ["hello", "help", "held"])
+        TestSupport.expectEqual(suggest("helo"), all)
+        TestSupport.expectEqual(suggest("helo", 1), ["hello"])
+        // The best suggestion is the correction whenever there is one.
+        TestSupport.expectEqual(correct(corrector, "", "helo"), "hello")
+        // None for a lexicon word, a limit below 1, or inputs `correct` keeps without looking.
+        TestSupport.expectEqual(suggest("help"), [])
+        TestSupport.expectEqual(suggest("helo", 0), [])
+        TestSupport.expectEqual(suggest("helo", 3, params { $0.minLength = 5 }), [])
+        TestSupport.expectEqual(suggest("helo", 3, .standard, centreTaps("hel")), [])
+        TestSupport.expectEqual(suggest("hel-o", 3, .standard, centreTaps("helxo")), [])
+        TestSupport.expectEqual(corrector.suggestions(context: "", word: "helo", points: centreTaps("helo"), keys: [], params: .standard,
+                                                      limit: 3), [])
+        TestSupport.expectEqual(suggest("zzzzzz"), [])
+    }
+
+    private static func testSuggestionsMatchABruteForceRanking() {
+        var random = SplitMix64(seed: 5)
+        let alphabet = Array("aqwsde")
+        var entries: [String: Int] = [:]
+        for key in Set((0 ..< 160).map { _ in randomWord(alphabet, 1 ... 6, &random) }).sorted() {
+            entries[key] = Int.random(in: 0 ... 255, using: &random)
+        }
+        let lexicon = lexicon(entries.map { ($0.key, $0.value) })
+        var probs: [String: Double] = [:]
+        for form in entries.keys.sorted() { probs[form] = Double.random(in: 1e-4 ... 0.3, using: &random) }
+        let model = FakeModel(probs, unknown: 0.02)
+        let corrector = Autocorrector(lexicon: lexicon, model: model, touch: touch)
+        var compared = 0
+        for index in 0 ..< 200 {
+            let p = params {
+                $0.maxEdits = [1, 2].randomElement(using: &random)!
+                $0.maxEditsShort = [0, 1].randomElement(using: &random)!
+                $0.minLength = [1, 2].randomElement(using: &random)!
+                $0.lmWeight = [0.5, 1, 2].randomElement(using: &random)!
+                $0.marginOOV = [1, .infinity].randomElement(using: &random)!
+            }
+            let typed = randomWord(alphabet, 1 ... 7, &random)
+            let taps: [(x: Double, y: Double)?] = typed.map { ch in
+                Double.random(in: 0 ..< 1, using: &random) < 0.1 ? nil : sample(ch, sigma: 0.3, &random)
+            }
+            let limit = Int.random(in: 1 ... 4, using: &random)
+            let got = corrector.suggestions(context: "we ", word: typed, points: taps, keys: keys, params: p, limit: limit)
+            guard entries[typed] == nil,
+                  let reference = referenceScores(entries: entries, model: model, p: p, context: "we ", typed: typed, taps: taps) else {
+                TestSupport.expect(got.isEmpty, "case \(index) \(typed): \(got)")
+                continue
+            }
+            let ranked = reference.scored.filter { $0.0.isFinite }
+            // Scores this close may rank either way in floating point.
+            let shown = min(limit, ranked.count)
+            if shown < ranked.count, ranked[shown - 1].0 - ranked[shown].0 < 1e-6 { continue }
+            if zip(ranked.prefix(shown), ranked.prefix(shown).dropFirst()).contains(where: { $0.0 - $1.0 < 1e-6 }) { continue }
+            compared += 1
+            let want = ranked.prefix(shown).map(\.1)
+            TestSupport.expect(got == want, "case \(index) \(typed): \(got) vs \(want) \(p)")
+        }
+        TestSupport.expect(compared > 100, "compared \(compared)")
     }
 
     private static func testInsertionWeightsWithinRoundingAreNormalized() {
