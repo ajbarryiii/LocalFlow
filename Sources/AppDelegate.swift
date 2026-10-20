@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
@@ -73,14 +74,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                guard let self = self else { return }
-                if !self.appState.hasCompletedSetup {
-                    self.appState.hasCompletedSetup = true
-                    self.appState.startHotkeyMonitoring()
-                    self.appState.startAccessibilityPolling()
-                    NSApp.setActivationPolicy(.accessory)
+                // Delivered on the main queue (queue: .main), so already on the main actor.
+                MainActor.assumeIsolated {
+                    guard let self = self else { return }
+                    if !self.appState.hasCompletedSetup {
+                        self.appState.hasCompletedSetup = true
+                        self.appState.startHotkeyMonitoring()
+                        self.appState.startAccessibilityPolling()
+                        NSApp.setActivationPolicy(.accessory)
+                    }
+                    self.setupWindow = nil
                 }
-                self.setupWindow = nil
             }
         }
     }
@@ -131,10 +135,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            if self?.setupWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
+            // Delivered on the main queue (queue: .main), so already on the main actor.
+            MainActor.assumeIsolated {
+                if self?.setupWindow == nil {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+                self?.settingsWindow = nil
             }
-            self?.settingsWindow = nil
         }
     }
 
