@@ -107,7 +107,7 @@ struct DictationShortcutEditor: View {
                     .foregroundStyle(.orange)
             }
         }
-        .onChange(of: activeCaptureRole) { role in
+        .onChange(of: activeCaptureRole) { _, role in
             onCaptureStateChange?(role != nil)
         }
         .onDisappear {
@@ -187,7 +187,7 @@ private struct PromptTagField: View {
                 .foregroundStyle(.secondary)
         }
         .onAppear { text = appState.promptTag }
-        .onChange(of: isFocused) { focused in
+        .onChange(of: isFocused) { _, focused in
             if !focused { commit() }
         }
         .onDisappear(perform: commit)

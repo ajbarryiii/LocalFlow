@@ -834,6 +834,6 @@ struct DictionaryEntryEditorView: View {
                 strength = original.strength
             }
         }
-        .onChange(of: text) { _ in saveError = nil }
+        .onChange(of: text) { saveError = nil }
     }
 }

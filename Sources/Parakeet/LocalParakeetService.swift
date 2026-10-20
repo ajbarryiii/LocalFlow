@@ -13,7 +13,7 @@ final class LocalParakeetService: @unchecked Sendable {
     }
     static var isAvailable: Bool {
         #if arch(arm64)
-        if #available(macOS 26, *), let directory = bundleDirectory {
+        if let directory = bundleDirectory {
             return FileManager.default.fileExists(atPath: directory.appendingPathComponent("bundle.json").path)
         }
         #endif
@@ -633,8 +633,7 @@ private enum ParakeetEncoder {
     static func load(bucket: Int, directory: URL, computeUnits: MLComputeUnits) throws -> MLModel {
         let config = MLModelConfiguration()
         config.computeUnits = computeUnits
-        if #available(macOS 15, *) { config.functionName = "b\(bucket)" }
-        else { throw LocalParakeetError.invalid("LocalFlow requires macOS 26 or newer.") }
+        config.functionName = "b\(bucket)"
         return try MLModel(contentsOf: directory.appendingPathComponent("Encoder.mlmodelc"), configuration: config)
     }
 
