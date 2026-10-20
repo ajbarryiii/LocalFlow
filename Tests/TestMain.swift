@@ -21,6 +21,7 @@ struct LocalFlowTests {
         UpdateManagerTests.run()
         DictationStatsTests.run()
         DictionaryTests.run()
+        DictionaryAppTests.run()
         StrengthProbeTests.run()
         print("LocalFlowTests passed")
     }

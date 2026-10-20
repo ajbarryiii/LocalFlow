@@ -293,10 +293,12 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
     }
 
-    // MARK: Custom dictionary (DESIGN §3.2). Entries and corrections are never logged.
+    // MARK: Custom dictionary (DESIGN §3.2, §3.6). Entries and corrections are never logged.
 
     private static let dictionaryStorageKey = "custom_dictionary"
     private static let dictionaryIgnoreStorageKey = "custom_dictionary_ignore"
+    /// Which words are limited to which apps; macOS only.
+    private static let dictionaryAppsStorageKey = "custom_dictionary_apps"
     private static let correctionSuggestionsStorageKey = "correction_suggestions_enabled"
 
     /// The bundled model's vocabulary, so Settings can reject unencodable entries.
@@ -304,7 +306,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         try? BPEEncoder(vocabularyFile: $0.appendingPathComponent("vocabulary.json"))
     }
 
-    @Published private(set) var customDictionary = CustomDictionary()
+    @Published private(set) var customDictionary = ScopedDictionary()
     /// Saved data failed validation. It stays untouched, the dictionary is
     /// empty in memory, and editing waits for an explicit reset.
     @Published private(set) var dictionaryLoadFailed = false
@@ -321,13 +323,32 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private var dictionaryRevision: UInt64 = 1
     private let correctionWatcher = CorrectionWatcher(reader: AccessibilityTextFieldReader())
     private var correctionSuggestionTask: Task<Void, Never>?
+    /// The watched dictation and the app it went into, for its suggestion.
+    private var correctionApp: (dictationID: UInt64, app: DictionaryApp?)?
 
-    var dictionaryEntries: [DictionaryEntry] { customDictionary.entries }
-    var dictionaryIgnore: [DictionaryKey] { customDictionary.ignore }
+    var dictionaryEntries: [DictionaryEntry] { customDictionary.dictionary.entries }
+    var dictionaryIgnore: [DictionaryKey] { customDictionary.dictionary.ignore }
+    var dictionaryApps: [DictionaryApp] { customDictionary.scopes.apps }
 
-    /// The immutable dictionary a transcription decodes with.
-    var dictionarySnapshot: DictionarySnapshot {
-        DictionarySnapshot(revision: dictionaryRevision, entries: dictionaryLoadFailed ? [] : customDictionary.entries)
+    /// Empty: the word applies everywhere.
+    func dictionaryApps(for key: DictionaryKey) -> Set<String> { customDictionary.scopes.apps(for: key) }
+
+    /// The app the current recording dictates into, fixed when it begins (DESIGN §3.6).
+    private var dictationApp: DictionaryApp?
+
+    /// The immutable dictionary a transcription into `app` decodes with: the
+    /// words that apply everywhere plus the app's own (DESIGN §3.6).
+    func dictionarySnapshot(for app: DictionaryApp?) -> DictionarySnapshot {
+        guard !dictionaryLoadFailed else { return DictionarySnapshot(revision: dictionaryRevision, entries: []) }
+        let words = customDictionary.decodingWords(for: app?.id)
+        return DictionarySnapshot(revision: dictionaryRevision, entries: words.entries, appID: words.appID)
+    }
+
+    /// The frontmost app, unless it is LocalFlow itself or has no valid bundle identifier.
+    private static func frontmostDictionaryApp() -> DictionaryApp? {
+        guard let app = NSWorkspace.shared.frontmostApplication, let id = app.bundleIdentifier,
+              id != Bundle.main.bundleIdentifier else { return nil }
+        return DictionaryApp(id: id, name: app.localizedName)
     }
 
     private static let dictationStatsStorageKey = "dictation_stats"
@@ -548,10 +569,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 self?.handleUpdateOverlayPressed()
             }
         }
-        overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, action in
+        overlayManager.onDictionarySuggestionAction = { [weak self] suggestion, app, action in
             // Sent from the overlay's suggestion buttons, on the main thread.
             MainActor.assumeIsolated {
-                self?.handleDictionarySuggestionAction(suggestion, action)
+                self?.handleDictionarySuggestionAction(suggestion, app: app, action)
             }
         }
         // CorrectionWatcher delivers both callbacks on the main queue.
@@ -811,9 +832,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
             defer { retryingItemIDs.remove(item.id) }
             var updated = item
             do {
-                // Casing restoration runs inside, before LocalDictationCore.
-                let raw = try await LocalParakeetService.shared.transcribe(fileURL: audioURL, dictionary: dictionarySnapshot,
-                                                                           retainForCorrection: false).text
+                // Casing restoration runs inside, before LocalDictationCore. The original
+                // app is not kept, so a retry uses the words that apply everywhere.
+                let raw = try await LocalParakeetService.shared.transcribe(
+                    fileURL: audioURL, dictionary: dictionarySnapshot(for: nil), retainForCorrection: false).text
                 let result = LocalDictationCore.process(raw, macros: voiceMacros,
                                                        pressEnterEnabled: isPressEnterVoiceCommandEnabled,
                                                        spokenDelimitersEnabled: isSpokenDelimitersEnabled,
@@ -1539,6 +1561,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
+        // Before the streaming transcription starts: its dictionary is this app's.
+        dictationApp = Self.frontmostDictionaryApp()
         let attempt = recordingAttempts.begin()
         beginCriticalDictationActivity()
         clearPendingOverlayDismissToken()
@@ -1647,7 +1671,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private func beginStreamingDictation() -> ParakeetStreamingSession? {
         cancelStreamingDictation()
         guard localModelPreparationState == .ready else { return nil }
-        let dictionary = dictionarySnapshot, retain = retainsAudioForCorrection
+        let dictionary = dictionarySnapshot(for: dictationApp), retain = retainsAudioForCorrection
         guard let session = LocalParakeetService.shared.beginStreamingTranscription(
             dictionary: dictionary, retainForCorrection: retain) else { return nil }
         streamingDictation = (session, dictionary.revision, retain)
@@ -1749,7 +1773,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     private func stopAndTranscribe() {
         let appliedPromptTag = shortcutSessionController.isPromptSession ? promptTag : nil
-        let dictionary = dictionarySnapshot
+        // The app fixed at recording start, whatever is frontmost now (DESIGN §3.6).
+        let app = dictationApp
+        let dictionary = dictionarySnapshot(for: app)
         // Audio is retained only while suggestions are on; macros and press-enter
         // results release it right after processing.
         let retainForCorrection = retainsAudioForCorrection
@@ -1826,7 +1852,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                                 let pendingRestore = self.writeTranscriptToPasteboard(result.output)
                                 self.pasteAtCursorWhenShortcutReleased(
                                     correction: self.correctionPasteContext(for: result, dictationID: transcription.dictationID,
-                                                             snapshotRevision: dictionary.revision,
+                                                             snapshotRevision: dictionary.revision, app: app,
                                                              watchGeneration: watchGeneration)
                                 ) {
                                     if result.shouldPressEnter {
@@ -2174,6 +2200,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                     guard let self else { return }
                     self.pasteAtCursor()
                     if let capture, self.isCorrectionSuggestionsEnabled {
+                        self.correctionApp = (correction.dictationID, correction.app)
                         self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
                     } else {
                         LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
@@ -2192,13 +2219,15 @@ final class AppState: ObservableObject, DictationCleanupActions {
         let dictationID: UInt64
         /// The watcher generation when recording stopped; any cancel since makes it stale.
         let watchGeneration: UInt64
+        /// The app the dictation went into, for its suggestion (DESIGN §3.6).
+        let app: DictionaryApp?
     }
 
     /// Eligible: suggestions on, audio retained with the current dictionary
     /// revision, nothing cancelled since recording stopped, pasted, not a
     /// macro, no press-enter. Otherwise this dictation's audio is released.
     private func correctionPasteContext(for result: LocalDictationResult, dictationID: UInt64?, snapshotRevision: UInt64,
-                                        watchGeneration: UInt64) -> CorrectionPasteContext? {
+                                        app: DictionaryApp?, watchGeneration: UInt64) -> CorrectionPasteContext? {
         guard let dictationID else { return nil }
         guard CorrectionEligibility.isEligible(
             suggestionsEnabled: isCorrectionSuggestionsEnabled, dictionaryReadable: !dictionaryLoadFailed, retained: true,
@@ -2209,7 +2238,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             return nil
         }
         return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID,
-                                      watchGeneration: watchGeneration)
+                                      watchGeneration: watchGeneration, app: app)
     }
 
     /// Discards any watched paste, running verification and retained audio
@@ -2220,6 +2249,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         correctionWatcher.cancel()
         correctionSuggestionTask?.cancel()
         correctionSuggestionTask = nil
+        correctionApp = nil
         cancelStreamingDictation()
         LocalParakeetService.shared.discardCorrectionSession()
     }
@@ -2239,11 +2269,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool, watch: UInt64) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
         guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
-              customDictionary.entries.count < DictionaryValidation.capacity else {
+              customDictionary.dictionary.entries.count < DictionaryValidation.capacity,
+              let watched = correctionApp, watched.dictationID == edit.dictationID else {
             stopCorrectionSuggestions()
             return
         }
-        let ignore = Set(customDictionary.ignore)
+        let app = watched.app
+        let ignore = Set(customDictionary.dictionary.ignore)
         // Registered here, in report order, so an older check can never cancel this one.
         let check = LocalParakeetService.shared.beginCorrectionCheck()
         correctionSuggestionTask?.cancel()
@@ -2258,18 +2290,24 @@ final class AppState: ObservableObject, DictationCleanupActions {
             guard let suggestion, self.correctionWatcher.claim(watch) else { return }
             LocalParakeetService.shared.releaseCorrectionSession(dictationID: edit.dictationID)
             guard self.mayPresentCorrectionSuggestion else { return }
+            // A word limited to another app can still be offered for this one (DESIGN §3.6).
             let key = DictionaryKey(suggestion.word)
-            guard !self.customDictionary.contains(key), !self.customDictionary.isIgnored(key) else { return }
-            self.overlayManager.showDictionarySuggestion(suggestion)
+            guard !self.customDictionary.applies(key, in: app?.id), !self.customDictionary.dictionary.isIgnored(key) else { return }
+            self.overlayManager.showDictionarySuggestion(suggestion, app: app)
         }
     }
 
-    private func handleDictionarySuggestionAction(_ suggestion: DictionarySuggestion, _ action: DictionarySuggestionAction) {
+    /// `app` is the dictation's app, if any: Add puts the word there, Add
+    /// everywhere makes it global (DESIGN §3.6).
+    private func handleDictionarySuggestionAction(_ suggestion: DictionarySuggestion, app: DictionaryApp?,
+                                                  _ action: DictionarySuggestionAction) {
         switch action {
-        case .add:
+        case .add, .addEverywhere:
             // Defensive: if the add still fails (for example the dictionary filled
             // meanwhile), say so. The message never contains the word.
-            if let message = saveDictionaryEntry(text: suggestion.word, strength: suggestion.strength, replacing: nil) {
+            let target = action == .add ? app : nil
+            if let message = apply(dictionaryEditor.adding(suggestion.word, strength: suggestion.strength, to: target,
+                                                           in: customDictionary)) {
                 overlayManager.showError(message)
             }
         case .dontSuggest:
@@ -2282,13 +2320,14 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     /// Every change needs the speech model's vocabulary (DESIGN §1.1 step 3).
-    let dictionaryEditor = DictionaryEditor(encoder: AppState.dictionaryEncoder)
+    let dictionaryEditor = ScopedDictionaryEditor(encoder: AppState.dictionaryEncoder)
 
     var canEditDictionary: Bool { dictionaryEditor.canEdit && !dictionaryLoadFailed }
 
-    /// Adds or edits an entry. Returns a user-facing error, or nil on success.
-    func saveDictionaryEntry(text: String, strength: Float, replacing original: DictionaryKey?) -> String? {
-        apply(dictionaryEditor.saving(text: text, strength: strength, replacing: original, in: customDictionary))
+    /// Adds or edits an entry, limited to `apps` (none: everywhere). Returns a
+    /// user-facing error, or nil on success.
+    func saveDictionaryEntry(text: String, strength: Float, apps: Set<String>, replacing original: DictionaryKey?) -> String? {
+        apply(dictionaryEditor.saving(text: text, strength: strength, apps: apps, replacing: original, in: customDictionary))
     }
 
     func removeDictionaryEntry(_ key: DictionaryKey) {
@@ -2299,8 +2338,18 @@ final class AppState: ObservableObject, DictationCleanupActions {
         if let result = dictionaryEditor.unignoring(key, in: customDictionary) { _ = apply(result) }
     }
 
+    /// Adds an app words can be limited to, or updates its name.
+    func addDictionaryApp(_ app: DictionaryApp) -> String? {
+        apply(dictionaryEditor.registering(app, in: customDictionary))
+    }
+
+    /// Forgets the app and deletes the words only it had; they never become global.
+    func removeDictionaryApp(id: String) {
+        if let result = dictionaryEditor.removingApp(id, in: customDictionary) { _ = apply(result) }
+    }
+
     /// Persists and publishes an accepted change; returns a content-free error otherwise.
-    private func apply(_ result: Result<CustomDictionary, DictionaryEditError>) -> String? {
+    private func apply(_ result: Result<ScopedDictionary, ScopedDictionaryEditError>) -> String? {
         guard !dictionaryLoadFailed else { return "Reset the saved dictionary first." }
         switch result {
         case .success(let updated):
@@ -2315,18 +2364,20 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func resetSavedDictionary() {
         UserDefaults.standard.removeObject(forKey: Self.dictionaryStorageKey)
         UserDefaults.standard.removeObject(forKey: Self.dictionaryIgnoreStorageKey)
+        UserDefaults.standard.removeObject(forKey: Self.dictionaryAppsStorageKey)
         dictionaryLoadFailed = false
-        customDictionary = CustomDictionary()
+        customDictionary = ScopedDictionary()
         dictionaryDidChange()
     }
 
     /// Persists a validated state, then publishes it. Never writes over
     /// unreadable saved data.
-    private func applyDictionary(_ updated: CustomDictionary) {
+    private func applyDictionary(_ updated: ScopedDictionary) {
         guard !dictionaryLoadFailed else { return }
-        let encoded = DictionaryStorage.encode(updated)
+        let encoded = DictionaryStorage.encode(updated.dictionary)
         UserDefaults.standard.set(encoded.entries, forKey: Self.dictionaryStorageKey)
         UserDefaults.standard.set(encoded.ignore, forKey: Self.dictionaryIgnoreStorageKey)
+        UserDefaults.standard.set(DictionaryAppStorage.encode(updated.scopes), forKey: Self.dictionaryAppsStorageKey)
         customDictionary = updated
         dictionaryDidChange()
     }
@@ -2339,18 +2390,21 @@ final class AppState: ObservableObject, DictationCleanupActions {
         overlayManager.withdrawDictionarySuggestion()
     }
 
-    private static func loadCustomDictionary() -> (dictionary: CustomDictionary, failed: Bool) {
+    private static func loadCustomDictionary() -> (dictionary: ScopedDictionary, failed: Bool) {
         let defaults = UserDefaults.standard
         let entries = defaults.object(forKey: dictionaryStorageKey)
         let ignore = defaults.object(forKey: dictionaryIgnoreStorageKey)
+        let apps = defaults.object(forKey: dictionaryAppsStorageKey)
         // A value of the wrong type is unreadable, never "missing".
-        if (entries != nil && !(entries is Data)) || (ignore != nil && !(ignore is Data)) {
-            return (CustomDictionary(), true)
+        if [entries, ignore, apps].contains(where: { $0 != nil && !($0 is Data) }) {
+            return (ScopedDictionary(), true)
         }
-        switch DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data, encoder: dictionaryEncoder) {
-        case .success(let dictionary): return (dictionary, false)
-        case .failure: return (CustomDictionary(), true)
+        guard case .success(let dictionary) = DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data,
+                                                                     encoder: dictionaryEncoder),
+              case .success(let scopes) = DictionaryAppStorage.load(apps as? Data, entries: dictionary.entries) else {
+            return (ScopedDictionary(), true)
         }
+        return (ScopedDictionary(dictionary: dictionary, scopes: scopes), false)
     }
 
     private func pressEnterWhenShortcutReleased(completion: (() -> Void)? = nil) {
