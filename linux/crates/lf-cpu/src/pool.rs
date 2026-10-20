@@ -27,9 +27,14 @@ struct Shared {
     job: UnsafeCell<Option<Job>>,
 }
 
-// `job` is written by the caller before publishing a new generation (Release)
-// and read by workers after observing it (Acquire).
+// SAFETY: `job` is the only field that is not `Sync`/`Send` on its own. It is
+// written only by the `run` call holding `busy`: before publishing a new
+// generation (Release) and after `pending` reaches zero (Acquire). Workers read
+// it only after observing that generation (Acquire) and before decrementing
+// `pending` (Release), so accesses never race. The pointee is `Sync`, and
+// `run` keeps it alive until every worker is done with it.
 unsafe impl Sync for Shared {}
+// SAFETY: as for `Sync`; the raw job pointer is the only non-`Send` field.
 unsafe impl Send for Shared {}
 
 pub struct ThreadPool {
@@ -86,9 +91,14 @@ impl ThreadPool {
             self.busy.store(false, Ordering::Release);
             return;
         }
-        // Erase the lifetime: `run` does not return (and cannot unwind) until every
-        // worker is done with `f`.
+        // SAFETY: erases only the lifetime (same fat-pointer layout). `run` does
+        // not return until `pending` is zero, i.e. every worker is done with
+        // `f`, and cannot unwind before then: `run_job` aborts on a panic and
+        // nothing else between here and the wait panics.
         let job: Job = unsafe { std::mem::transmute::<&(dyn Fn(usize) + Sync), Job>(f) };
+        // SAFETY: `busy` makes this the only `run` in progress, the previous
+        // job's workers all finished (its `run` waited for `pending == 0`), and
+        // workers read `job` only after the generation bump below (Release).
         unsafe { *self.shared.job.get() = Some(job) };
         self.shared
             .pending
@@ -101,6 +111,8 @@ impl ThreadPool {
         while self.shared.pending.load(Ordering::Acquire) != 0 {
             std::hint::spin_loop();
         }
+        // SAFETY: `pending` reached zero (Acquire), so every worker finished
+        // reading `job` for this generation; `busy` still excludes other callers.
         unsafe { *self.shared.job.get() = None };
         self.busy.store(false, Ordering::Release);
     }
@@ -137,7 +149,12 @@ fn worker_loop(shared: &Shared, idx: usize) {
         if shared.shutdown.load(Ordering::Acquire) {
             return;
         }
+        // SAFETY: this generation was observed with Acquire after `run` wrote
+        // `job`, and `run` cannot clear it before this worker's `pending`
+        // decrement below, so the read does not race.
         let job = unsafe { (*shared.job.get()).expect("job published") };
+        // SAFETY: `run` keeps the closure behind `job` alive until `pending`
+        // is zero, which is after this worker's decrement below.
         run_job(unsafe { &*job }, idx);
         shared.pending.fetch_sub(1, Ordering::Release);
     }
@@ -157,6 +174,9 @@ impl Drop for ThreadPool {
 }
 
 fn pin_current_thread(cpu: usize) {
+    // SAFETY: an all-zero `cpu_set_t` is a valid empty set; `CPU_SET` writes
+    // through a checked index (a `cpu` past `CPU_SETSIZE` panics);
+    // `sched_setaffinity` reads `size_of::<cpu_set_t>()` bytes from a live local.
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_SET(cpu, &mut set);
