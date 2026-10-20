@@ -32,27 +32,27 @@ how both are held to it.
 - Characters are Unicode scalars. Strings compare by exact scalar sequence,
   with no normalization: canonically equivalent spellings differ.
   (`DictionaryText`, `Sources/Dictionary/DictionaryText.swift:4-19`; the
-  `lf_asr::dictionary` module doc, `linux/crates/lf-asr/src/dictionary.rs:5-7`)
+  `lf_text::dictionary` module doc, `linux/crates/lf-text/src/dictionary.rs:6-8`)
 - `fold(s)`: each scalar through its full lowercase mapping. Folding can
   lengthen text: `İ` folds to `i` + U+0307. (`DictionaryText.fold`,
-  `DictionaryText.swift:21-36`; `fold`, `lf-asr/src/dictionary.rs:100-103`)
+  `DictionaryText.swift:21-36`; `fold`, `lf-text/src/dictionary.rs:99-102`)
 - `upper1(s)`: the first scalar through its full uppercase mapping, the rest
   unchanged. (`DictionaryText.upper1`, `DictionaryText.swift:38-42`;
-  `upper1`, `lf-asr/src/dictionary.rs:105-113`)
+  `upper1`, `lf-text/src/dictionary.rs:104-112`)
 - Whitespace is the Unicode `White_Space` property. A letter is general
   category L\*. A word character is L\*, M\*, Nd or Pc. A control character
   is Cc. Uppercase is the Unicode `Uppercase` property (pin P5).
   (`DictionaryText.isWhitespace`, `isLetter`, `isWordCharacter`,
   `isUppercase` and `isControl`, `DictionaryText.swift:44-63,122`;
   `is_whitespace`, `is_letter` and `is_word_char`,
-  `lf-asr/src/dictionary.rs:115-134`)
+  `lf-text/src/dictionary.rs:114-133`)
 - Edge punctuation is exactly `. , ; : ! ? " ' “ ” ‘ ’ ( ) [ ] { } … — – « »`.
   Other symbols, such as `# + & / @ - _`, are kept.
   (`DictionaryText.edgePunctuation`, `DictionaryText.swift:65`;
-  `is_edge_punct`, `lf-asr/src/dictionary.rs:136-161`)
+  `is_edge_punct`, `lf-text/src/dictionary.rs:135-160`)
 - `words(s)`: split on whitespace, with empty pieces dropped.
   (`DictionaryText.words`, `DictionaryText.swift:69-82`; `words`,
-  `lf-asr/src/dictionary.rs:172-175`)
+  `lf-text/src/dictionary.rs:171-174`)
 - `norm(w)`: `fold(w)` with leading and trailing edge punctuation removed.
   (`DictionaryText.norm`, `DictionaryText.swift:91-94`; `norm`,
   `linux/crates/lf-dictation/src/correction.rs:101-105`)
@@ -66,7 +66,7 @@ An entry is a text and an f32 strength. Its **identity key** is
 `fold(text)`. Two entries are the same entry when their keys are equal
 scalar sequences. (`DictionaryEntry.key`,
 `Sources/Dictionary/DictionaryEntry.swift:4-15`; `DictionaryEntry::key`
-and `identity_key`, `lf-asr/src/dictionary.rs:48-52,246-250`)
+and `identity_key`, `lf-text/src/dictionary.rs:47-51,245-249`)
 
 Validation runs these steps in order, and the first failure wins. The
 shared vector error names are in brackets.
@@ -83,7 +83,7 @@ shared vector error names are in brackets.
 The stored text is the normalized text. (`DictionaryEntryError` and
 `DictionaryValidation.validate`, `DictionaryEntry.swift:17-36,65-78`;
 `normalize`, `encodable`, `check_strength` and `validate`,
-`lf-asr/src/dictionary.rs:177-242`; vectors `validation`; `testValidation`)
+`lf-text/src/dictionary.rs:176-241`; vectors `validation`; `testValidation`)
 
 Some callers have no vocabulary: loading on a Mac without the bundled
 model, or `localflowctl dict list` without the model. These callers skip
@@ -95,14 +95,14 @@ accepted without a vocabulary (§3.3).
 
 | Limit | Value | Source |
 |---|---|---|
-| Words per entry | 8 | `DictionaryValidation.maxWords` (`DictionaryEntry.swift:45`), `MAX_WORDS` (`lf-asr/src/dictionary.rs:20`) |
-| Scalars per entry (normalized) | 100 | `DictionaryValidation.maxScalars` (`DictionaryEntry.swift:46`), `MAX_SCALARS` (`lf-asr/src/dictionary.rs:22`) |
-| Strength range | 0.25 to 8, inclusive | `DictionaryValidation.minStrength`/`maxStrength` (`DictionaryEntry.swift:47-48`), `MIN_STRENGTH`/`MAX_STRENGTH` (`lf-asr/src/dictionary.rs:23-24`) |
-| Default strength | 1 | `DictionaryValidation.defaultStrength` (`DictionaryEntry.swift:49`), `DEFAULT_STRENGTH` (`lf-asr/src/dictionary.rs:25`) |
-| Strength presets | 0.5, 1, 1.41, 2, 2.83, 4, 5.66, 8 | `DictionaryValidation.presets` (`DictionaryEntry.swift:52`), `STRENGTH_PRESETS` (`lf-asr/src/dictionary.rs:27`) |
-| Entry capacity | 1000 | `DictionaryValidation.capacity` (`DictionaryEntry.swift:50`), `MAX_ENTRIES` (`lf-asr/src/dictionary.rs:16`) |
-| Ignore-list capacity | 1000 keys | `DictionaryValidation.ignoreCapacity` (`DictionaryEntry.swift:51`), `MAX_IGNORED` (`lf-asr/src/dictionary.rs:18`) |
-| Stored key | ≤ 300 scalars, ≤ 8 fields split at U+0020, empty fields included (pin P6) | `DictionaryKey.isValid` (`DictionaryText.swift:106-118`), `valid_key` and `MAX_KEY_SCALARS` (`lf-asr/src/dictionary.rs:205-218`) |
+| Words per entry | 8 | `DictionaryValidation.maxWords` (`DictionaryEntry.swift:45`), `MAX_WORDS` (`lf-text/src/dictionary.rs:19`) |
+| Scalars per entry (normalized) | 100 | `DictionaryValidation.maxScalars` (`DictionaryEntry.swift:46`), `MAX_SCALARS` (`lf-text/src/dictionary.rs:21`) |
+| Strength range | 0.25 to 8, inclusive | `DictionaryValidation.minStrength`/`maxStrength` (`DictionaryEntry.swift:47-48`), `MIN_STRENGTH`/`MAX_STRENGTH` (`lf-text/src/dictionary.rs:22-23`) |
+| Default strength | 1 | `DictionaryValidation.defaultStrength` (`DictionaryEntry.swift:49`), `DEFAULT_STRENGTH` (`lf-text/src/dictionary.rs:24`) |
+| Strength presets | 0.5, 1, 1.41, 2, 2.83, 4, 5.66, 8 | `DictionaryValidation.presets` (`DictionaryEntry.swift:52`), `STRENGTH_PRESETS` (`lf-text/src/dictionary.rs:26`) |
+| Entry capacity | 1000 | `DictionaryValidation.capacity` (`DictionaryEntry.swift:50`), `MAX_ENTRIES` (`lf-text/src/dictionary.rs:15`) |
+| Ignore-list capacity | 1000 keys | `DictionaryValidation.ignoreCapacity` (`DictionaryEntry.swift:51`), `MAX_IGNORED` (`lf-text/src/dictionary.rs:17`) |
+| Stored key | ≤ 300 scalars, ≤ 8 fields split at U+0020, empty fields included (pin P6) | `DictionaryKey.isValid` (`DictionaryText.swift:106-118`), `valid_key` and `MAX_KEY_SCALARS` (`lf-text/src/dictionary.rs:204-217`) |
 
 Dictionary rules:
 
@@ -119,7 +119,7 @@ Dictionary rules:
 - Errors never quote the entry. (`DictionaryEditError.message`,
   `DictionaryEditor.swift:15-24`; `DictionaryEntryError.message`,
   `DictionaryEntry.swift:26-35`; the `EntryError` `Display` impl,
-  `lf-asr/src/dictionary.rs:85-95`)
+  `lf-text/src/dictionary.rs:84-94`)
 
 ### §1.2 Bias graph and scoring
 
@@ -128,11 +128,11 @@ Surfaces and phrases:
 - An entry is boosted as up to four **surfaces**, without repeats and in
   this order: the text, `fold(text)`, `upper1(text)`, and each U+0020-separated
   word through `upper1`. (`BiasGraph.surfaces`, `BiasGraph.swift:111-127`;
-  `surfaces`, `lf-asr/src/dictionary.rs:252-263`)
+  `surfaces`, `lf-text/src/dictionary.rs:251-262`)
 - Each surface is encoded (§1.3). A sequence that is empty or contains
   `<unk>` is skipped. When two surfaces give the same token sequence, the
   largest strength is kept. (`BiasGraph.phrases`, `BiasGraph.swift:137-155`;
-  `phrases`, `lf-asr/src/dictionary.rs:265-281`; vectors `phrases`)
+  `phrases`, `lf-text/src/dictionary.rs:264-280`; vectors `phrases`)
 
 The graph is an Aho-Corasick trie over token ids, with failure links.
 (`BiasGraph`, `BiasGraph.swift:4-76`; the `lf_cpu::bias` module doc,
@@ -185,7 +185,7 @@ The vocabulary has 1024 pieces. A piece's id is its merge rank, and lower
 ids merge first. Id 0 is `<unk>`, which a merge never produces. Empty
 pieces are ignored, and a repeated piece keeps its lowest id.
 (`BPEEncoder.init(pieces:)`, `Sources/Dictionary/BPEEncoder.swift:5-24`;
-`Tokenizer::from_pieces`, `linux/crates/lf-asr/src/tokenizer.rs:100-105`;
+`Tokenizer::from_pieces`, `linux/crates/lf-text/src/tokenizer.rs:84-89`;
 vectors `vocab`)
 
 - macOS and iOS read `vocabulary.json`, shaped
@@ -213,7 +213,7 @@ No other normalization is applied. Empty text encodes as U+2581 alone
 
 "Encodes without `<unk>`" means the result is non-empty and contains no id 0.
 (`BPEEncoder.encodesWithoutUnknown`, `BPEEncoder.swift:76-79`; `encodable`,
-`lf-asr/src/dictionary.rs:198-203`)
+`lf-text/src/dictionary.rs:197-202`)
 
 ### §1.4 Casing restoration
 
@@ -437,7 +437,7 @@ is invented.
 Each published change is a new immutable `Snapshot`, identified by a
 revision. A dictation decodes with the snapshot taken when it was
 submitted. (`Snapshot`, `lf-daemon/src/dictionary.rs:61-68`;
-`Controller::finish`, `lf-daemon/src/controller.rs:1237-1258`)
+`Controller::finish`, `lf-daemon/src/controller.rs:1464-1485`)
 
 Agent-link project words are boosted together with the dictionary, and the
 dictionary's strength wins on overlap. They are not dictionary changes.

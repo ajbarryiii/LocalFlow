@@ -79,7 +79,7 @@ piece stay separate: `tzzh` encodes as `[▁t, <unk>, h]` and `tzhz` as
 `[▁t, <unk>, h, <unk>]` in the test vocabulary.
 
 Sources: `BPEEncoder.encode` (`Sources/Dictionary/BPEEncoder.swift:61-73`);
-`Tokenizer::encode` (`linux/crates/lf-asr/src/tokenizer.rs:130-137,196-206`). Tests:
+`Tokenizer::encode` (`linux/crates/lf-text/src/tokenizer.rs:114-121,180-190`). Tests:
 `testEncoderHandCases` (`Tests/DictionaryTests.swift:108-110`), vectors
 `encode`.
 
@@ -121,7 +121,7 @@ Three rules follow:
 Sources: `DictionaryKey.isValid` (`Sources/Dictionary/DictionaryText.swift:106-118`);
 `DictionaryMutationError.invalidKey`, `DictionaryValidation.validate` and
 `DictionaryStorage.load` (`Sources/Dictionary/DictionaryEntry.swift:38-42,72-74,181-186`);
-`encodable` and `valid_key` (`linux/crates/lf-asr/src/dictionary.rs:198-218`);
+`encodable` and `valid_key` (`linux/crates/lf-text/src/dictionary.rs:197-217`);
 the `lf_daemon::dictionary` module doc and `Store::ignore`
 (`linux/crates/lf-daemon/src/dictionary.rs:12-15,177-181`). Tests:
 `testKeyValidity` (`Tests/DictionaryTests.swift:967-1008`),
@@ -135,7 +135,7 @@ encodes as `▁` alone. "Encodes without `<unk>`" also requires a non-empty
 result.
 
 Sources: `BPEEncoder.encode` (`Sources/Dictionary/BPEEncoder.swift:44-45`);
-`Tokenizer::encode` (`linux/crates/lf-asr/src/tokenizer.rs:137-140`). Tests:
+`Tokenizer::encode` (`linux/crates/lf-text/src/tokenizer.rs:121-124`). Tests:
 `testEncoderHandCases` (`Tests/DictionaryTests.swift:111-112`), and the first
 case of vectors `encode` (`""` encodes as id 63, `▁`).
 
@@ -159,7 +159,7 @@ worker applies the filter and the cap.
 Sources: `DictionarySuggestionFinder.find`
 (`Sources/Dictionary/VerifyDecision.swift:121-162`); `verify_with_clock`
 (`linux/crates/lf-daemon/src/worker.rs:321-386`); `submit_correction`
-(`linux/crates/lf-daemon/src/controller.rs:518-527`). Tests:
+(`linux/crates/lf-daemon/src/controller.rs:567-576`). Tests:
 `testVerificationOrder` (`Tests/DictionaryTests.swift:1010-1087`) and the
 `lf-daemon` worker tests with a mocked clock. Vectors `verify` describe the
 rule but leave ordering to these per-platform tests.
