@@ -34,6 +34,10 @@ pub fn for_each_row_mut<T: Send>(
     let rows = data.len() / row_len;
     let p = SendPtr(data.as_mut_ptr());
     rows_parallel(pool, rows, &|r| {
+        // SAFETY: `r < rows = data.len() / row_len`, so the row lies in `data`.
+        // `rows_parallel` calls this once per row, so rows are disjoint; `T:
+        // Send` lets another thread own one, and `data` stays mutably borrowed
+        // until `pool.run` returns.
         let row = unsafe { std::slice::from_raw_parts_mut(p.get().add(r * row_len), row_len) };
         f(r, row);
     });
@@ -54,6 +58,9 @@ pub fn layer_norm(
     let n = crate::size(rows, d);
     assert!(x.len() >= n && out.len() >= n && gamma.len() >= d && beta.len() >= d);
     let op = SendPtr(out.as_mut_ptr());
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`. Row `r < rows`
+    // of `x` and `out` (`rows * d`, checked) and `d` values of `gamma`/`beta`
+    // are in bounds, and each output row is written by one thread.
     rows_parallel(pool, rows, &|r| unsafe {
         x86::layer_norm_row(
             x[r * d..].as_ptr(),
@@ -71,6 +78,9 @@ pub fn add_scaled(pool: &ThreadPool, x: &mut [f32], y: &[f32], rows: usize, d: u
     let n = crate::size(rows, d);
     assert!(x.len() >= n && y.len() >= n);
     let xp = SendPtr(x.as_mut_ptr());
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`. Row `r < rows`
+    // of `x` and `y` (`rows * d`, checked) is in bounds, `x` and `y` cannot
+    // overlap (`&mut` and `&`), and each row of `x` is written by one thread.
     rows_parallel(pool, rows, &|r| unsafe {
         x86::add_scaled(xp.get().add(r * d), y[r * d..].as_ptr(), d, s)
     });
@@ -81,6 +91,8 @@ pub fn silu(pool: &ThreadPool, x: &mut [f32], rows: usize, d: usize) {
     check_width(d);
     assert!(x.len() >= crate::size(rows, d));
     let xp = SendPtr(x.as_mut_ptr());
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`; row `r < rows`
+    // of `x` (`rows * d`, checked) is in bounds and written by one thread.
     rows_parallel(pool, rows, &|r| unsafe {
         x86::silu(xp.get().add(r * d), d)
     });
@@ -91,6 +103,8 @@ pub fn relu(pool: &ThreadPool, x: &mut [f32], rows: usize, d: usize) {
     check_width(d);
     assert!(x.len() >= crate::size(rows, d));
     let xp = SendPtr(x.as_mut_ptr());
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`; row `r < rows`
+    // of `x` (`rows * d`, checked) is in bounds and written by one thread.
     rows_parallel(pool, rows, &|r| unsafe {
         x86::relu(xp.get().add(r * d), d)
     });
@@ -102,6 +116,9 @@ pub fn glu(pool: &ThreadPool, a: &[f32], rows: usize, d: usize, out: &mut [f32])
     check_width(d);
     assert!(a.len() >= crate::size(crate::size(rows, 2), d) && out.len() >= crate::size(rows, d));
     let op = SendPtr(out.as_mut_ptr());
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`. Row `r < rows`
+    // of `a` (`2 * d` values of `rows * 2 * d`) and of `out` (`rows * d`) are in
+    // bounds (checked), and each output row is written by one thread.
     rows_parallel(pool, rows, &|r| unsafe {
         x86::glu(a[r * 2 * d..].as_ptr(), d, op.get().add(r * d))
     });
@@ -127,6 +144,11 @@ pub fn depthwise_time(
     assert!(x.len() >= n && out.len() >= n);
     let op = SendPtr(out.as_mut_ptr());
     let pad = (k - 1) / 2;
+    // SAFETY: `check_width` asserted AVX-512 F and `d % 16 == 0`. The filter
+    // keeps only taps `j < k` whose input row `t + j - pad` is in `0..rows`, so
+    // `x` (`rows * d`), `w` (`k * d`) and `bias` (`d`) reads are in bounds
+    // (checked). Row `t < rows` of `out` is written by one thread, and `out`
+    // cannot overlap `x`.
     rows_parallel(pool, rows, &|t| unsafe {
         let taps = (0..k).filter(|&j| t + j >= pad && t + j - pad < rows);
         x86::depthwise_row(
@@ -146,6 +168,7 @@ pub fn depthwise_time(
 /// In-place softmax of `row * scale` (single-threaded; any length).
 pub fn softmax_scaled(row: &mut [f32], scale: f32) {
     assert!(crate::cpu_supported(), "AVX-512 required");
+    // SAFETY: AVX-512 F was asserted just above; there is no `add`.
     unsafe { x86::softmax_scaled(row, None, scale) }
 }
 
@@ -153,6 +176,7 @@ pub fn softmax_scaled(row: &mut [f32], scale: f32) {
 pub fn softmax_scaled_add(row: &mut [f32], add: &[f32], scale: f32) {
     assert!(crate::cpu_supported(), "AVX-512 required");
     assert!(add.len() >= row.len());
+    // SAFETY: AVX-512 F was asserted, and `add` has at least `row.len()` values.
     unsafe { x86::softmax_scaled(row, Some(add.as_ptr()), scale) }
 }
 
@@ -161,6 +185,10 @@ mod x86 {
     use crate::math::simd::{exp_ps, sigmoid_ps};
     use std::arch::x86_64::*;
 
+    /// # Safety
+    /// The CPU must support AVX-512 F and `d` must be a multiple of 16. `x`,
+    /// `g` and `b` must be readable for `d` floats, and `out` valid for writes
+    /// of `d` floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn layer_norm_row(
         x: *const f32,
@@ -169,6 +197,8 @@ mod x86 {
         b: *const f32,
         out: *mut f32,
     ) {
+        // SAFETY: every access covers floats `i..i + 16` with `i + 16 <= d`
+        // (`d % 16 == 0`), inside the caller's `d`-float buffers.
         unsafe {
             let mut s = _mm512_setzero_ps();
             for i in (0..d).step_by(16) {
@@ -191,10 +221,15 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F and `d` must be a multiple of 16. `y`
+    /// must be readable for `d` floats, and `x` valid for reads and writes of
+    /// `d` floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn add_scaled(x: *mut f32, y: *const f32, d: usize, s: f32) {
         let sv = _mm512_set1_ps(s);
         for i in (0..d).step_by(16) {
+            // SAFETY: `i + 16 <= d` (`d % 16 == 0`), inside both buffers.
             unsafe {
                 let r = _mm512_fmadd_ps(_mm512_loadu_ps(y.add(i)), sv, _mm512_loadu_ps(x.add(i)));
                 _mm512_storeu_ps(x.add(i), r);
@@ -202,9 +237,14 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F, `d` must be a multiple of 16, and `x`
+    /// must be valid for reads and writes of `d` floats that no other thread
+    /// accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn silu(x: *mut f32, d: usize) {
         for i in (0..d).step_by(16) {
+            // SAFETY: `i + 16 <= d` (`d % 16 == 0`), inside `x`.
             unsafe {
                 let v = _mm512_loadu_ps(x.add(i));
                 _mm512_storeu_ps(x.add(i), _mm512_mul_ps(v, sigmoid_ps(v)));
@@ -212,17 +252,28 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F, `d` must be a multiple of 16, and `x`
+    /// must be valid for reads and writes of `d` floats that no other thread
+    /// accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn relu(x: *mut f32, d: usize) {
         let z = _mm512_setzero_ps();
         for i in (0..d).step_by(16) {
+            // SAFETY: `i + 16 <= d` (`d % 16 == 0`), inside `x`.
             unsafe { _mm512_storeu_ps(x.add(i), _mm512_max_ps(_mm512_loadu_ps(x.add(i)), z)) };
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F and `d` must be a multiple of 16. `a`
+    /// must be readable for `2 * d` floats, and `out` valid for writes of `d`
+    /// floats that no other thread accesses.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn glu(a: *const f32, d: usize, out: *mut f32) {
         for i in (0..d).step_by(16) {
+            // SAFETY: `i + 16 <= d` (`d % 16 == 0`), so `a` reads stay below
+            // `2 * d` and `out` writes below `d`.
             unsafe {
                 let v = _mm512_loadu_ps(a.add(i));
                 let gate = sigmoid_ps(_mm512_loadu_ps(a.add(d + i)));
@@ -231,6 +282,12 @@ mod x86 {
         }
     }
 
+    /// # Safety
+    /// The CPU must support AVX-512 F and `d` must be a multiple of 16. For
+    /// every tap `j` that `taps` yields, `t + j >= pad`, and row `t + j - pad`
+    /// of `x` (`d` floats, stride `d`) and `w[j * d..][..d]` must be readable.
+    /// `bias` must be readable for `d` floats, and `out` valid for writes of
+    /// `d` floats that no other thread accesses.
     #[allow(clippy::too_many_arguments)]
     #[target_feature(enable = "avx512f")]
     pub unsafe fn depthwise_row(
@@ -245,6 +302,8 @@ mod x86 {
         out: *mut f32,
     ) {
         for i in (0..d).step_by(16) {
+            // SAFETY: `i + 16 <= d` (`d % 16 == 0`), and every tap's `x` row and
+            // `w` row are readable (caller contract).
             unsafe {
                 let mut acc = _mm512_loadu_ps(bias.add(i));
                 for j in taps.clone() {
@@ -264,6 +323,10 @@ mod x86 {
     }
 
     /// `row = softmax((row + add) * scale)`; `add` (if given) has at least `row.len()` values.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F, and `add`, if given, must be readable
+    /// for `row.len()` floats.
     #[target_feature(enable = "avx512f")]
     pub unsafe fn softmax_scaled(row: &mut [f32], add: Option<*const f32>, scale: f32) {
         let n = row.len();
@@ -276,6 +339,9 @@ mod x86 {
             let lanes = (n - i).min(16);
             if lanes == 16 { !0 } else { (1u16 << lanes) - 1 }
         };
+        // SAFETY: every access starts at `i < n` and is masked to lanes below
+        // `n = row.len()`, inside `row` and `add` (caller contract); masked-off
+        // lanes are not accessed.
         unsafe {
             // First pass: scaled (row + add), stored back, and the running maximum.
             let mut mx = _mm512_set1_ps(f32::NEG_INFINITY);

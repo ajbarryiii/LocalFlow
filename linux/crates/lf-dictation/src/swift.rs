@@ -76,12 +76,6 @@ pub fn last_grapheme(s: &str) -> Option<&str> {
     s.graphemes(true).next_back()
 }
 
-/// Whether a byte offset is a `Character` boundary, as required by
-/// `Range(_: NSRange, in: String)` (it fails otherwise).
-pub fn is_grapheme_boundary(s: &str, offset: usize) -> bool {
-    offset == s.len() || s.grapheme_indices(true).any(|(start, _)| start == offset)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,7 +132,5 @@ mod tests {
         assert_eq!(last_grapheme("ab\r\n"), Some("\r\n"));
         assert_eq!(last_grapheme("e\u{301}"), Some("e\u{301}"));
         assert_eq!(last_grapheme(""), None);
-        assert!(!is_grapheme_boundary("ae\u{301}b", 2));
-        assert!(is_grapheme_boundary("ab", 1) && is_grapheme_boundary("ab", 2));
     }
 }
