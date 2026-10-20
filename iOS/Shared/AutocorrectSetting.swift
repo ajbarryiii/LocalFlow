@@ -16,10 +16,12 @@ enum AutocorrectSetting: String, CaseIterable, Sendable {
     case wRepeat = "w_repeat"
     case wSlip = "w_slip"
     case shortLength = "short_length"
+    case wSpelling = "w_spelling"
 
     /// The accepted finite values: `log_oov` from 1e-10 to 1e-1, `margin_oov` 1–30, the other margins
     /// 1–1000, `lm_weight` 0.25–2, the edit probabilities 0.001–0.1, the insertion weights 0–1 (summing to
-    /// at most 1 once merged) and `short_length` 3–5.
+    /// at most 1 once merged), `short_length` 3–5 and `w_spelling` 0–1 (localflow-swipe tunes it over 0,
+    /// 0.01, 0.03, 0.1, 0.3 and 1).
     var range: ClosedRange<Double> {
         switch self {
         case .logOOV: return log(1e-10) ... log(1e-1)
@@ -29,6 +31,7 @@ enum AutocorrectSetting: String, CaseIterable, Sendable {
         case .pOmit, .pInsert, .pTranspose: return 0.001 ... 0.1
         case .wRepeat, .wSlip: return 0 ... 1
         case .shortLength: return 3 ... 5
+        case .wSpelling: return 0 ... 1
         }
     }
 
@@ -58,6 +61,7 @@ enum AutocorrectSetting: String, CaseIterable, Sendable {
         case .wRepeat: return params.wRepeat
         case .wSlip: return params.wSlip
         case .shortLength: return Double(params.shortLength)
+        case .wSpelling: return params.wSpelling
         }
     }
 
@@ -75,6 +79,7 @@ enum AutocorrectSetting: String, CaseIterable, Sendable {
         case .wRepeat: params.wRepeat = value
         case .wSlip: params.wSlip = value
         case .shortLength: params.shortLength = Int(value.rounded())
+        case .wSpelling: params.wSpelling = value
         }
     }
 }

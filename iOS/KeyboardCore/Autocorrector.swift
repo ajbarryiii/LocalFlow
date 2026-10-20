@@ -15,6 +15,14 @@ import Foundation
 ///   letter log pInsert + log q, q mixing a repeat of the previous candidate letter, a slip onto its
 ///   neighbours and a uniform stray tap over the letters area; two swapped letters log pTranspose plus both
 ///   taps at their keys) plus `lmWeight` × the word model's log probability given the sentence's words.
+/// - Spelling channel ("Spelling channel"), with `wSpelling` > 0 and `spelling` tables: each step of an
+///   alignment that is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its score above and
+///   spelling, with m the match log above and t(x) the step's tap's touch log likelihood at key x (0 for a
+///   letter without a tap typed as x): typed x at candidate letter c ≠ x, m + sub[c, x] + t(x); candidate
+///   letter c omitted after p (START for the first), dele[p, c]; typed x inserted after candidate letter c
+///   (START before the first, where the motor term still judges it against the first), m + ins[c, x] + t(x);
+///   candidate letters p, c typed as c, p, 2m + trans[p, c] + both taps' touch log likelihoods. Matches and
+///   keep are unchanged. `wSpelling` 0 ignores the tables: the scores are the motor channel's, bit for bit.
 /// - Keep scores the typed key with every letter matched, plus `lmWeight` × its model log probability if it
 ///   is a lexicon form, else `lmWeight` × log P("<unk>") + `logOOV`.
 /// - The best form (ties: higher frequency, then alphabetically first) replaces the word only if it beats
@@ -23,8 +31,11 @@ import Foundation
 /// - Suggestions (the strip after a commit key) rank the same scores without a margin.
 ///
 /// Where the reference raises (taps of the wrong count, a word with characters other than a–z and
-/// apostrophes, invalid parameters, keys without a letter pitch), this keeps the word. Main thread only:
-/// the word model caches by context until `forgetContext()`. Nothing here logs, stores or sends its inputs.
+/// apostrophes, invalid parameters, a negative, NaN or infinite `wSpelling`, keys without a letter pitch),
+/// this keeps the word. One exception: `wSpelling` > 0 without tables scores the motor channel alone (the
+/// reference raises; the manifest refuses such presets, so only a stale override gets here). Main thread
+/// only: the word model caches by context until `forgetContext()`, and the corrector its letters layout
+/// and spelling constants. Nothing here logs, stores or sends its inputs.
 final class Autocorrector: WordCorrecting {
     /// The model's word for every word outside its vocabulary (`tap.wordlm.UNK`).
     static let unknown = WordModelVocabulary.unknown
@@ -35,13 +46,17 @@ final class Autocorrector: WordCorrecting {
     let lexicon: WordLexicon
     let model: WordModel
     let touch: TapDecoder.TouchModel
+    /// The spelling channel's tables; nil scores the motor channel alone whatever `wSpelling` is.
+    let spelling: SpellingTables?
 
     private var layout: Layout?
+    private var spellingConstants: SpellingConstants?
 
-    init(lexicon: WordLexicon, model: WordModel, touch: TapDecoder.TouchModel = .standard) {
+    init(lexicon: WordLexicon, model: WordModel, touch: TapDecoder.TouchModel = .standard, spelling: SpellingTables? = nil) {
         self.lexicon = lexicon
         self.model = model
         self.touch = touch
+        self.spelling = spelling
     }
 
     // MARK: Correcting
@@ -174,8 +189,13 @@ final class Autocorrector: WordCorrecting {
         guard !candidates.isEmpty, let layout = layout(for: keys) else { return nil }
         let table = touchTable(typed: typed, points: points, layout: layout)
         let inserted = insertions(table: table, rows: n, layout: layout, constants: constants)
+        var spelled: SpellingTerms?
+        if let spelling, let logWeight = constants.logSpelling {
+            spelled = spellingTerms(typed: typed.codes, table: table, inserted: inserted, tables: spelling, logWeight: logWeight,
+                                    constants: constants)
+        }
         let channel = Channel(typed: typed.codes, edits: limit + 1, longest: candidates.map(\.codes.count).max() ?? 0, table: table,
-                              inserted: inserted, constants: constants)
+                              inserted: inserted, spelled: spelled, constants: constants)
         return Search(candidates: candidates, table: table, channel: channel)
     }
 
@@ -256,6 +276,8 @@ final class Autocorrector: WordCorrecting {
         let thresholdOOV: Double
         let thresholdKnown: Double
         let thresholdApostrophe: Double
+        /// log wSpelling, nil for 0 (the motor channel alone).
+        let logSpelling: Double?
 
         /// Nil for parameters the reference rejects, except insertion weights summing to more than 1 by at most
         /// `AutocorrectManifest.weightSumTolerance` (rounding, which the manifest and the settings accept):
@@ -265,7 +287,7 @@ final class Autocorrector: WordCorrecting {
             guard p.wRepeat >= 0, p.wSlip >= 0, sum <= 1 + AutocorrectManifest.weightSumTolerance else { return nil }
             let (wRepeat, wSlip, stray) = sum > 1 ? (p.wRepeat / sum, p.wSlip / sum, 0.0) : (p.wRepeat, p.wSlip, 1 - p.wRepeat - p.wSlip)
             let keep = 1 - p.pOmit - p.pInsert - p.pTranspose
-            guard keep > 0, keep.isFinite, p.lmWeight.isFinite, !p.logOOV.isNaN else { return nil }
+            guard keep > 0, keep.isFinite, p.lmWeight.isFinite, !p.logOOV.isNaN, p.wSpelling.isFinite, p.wSpelling >= 0 else { return nil }
             match = log(keep)
             omit = Self.log0(p.pOmit)
             insert = Self.log0(p.pInsert)
@@ -276,6 +298,7 @@ final class Autocorrector: WordCorrecting {
             thresholdOOV = Self.log0(p.marginOOV)
             thresholdKnown = Self.log0(p.marginKnown)
             thresholdApostrophe = Self.log0(p.marginApostrophe)
+            logSpelling = p.wSpelling > 0 ? log(p.wSpelling) : nil
         }
 
         /// The reference's `_log`: log x for x > 0, else −∞.
@@ -374,6 +397,58 @@ final class Autocorrector: WordCorrecting {
         return out
     }
 
+    /// The spelling channel's terms per parameters (the reference's `_spell_omit` and `_spell_trans`), the
+    /// motor cost mixed in: omissions [context p (START 26) × 26 + omitted c] = logaddexp(log pOmit, log w +
+    /// dele[p, c]), transpositions [intended first × 26 + second] = logaddexp(log pTranspose, (log w + 2m) +
+    /// trans), both touches added later. Cached for the last parameters.
+    private struct SpellingConstants {
+        let logWeight: Double, match: Double, omit: Double, transpose: Double
+        let omits: [Double]
+        let transposes: [Double]
+    }
+
+    /// Per word, every spelling alternative mixed into its motor cost as the reference orders the sums (rows
+    /// typed letters, 26 columns): `aligned` [i × 26 + c] typed letter i at candidate letter c (the motor
+    /// cost alone where c is the letter typed), `inserted` [i × 26 + c] inserted after c, `before` [i × 26 + c]
+    /// inserted before a first candidate letter c; then the cached omissions and transpositions.
+    struct SpellingTerms {
+        let aligned: [Double]
+        let inserted: [Double]
+        let before: [Double]
+        let omits: [Double]
+        let transposes: [Double]
+    }
+
+    private func spellingTerms(typed codes: [Int], table: [Double], inserted motor: [Double], tables: SpellingTables, logWeight w: Double,
+                               constants: Constants) -> SpellingTerms {
+        let m = constants.match
+        if spellingConstants.map({ $0.logWeight != w || $0.match != m || $0.omit != constants.omit || $0.transpose != constants.transpose })
+            ?? true {
+            let twice = w + 2 * m
+            spellingConstants = SpellingConstants(
+                logWeight: w, match: m, omit: constants.omit, transpose: constants.transpose,
+                omits: tables.dele.map { TapDecoder.logAddExp(constants.omit, w + $0) },
+                transposes: tables.trans.map { TapDecoder.logAddExp(constants.transpose, twice + $0) })
+        }
+        let shared = spellingConstants!
+        let n = codes.count, wm = w + m, start = SpellingTables.start * 26
+        var aligned = [Double](repeating: -.infinity, count: n * 26)
+        var inserted = motor
+        var before = motor
+        for i in 0 ..< n {
+            let x = codes[i], own = table[i * 26 + x]
+            for c in 0 ..< 26 {
+                let index = i * 26 + c
+                let motorAligned = m + table[index]
+                // A match has sub = −∞ on the diagonal: logaddexp leaves the motor score, so it is taken as is.
+                aligned[index] = c == x ? motorAligned : TapDecoder.logAddExp(motorAligned, (wm + tables.sub[c * 26 + x]) + own)
+                inserted[index] = TapDecoder.logAddExp(motor[index], (wm + tables.ins[c * 26 + x]) + own)
+                before[index] = TapDecoder.logAddExp(motor[index], (wm + tables.ins[start + x]) + own)
+            }
+        }
+        return SpellingTerms(aligned: aligned, inserted: inserted, before: before, omits: shared.omits, transposes: shared.transposes)
+    }
+
     /// numpy's pairwise summation of a float64 array (`np.sum`): sequential below 8 values, eight
     /// accumulators up to 128, halves (cut to a multiple of 8) above, so sums match the reference's bits.
     static func pairwiseSum(_ values: [Double]) -> Double {
@@ -411,7 +486,9 @@ final class Autocorrector: WordCorrecting {
 /// Candidates come in key order, so the columns of the prefix a candidate shares with the previous one are
 /// reused: a column depends only on the candidate's letters up to it (column 0 on its first letter). Every
 /// sum is formed in the reference's order, so scores match its bits whatever is reused. Plain pointers and
-/// comparisons: it runs for every candidate, and the keyboard may be built without optimization.
+/// comparisons: it runs for every candidate, and the keyboard may be built without optimization. With the
+/// spelling channel the same loops read its precomputed terms (`Autocorrector.SpellingTerms`) instead of the
+/// motor costs; without, they run exactly as before.
 private final class Channel {
     private let n: Int
     private let edits: Int
@@ -422,10 +499,14 @@ private final class Channel {
     private let table: UnsafeMutablePointer<Double>
     private let inserted: UnsafeMutablePointer<Double>
     private let match: Double, omit: Double, transpose: Double
+    /// The spelling channel's terms (nil: the motor channel): aligned and before (n × 26), omissions
+    /// (27 × 26) and transpositions (26 × 26); `inserted` then holds its insertions.
+    private let spelled: (aligned: UnsafeMutablePointer<Double>, before: UnsafeMutablePointer<Double>, omits: UnsafeMutablePointer<Double>,
+                          transposes: UnsafeMutablePointer<Double>)?
     private var previous: [Int] = []
 
     init(typed codes: [Int], edits: Int, longest: Int, table rows: [Double], inserted insertions: [Double],
-         constants: Autocorrector.Constants) {
+         spelled terms: Autocorrector.SpellingTerms?, constants: Autocorrector.Constants) {
         n = codes.count
         self.edits = edits
         stride = (codes.count + 1) * edits
@@ -435,8 +516,17 @@ private final class Channel {
         typed.initialize(from: codes, count: codes.count)
         table = .allocate(capacity: max(rows.count, 1))
         table.initialize(from: rows, count: rows.count)
-        inserted = .allocate(capacity: max(insertions.count, 1))
-        inserted.initialize(from: insertions, count: insertions.count)
+        let mixed = terms?.inserted ?? insertions
+        inserted = .allocate(capacity: max(mixed.count, 1))
+        inserted.initialize(from: mixed, count: mixed.count)
+        spelled = terms.map { terms in
+            func copy(_ values: [Double]) -> UnsafeMutablePointer<Double> {
+                let pointer = UnsafeMutablePointer<Double>.allocate(capacity: max(values.count, 1))
+                pointer.initialize(from: values, count: values.count)
+                return pointer
+            }
+            return (copy(terms.aligned), copy(terms.before), copy(terms.omits), copy(terms.transposes))
+        }
         match = constants.match
         omit = constants.omit
         transpose = constants.transpose
@@ -447,6 +537,12 @@ private final class Channel {
         typed.deallocate()
         table.deallocate()
         inserted.deallocate()
+        if let spelled {
+            spelled.aligned.deallocate()
+            spelled.before.deallocate()
+            spelled.omits.deallocate()
+            spelled.transposes.deallocate()
+        }
     }
 
     /// log P(taps | candidate key) within the edit limit; −∞ when no alignment fits.
@@ -460,9 +556,10 @@ private final class Channel {
             // Column 0: insertions before the first candidate letter, judged against it.
             for index in 0 ..< stride { columns[index] = -.infinity }
             columns[0] = 0
+            let before = spelled?.before ?? inserted
             var i = 1
             while i <= n, i < e {
-                columns[i * e + i] = columns[(i - 1) * e + i - 1] + inserted[(i - 1) * 26 + candidate[0]]
+                columns[i * e + i] = columns[(i - 1) * e + i - 1] + before[(i - 1) * 26 + candidate[0]]
                 i += 1
             }
         }
@@ -483,9 +580,11 @@ private final class Channel {
         let current = columns + j * stride, before = columns + (j - 1) * stride
         for index in 0 ..< stride { current[index] = -.infinity }
         // A typed letter at candidate letter c: a match, or a substitution (one edit).
+        let aligned = spelled?.aligned
         var t = 1
         while t <= n {
-            let add = match + table[(t - 1) * 26 + c]
+            let add: Double
+            if let aligned { add = aligned[(t - 1) * 26 + c] } else { add = match + table[(t - 1) * 26 + c] }
             if typed[t - 1] == c {
                 for k in 0 ..< e { current[t * e + k] = before[(t - 1) * e + k] + add }
             } else {
@@ -498,12 +597,13 @@ private final class Channel {
             t += 1
         }
         guard e > 1 else { return }
-        // Candidate letter c omitted.
+        // Candidate letter c omitted (after candidate letter j − 2, START for the first).
+        let omitted = spelled.map { $0.omits[(j >= 2 ? candidate[j - 2] : SpellingTables.start) * 26 + c] } ?? omit
         t = 0
         while t <= n {
             var k = 1
             while k < e {
-                let value = before[t * e + k - 1] + omit
+                let value = before[t * e + k - 1] + omitted
                 if value > current[t * e + k] { current[t * e + k] = value }
                 k += 1
             }
@@ -512,10 +612,11 @@ private final class Channel {
         // Two different candidate letters typed in swapped order.
         if j >= 2, n >= 2, candidate[j - 2] != c {
             let cp = candidate[j - 2], before2 = columns + (j - 2) * stride
+            let transposed = spelled.map { $0.transposes[cp * 26 + c] } ?? transpose
             t = 2
             while t <= n {
                 if typed[t - 1] == cp, typed[t - 2] == c {
-                    let add = transpose + table[(t - 2) * 26 + c] + table[(t - 1) * 26 + cp]
+                    let add = transposed + table[(t - 2) * 26 + c] + table[(t - 1) * 26 + cp]
                     var k = 1
                     while k < e {
                         let value = before2[(t - 2) * e + k - 1] + add

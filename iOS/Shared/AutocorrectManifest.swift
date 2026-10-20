@@ -1,15 +1,16 @@
 import Foundation
 
 /// The optional `autocorrect` section of the swipe bundle's `bundle.json` (ARCHITECTURE.md, "Word
-/// autocorrect"): the lexicon, the word models by name, their tuned presets, and the touch model the
-/// corrector assumes.
+/// autocorrect"): the lexicon, the word models by name, their tuned presets, the touch model the
+/// corrector assumes and, optionally, the spelling channel's tables.
 ///
 ///     "autocorrect": {"format": 1, "lexicon": "autocorrect/lexicon.lfwl",
 ///                     "models": {"unigram": {"kind": "unigram"}, "ngram": {"kind": "ngram", "path": ...}, ...},
 ///                     "default_model": "ngram",
 ///                     "presets": {"ngram": {"balanced": {p_omit, ..., margin_known: null, ...}, ...}, ...},
 ///                     "default_preset": "balanced",
-///                     "touch": {sigma, ratio, offset_y, tail_weight, tail_scale, space_spread}}
+///                     "touch": {sigma, ratio, offset_y, tail_weight, tail_scale, space_spread},
+///                     "spelling": "autocorrect/spelling.lfwe"}
 ///
 /// Shared so the app can list the models and presets; the keyboard runs them. A bundle without the section
 /// has no autocorrect; an invalid section rejects autocorrect, never the swipe bundle or soft key edges.
@@ -42,6 +43,9 @@ struct AutocorrectManifest: Equatable, Sendable {
         /// of its domain.
         case invalidPresets
         case invalidTouch
+        /// A spelling path that is empty, absolute or leaves the bundle, or a preset with `w_spelling` > 0 in a
+        /// section without one (the exporter refuses to write such a section).
+        case invalidSpelling
     }
 
     var lexicon: String
@@ -53,6 +57,9 @@ struct AutocorrectManifest: Equatable, Sendable {
     /// The touch model the corrector assumes: the section's own, else the `tap` section's; nil when neither
     /// has one (the keyboard then uses `TapDecoder.TouchModel.standard`).
     var touch: SoftKeyEdgesManifest.Touch?
+    /// The LFWE spelling tables' file relative to the bundle (`SpellingTables`); nil when the bundle has none,
+    /// and then every preset's `wSpelling` is 0.
+    var spelling: String?
 
     /// The section of a `bundle.json`; nil when it has none. Throws for a malformed manifest or an invalid
     /// section. The `tap` section is read only for its touch model, and its being invalid never rejects this.
@@ -77,6 +84,9 @@ struct AutocorrectManifest: Equatable, Sendable {
             throw ManifestError.invalidPresets
         }
         if let touch = section.touch, !touch.isValid { throw ManifestError.invalidTouch }
+        if let spelling = section.spelling, !isBundlePath(spelling) { throw ManifestError.invalidSpelling }
+        guard section.spelling != nil || section.presets.values.allSatisfy({ $0.values.allSatisfy { $0.params.wSpelling == 0 } })
+        else { throw ManifestError.invalidSpelling }
         let tapTouch = (try? SoftKeyEdgesManifest.decode(from: data))??.touch
         return AutocorrectManifest(
             lexicon: section.lexicon,
@@ -84,7 +94,8 @@ struct AutocorrectManifest: Equatable, Sendable {
             defaultModel: section.defaultModel,
             presets: section.presets.mapValues { $0.mapValues(\.params) },
             defaultPreset: section.defaultPreset,
-            touch: section.touch ?? tapTouch)
+            touch: section.touch ?? tapTouch,
+            spelling: section.spelling)
     }
 
     /// The model names: unigram, then n-gram, then LSTM models, each by name.
@@ -141,9 +152,10 @@ struct AutocorrectManifest: Equatable, Sendable {
         var presets: [String: [String: ParamsSection]]
         var defaultPreset: String
         var touch: SoftKeyEdgesManifest.Touch?
+        var spelling: String?
 
         enum CodingKeys: String, CodingKey {
-            case format, lexicon, models, presets, touch
+            case format, lexicon, models, presets, touch, spelling
             case defaultModel = "default_model"
             case defaultPreset = "default_preset"
         }
@@ -154,7 +166,8 @@ struct AutocorrectManifest: Equatable, Sendable {
         var path: String?
     }
 
-    /// A preset as the bundle has it: every name required, `null` margins infinite.
+    /// A preset as the bundle has it: every name required but `w_spelling` (missing in bundles from before the
+    /// spelling channel: 0), `null` margins infinite.
     private struct ParamsSection: Decodable {
         var params: AutocorrectParams
 
@@ -162,7 +175,7 @@ struct AutocorrectManifest: Equatable, Sendable {
             case pOmit = "p_omit", pInsert = "p_insert", pTranspose = "p_transpose", maxEdits = "max_edits"
             case maxEditsShort = "max_edits_short", shortLength = "short_length", minLength = "min_length"
             case lmWeight = "lm_weight", logOOV = "log_oov", marginOOV = "margin_oov", marginKnown = "margin_known"
-            case marginApostrophe = "margin_apostrophe", wRepeat = "w_repeat", wSlip = "w_slip"
+            case marginApostrophe = "margin_apostrophe", wRepeat = "w_repeat", wSlip = "w_slip", wSpelling = "w_spelling"
         }
 
         init(from decoder: Decoder) throws {
@@ -176,12 +189,14 @@ struct AutocorrectManifest: Equatable, Sendable {
                 lmWeight: try c.decode(Double.self, forKey: .lmWeight), logOOV: try c.decode(Double.self, forKey: .logOOV),
                 marginOOV: try margin(.marginOOV), marginKnown: try margin(.marginKnown),
                 marginApostrophe: try margin(.marginApostrophe), wRepeat: try c.decode(Double.self, forKey: .wRepeat),
-                wSlip: try c.decode(Double.self, forKey: .wSlip))
+                wSlip: try c.decode(Double.self, forKey: .wSlip),
+                wSpelling: try c.decodeIfPresent(Double.self, forKey: .wSpelling) ?? 0)
         }
 
         /// Each value in its domain: probabilities strictly between 0 and 1, bounded edits and lengths, a
-        /// non-negative LM weight, a negative `log_oov`, margins of at least 1 (or infinite), and insertion
-        /// weights in 0–1 summing to at most 1. The sliders' narrower ranges are not required here.
+        /// non-negative LM weight, a negative `log_oov`, margins of at least 1 (or infinite), insertion
+        /// weights in 0–1 summing to at most 1, and a finite, non-negative `w_spelling`. The sliders' narrower
+        /// ranges are not required here.
         var isValid: Bool {
             let p = params
             let probabilities = [p.pOmit, p.pInsert, p.pTranspose].allSatisfy { $0.isFinite && $0 > 0 && $0 < 1 }
@@ -192,6 +207,7 @@ struct AutocorrectManifest: Equatable, Sendable {
                 && AutocorrectManifest.maxEditsRange.contains(p.maxEdits) && AutocorrectManifest.maxEditsRange.contains(p.maxEditsShort)
                 && AutocorrectManifest.lengthRange.contains(p.shortLength) && AutocorrectManifest.lengthRange.contains(p.minLength)
                 && p.lmWeight.isFinite && p.lmWeight >= 0 && p.logOOV.isFinite && p.logOOV < 0
+                && p.wSpelling.isFinite && p.wSpelling >= 0
         }
     }
 }

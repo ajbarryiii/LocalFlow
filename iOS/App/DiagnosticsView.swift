@@ -273,6 +273,8 @@ private struct AutocorrectSection: View {
     /// Where the known-word and apostrophe margins' sliders return when their ∞ switch turns off.
     @State private var finiteKnown = 100.0
     @State private var finiteApostrophe = 100.0
+    /// Where the spelling weight's slider returns when its switch turns on.
+    @State private var finiteSpelling = 0.1
 
     private static let fallbackModels = ["unigram", "ngram", "lstm"]
     private static let fallbackPresets = ["balanced", "conservative"]
@@ -324,7 +326,7 @@ private struct AutocorrectSection: View {
         } header: {
             Text("Autocorrect (experimental)")
         } footer: {
-            Text("At space, Return or . , ! ? ; : the word before it may be replaced by a likelier one, from where your taps landed and the words before it. Delete right after a correction puts your word back, and it is not corrected again until the keyboard restarts. A margin is the odds a correction needs; at ∞ that kind is never replaced. The unknown-word probability is how likely a word outside the lexicon is. Repeat and slip weights split a stray letter between a doubled letter and a neighbour key. Sliders apply to the next word; the switch, model and preset the next time the keyboard appears. Needs Full Access. Words and taps stay in the keyboard's memory and are never stored or sent.")
+            Text("At space, Return or . , ! ? ; : the word before it may be replaced by a likelier one, from where your taps landed and the words before it. Delete right after a correction puts your word back, and it is not corrected again until the keyboard restarts. A margin is the odds a correction needs; at ∞ that kind is never replaced. The unknown-word probability is how likely a word outside the lexicon is. Repeat and slip weights split a stray letter between a doubled letter and a neighbour key. Spelling errors weighs misspellings typed as aimed (\"recieve\"); off, only finger slips count. Sliders apply to the next word; the switch, model and preset the next time the keyboard appears. Needs Full Access. Words and taps stay in the keyboard's memory and are never stored or sent.")
         }
         .onAppear(perform: load)
         .onChange(of: enabled) { _, value in
@@ -363,6 +365,8 @@ private struct AutocorrectSection: View {
                text: String(format: "%.2f", params.wSlip), identifier: "diagnostics.autocorrectWSlip")
         slider("Short word length", value: binding(.shortLength), range: AutocorrectSetting.shortLength.range, step: 1,
                text: "\(params.shortLength) letters", identifier: "diagnostics.autocorrectShortLength")
+        // Only a bundle with spelling tables can use the weight (without them the keyboard ignores it).
+        if manifest?.spelling != nil { spellingWeight(identifier: "diagnostics.autocorrectWSpelling") }
     }
 
     /// The settings as the keyboard reads them, over the bundle's presets.
@@ -378,6 +382,7 @@ private struct AutocorrectSection: View {
         let current = merged
         if current.marginKnown.isFinite { finiteKnown = current.marginKnown }
         if current.marginApostrophe.isFinite { finiteApostrophe = current.marginApostrophe }
+        if current.wSpelling > 0 { finiteSpelling = current.wSpelling }
         params = current
         hasOverrides = AutocorrectSetting.allCases.contains { settings?.autocorrectOverride($0) != nil }
     }
@@ -442,6 +447,28 @@ private struct AutocorrectSection: View {
                                                  setting.set(on ? .infinity : odds, in: &params)
                                              }))
             .accessibilityIdentifier(identifier + "Infinite")
+    }
+
+    /// The spelling channel's weight from 0.001 to 1 on a log scale, with a switch: off is 0 (finger slips only).
+    @ViewBuilder
+    private func spellingWeight(identifier: String) -> some View {
+        let setting = AutocorrectSetting.wSpelling, lowest = 0.001
+        let off = params.wSpelling == 0
+        slider("Spelling errors", value: Binding(get: { log10(min(max(off ? finiteSpelling : params.wSpelling, lowest), 1)) },
+                                                 set: { value in
+                                                     let weight = min(max(pow(10, value), lowest), setting.range.upperBound)
+                                                     finiteSpelling = weight
+                                                     setting.set(weight, in: &params)
+                                                 }),
+               range: log10(lowest) ... 0, step: 0.05, text: off ? "Off" : String(format: "%.3g", params.wSpelling), identifier: identifier)
+            .disabled(off)
+        // A remembered value may be a preset's, outside the slider's range: clamp it, so the override takes it.
+        Toggle("Spelling errors: on", isOn: Binding(get: { params.wSpelling > 0 },
+                                                    set: { on in
+                                                        let weight = min(max(finiteSpelling, lowest), setting.range.upperBound)
+                                                        setting.set(on ? weight : 0, in: &params)
+                                                    }))
+            .accessibilityIdentifier(identifier + "Enabled")
     }
 
     private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, text: String,

@@ -1,0 +1,27 @@
+Autocorrect spelling tables (autocorrect/spelling.lfwe)
+
+The keyboard's autocorrect spelling channel uses a table of per-letter
+spelling-error probabilities (substitution, omission, insertion and
+transposition rates). Only these aggregated probabilities ship; no word,
+sentence or other text from the sources below is included.
+
+1. Wikipedia, "Lists of common misspellings/For machines"
+   https://en.wikipedia.org/wiki/Wikipedia:Lists_of_common_misspellings/For_machines
+   Revision 1199637275 (2024-01-27), by Wikipedia contributors.
+   Licensed under the Creative Commons Attribution-ShareAlike 4.0
+   International License (CC BY-SA 4.0):
+   https://creativecommons.org/licenses/by-sa/4.0/
+   Changes: the list's misspelling and correction pairs were aligned letter
+   by letter and counted into smoothed edit probabilities. The tables are
+   an adaptation of that list and are shared under the same licence.
+
+2. The Aalto typing37k dataset
+   https://userinterfaces.aalto.fi/typing37k/
+   Kseniia Palin, Anna Maria Feit, Sunjun Kim, Per Ola Kristensson and
+   Antti Oulasvirta. 2019. How do People Type on Mobile Devices?
+   Observations from a Study with 37,000 Volunteers. In Proceedings of the
+   21st International Conference on Human-Computer Interaction with Mobile
+   Devices and Services (MobileHCI '19). ACM.
+   https://doi.org/10.1145/3338286.3340120
+   The edit probabilities count the words participants typed against the
+   sentences they were shown.

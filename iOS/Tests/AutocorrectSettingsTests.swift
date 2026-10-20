@@ -1,8 +1,9 @@
 import Foundation
 
-/// ARCHITECTURE.md, "Word autocorrect": the bundle's optional `autocorrect` section (`AutocorrectManifest`) and
-/// the App Group settings (`LocalFlowSettings`): the switch, the model and preset choices, the per-parameter
-/// overrides merged over the preset, and the reset. Invented manifests and values only.
+/// ARCHITECTURE.md, "Word autocorrect": the bundle's optional `autocorrect` section (`AutocorrectManifest`), the
+/// loader that builds the corrector from an invented bundle (`AutocorrectLoader`), and the App Group settings
+/// (`LocalFlowSettings`): the switch, the model and preset choices, the per-parameter overrides merged over the
+/// preset, and the reset. Invented manifests, files and values only.
 enum AutocorrectSettingsTests {
     static var tests: [TestCase] {
         [
@@ -13,6 +14,10 @@ enum AutocorrectSettingsTests {
             ("manifestRejectsPresetsOutOfTheirDomain", testManifestRejectsPresetsOutOfTheirDomain),
             ("anInvalidSectionRejectsOnlyAutocorrect", testAnInvalidSectionRejectsOnlyAutocorrect),
             ("manifestResolvesModelsAndPresets", testManifestResolvesModelsAndPresets),
+            ("manifestReadsTheSpellingChannel", testManifestReadsTheSpellingChannel),
+            ("spellingPresetsNeedTheTables", testSpellingPresetsNeedTheTables),
+            ("loaderReadsTheSpellingTables", testLoaderReadsTheSpellingTables),
+            ("spellingOverrideAcceptsItsRangeAndMerges", testSpellingOverrideAcceptsItsRangeAndMerges),
             ("settingsAreOffAndUnsetByDefault", testSettingsAreOffAndUnsetByDefault),
             ("overridesAcceptOnlyTheirRanges", testOverridesAcceptOnlyTheirRanges),
             ("overridesMergeOverThePreset", testOverridesMergeOverThePreset),
@@ -223,6 +228,128 @@ enum AutocorrectSettingsTests {
         TestSupport.expectEqual(decoded.params(model: "w2", preset: "conservative").logOOV, -12)
     }
 
+    // MARK: Spelling channel
+
+    private static func testManifestReadsTheSpellingChannel() {
+        // No spelling path: none, and presets without w_spelling (bundles from before the channel) have 0.
+        let plain = try! AutocorrectManifest.decode(from: manifest(autocorrect: section()))!
+        TestSupport.expectEqual(plain.spelling, nil)
+        TestSupport.expect(plain.presets.values.allSatisfy { $0.values.allSatisfy { $0.wSpelling == 0 } }, "w_spelling 0")
+        // A path, and presets that use it (or give 0 explicitly).
+        let spelled = try! AutocorrectManifest.decode(from: manifest(autocorrect: section([
+            "spelling": "autocorrect/spelling.lfwe",
+            "presets": ["w0": ["balanced": preset(["w_spelling": 0.1])], "w1": ["balanced": preset(["w_spelling": 0.0])],
+                        "w2": ["balanced": preset(["w_spelling": 3.0])]],
+        ])))!
+        TestSupport.expectEqual(spelled.spelling, "autocorrect/spelling.lfwe")
+        var expected = presetParams
+        expected.wSpelling = 0.1
+        TestSupport.expectEqual(spelled.presets["w0"]?["balanced"], expected)
+        TestSupport.expectEqual(spelled.presets["w1"]?["balanced"]?.wSpelling, 0)
+        TestSupport.expectEqual(spelled.presets["w2"]?["balanced"]?.wSpelling, 3)  // the slider's range is not required
+        // Paths outside the bundle, and weights outside the domain.
+        for path in ["", "/s.lfwe", "../s.lfwe", "autocorrect/../s.lfwe", "autocorrect//s.lfwe", "./s.lfwe"] {
+            TestSupport.expect(error(section(["spelling": path])) == .invalidSpelling, "spelling \(path)")
+        }
+        for weight in [-0.1, -1e-300] {
+            TestSupport.expect(error(section(["spelling": "s.lfwe", "presets": ["w0": ["balanced": preset(["w_spelling": weight])],
+                                                                             "w1": ["balanced": preset()], "w2": ["balanced": preset()]]]))
+                == .invalidPresets, "w_spelling \(weight)")
+        }
+        TestSupport.expect((try? AutocorrectManifest.decode(from: manifest(autocorrect: section([
+            "spelling": "s.lfwe",
+            "presets": ["w0": ["balanced": preset(["w_spelling": "0.1"])], "w1": ["balanced": preset()], "w2": ["balanced": preset()]],
+        ])))) == nil, "a string weight")
+    }
+
+    private static func testSpellingPresetsNeedTheTables() {
+        // A preset with w_spelling > 0 in a section without tables is inconsistent: the section is refused
+        // (only autocorrect; soft key edges and swipe stay), as the exporter refuses to write it.
+        let presets: [String: Any] = ["w0": ["balanced": preset(), "conservative": preset(["w_spelling": 0.03])],
+                                      "w1": ["balanced": preset()], "w2": ["balanced": preset()]]
+        TestSupport.expectEqual(error(section(["presets": presets])), .invalidSpelling)
+        let data = manifest(autocorrect: section(["presets": presets]), tap: tapSection())
+        TestSupport.expect((try? SoftKeyEdgesManifest.decode(from: data)) != nil, "soft key edges rejected")
+        TestSupport.expectEqual(error(section(["presets": presets, "spelling": "autocorrect/spelling.lfwe"])), nil)
+    }
+
+    /// An invented bundle directory: the lexicon, optionally spelling tables, and the manifest's section.
+    private static func withBundle(spelling: Data?, _ body: (URL) -> Void) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("LocalFlowIOSTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = directory.appendingPathComponent("autocorrect")
+        try! FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        try! AutocorrectTestFiles.lexicon([("cat", 200), ("the", 250), ("receive", 150)]).write(to: files.appendingPathComponent("lexicon.lfwl"))
+        if let spelling { try! spelling.write(to: files.appendingPathComponent("spelling.lfwe")) }
+        body(directory)
+    }
+
+    private static func testLoaderReadsTheSpellingTables() {
+        let tables = AutocorrectTestFiles.flatSpelling(log(1e-6), ["trans": [("e", "i", 0.5)]])
+        let good = AutocorrectTestFiles.spelling(tables)
+        let named = try! AutocorrectManifest.decode(from: manifest(autocorrect: section([
+            "spelling": "autocorrect/spelling.lfwe",
+            "presets": ["w0": ["balanced": preset(["w_spelling": 1.0])], "w1": ["balanced": preset()], "w2": ["balanced": preset()]],
+        ])))!
+        let unnamed = try! AutocorrectManifest.decode(from: manifest(autocorrect: section()))!
+        func load(_ manifest: AutocorrectManifest, _ url: URL) -> Autocorrector? {
+            AutocorrectLoader.load(manifest: manifest, bundleURL: url, model: "w0") as? Autocorrector
+        }
+        withBundle(spelling: good) { url in
+            // Named: read, widened from float32; the corrector uses them (a cognitive misspelling is corrected).
+            let corrector = load(named, url)
+            TestSupport.expect(corrector?.spelling == (try! SpellingTables(data: good)), "tables loaded")
+            let p = named.params(model: "w0", preset: nil)
+            var motor = p
+            motor.wSpelling = 0
+            let points = AutocorrectCoreTests.centreTaps("recieve"), keys = AutocorrectCoreTests.keys
+            TestSupport.expectEqual(corrector?.correct(context: "", word: "recieve", points: points, keys: keys, params: p), "receive")
+            TestSupport.expectEqual(corrector?.correct(context: "", word: "recieve", points: points, keys: keys, params: motor), "recieve")
+            // Not named: a motor-only corrector, the file ignored.
+            let plain = load(unnamed, url)
+            TestSupport.expect(plain != nil && plain?.spelling == nil, "motor-only corrector")
+        }
+        // Named but missing or invalid: no corrector, as for any other file it needs.
+        withBundle(spelling: nil) { url in
+            TestSupport.expect(load(named, url) == nil, "missing tables loaded")
+            TestSupport.expect(load(unnamed, url) != nil, "a bundle without tables")
+        }
+        var badMagic = good
+        badMagic.replaceSubrange(0 ..< 4, with: Array("LFWL".utf8))
+        var badValue = good
+        badValue.replaceSubrange(12 ..< 16, with: withUnsafeBytes(of: Float(0.5).bitPattern.littleEndian) { Array($0) })
+        for (name, data) in [("bad magic", badMagic), ("short", good.dropLast(4)), ("long", good + Data(count: 8)), ("bad value", badValue),
+                             ("empty", Data())] {
+            withBundle(spelling: Data(data)) { url in TestSupport.expect(load(named, url) == nil, "\(name) tables loaded") }
+        }
+    }
+
+    private static func testSpellingOverrideAcceptsItsRangeAndMerges() {
+        withSettings { settings, defaults in
+            TestSupport.expectEqual(AutocorrectSetting.wSpelling.range, 0 ... 1)
+            for value in [0, 0.001, 0.03, 1] {
+                settings.setAutocorrectOverride(.wSpelling, value)
+                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == value, "\(value) not stored")
+            }
+            for value in [-0.1, 1.5, .nan, .infinity, -.infinity] {
+                settings.setAutocorrectOverride(.wSpelling, value)
+                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == 1, "\(value) stored")
+            }
+            for stored: Any in ["0.1", true, -1.0, 3.0] {
+                defaults.set(stored, forKey: "autocorrectParam.w_spelling")
+                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == nil, "\(stored) read")
+            }
+            var preset = presetParams
+            preset.wSpelling = 0.3
+            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.3)
+            settings.setAutocorrectOverride(.wSpelling, 0.01)
+            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.01)
+            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams).wSpelling, 0.01)
+            settings.resetAutocorrectParams()
+            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.3)
+        }
+    }
+
     // MARK: Settings
 
     private static func testSettingsAreOffAndUnsetByDefault() {
@@ -251,10 +378,10 @@ enum AutocorrectSettingsTests {
             TestSupport.expectEqual(settings.autocorrectModel, nil)
             defaults.set("yes", forKey: "autocorrectEnabled")
             TestSupport.expect(!settings.autocorrectEnabled, "invalid enabled value")
-            // The names are the contract.
+            // The names are the contract (w_spelling since the spelling channel, 2026-10-20).
             TestSupport.expectEqual(AutocorrectSetting.allCases.map(\.rawValue),
                                     ["log_oov", "margin_oov", "margin_known", "margin_apostrophe", "lm_weight", "p_omit", "p_insert",
-                                     "p_transpose", "w_repeat", "w_slip", "short_length"])
+                                     "p_transpose", "w_repeat", "w_slip", "short_length", "w_spelling"])
         }
     }
 

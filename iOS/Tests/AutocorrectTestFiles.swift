@@ -1,9 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// Writers of the word files (LFWL, LFWN, LFWR; localflow-swipe `tap/export_word_ios.py`) for invented test
-/// lexicons and models, so tests can build small ones. The lexicon writer follows `lexicon_bytes` and
-/// `tap.words.WordLexicon`'s rules.
+/// Writers of the word files (LFWL, LFWN, LFWR, LFWE; localflow-swipe `tap/export_word_ios.py`) for invented
+/// test lexicons, models and spelling tables, so tests can build small ones. The lexicon writer follows
+/// `lexicon_bytes` and `tap.words.WordLexicon`'s rules.
 enum AutocorrectTestFiles {
     struct Writer {
         private(set) var bytes = Data()
@@ -152,5 +152,43 @@ enum AutocorrectTestFiles {
         w.f32s(weights(embed * hidden))
         w.f32s(weights(v + 2))
         return w.bytes
+    }
+
+    // MARK: Spelling tables
+
+    /// An LFWE file of four row-major tables (sub, dele, ins, trans), written as float32 as `spelling_bytes`
+    /// does; no checks, so tests can write invalid ones.
+    static func spelling(_ tables: [[Double]]) -> Data {
+        var w = Writer(magic: "LFWE")
+        w.u32(1)
+        for table in tables { w.f32s(table.map(Float.init)) }
+        return w.bytes
+    }
+
+    static func spelling(_ tables: SpellingTables) -> Data {
+        spelling([tables.sub, tables.dele, tables.ins, tables.trans])
+    }
+
+    /// Synthetic tables: every entry off the −∞ sub and trans diagonals at `logP`, then the given entries
+    /// ("trans": [("e", "i", 0.5)], a row "^" for START) set to the log of their probability.
+    static func flatSpelling(_ logP: Double = log(1e-6), _ entries: [String: [(Character, Character, Double)]] = [:]) -> SpellingTables {
+        var tables = SpellingTables.rows.map { [Double](repeating: logP, count: $0 * SpellingTables.columns) }
+        for index in [0, 3] { for c in 0 ..< 26 { tables[index][c * 26 + c] = -.infinity } }
+        let names = ["sub": 0, "dele": 1, "ins": 2, "trans": 3]
+        func code(_ letter: Character) -> Int { letter == "^" ? SpellingTables.start : Int(letter.asciiValue! - UInt8(ascii: "a")) }
+        for (name, items) in entries {
+            for (row, column, probability) in items { tables[names[name]!][code(row) * 26 + code(column)] = log(probability) }
+        }
+        return try! SpellingTables(sub: tables[0], dele: tables[1], ins: tables[2], trans: tables[3])
+    }
+
+    /// Synthetic tables of uniform log probabilities in [low, 0], −∞ on the sub and trans diagonals.
+    static func randomSpelling(_ random: inout SplitMix64, low: Double = -8) -> SpellingTables {
+        let tables = SpellingTables.rows.enumerated().map { index, rows in
+            (0 ..< rows * SpellingTables.columns).map { offset -> Double in
+                (index == 0 || index == 3) && offset / 26 == offset % 26 ? -.infinity : Double.random(in: low ... 0, using: &random)
+            }
+        }
+        return try! SpellingTables(sub: tables[0], dele: tables[1], ins: tables[2], trans: tables[3])
     }
 }
