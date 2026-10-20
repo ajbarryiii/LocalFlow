@@ -47,6 +47,7 @@ enum SwipeEditorTests {
             ("deleteRemovesAReplacedWordWhole", testDeleteRemovesAReplacedWordWhole),
             ("deleteAfterTheStripClosedDeletesOneCharacter", testDeleteAfterTheStripClosedDeletesOneCharacter),
             ("deleteWhenTheTextNoLongerEndsWithTheWordDeletesOneCharacter", testDeleteWhenTheTextNoLongerEndsWithTheWordDeletesOneCharacter),
+            ("atMostOneSwipedEditIsRecorded", testAtMostOneSwipedEditIsRecorded),
             ("manifestReadsTheDecodeSettings", testManifestReadsTheDecodeSettings),
             ("engineRunsThePipeline", testEngineRunsThePipeline),
             ("engineFindsNothingWithoutAUsableSwipe", testEngineFindsNothingWithoutAUsableSwipe),
@@ -779,6 +780,53 @@ enum SwipeEditorTests {
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "a cat")
         TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed after the deletion")
+    }
+
+    // MARK: The swiped word's recorded edit
+
+    /// The strip and the pending space refer to one recorded edit, so the editor's checks see at most one
+    /// (`KeyboardEditor.swipeEditCount`, also asserted wherever the editor consults them), between calls
+    /// and when the strip is reported changed; none once both are gone.
+    private static func testAtMostOneSwipedEditIsRecorded() {
+        func watched(_ text: String) -> SwipeRig {
+            let rig = SwipeRig(text)
+            rig.editor.onSwipeStripChanged = { [unowned rig] in
+                TestSupport.expect(rig.editor.swipeEditCount <= 1, "two edits recorded as the strip changed")
+            }
+            return rig
+        }
+        func expectRecorded(_ rig: SwipeRig, _ count: Int, file: StaticString = #filePath, line: UInt = #line) {
+            TestSupport.expectEqual(rig.editor.swipeEditCount, count, file: file, line: line)
+        }
+        // Swipe, choose a candidate, Shift closes the strip (the space stays pending), tap a letter.
+        let chosen = watched("so")
+        chosen.swipe(["word", "ward"])
+        expectRecorded(chosen, 1)
+        chosen.choose(1)
+        expectRecorded(chosen, 1)
+        chosen.press(.shift)
+        TestSupport.expect(chosen.editor.swipeStrip == nil, "Shift closes the strip")
+        expectRecorded(chosen, 1)
+        chosen.press(.character("i"))
+        TestSupport.expectEqual(chosen.text, "so ward I")
+        expectRecorded(chosen, 0)
+        // Swipe, then swipe again while the space is still pending.
+        let again = watched("")
+        again.swipe(["one"])
+        expectRecorded(again, 1)
+        again.swipe(["two", "too"])
+        expectRecorded(again, 1)
+        again.choose(1)
+        again.press(.character("a"))
+        TestSupport.expectEqual(again.text, "one too a")
+        expectRecorded(again, 0)
+        // Swipe, then delete the word.
+        let deleted = watched("a")
+        deleted.swipe(["cat"])
+        expectRecorded(deleted, 1)
+        deleted.heldDelete()
+        TestSupport.expectEqual(deleted.text, "a ")
+        expectRecorded(deleted, 0)
     }
 
     // MARK: Swipe engine (the pipeline around the encoder; Core ML itself is faked)
