@@ -452,8 +452,11 @@ checklist.
   tap of the toggle key (activate + deactivate); `again` = Paste Again (retype
   the last dictation, held in memory only); `cancel` = Escape; `status`.
 - **States:** idle → recording → transcribing → typing → idle. A dedicated
-  worker thread owns the recognizer and the `TextOutput`; the control loop
-  never waits for it.
+  worker thread owns the recognizer and the `TextOutput`, and a capture
+  thread owns the `AudioCapture`; the control loop never waits for either.
+  While a capture `start` or `stop` runs, status reports the state from
+  before the call (starting is idle, stopping is still recording), so
+  watchers see the same changes as when the call blocked the loop.
 
 | Situation | Behaviour |
 | --- | --- |
@@ -465,6 +468,8 @@ checklist.
 | cancel while typing | waits for the 64-byte piece being typed, then nothing more: no further text and no Return after the reply; typed text stays |
 | cancel while idle | ignored |
 | capture fails to start or stop | capture cancelled, `error capture`, idle, session reset |
+| press, release, toggle or again while the microphone starts or stops | the request that made the call is answered when it returns; these wait, at most 32 (more get `error busy`), and are then handled in arrival order with their own stamps, as if they had arrived after the call; `status`, `watch` and text commands are answered at once |
+| cancel while the microphone starts or stops | at once: recording discarded (the stream is closed when the call returns; calls still queued for cancelled recordings are skipped), idle; the waiting requests are answered `note=cancelled` and have no effect |
 | press and release arrive out of order (each bind is its own process) | `localflowctl` stamps requests with `CLOCK_MONOTONIC` at start; a press stamped before an unmatched release is ignored, and a release stamped before the current hold's press is ignored; stamps from the future are treated as absent |
 | empty recording / under `min_recording_seconds` (0.3 s) | discarded before recognition (`note=empty` / `note=too-short`) |
 | `max_recording_seconds` (300 s) reached | stops and transcribes |
@@ -522,7 +527,12 @@ checklist.
   is 0600, a `flock` on `localflowd.lock` allows one instance, and every
   connection's `SO_PEERCRED` uid must match. One request line per
   connection: `localflow/1 <command>`, printable ASCII, under 256 bytes, sent
-  within 250 ms. Connections are served one at a time in accept order. That
+  within 250 ms. Connections are read one at a time in accept order and
+  handed, with the request, to the control loop, which writes the reply
+  (`MSG_DONTWAIT`; a client that has gone loses it), so the socket thread
+  never waits for a reply. At most 64 requests are handed on unanswered
+  (each holds its connection); more get `error busy` from the socket
+  thread. That
   does not guarantee a press is handled before its release, because
   Hyprland starts a separate `localflowctl` process for each; the `at=`
   stamp restores the order (see the table), except when the later process
@@ -650,7 +660,7 @@ Codex, then merged. After the merge:
 Residual risks:
 - A capture thread that hangs inside PipeWire is detached after 2 s. It keeps its (in-memory) audio until it ends, when its buffers are wiped.
 - Spectrum, features and encoder activations stay in `lf-asr`'s reusable workspace until the next dictation (the raw waveform copies are zeroed).
-- Worst-case cancel waits are about 2 s per phase when the compositor or PipeWire hangs. A backlog of requests has no global bound.
+- Cancel no longer waits for PipeWire: capture calls run on their own thread, and `status`, `watch` and the timers are served while a start or stop runs (bounded by 3 s and 2 s in `lf-pipewire`). Cancel while typing still waits for one compositor call (up to 2 s), and `status` still waits for the control loop. Requests waiting for a capture call are bounded (32), as are requests handed to the control loop and not yet answered (64); the listen backlog is the kernel's.
 - Not yet run live: microphone capture, typing and modifier behaviour on the Hyprland session, and journald output. See `README.md` and the "Desktop I/O" section.
 
 ## Open items
@@ -677,7 +687,7 @@ session (see the manual tests below).
 - If the server ever negotiates another rate or channel count, `convert.rs` takes over: a channel average plus a Kaiser-windowed sinc polyphase resampler (16 zero crossings, about 85 dB stopband, unit DC gain). It is unit-tested against ideal sines, aliasing, DC and chunked streaming.
 - Input: the default source, or a node name via `target.object`. A named target also sets `node.dont-fallback` and `node.dont-move`, so a missing device fails instead of silently recording another one, and stored routing metadata cannot move the stream.
 - Buffers follow the SPA chunk contract: the offset is taken modulo the block size, regions may wrap, the stride is honoured, and partial frames are dropped. A format the converter rejects stops the capture with an error.
-- `start` blocks until the stream is Streaming (default timeout 3 s), so "no microphone" is an error, not an empty recording.
+- `start` blocks until the stream is Streaming (default timeout 3 s), so "no microphone" is an error, not an empty recording. The daemon calls it on its capture thread.
 - The buffer is in memory only and bounded by `max_duration` (default 600 s, matching `lf-asr`'s `MAX_SECONDS`). Beyond it, the default `Overflow::Truncate` keeps the start and sets `Recording::truncated`; `Overflow::Error` fails `stop`. Capacity never grows past the limit.
 - `level()` is the RMS of the latest buffer, reset to 0 when idle. Samples are sanitized (non-finite becomes 0) and clamped to [-1, 1].
 - Stop and cancel signal an eventfd watched by the loop; queued buffers are drained before the loop exits. `cancel` is idempotent, and `Drop` cancels.
@@ -740,7 +750,7 @@ Checklist:
 
 - Hyprland combines modifiers held on the physical keyboard with virtual-keyboard keys (confirmed live 2026-10-08, Hyprland 0.55.4). Text typed while Ctrl was held reached the app as Ctrl shortcuts. Text typed again with Super+F13 still held triggered Hyprland's own binds: Super+L locked the screen and Super+Return opened a terminal, and Super+Q or Super+M (exit) were equally reachable. The daemon cannot see physical modifier state. `device { name = hl-virtual-keyboard-localflowd; keybinds = false }` (`packaging/hyprland.conf`) stops LocalFlow's keyboard from triggering any Hyprland bind; Hyprland reads it when the virtual keyboard is created, so the daemon must (re)connect after it is set. `input:virtualkeyboard:share_states = 0` does not help: it only stops a virtual keyboard's own state from being shared, while a physical keyboard's modifiers are always merged into what apps receive (Hyprland `InputManager::shareModsFromAllKBs`; verified live: Super held while the smoke test typed `z` reached Neovim as `<D-z>`). So apps still see modifiers held when F13 is released. The packaged binds are now F13 hold-to-talk only (the user does not use toggle, cancel or again from the keyboard), so no bind types while its own modifier is held. A remaining option is typing through `zwp_input_method_v2` `commit_string`, which modifiers cannot affect, for apps that support text-input-v3.
 - Keymap switching: some clients (XWayland, older Electron) may apply a new keymap late. Batching makes this visible only for texts with more than 50 distinct characters, which long English paragraphs can reach. Two-level keys (the second level reached with Shift) would double the capacity, but they add modifier events; that is not done.
-- `start` blocking until Streaming makes the device wake-up time part of the shortcut's response time. To be measured on the real microphone.
+- `start` blocking until Streaming makes the device wake-up time part of the press's response time (other requests are served meanwhile). To be measured on the real microphone.
 
 ## Pause media while recording
 
@@ -780,7 +790,7 @@ system sounds alone.
   - A new pause pass re-pauses remembered players the user had started again. It also pauses players resumed in the last 2 s that still read `Paused`, since their `Play` may not have landed yet.
 - **Daemon:**
   - The controller only calls `pause`/`resume` on a `MediaSink`; each sets the wanted state (an atomic flag) and wakes a dedicated `lf-media` thread (`media.rs`). Recording never waits for D-Bus.
-  - `pause` comes just before the microphone starts, and `resume` after the capture stopped, on every path out of recording: stop, cancel, maximum length, too-short/empty, capture start or stop failure, and shutdown.
+  - `pause` comes just before the microphone starts, and `resume` after the capture stopped, on every path out of recording: stop, maximum length, too-short/empty, capture start or stop failure. Cancel and shutdown resume at once, possibly before the stream has closed; that audio is discarded.
   - The thread works towards the latest wanted state. Queued wake-ups collapse, so a quick tap does not stop and restart the music.
   - Both passes check the wanted state before every call and stop when it changes. A resume overtaken by the next recording leaves the rest paused, and that recording's pass re-pauses any player already resumed. At most the one call in flight can land after the change.
   - When the controller is dropped (shutdown or a control-loop panic), the channel closes and the thread resumes what it still holds. `Handle::join` waits up to 3 s for that.
