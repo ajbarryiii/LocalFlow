@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import Combine
 
 struct LocalModelSettingsView: View {
     @EnvironmentObject var appState: AppState
