@@ -412,7 +412,11 @@ is invented.
   `check_private_dir`, `linux/crates/lf-daemon/src/paths.rs:64-101`)
 - The file is opened with `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`. It must be
   a regular file owned by the effective uid, with mode exactly 0600, and
-  at most 1 MiB. A missing file is an empty dictionary.
+  at most 2 MiB (`MAX_FILE_BYTES`). That is above the largest file a full
+  dictionary serializes to (1000 entries of 100 scalars and 1000 ignored
+  keys of 300 scalars, at most 4 bytes each, come to about 1.7 MiB with
+  the pretty-printed framing), so whatever was saved loads again
+  (`a_full_dictionary_reloads`). A missing file is an empty dictionary.
 - Loading requires version 1 and at most 1000 entries. Each entry must be
   valid under §1.1 and stored already normalized, and no two entries may
   share a key. The ignore list may hold at most 1000 keys, each valid under
@@ -523,7 +527,7 @@ revision. (`AppState.dictionarySnapshot`, `Sources/AppState.swift:327-330`;
 ### §3.2 Storage
 
 UserDefaults holds two keys (`DictionaryStorage`,
-`Sources/Dictionary/DictionaryEntry.swift:139-199`;
+`Sources/Dictionary/DictionaryEntry.swift:139-200`;
 `AppState.dictionaryStorageKey` and `dictionaryIgnoreStorageKey`,
 `Sources/AppState.swift:295-332`):
 
@@ -533,9 +537,12 @@ UserDefaults holds two keys (`DictionaryStorage`,
 | `custom_dictionary_ignore` | `{"ignore":[…],"version":1}` |
 
 Both are JSON with sorted keys. Loading accepts each payload only up to
-1 MiB (`DictionaryStorage.maxBytes`). Saving does not check the size
-(`DictionaryStorage.encode`), so a full ignore list of long keys could save
-a payload that no longer loads (inferred).
+2 MiB (`DictionaryStorage.maxBytes`). Saving does not check the size
+(`DictionaryStorage.encode`); the cap is above the largest payload a full
+dictionary encodes to (a full ignore list of 300-scalar keys of 4-byte
+scalars is about 1.2 MiB, and no scalar costs more than 4 bytes once
+escaped; entries come to well under that), so whatever was saved loads
+again (`testStorageCapacity`).
 
 Loading validates everything:
 

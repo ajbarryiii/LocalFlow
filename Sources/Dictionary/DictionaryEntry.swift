@@ -141,7 +141,8 @@ enum DictionaryStorageError: Error, Equatable {
 /// rejects the whole dictionary so the caller can preserve the raw data.
 enum DictionaryStorage {
     static let version = 1
-    static let maxBytes = 1 << 20
+    /// Above the largest payload `encode` can produce (DESIGN §3.2), so whatever was saved loads again.
+    static let maxBytes = 2 << 20
 
     private struct EntriesFile: Codable {
         let version: Int

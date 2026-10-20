@@ -120,7 +120,7 @@ Three rules follow:
 
 Sources: `DictionaryKey.isValid` (`Sources/Dictionary/DictionaryText.swift:106-118`);
 `DictionaryMutationError.invalidKey`, `DictionaryValidation.validate` and
-`DictionaryStorage.load` (`Sources/Dictionary/DictionaryEntry.swift:38-42,72-74,181-186`);
+`DictionaryStorage.load` (`Sources/Dictionary/DictionaryEntry.swift:38-42,72-74,182-187`);
 `encodable` and `valid_key` (`linux/crates/lf-text/src/dictionary.rs:197-217`);
 the `lf_daemon::dictionary` module doc and `Store::ignore`
 (`linux/crates/lf-daemon/src/dictionary.rs:12-15,177-181`). Tests:
