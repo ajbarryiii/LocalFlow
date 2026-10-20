@@ -1026,6 +1026,16 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(back.text, "the ")
         TestSupport.expectEqual(back.events, [.checked, .corrected, .reverted, .chosen])
         TestSupport.expect(back.editor.revertedWords.isEmpty, "the correction chosen back stays reverted")
+        // Tapping the correction already in the field confirms it: a Delete after is a plain Delete.
+        let confirmed = AutocorrectRig("", corrections: ["teh": "the"])
+        confirmed.tap("teh")
+        confirmed.press(.space)
+        confirmed.choose(1)
+        TestSupport.expectEqual(confirmed.text, "the ")
+        confirmed.heldDelete()
+        TestSupport.expectEqual(confirmed.text, "the")
+        TestSupport.expectEqual(confirmed.events, [.checked, .corrected])
+        TestSupport.expect(confirmed.editor.revertedWords.isEmpty, "a confirmed correction was reverted")
     }
 
     private static func testTheCommitStripClosesAndRefusesLikeTheSwipeStrip() {

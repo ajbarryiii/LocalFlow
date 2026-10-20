@@ -464,7 +464,12 @@ final class KeyboardEditor {
             pendingSpace = nil
             return
         }
-        guard strip.candidates.indices.contains(index), index != strip.inserted else { return }
+        guard strip.candidates.indices.contains(index) else { return }
+        guard index != strip.inserted else {
+            // The word already in the field, confirmed after a commit key: a Delete after it is a plain Delete.
+            if shown.commit != nil { pendingRevert = nil }
+            return
+        }
         let keyText = shown.commit?.keyText ?? ""
         let old = (strip.insertedWord + keyText).count
         let new = strip.candidates[index] + keyText
