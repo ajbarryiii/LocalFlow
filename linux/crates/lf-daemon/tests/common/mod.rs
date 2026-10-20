@@ -132,6 +132,17 @@ impl Rig {
         reply
     }
 
+    /// Sends a command without waiting for its reply. Connections are
+    /// accepted and handed on in order, so a request sent after this
+    /// returns is handled after this one.
+    pub fn send(&self, command: &str) -> Pending {
+        let mut s = UnixStream::connect(self.socket()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(format!("localflow/1 {command}\n").as_bytes())
+            .unwrap();
+        Pending(s)
+    }
+
     /// Sends a command and returns the reply fields after `ok`, or panics.
     pub fn cmd(&self, command: &str) -> String {
         let reply = self.raw(format!("localflow/1 {command}\n").as_bytes());
@@ -184,6 +195,28 @@ impl Drop for Rig {
             h.shutdown();
             let _ = h.join();
         }
+    }
+}
+
+/// A request sent with [`Rig::send`].
+pub struct Pending(pub UnixStream);
+
+impl Pending {
+    /// The raw reply (waits for it, at most 10 s).
+    pub fn raw(mut self) -> String {
+        let mut reply = String::new();
+        self.0.read_to_string(&mut reply).unwrap();
+        reply
+    }
+
+    /// The reply fields after `ok`, or panics.
+    pub fn ok(self) -> String {
+        let reply = self.raw();
+        reply
+            .strip_prefix("localflow/1 ok ")
+            .and_then(|r| r.strip_suffix('\n'))
+            .unwrap_or_else(|| panic!("{reply:?}"))
+            .to_owned()
     }
 }
 

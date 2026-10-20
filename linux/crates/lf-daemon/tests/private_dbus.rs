@@ -367,7 +367,7 @@ fn pauses_playing_players_and_resumes_them(bus: &PrivateBus) {
         a.status() == "Playing" && d.status() == "Playing"
     });
     rig.wait_for("state=idle");
-    assert_eq!(rig.output.text(), "Synthetic.");
+    assert_eq!(rig.output.text(), "Synthetic. ");
     for p in [&a, &d] {
         let s = p.state();
         assert_eq!((s.pauses, s.plays), (1, 1));
@@ -486,7 +486,7 @@ fn no_bus_is_not_fatal(bus: &PrivateBus) {
     rig.cmd("toggle");
     rig.cmd("toggle");
     rig.wait_for("state=idle");
-    assert_eq!(rig.output.text(), "Synthetic.");
+    assert_eq!(rig.output.text(), "Synthetic. ");
     assert_eq!(a.state().pauses, 0);
 }
 

@@ -964,7 +964,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
         audioDeviceObservers.append(
             notificationCenter.addObserver(
-                forName: .AVCaptureDeviceWasConnected,
+                forName: AVCaptureDevice.wasConnectedNotification,
                 object: nil,
                 queue: .main,
                 using: refreshOnAudioDeviceChange
@@ -972,7 +972,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         )
         audioDeviceObservers.append(
             notificationCenter.addObserver(
-                forName: .AVCaptureDeviceWasDisconnected,
+                forName: AVCaptureDevice.wasDisconnectedNotification,
                 object: nil,
                 queue: .main,
                 using: refreshOnAudioDeviceChange

@@ -32,7 +32,7 @@ final class TrackpadController: AdjustmentOwner {
     private var unitCache: (documentID: UUID, unit: CursorOffsetUnit)?
     private var reportsCache: (documentID: UUID, reportsTwice: Bool)?
     private var touchRate = TouchRateEstimator()
-    /// The keyboard hid while a cancelled session still watches a jump; see `hide`.
+    /// The keyboard hid while a cancelled session still watches a jump or a repair; see `hide`.
     private var isHiding = false
     /// Every report the host still owes for the adjustments issued in this field, by any session
     /// (`ReportDebt`): none is the echo of a later edit, and a new session expects them first.
@@ -133,9 +133,9 @@ final class TrackpadController: AdjustmentOwner {
     }
 
     /// The keyboard is hiding: roll back an outstanding probe now and drop the snapshot (and its
-    /// laid-out copy), every expected context and the learned unit at once. Only a jump past the edge
-    /// still out keeps the text-free session (and the field's identity) until its time limit, at most
-    /// `syncTimeout`.
+    /// laid-out copy), every expected context and the learned unit at once. Only a jump past the edge, or
+    /// a repair out of a surrogate pair's middle, still out keeps the text-free session (and the field's
+    /// identity) until it is finished (`TrackpadSession.cancel`).
     func hide(at timestamp: TimeInterval) {
         cancel(at: timestamp)
         unitCache = nil
@@ -178,7 +178,7 @@ final class TrackpadController: AdjustmentOwner {
     }
 
     /// The editing side saw another field, or none (as it does for every callback once hidden): end the
-    /// gesture at once, unless a hidden keyboard is still watching a cancelled jump, which checks the
+    /// gesture at once, unless a hidden keyboard is still watching a cancelled jump or repair, which checks the
     /// field on every frame itself.
     func fieldChanged() {
         guard !isHiding else { return }
@@ -247,7 +247,7 @@ final class TrackpadController: AdjustmentOwner {
     }
 
     /// The field and the generation are still the ones the gesture started on. While a hidden keyboard
-    /// finishes watching a cancelled jump, or a session guards the boundary after an outside change,
+    /// finishes watching a cancelled jump or repair, or a session guards the boundary after an outside change,
     /// only the field counts: hiding and the outside change advanced the generation.
     private var isValid: Bool {
         guard let host, let documentID, host.documentID == documentID else { return false }

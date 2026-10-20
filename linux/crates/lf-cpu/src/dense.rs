@@ -104,6 +104,12 @@ pub fn gemm(
             // Panel-major: consecutive units reuse the same panel.
             let (p, chunk) = (u / m.div_ceil(UNIT_ROWS), u % m.div_ceil(UNIT_ROWS));
             let rows = chunk * UNIT_ROWS..(chunk * UNIT_ROWS + UNIT_ROWS).min(m);
+            // SAFETY: AVX-512 F was asserted on entry. `units > 0` implies `m > 0`,
+            // so `check_shapes` covered all `m` rows of `a` and `c` (and `bias`);
+            // `p < np` keeps column `p * 64` below `n <= ldc`, inside row 0 of `c`.
+            // Each unit `(p, chunk)` runs on one thread and writes only rows
+            // `rows` of panel `p`'s columns, which `ldc >= n` keeps disjoint from
+            // every other unit's.
             unsafe { block(a, lda, b, p, rows, cp.get().add(p * NB), ldc, bias) };
         }
     });
@@ -133,7 +139,13 @@ pub fn gemm_serial(
     assert!(c.len() >= crate::span(m, ldc, width));
     let c0 = c.as_mut_ptr();
     for p in panels.clone() {
+        // SAFETY: `(p - panels.start) * 64 < width`, inside row 0 of `c` (the
+        // `c.len()` assert above, with `m > 0`).
         let cp = unsafe { c0.add((p - panels.start) * NB) };
+        // SAFETY: AVX-512 F was asserted, and `p < b.panels()`. The asserts above
+        // cover rows `0..m` of `a` (stride `lda`, `b.k` values) and of this
+        // panel's columns of `c` (stride `ldc`, ending by `width`). This call is
+        // single-threaded and holds `c` mutably.
         unsafe { block(a, lda, b, p, 0..m, cp, ldc, None) };
     }
 }
@@ -165,6 +177,12 @@ fn check_shapes(
 }
 
 /// Rows `rows` of `C` for panel `p`; row `r` of the panel's columns starts at `c + r * ldc`.
+///
+/// # Safety
+/// The CPU must support AVX-512 F, and `p < b.panels()`. For every `r` in
+/// `rows`, `a` must hold `r * lda + b.k` values, and `c` must be valid for
+/// reads and writes of `min(64, b.n - p * 64)` floats at `r * ldc`, with no
+/// other thread accessing them. `bias`, if given, must hold `b.n` values.
 #[allow(clippy::too_many_arguments)]
 unsafe fn block(
     a: &[f32],
@@ -186,6 +204,11 @@ unsafe fn block(
         let mut r = rows.start;
         while r < rows.end {
             let mr = MR.min(rows.end - r);
+            // SAFETY: AVX-512 F (caller contract). Panel `p` stores `k * 64`
+            // zero-padded floats, so `panel + kb * 64` has `kc * 64` readable.
+            // Rows `r..r + mr` lie in `rows`, so the caller contract covers their
+            // `a` inputs `kb..kb + kc` and their `width` columns of `c`; `bias`
+            // (sliced from `p * 64`) has `width` values.
             unsafe {
                 x86::kernel_for(mr)(
                     panel.add(kb * NB),
@@ -236,6 +259,13 @@ mod x86 {
 
     /// `R` rows of `A` times `kc` rows of one panel; adds to `C` when
     /// `accumulate`, adds `bias` if given, and stores the first `width` columns.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F. `panel` must have `kc * 64` readable
+    /// floats; `a` must be readable at `r * lda + i` for `r < R`, `i < kc`; `c`
+    /// must be valid for reads and writes of `width` (at most 64) floats at
+    /// each `r * ldc` for `r < R`, with no other thread accessing them; `bias`,
+    /// if given, must have `width` readable floats.
     #[target_feature(enable = "avx512f")]
     unsafe fn kernel<const R: usize>(
         panel: *const f32,
@@ -250,10 +280,13 @@ mod x86 {
     ) {
         let mut acc = [[_mm512_setzero_ps(); 4]; R];
         for i in 0..kc {
+            // SAFETY: `i < kc`, so row `i` lies inside the panel.
             let wp = unsafe { panel.add(i * 64) };
+            // SAFETY: 16 of panel row `i`'s 64 floats (`v * 16 < 64`).
             let w: [__m512; 4] =
                 std::array::from_fn(|v| unsafe { _mm512_loadu_ps(wp.add(v * 16)) });
             for r in 0..R {
+                // SAFETY: `r < R` and `i < kc` (caller contract).
                 let x = _mm512_set1_ps(unsafe { *a.add(r * lda + i) });
                 for v in 0..4 {
                     acc[r][v] = _mm512_fmadd_ps(w[v], x, acc[r][v]);
@@ -267,15 +300,22 @@ mod x86 {
             }
             let mask: __mmask16 = if lanes == 16 { !0 } else { (1u16 << lanes) - 1 };
             let b = match bias {
+                // SAFETY: `v * 16 < width`, and the mask limits the load to lanes
+                // below `width`, all readable (caller contract); masked-off lanes
+                // are not accessed.
                 Some(bp) => unsafe { _mm512_maskz_loadu_ps(mask, bp.add(v * 16)) },
                 None => _mm512_setzero_ps(),
             };
             for r in 0..R {
+                // SAFETY: `r < R` and `v * 16 < width` (caller contract).
                 let p = unsafe { c.add(r * ldc + v * 16) };
                 let mut out = _mm512_add_ps(acc[r][v], b);
                 if accumulate {
+                    // SAFETY: masked to row `r`'s columns below `width`.
                     out = _mm512_add_ps(out, unsafe { _mm512_maskz_loadu_ps(mask, p) });
                 }
+                // SAFETY: masked to row `r`'s columns below `width`, which only
+                // this thread accesses (caller contract).
                 unsafe { _mm512_mask_storeu_ps(p, mask, out) };
             }
         }
