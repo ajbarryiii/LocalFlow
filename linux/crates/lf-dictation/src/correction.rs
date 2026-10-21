@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! Custom-dictionary text rules that run around recognition (LocalFlow
 //! DESIGN §1.4-§1.6 with the pinned interpretations P1-P5):
 //!
@@ -13,10 +14,10 @@
 
 use std::ops::Range;
 
-use lf_asr::dictionary::{
+use lf_text::dictionary::{
     DictionaryEntry, fold, is_edge_punct, is_word_char, strip_edge_punct, validate, words,
 };
-use lf_asr::tokenizer::Tokenizer;
+use lf_text::tokenizer::Tokenizer;
 
 /// Longest text (UTF-8 bytes) a correction is examined for.
 pub const MAX_CORRECTION_BYTES: usize = 4096;

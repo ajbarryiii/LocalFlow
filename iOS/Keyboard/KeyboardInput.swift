@@ -281,7 +281,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         tapPrior?.bind(to: current)
         guard proxy?.isSecureTextEntry != true else { return action }
         if let field, let current, field != current { return action }
-        let context = editor.tapPriorContext
+        let context = editor.tapPriorContext(now: now)
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
         let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
         let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)

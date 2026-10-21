@@ -37,6 +37,7 @@ struct LocalFlowIOSTests {
             ("TypingRules", TypingRulesTests.tests),
             ("UndoTracker", UndoTrackerTests.tests),
             ("EditingCore", EditingCoreTests.tests),
+            ("ExpectedDocument", ExpectedDocumentTests.tests),
             ("KeyboardEditor", KeyboardEditorTests.tests),
             ("SwipeEditor", SwipeEditorTests.tests),
             ("TouchRate", TouchRateTests.tests),

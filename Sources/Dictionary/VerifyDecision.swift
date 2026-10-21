@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 /// The per-strength acceptance rule for a `replace` candidate (DESIGN §1.6,

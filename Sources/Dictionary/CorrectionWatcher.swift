@@ -4,6 +4,7 @@ import Foundation
 // `TextFieldReader`; the app supplies the AX implementation and tests a fake.
 // Text read here stays in the session record and local variables, is cleared
 // on finalize or discard, and is never logged, persisted or transmitted.
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 
 /// An opaque destination: the process and its focused text element.
 struct TextFieldTarget {

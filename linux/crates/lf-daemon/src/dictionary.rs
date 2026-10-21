@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The custom dictionary: `$XDG_DATA_HOME/localflow/dictionary.json`.
 //!
 //! ```text
@@ -35,8 +36,8 @@ use lf_asr::tokenizer::Tokenizer;
 use serde_json::{Value, json};
 
 pub const FILE_NAME: &str = "dictionary.json";
-/// Largest dictionary file read.
-pub const MAX_FILE_BYTES: u64 = 1 << 20;
+/// Largest dictionary file read; above what a full dictionary serializes to (DESIGN §2.1).
+pub const MAX_FILE_BYTES: u64 = 2 << 20;
 
 /// A validated dictionary.
 #[derive(Clone, Default, PartialEq)]
@@ -603,6 +604,51 @@ mod tests {
         }
         assert_eq!(store.ignore("zzzz"), Err(ChangeError::Full));
         store.ignore(&word(5)).unwrap();
+    }
+
+    /// Whatever `commit` writes must load again (DESIGN §2.1): the largest
+    /// file holds 1000 entries of 100 scalars and 1000 ignored keys of 300
+    /// scalars, each up to 4 bytes, and is over 1 MiB.
+    #[test]
+    fn a_full_dictionary_reloads() {
+        // U+20000 and its neighbours are letters with no case mapping, so a
+        // run of them is its own fold; each is 4 bytes of UTF-8.
+        let wide = |len: usize, i: usize| -> String {
+            std::iter::once(char::from_u32(0x20000 + i as u32).unwrap())
+                .chain(std::iter::repeat_n('\u{20000}', len - 1))
+                .collect()
+        };
+        let full = Dictionary {
+            entries: (0..MAX_ENTRIES)
+                .map(|i| DictionaryEntry {
+                    text: wide(rules::MAX_SCALARS, i),
+                    strength: 8.0,
+                })
+                .collect(),
+            ignore: (0..MAX_IGNORED)
+                .map(|i| wide(rules::MAX_KEY_SCALARS, i))
+                .collect(),
+        };
+        let bytes = serialize(&full);
+        assert!(bytes.len() > 1 << 20, "{}", bytes.len());
+        assert!(bytes.len() as u64 <= MAX_FILE_BYTES, "{}", bytes.len());
+        // Without a vocabulary nothing is unencodable.
+        assert_eq!(parse(&bytes, None).as_ref(), Ok(&full));
+
+        // Through the store: ignored keys are not checked against the
+        // vocabulary, so the ignore list alone takes the file past 1 MiB.
+        let t = TempDir::new("dict-full");
+        let s = setting(&t);
+        let almost = Dictionary {
+            entries: Vec::new(),
+            ignore: full.ignore[..MAX_IGNORED - 1].to_vec(),
+        };
+        write_file(&s, std::str::from_utf8(&serialize(&almost)).unwrap());
+        let mut store = Store::open(&s).unwrap();
+        store.ignore(&full.ignore[MAX_IGNORED - 1]).unwrap();
+        assert!(fs::metadata(file(&s)).unwrap().len() > 1 << 20);
+        let reopened = Store::open(&s).unwrap();
+        assert_eq!(reopened.snapshot().dictionary.ignore, full.ignore);
     }
 
     #[test]

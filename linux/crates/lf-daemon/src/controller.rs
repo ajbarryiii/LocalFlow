@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The dictation state machine, driven by control commands and worker events
 //! on a single thread:
 //!
@@ -30,6 +31,19 @@
 //!   without (trusted) stamps are taken in arrival order.
 //! - **Capture errors** at start or stop cancel the capture and return to
 //!   idle with `error capture`.
+//! - **The microphone never blocks this thread.** Capture calls run on their
+//!   own thread (`crate::capture`). While one runs (*starting* or
+//!   *stopping*), `status`, `watch`, text commands and the timers are served
+//!   at once, and status reports the state from before the call (starting
+//!   is idle, stopping is still recording), so it changes when the call
+//!   completes, as when the call blocked. The reply of the request that made
+//!   the call waits for it. `press`, `release`, `toggle` and `again` wait in
+//!   arrival order, at most [`MAX_WAITING`] (the next is refused with
+//!   `error busy`), and are then handled as if they had arrived after the
+//!   call, with their own stamps. `cancel` acts at once: it discards the
+//!   recording, and the requests waiting for the call are answered like the
+//!   cancel (`note=cancelled`) without taking effect. A late result of a
+//!   cancelled call is dropped (its audio wiped).
 //! - **Empty** recordings and recordings shorter than
 //!   `min_recording_seconds` are discarded without recognition
 //!   (`note=empty` / `note=too-short`).
@@ -83,6 +97,7 @@
 //!   suggestion with add or ignore is a dictionary change and ends the
 //!   correction session, project words never do.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -108,7 +123,9 @@ pub fn boottime() -> Duration {
 
 use lf_asr::dictionary::{self as rules, DEFAULT_STRENGTH};
 use lf_dictation::correction::correction_candidates;
-use lf_io_api::{AudioCapture, SAMPLE_RATE};
+use lf_io_api::{IoError, SAMPLE_RATE};
+
+use crate::capture::{Call, CaptureEvent, CapturePort, Done};
 
 use crate::dictionary::{ChangeError, Snapshot, Store};
 use crate::history::{Entry, History};
@@ -118,10 +135,14 @@ use crate::protocol::{
     AGENTS_DEFAULT_TTL, Activity, AgentCounts, Args, Command, CorrectionResult, ErrorCode, Extra,
     Note, Reply, Request, Resolve, State, Status, SuggestOutcome, WORDS_DEFAULT_TTL,
 };
+use crate::server::Responder;
 use crate::session::{Action, Event, Mode, SessionController};
 use crate::worker::{
     Audio, CancelToken, Job, JobKind, Outcome, Retained, Suggestion, Verify, WorkerEvent,
 };
+
+/// How many requests may wait for a capture call (see the module docs).
+pub const MAX_WAITING: usize = 32;
 
 /// How long after a dictation is typed it can still be corrected
 /// (`correct-begin` / `correct-submit`); then its session is discarded.
@@ -178,13 +199,33 @@ impl Limits {
 
 enum Phase {
     Idle,
+    /// `start` sent for recording `generation`; reported as idle.
+    Starting {
+        generation: u64,
+        prompt: bool,
+        tap_eligible: bool,
+    },
     Recording {
+        generation: u64,
         since: Instant,
         /// A prompt recording (double-tap and hold).
         prompt: bool,
         /// Started from idle by a press with a fresh stamp: discarded as
         /// too short by its own release, it is a tap.
         tap_eligible: bool,
+    },
+    /// `stop` sent; reported as still recording, in `mode`.
+    Stopping {
+        generation: u64,
+        since: Instant,
+        prompt: bool,
+        mode: Option<Mode>,
+        /// See [`Controller::stop_recording`].
+        hold_release: bool,
+        /// When the stop was asked for.
+        at: Instant,
+        /// The tap this recording is if it turns out too short or empty.
+        tap: Option<Tap>,
     },
     /// A job the worker is running for the current dictation.
     Busy {
@@ -210,7 +251,13 @@ struct Merged {
 
 pub struct Controller {
     session: SessionController,
-    capture: Box<dyn AudioCapture>,
+    capture: Box<dyn CapturePort>,
+    /// Numbers recordings, so a late result of a cancelled one is dropped.
+    generation: u64,
+    /// The reply of the request that made the capture call in flight.
+    in_flight: Option<Responder>,
+    /// Requests waiting for that call, in arrival order.
+    waiting: VecDeque<(Request, Responder)>,
     jobs: Box<dyn JobSink>,
     phase: Phase,
     model_ready: bool,
@@ -305,7 +352,7 @@ fn sample_clocks() -> (u64, Instant, u64) {
 
 impl Controller {
     pub fn new(
-        capture: Box<dyn AudioCapture>,
+        capture: Box<dyn CapturePort>,
         jobs: Box<dyn JobSink>,
         limits: Limits,
         history: Option<History>,
@@ -313,6 +360,9 @@ impl Controller {
         Controller {
             session: SessionController::default(),
             capture,
+            generation: 0,
+            in_flight: None,
+            waiting: VecDeque::new(),
             jobs,
             phase: Phase::Idle,
             model_ready: false,
@@ -788,8 +838,8 @@ impl Controller {
 
     pub fn status(&self) -> Status {
         let state = match self.phase {
-            Phase::Idle => State::Idle,
-            Phase::Recording { .. } => State::Recording,
+            Phase::Idle | Phase::Starting { .. } => State::Idle,
+            Phase::Recording { .. } | Phase::Stopping { .. } => State::Recording,
             Phase::Busy { typing: false, .. } => State::Transcribing,
             Phase::Busy { typing: true, .. } => State::Typing,
         };
@@ -797,11 +847,14 @@ impl Controller {
             state,
             mode: match self.phase {
                 Phase::Recording { .. } => self.session.active_mode(),
+                Phase::Stopping { mode, .. } => mode,
                 _ => None,
             },
             prompt: matches!(
                 self.phase,
-                Phase::Recording { prompt: true, .. } | Phase::Busy { prompt: true, .. }
+                Phase::Recording { prompt: true, .. }
+                    | Phase::Stopping { prompt: true, .. }
+                    | Phase::Busy { prompt: true, .. }
             ),
             model_ready: self.model_ready,
         }
@@ -843,7 +896,8 @@ impl Controller {
         self.capture.input_available()
     }
 
-    /// The capture's input level in [0, 1]; 0 when not recording.
+    /// The capture's input level in [0, 1]; 0 when not recording (nor while
+    /// the microphone starts or stops).
     pub fn input_level(&self) -> f32 {
         match self.phase {
             Phase::Recording { .. } => self.capture.level(),
@@ -855,12 +909,118 @@ impl Controller {
         Reply::Ok(self.status(), note)
     }
 
-    /// A request without a stamp.
+    /// A request without a stamp (tests; see [`Controller::handle_request`]).
+    #[cfg(test)]
     pub fn handle_command(&mut self, cmd: Command, now: Instant) -> Reply {
         self.handle_request(Request::new(cmd), now)
     }
 
+    /// Handles `req` and returns its reply, which must come at once (an
+    /// [`crate::capture::Inline`] capture always answers at once).
+    #[cfg(test)]
     pub fn handle_request(&mut self, req: Request, now: Instant) -> Reply {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.request(req, tx.into(), now);
+        rx.try_recv().expect("the reply waits for the capture")
+    }
+
+    fn capture_busy(&self) -> bool {
+        matches!(self.phase, Phase::Starting { .. } | Phase::Stopping { .. })
+    }
+
+    /// Handles `req` and answers through `reply`, at once or, if `req` made
+    /// or must wait for a capture call, once that is done (see the module
+    /// docs).
+    pub fn request(&mut self, req: Request, reply: Responder, now: Instant) {
+        let entered = Instant::now();
+        let waits = matches!(
+            req.command,
+            Command::Press | Command::Release | Command::Toggle | Command::Again
+        );
+        if waits && self.capture_busy() {
+            if self.waiting.len() < MAX_WAITING {
+                self.waiting.push_back((req, reply));
+            } else {
+                reply.send(Reply::Error(ErrorCode::Busy));
+            }
+            return;
+        }
+        self.serve(req, reply, now);
+        self.collect(now, entered);
+    }
+
+    fn serve(&mut self, req: Request, reply: Responder, now: Instant) {
+        let busy = self.capture_busy();
+        let r = self.handle(req, now);
+        if !busy && self.capture_busy() {
+            self.in_flight = Some(reply);
+        } else {
+            reply.send(r);
+        }
+    }
+
+    /// Applies a capture result (see [`Controller::request`]).
+    pub fn handle_capture(&mut self, event: CaptureEvent, now: Instant) {
+        let entered = Instant::now();
+        self.apply(event, now);
+        self.collect(now, entered);
+    }
+
+    /// Applies results the port has at once; `entered` is when the caller
+    /// got `now`, so time spent in an inline call counts.
+    fn collect(&mut self, now: Instant, entered: Instant) {
+        while let Some(event) = self.capture.poll() {
+            self.apply(event, now + entered.elapsed());
+        }
+    }
+
+    fn apply(&mut self, event: CaptureEvent, now: Instant) {
+        let starting = match self.phase {
+            Phase::Starting { generation, .. } if generation == event.generation => true,
+            Phase::Stopping { generation, .. } if generation == event.generation => false,
+            // A cancelled recording's; any audio is wiped here.
+            _ => return,
+        };
+        let result = match event.done {
+            Done::Started(r) if starting => self.started(r, now),
+            Done::Stopped(r) if !starting => self.stopped(r, now),
+            _ => return,
+        };
+        if let Some(reply) = self.in_flight.take() {
+            reply.send(match result {
+                Ok(note) => self.ok(note),
+                Err(code) => Reply::Error(code),
+            });
+        }
+        self.end_request();
+        while !self.capture_busy() {
+            let Some((req, reply)) = self.waiting.pop_front() else {
+                break;
+            };
+            self.serve(req, reply, now);
+        }
+    }
+
+    /// Answers the request that made the capture call and those waiting
+    /// for it like the cancel that ended the recording.
+    fn abandon_waiting(&mut self) {
+        let reply = self.ok(Some(Note::Cancelled));
+        for r in self.in_flight.take().into_iter().chain(
+            std::mem::take(&mut self.waiting)
+                .into_iter()
+                .map(|(_, r)| r),
+        ) {
+            r.send(reply.clone());
+        }
+    }
+
+    fn end_request(&mut self) {
+        if self.session.active_mode() != Some(Mode::Hold) {
+            self.hold_press_at = None;
+        }
+    }
+
+    fn handle(&mut self, req: Request, now: Instant) -> Reply {
         if req.command.is_text() {
             return self.text_command(req.command, req.args, now);
         }
@@ -912,7 +1072,7 @@ impl Controller {
                     let idle = matches!(self.phase, Phase::Idle);
                     let result = self.shortcut(&[Event::HoldActivated], now);
                     self.start_prompt = false;
-                    if idle && let Phase::Recording { tap_eligible, .. } = &mut self.phase {
+                    if idle && let Phase::Starting { tap_eligible, .. } = &mut self.phase {
                         // A new hold: its own press stamp, never an older one.
                         *tap_eligible = eligible;
                         self.hold_press_at = at;
@@ -956,13 +1116,14 @@ impl Controller {
                     if stopped && at.is_some() {
                         self.last_release_at = self.last_release_at.max(at);
                     }
-                    let discarded = matches!(result, Ok(Some(Note::TooShort | Note::Empty)));
+                    // Armed when the stop finds the recording too short or
+                    // empty (see `apply`).
+                    let released = self.fresh_stamp(req.at, now);
                     if tap_eligible
-                        && stopped
-                        && discarded
-                        && let Some(released) = self.fresh_stamp(req.at, now)
+                        && let Phase::Stopping { tap, .. } = &mut self.phase
+                        && let Some(released) = released
                     {
-                        self.tap = Some(Tap { received, released });
+                        *tap = Some(Tap { received, released });
                     }
                     result
                 }
@@ -973,9 +1134,7 @@ impl Controller {
             Command::Cancel => Ok(self.cancel()),
             Command::Again => Ok(self.again()),
         };
-        if self.session.active_mode() != Some(Mode::Hold) {
-            self.hold_press_at = None;
-        }
+        self.end_request();
         match result {
             Ok(note) => self.ok(note),
             Err(code) => Reply::Error(code),
@@ -990,22 +1149,16 @@ impl Controller {
         let mut acted = false;
         let mut note = None;
         for &event in events {
+            let mode = self.session.active_mode();
             let Some(action) = self.session.handle(event, self.is_busy()) else {
                 continue;
             };
             acted = true;
             match action {
-                Action::Start(mode) => {
-                    let prompt = self.start_prompt;
-                    self.start_recording(now, prompt)?;
-                    crate::info!(
-                        "recording ({}{})",
-                        mode.name(),
-                        if prompt { ", prompt" } else { "" }
-                    );
-                }
+                // Logged once the microphone runs.
+                Action::Start(_) => self.start_recording(self.start_prompt)?,
                 Action::Stop => {
-                    note = self.stop_recording(now, event == Event::HoldDeactivated)?;
+                    note = self.stop_recording(now, event == Event::HoldDeactivated, mode)?;
                 }
                 Action::SwitchedToToggle => crate::info!("recording switched to toggle mode"),
             }
@@ -1013,7 +1166,7 @@ impl Controller {
         Ok(if acted { note } else { Some(Note::Ignored) })
     }
 
-    fn start_recording(&mut self, now: Instant, prompt: bool) -> Result<(), ErrorCode> {
+    fn start_recording(&mut self, prompt: bool) -> Result<(), ErrorCode> {
         if !matches!(self.phase, Phase::Idle) {
             // The session controller prevents this; stay consistent anyway.
             self.session.reset();
@@ -1025,46 +1178,111 @@ impl Controller {
         // Only a message to the media thread: players pause while the
         // device starts (a Bluetooth headset switches profile meanwhile).
         self.pause_media();
-        // `start` blocks until audio flows (seconds, for a sleeping device).
-        // The recording window counts from then, not from the request.
-        let started = Instant::now();
-        if let Err(e) = self.capture.start() {
-            // A partial start must not leave the microphone open.
-            self.capture.cancel();
+        self.generation += 1;
+        self.phase = Phase::Starting {
+            generation: self.generation,
+            prompt,
+            tap_eligible: false,
+        };
+        // Done when audio flows (seconds, for a sleeping device); see
+        // `started`.
+        self.capture.send(self.generation, Call::Start);
+        Ok(())
+    }
+
+    /// `start` returned. The recording window counts from now, not from
+    /// the request.
+    fn started(
+        &mut self,
+        result: Result<(), IoError>,
+        now: Instant,
+    ) -> Result<Option<Note>, ErrorCode> {
+        let Phase::Starting {
+            generation,
+            prompt,
+            tap_eligible,
+        } = self.phase
+        else {
+            unreachable!("only called while starting");
+        };
+        if let Err(e) = result {
+            // The capture thread already closed the stream.
+            self.phase = Phase::Idle;
             self.resume_media();
             self.session.reset();
             crate::error!("microphone capture failed to start: {e}");
             return Err(ErrorCode::Capture);
         }
         self.phase = Phase::Recording {
-            since: now + started.elapsed(),
+            generation,
+            since: now,
             prompt,
-            tap_eligible: false,
+            tap_eligible,
         };
-        Ok(())
+        if let Some(mode) = self.session.active_mode() {
+            crate::info!(
+                "recording ({}{})",
+                mode.name(),
+                if prompt { ", prompt" } else { "" }
+            );
+        }
+        Ok(None)
     }
 
-    /// Stops recording and queues recognition. The session must already be
-    /// reset (it is, after `Action::Stop`). `hold_release`: stopped by
+    /// Stops recording; recognition is queued when the audio arrives (see
+    /// `stopped`). The session must already be reset (it is, after
+    /// `Action::Stop`); `mode` is the one it had. `hold_release`: stopped by
     /// releasing a hold, so a too-short recording is a tap that a second
     /// press may follow; media then stay paused for the double-tap window.
     fn stop_recording(
         &mut self,
         now: Instant,
         hold_release: bool,
+        mode: Option<Mode>,
     ) -> Result<Option<Note>, ErrorCode> {
-        let Phase::Recording { since, prompt, .. } = self.phase else {
+        let Phase::Recording {
+            generation,
+            since,
+            prompt,
+            ..
+        } = self.phase
+        else {
             self.session.reset();
             return Ok(Some(Note::Ignored));
         };
-        self.phase = Phase::Idle;
-        let stopped = self.capture.stop();
-        if stopped.is_err() {
-            // Make sure the stream is closed whatever state it is in.
-            self.capture.cancel();
-        }
-        let mut audio = match stopped {
-            Ok(s) => Audio::new(s),
+        self.phase = Phase::Stopping {
+            generation,
+            since,
+            prompt,
+            mode,
+            hold_release,
+            at: now,
+            tap: None,
+        };
+        self.capture.send(generation, Call::Stop);
+        Ok(None)
+    }
+
+    /// `stop` returned: discards a recording too short or empty (arming the
+    /// tap it may be), or queues recognition.
+    fn stopped(
+        &mut self,
+        result: Result<Audio, IoError>,
+        done: Instant,
+    ) -> Result<Option<Note>, ErrorCode> {
+        let Phase::Stopping {
+            since,
+            prompt,
+            hold_release,
+            at: now,
+            tap,
+            ..
+        } = std::mem::replace(&mut self.phase, Phase::Idle)
+        else {
+            unreachable!("only called while stopping");
+        };
+        let mut audio = match result {
+            Ok(a) => a,
             Err(e) => {
                 self.resume_media();
                 crate::error!("microphone capture failed: {e}");
@@ -1095,8 +1313,12 @@ impl Controller {
             self.resume_media();
         }
         if discarded.is_some() {
+            if tap.is_some() {
+                self.tap = tap;
+            }
             return Ok(discarded);
         }
+        let now = done;
         audio.truncate(Limits::samples(self.limits.max_recording));
         let id = self.next_id;
         self.next_id += 1;
@@ -1131,9 +1353,15 @@ impl Controller {
         self.session.reset();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => Some(Note::Ignored),
-            Phase::Recording { .. } => {
-                self.capture.cancel();
+            Phase::Starting { generation, .. }
+            | Phase::Recording { generation, .. }
+            | Phase::Stopping { generation, .. } => {
+                // Runs after a call in flight; its late result is dropped.
+                self.capture.send(generation, Call::Cancel);
+                // The audio is discarded, so resuming before the stream
+                // has closed cannot reach a dictation.
                 self.resume_media();
+                self.abandon_waiting();
                 crate::info!("recording cancelled");
                 Some(Note::Cancelled)
             }
@@ -1324,10 +1552,12 @@ impl Controller {
             && now.saturating_duration_since(since) >= self.limits.max_recording
         {
             crate::info!("maximum recording length reached");
+            let mode = self.session.active_mode();
             self.session.reset();
             // The hold is over: its press stamp must not mark a later one.
             self.hold_press_at = None;
-            let _ = self.stop_recording(now, false);
+            let _ = self.stop_recording(now, false, mode);
+            self.collect(now, Instant::now());
         }
         if self.media_resume_at.is_some_and(|t| now >= t) {
             self.resume_media();
@@ -1355,6 +1585,7 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::Inline;
     use crate::session::Mode;
     use crate::testing::{FakeCapture, TempDir};
     use std::sync::Mutex;
@@ -1396,7 +1627,7 @@ mod tests {
         let cap = FakeCapture::with_samples(vec![0.1; SECOND]);
         let jobs = Jobs::default();
         let mut c = Controller::new(
-            Box::new(cap.clone()),
+            Box::new(Inline::new(Box::new(cap.clone()))),
             Box::new(jobs.clone()),
             Limits {
                 min_recording: Duration::from_millis(300),
@@ -1708,7 +1939,7 @@ mod tests {
         let cap = FakeCapture::with_samples(vec![0.1; SECOND]);
         let jobs = Jobs::default();
         let mut c = Controller::new(
-            Box::new(cap),
+            Box::new(Inline::new(Box::new(cap))),
             Box::new(jobs.clone()),
             Limits {
                 min_recording: Duration::ZERO,
@@ -1795,7 +2026,7 @@ mod tests {
             log: Arc::default(),
         };
         r.c = Controller::new(
-            Box::new(r.cap.clone()),
+            Box::new(Inline::new(Box::new(r.cap.clone()))),
             Box::new(r.jobs.clone()),
             Limits {
                 min_recording: Duration::from_millis(300),
@@ -3539,5 +3770,127 @@ mod tests {
             // Clearing nothing is fine.
             assert_eq!(send(&mut r, Command::AgentsClear, |_| {}), r.c.ok(None));
         }
+    }
+
+    /// A capture the test drives by hand: it records the calls, and the
+    /// test delivers their results.
+    #[derive(Clone, Default)]
+    struct Calls(Arc<Mutex<Vec<(u64, Call)>>>);
+
+    impl CapturePort for Calls {
+        fn send(&mut self, generation: u64, call: Call) {
+            self.0.lock().unwrap().push((generation, call));
+        }
+        fn poll(&mut self) -> Option<CaptureEvent> {
+            None
+        }
+        fn level(&self) -> f32 {
+            0.0
+        }
+        fn input_available(&self) -> Option<bool> {
+            None
+        }
+    }
+
+    impl Calls {
+        fn take(&self) -> Vec<(u64, Call)> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    fn manual(r: &mut Rig) -> Calls {
+        let calls = Calls::default();
+        r.c.capture = Box::new(calls.clone());
+        calls
+    }
+
+    /// Sends a request (stamped `at_ms` after `t0`, if given) received
+    /// `recv_ms` after `t0`; its reply arrives on the returned channel.
+    fn ask(
+        r: &mut Rig,
+        command: Command,
+        at_ms: Option<u64>,
+        recv_ms: u64,
+    ) -> std::sync::mpsc::Receiver<Reply> {
+        r.t = r.t0 + Duration::from_millis(recv_ms);
+        r.boot.store(recv_ms, std::sync::atomic::Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let req = Request {
+            command,
+            at: at_ms.map(|ms| BASE + ms * MS),
+            args: Default::default(),
+        };
+        r.c.request(req, tx.into(), r.t);
+        rx
+    }
+
+    fn deliver(r: &mut Rig, generation: u64, done: Done, recv_ms: u64) {
+        r.t = r.t0 + Duration::from_millis(recv_ms);
+        r.boot.store(recv_ms, std::sync::atomic::Ordering::SeqCst);
+        r.c.handle_capture(CaptureEvent { generation, done }, r.t);
+    }
+
+    fn short_audio() -> Done {
+        Done::Stopped(Ok(Audio::new(vec![0.1; SECOND / 10])))
+    }
+
+    /// The second press of a double tap that arrives while the tap's
+    /// microphone is still stopping waits, then is judged with its own
+    /// stamp as if it had arrived after the stop: a prompt recording.
+    #[test]
+    fn a_press_waiting_behind_the_stop_of_a_tap_still_makes_a_prompt() {
+        let (mut r, _) = tap_rig();
+        let calls = manual(&mut r);
+        let press = ask(&mut r, Command::Press, Some(1000), 1005);
+        assert!(press.try_recv().is_err(), "waits for the microphone");
+        assert_eq!(r.state(), State::Idle);
+        assert_eq!(calls.take(), [(1, Call::Start)]);
+        deliver(&mut r, 1, Done::Started(Ok(())), 1010);
+        assert_eq!(note_of(press.try_recv().unwrap()), None);
+
+        let release = ask(&mut r, Command::Release, Some(1080), 1085);
+        assert_eq!(calls.take(), [(1, Call::Stop)]);
+        let second = ask(&mut r, Command::Press, Some(1200), 1205);
+        assert!(second.try_recv().is_err());
+        // Stopping reads as still recording.
+        assert_eq!(r.state(), State::Recording);
+        assert_eq!(calls.take(), []);
+        deliver(&mut r, 1, short_audio(), 1300);
+        assert_eq!(note_of(release.try_recv().unwrap()), Some(Note::TooShort));
+        assert_eq!(calls.take(), [(2, Call::Start)]);
+        deliver(&mut r, 2, Done::Started(Ok(())), 1310);
+        assert_eq!(
+            second.try_recv().unwrap().to_line(),
+            "localflow/1 ok state=recording mode=hold tag=prompt model=ready\n"
+        );
+    }
+
+    /// A cancelled recording's capture results are dropped, however late
+    /// they come, and never touch the next recording.
+    #[test]
+    fn late_results_of_a_cancelled_recording_are_dropped() {
+        let mut r = rig();
+        let calls = manual(&mut r);
+        let press = ask(&mut r, Command::Press, None, 10);
+        assert_eq!(r.note(Command::Cancel), Some(Note::Cancelled));
+        assert_eq!(note_of(press.try_recv().unwrap()), Some(Note::Cancelled));
+        let again = ask(&mut r, Command::Press, None, 30);
+        assert_eq!(
+            calls.take(),
+            [(1, Call::Start), (1, Call::Cancel), (2, Call::Start)]
+        );
+        deliver(&mut r, 1, Done::Started(Ok(())), 40);
+        assert!(again.try_recv().is_err());
+        deliver(&mut r, 2, Done::Started(Ok(())), 50);
+        assert_eq!(note_of(again.try_recv().unwrap()), None);
+        deliver(&mut r, 1, short_audio(), 60);
+        assert_eq!(r.state(), State::Recording);
+        let release = ask(&mut r, Command::Release, None, 70);
+        assert_eq!(calls.take(), [(2, Call::Stop)]);
+        let audio = Done::Stopped(Ok(Audio::new(vec![0.1; SECOND])));
+        deliver(&mut r, 2, audio, 80);
+        assert_eq!(note_of(release.try_recv().unwrap()), None);
+        assert_eq!(r.state(), State::Transcribing);
+        assert_eq!(r.jobs.take().len(), 1);
     }
 }

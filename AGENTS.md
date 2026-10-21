@@ -17,7 +17,8 @@ that architecture unless the user explicitly approves a migration.
 - `Sources/SettingsView.swift`, `Sources/SetupView.swift`, and other SwiftUI
   files: user interface.
 - `Tests/`: dependency-free executable tests.
-- `.github/workflows/check.yml`: pull-request verification.
+- `.github/workflows/check.yml`: pull-request verification: `make check`
+  (macOS), `make -C iOS check` (iOS), and the Linux commands below.
 - `.github/workflows/release.yml`: semver-tagged production release.
 - `.github/workflows/dev-release.yml`: signed development release from `main`.
 - `linux/`: Linux (NixOS, Hyprland) implementation in Rust. It is a separate
@@ -37,6 +38,9 @@ nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.t
 
 Model weights live outside the repository (on a separate data disk on the
 development machine). Tests use synthetic weights and activations only.
+Pull-request CI runs these three commands with `LF_SKIP_DBUS_TESTS`,
+`LF_SKIP_COMPOSITOR_TESTS`, and `LF_SKIP_PIPEWIRE_TESTS` set, so the
+private-instance integration tests run only locally.
 
 ## Working rules
 
@@ -67,6 +71,8 @@ git diff --check
 
 `make check` performs a full Swift type-check, compiles and runs deterministic
 tests, validates plist files, and parses repository shell scripts and YAML.
+It also fails if any `linux/testdata/*.json` vectors file is not referenced by
+name from both `Tests/` and `linux/crates/`.
 
 A full app build is usually unnecessary. When a compile-and-bundle check is
 material to the change, use:

@@ -5,7 +5,7 @@
 <h1 align="center">LocalFlow</h1>
 
 <p align="center">
-  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.4/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.5/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
   <sub>Apple Silicon · macOS 26 or later</sub><br>
   <sub>Developer ID signed · Apple-notarized beta</sub>
 </p>
@@ -69,8 +69,9 @@ credentials are ignored and are not read or automatically erased.
 ## Build locally
 
 LocalFlow uses `swiftc` and Make, without Swift Package Manager or an Xcode
-project. Install Xcode and its command-line tools. Model weights are kept
-outside Git; obtain or prepare the pinned model bundle as described in
+project. Install Xcode and its command-line tools. The app builds for Apple
+Silicon only (`ARCH=arm64`) with a macOS 26 deployment target. Model weights
+are kept outside Git; obtain or prepare the pinned model bundle as described in
 [the integration notes](Resources/Parakeet/INTEGRATION.md).
 
 ```sh
@@ -80,6 +81,12 @@ SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" make \
   ARCH="$(uname -m)" CODESIGN_IDENTITY=- PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"
 open "build/LocalFlow Dev.app"
 ```
+
+Without `PARAKEET_BUNDLE_DIR` the app still builds, but without the model, so
+dictation cannot run. Release builds must include it:
+`make release-preflight PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"` fails unless the
+directory contains the bundle's `bundle.json`, and both release workflows run
+it before building.
 
 The ad hoc development build may need its existing system approval refreshed
 when its executable changes. The app's permission guidance can reveal the

@@ -307,7 +307,11 @@ The dictation rules are pinned by `testdata/dictation-vectors.json` and
 `testdata/number-vectors.json`, shared with the Swift app. Word boosting (BPE encoding, entry validation, the
 bias graph and decision rule, casing restoration, correction candidates
 and their audio check) is pinned by `testdata/dictionary-vectors.json`,
-also shared with the Swift app. The rofi tests use fake rofi scripts; one
+also shared with the Swift app. `lf-text` (the dictionary text rules and
+the BPE tokenizer, with no model code) runs its encoding, validation, key
+and phrase sections, `lf-asr` the bias graph and decision rule, and
+`lf-dictation` (which depends on `lf-text`, not on `lf-asr`) the casing
+and correction sections. The rofi tests use fake rofi scripts; one
 also checks that the installed rofi reads the generated configuration back
 (it is skipped when rofi is not on `PATH`). The real-model daemon test is ignored by default; it
 needs the model export and public LibriSpeech data:

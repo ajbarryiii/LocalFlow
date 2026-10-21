@@ -1,5 +1,6 @@
 //! Wires the pieces together: control socket thread, control loop,
-//! recognition worker, and the `watch` subscribers the control loop owns.
+//! recognition worker, capture thread, and the `watch` subscribers the
+//! control loop owns.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,25 +10,28 @@ use std::time::{Duration, Instant};
 
 use lf_io_api::{AudioCapture, MediaPlayers, TextOutput};
 
+use crate::capture::{self, CaptureEvent, CaptureJoin};
 use crate::controller::{Controller, Limits};
 use crate::dictionary::{self, Store};
 use crate::history::{self, History};
 use crate::media::MediaJoin;
-use crate::protocol::{Reply, Request};
+use crate::protocol::Request;
 use crate::recognizer::RecognizerFactory;
-use crate::server::Server;
+use crate::server::{Responder, Server};
 use crate::watch::{Admission, MAX_WATCHERS, NewWatcher, Snapshot, Watchers};
 use crate::worker::{self, WorkerEvent};
 
 /// Everything the control loop reacts to.
 pub enum Event {
-    Request(Request, Sender<Reply>),
+    Request(Request, Responder),
     /// A `watch` connection, authenticated, its request read and its place
     /// reserved (see `crate::watch::Admission`).
     Watch(NewWatcher),
     /// Microphone presence may have changed.
     Input,
     Worker(WorkerEvent),
+    /// A capture call finished.
+    Capture(CaptureEvent),
     Shutdown,
 }
 
@@ -50,11 +54,17 @@ pub struct Parts {
 /// hanging players could take longer; the daemon then exits anyway.
 pub const MEDIA_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long stopping the daemon waits for the capture thread to close the
+/// microphone: one start (3 s in `lf-pipewire`) and the cancel after it
+/// (2 s), with a margin. A thread stuck longer is left behind.
+pub const CAPTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
+
 pub struct Handle {
     events: Sender<Event>,
     control: JoinHandle<Result<(), String>>,
     socket: JoinHandle<()>,
     worker: JoinHandle<()>,
+    capture: CaptureJoin,
     media: Option<MediaJoin>,
     server: Arc<Server>,
 }
@@ -82,6 +92,9 @@ impl Handle {
             .unwrap_or_else(|_| Err("control loop panicked".into()));
         self.server.stop();
         let _ = self.socket.join();
+        // The control loop cancelled any recording and dropped the capture
+        // port, so the capture thread closes the microphone and ends.
+        self.capture.join(CAPTURE_SHUTDOWN_TIMEOUT);
         // The control loop dropped the controller and with it the media
         // channel, so the media thread resumes what it paused and ends.
         if let Some(media) = self.media {
@@ -141,8 +154,21 @@ pub fn start_with(
     capture.watch_input(Box::new(move || {
         let _ = input_events.send(Event::Input);
     }));
-    let mut controller =
-        Controller::new(capture, Box::new(jobs_tx), parts.limits, history).with_dictionary(store);
+    let capture_events = events_tx.clone();
+    let (port, capture_join) = match capture::spawn(capture, move |e| {
+        let _ = capture_events.send(Event::Capture(e));
+    }) {
+        Ok(c) => c,
+        Err(e) => {
+            // Closing the job queue ends the worker after loading.
+            drop(jobs_tx);
+            let _ = worker.join();
+            server.stop();
+            return Err(format!("cannot start the audio capture thread: {e}"));
+        }
+    };
+    let mut controller = Controller::new(Box::new(port), Box::new(jobs_tx), parts.limits, history)
+        .with_dictionary(store);
     let mut media = None;
     if let Some(players) = parts.media {
         match crate::media::spawn(players, lf_media::Timing::default()) {
@@ -162,9 +188,11 @@ pub fn start_with(
     {
         Ok(c) => c,
         Err(e) => {
-            // The unstarted closure, with the job queue and the media
-            // channel, is dropped: the worker ends after loading, and the
-            // media thread at once (it paused nothing).
+            // The unstarted closure, with the job queue, the capture port
+            // and the media channel, is dropped: the worker ends after
+            // loading, the capture and media threads at once (nothing was
+            // recorded or paused).
+            capture_join.join(CAPTURE_SHUTDOWN_TIMEOUT);
             let _ = worker.join();
             if let Some(media) = media {
                 media.join(MEDIA_SHUTDOWN_TIMEOUT);
@@ -185,6 +213,7 @@ pub fn start_with(
         Err(e) => {
             let _ = events_tx.send(Event::Shutdown);
             let _ = control.join();
+            capture_join.join(CAPTURE_SHUTDOWN_TIMEOUT);
             if let Some(media) = media {
                 media.join(MEDIA_SHUTDOWN_TIMEOUT);
             }
@@ -200,6 +229,7 @@ pub fn start_with(
         control,
         socket,
         worker,
+        capture: capture_join,
         media,
         server,
     })
@@ -272,8 +302,7 @@ fn run(
         };
         match event {
             Event::Request(req, reply) => {
-                let r = controller.handle_request(req, Instant::now());
-                let _ = reply.send(r);
+                controller.request(req, reply, Instant::now());
                 if let Some(e) = controller.take_fatal() {
                     break Err(e);
                 }
@@ -286,6 +315,7 @@ fn run(
                     break Err(e);
                 }
             }
+            Event::Capture(c) => controller.handle_capture(c, Instant::now()),
             Event::Shutdown => break Ok(()),
         }
     };
@@ -296,8 +326,9 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::Inline;
     use crate::dictionary::{Setting, Store};
-    use crate::protocol::{Args, Command, ErrorCode};
+    use crate::protocol::{Args, Command, ErrorCode, Reply};
     use crate::testing::{FakeCapture, TempDir, synthetic_tokenizer};
 
     /// A dictionary save that cannot be undone gets `error storage`, then
@@ -313,7 +344,7 @@ mod tests {
         store.inject_faults(1, true);
         let (jobs, _job_rx) = mpsc::channel();
         let controller = Controller::new(
-            Box::new(FakeCapture::default()),
+            Box::new(Inline::new(Box::new(FakeCapture::default()))),
             Box::new(jobs),
             Limits {
                 min_recording: Duration::from_millis(300),
@@ -336,7 +367,7 @@ mod tests {
         events
             .send(Event::Request(
                 Request::with_args(Command::DictAdd, args),
-                tx,
+                tx.into(),
             ))
             .unwrap();
         assert_eq!(

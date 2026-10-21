@@ -19,7 +19,9 @@ concurrency:
 jobs:
   verify:
     name: Verify
-    runs-on: macos-15
+    # Xcode is pinned explicitly below; macos-26 is the hosted image that
+    # carries Xcode 26 releases with the macOS 26 and iOS 26 SDKs.
+    runs-on: macos-26
     timeout-minutes: 15
 
     steps:
@@ -29,9 +31,77 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+          swiftc --version
+
       - name: Run repository checks
         run: make check
 
       - name: Check changed files for whitespace errors
         if: github.event_name == 'pull_request'
         run: git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+
+  ios:
+    name: Verify iOS
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      # Simulator type-checks, host tests and plist lint. Needs no model
+      # bundle, signing identity or booted simulator.
+      - name: Run iOS checks
+        run: make -C iOS check
+
+  linux:
+    name: Verify Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The private D-Bus, headless sway and private PipeWire integration
+      # tests start their own daemons; skip them on hosted runners.
+      LF_SKIP_DBUS_TESTS: "1"
+      LF_SKIP_COMPOSITOR_TESTS: "1"
+      LF_SKIP_PIPEWIRE_TESTS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: linux-cargo-${{ runner.os }}-${{ hashFiles('linux/Cargo.lock', 'linux/flake.lock') }}
+          restore-keys: |
+            linux-cargo-${{ runner.os }}-
+
+      - name: Check formatting
+        run: nix develop ./linux --command cargo fmt --all --manifest-path linux/Cargo.toml --check
+
+      - name: Run Clippy
+        run: nix develop ./linux --command cargo clippy --release --manifest-path linux/Cargo.toml --all-targets
+
+      - name: Run tests
+        run: nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.toml

@@ -1,7 +1,10 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 enum DictionarySuggestionAction: Equatable {
-    case add, notNow, dontSuggest
+    /// `add` puts the word in the dictation's app when there is one (macOS, DESIGN §3.6),
+    /// otherwise everywhere; `addEverywhere` always makes it global.
+    case add, addEverywhere, notNow, dontSuggest
 }
 
 /// The overlay's only copy of a suggestion (DESIGN §3.5). Timers and button

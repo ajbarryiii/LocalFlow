@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 //! The recognition worker: one thread that owns the recognizer and the text
 //! output, and runs jobs in order. The control loop never waits for it,
 //! except for at most one output call when it cancels (see [`CancelToken`]).

@@ -52,7 +52,9 @@ import Foundation
 ///   field matches nothing. A `selectionDidChange` fits only an adjustment still owed a callback.
 /// - Cancellation (and hiding) drops the snapshot, its laid-out copy and every expected context at
 ///   once, rolls an outstanding probe back, and watches an outstanding jump past the edge until its
-///   time limit, moving a caret it left inside a hidden cluster back to the cluster's edge.
+///   time limit, moving a caret it left inside a hidden cluster back to the cluster's edge. An
+///   outstanding repair out of a surrogate pair's middle is watched the same way and finished: a caret
+///   it leaves inside the cluster goes on to the cluster's edge in the repair's direction.
 /// - A key ends the session on the spot (ARCHITECTURE.md, "Typing model v2"): nothing more is issued
 ///   and a probe's outcome is abandoned. Typing never waits on any of this.
 /// - An outside change ends the gesture without another step toward the target, but a caret that may
@@ -118,12 +120,14 @@ struct TrackpadSession {
     /// Edge probes at each edge whose outcome was ambiguous since the context last changed.
     private(set) var ambiguousProbes: [Edge: Int] = [:]
     private(set) var isCancelled = false
-    /// A cancelled jump past the snapshot's edge whose outcome is not known yet: it may stop inside a
-    /// cluster the snapshot never showed (a UTF-16 host one unit into "👍🏽"). Until its time is up, a
-    /// caret the context shows inside a cluster is moved back to the cluster's edge on the side the
-    /// jump came from. Holds no text: the direction, the deadline, and a hash of the context the last
-    /// repair was issued in (so a repair is not repeated before the host shows its result).
-    private var edgeWatch: (direction: Int, deadline: TimeInterval, repairs: Int, repairedIn: String?)?
+    /// A cancelled adjustment whose outcome is not known yet and may leave the caret inside a cluster: a
+    /// jump past the snapshot's edge (a UTF-16 host one unit into a "👍🏽" the snapshot never showed), or a
+    /// repair out of a surrogate pair's middle (one unit, which may stop between "👍" and "🏽"). Until its
+    /// time is up, a caret the context shows inside a cluster is moved to the cluster's edge toward
+    /// `direction`: back to the side a jump came from, or on in a repair's direction. Holds no text: the
+    /// direction, the deadline, and a hash of the context the last repair was issued in (so a repair is
+    /// not repeated before the host shows its result).
+    private var landingWatch: (direction: Int, deadline: TimeInterval, repairs: Int, repairedIn: String?)?
     /// A probe the host verifiably ignored (a grapheme host asked to step past the text): the next
     /// probe from there takes the smallest step.
     private var ignoredProbe: (from: Int, direction: Int)?
@@ -230,9 +234,9 @@ struct TrackpadSession {
 
     /// Nothing is in flight, and the caret is at the target or can get no closer for now.
     var isSettled: Bool {
-        // A cancelled gesture issues nothing more than a rollback; its last adjustment only has to be
-        // heard from.
-        if isCancelled { return edgeWatch == nil }
+        // A cancelled gesture issues nothing more than a rollback and a watch's repairs; its last
+        // adjustment only has to be heard from.
+        if isCancelled { return landingWatch == nil }
         guard flight == nil, !needsRepair else { return false }
         if isStalled { return true }
         if committed != (waypoint ?? navigator.cursor) { return false }
@@ -386,7 +390,9 @@ struct TrackpadSession {
     /// (the same count back returns to where it started, in either unit); the returned offset must be
     /// issued now. A jump past the snapshot's edge whose outcome is unknown is watched until its time
     /// limit: a caret it leaves inside a hidden cluster is moved back to the cluster's edge
-    /// (`resolveEdgeWatch`). Nothing else follows.
+    /// (`resolveLandingWatch`). A repair out of a surrogate pair's middle is watched the same way, and
+    /// a caret it leaves inside the cluster is moved on to the cluster's edge in the repair's direction
+    /// (never back into the pair it left). Nothing else follows.
     mutating func cancel(at timestamp: TimeInterval) -> Int? {
         end(at: timestamp)
         guard !isCancelled else { return nil }
@@ -402,7 +408,10 @@ struct TrackpadSession {
                 rollback = launch(.move(from: nil), offset: -direction * step, outcomes: [], context: current.context,
                                   at: timestamp)
             case .edgeProbe(_, let offset):
-                edgeWatch = (offset > 0 ? 1 : -1, current.issuedAt + parameters.syncTimeout, 0, nil)
+                landingWatch = (offset > 0 ? -1 : 1, current.issuedAt + parameters.syncTimeout, 0, nil)
+                flight = nil
+            case .repair(target: nil):
+                landingWatch = (travelDirection, current.issuedAt + parameters.syncTimeout, 0, nil)
                 flight = nil
             case .move, .repair:
                 break
@@ -436,25 +445,26 @@ struct TrackpadSession {
         layout = EmptyLineLayout()
     }
 
-    /// A cancelled gesture's jump past the snapshot's edge: if the context shows the caret inside a
-    /// cluster, back to the cluster's edge on the side the jump came from (UTF-16 units: no other host
-    /// stops there), at most `maximumRepairs` times. Wherever else the caret is (the jump ignored, a line
-    /// crossed, the user moved it), it stays. Done once the time is up with the caret on a boundary.
-    private mutating func resolveEdgeWatch(_ context: Context, timestamp: TimeInterval) -> Int? {
-        guard var watch = edgeWatch else { return nil }
+    /// A cancelled gesture's jump past the snapshot's edge, or repair out of a surrogate pair's middle: if
+    /// the context shows the caret inside a cluster, to the cluster's edge toward the watch's direction
+    /// (UTF-16 units: no other host stops there), at most `maximumRepairs` times. Wherever else the caret
+    /// is (the jump ignored, a line crossed, the repair landed on a boundary, the user moved it), it stays.
+    /// Done once the time is up with the caret on a boundary.
+    private mutating func resolveLandingWatch(_ context: Context, timestamp: TimeInterval) -> Int? {
+        guard var watch = landingWatch else { return nil }
         let split: (back: Int, forward: Int)? = Self.splitsSurrogatePair(context)
             ? (1, 1) : TextNavigator(before: context.before, after: context.after).snapshotSplit
         let hash = Self.contextHash(context)
-        // Only from a context that shows everything issued so far (the jump, a rollback, an earlier
-        // repair), as the guard does (`guardBoundary`).
+        // Only from a context that shows everything issued so far (the jump or repair watched, a rollback,
+        // an earlier repair), as the guard does (`guardBoundary`).
         if let split, watch.repairs < parameters.maximumRepairs, hash != watch.repairedIn, adjustmentsHeard(at: timestamp) {
             watch.repairs += 1
             watch.repairedIn = hash
-            edgeWatch = watch
-            return launch(.move(from: nil), offset: watch.direction > 0 ? -split.back : split.forward, outcomes: [],
+            landingWatch = watch
+            return launch(.move(from: nil), offset: watch.direction > 0 ? split.forward : -split.back, outcomes: [],
                           context: Context(before: "", after: ""), at: timestamp)
         }
-        if (split == nil && timestamp >= watch.deadline) || watch.repairs >= parameters.maximumRepairs { edgeWatch = nil }
+        if (split == nil && timestamp >= watch.deadline) || watch.repairs >= parameters.maximumRepairs { landingWatch = nil }
         return nil
     }
 
@@ -491,7 +501,7 @@ struct TrackpadSession {
     mutating func frame(before: String?, after: String?, timestamp: TimeInterval) -> Int? {
         let context = Self.visible(before: before, after: after)
         guard !isCancelled else {
-            return guardsBoundary ? guardBoundary(context, timestamp: timestamp) : resolveEdgeWatch(context, timestamp: timestamp)
+            return guardsBoundary ? guardBoundary(context, timestamp: timestamp) : resolveLandingWatch(context, timestamp: timestamp)
         }
         retireOverdue(at: timestamp)
         guard !isAmbiguous else { return nil }

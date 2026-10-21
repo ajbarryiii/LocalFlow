@@ -2,8 +2,8 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.3.1" >&2
+  echo "Usage: PARAKEET_BUNDLE_DIR=<model bundle> $0 <version>" >&2
+  echo "Example: PARAKEET_BUNDLE_DIR=MODEL_BUNDLE $0 2.1.5" >&2
   exit 2
 fi
 
@@ -15,12 +15,29 @@ if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-for path in CHANGELOG.md Info.plist .github/workflows/release.yml .github/scripts/changelog-section.sh; do
+for path in CHANGELOG.md Info.plist Makefile .github/workflows/release.yml .github/scripts/changelog-section.sh; do
   if [[ ! -f "$path" ]]; then
     echo "Missing required release file: $path" >&2
     exit 1
   fi
 done
+
+# release.yml runs for vX.Y.Z tags; releases are tagged on a commit on main.
+if ! git rev-parse --verify --quiet origin/main >/dev/null; then
+  echo "origin/main is not available; run git fetch origin first." >&2
+  exit 1
+fi
+
+if ! git merge-base --is-ancestor HEAD origin/main; then
+  echo "HEAD is not on origin/main; tag releases on a commit on main." >&2
+  exit 1
+fi
+
+# A release build must include the model bundle.
+if ! make --no-print-directory release-preflight; then
+  echo "Set PARAKEET_BUNDLE_DIR to the prepared model bundle before releasing." >&2
+  exit 1
+fi
 
 if git rev-parse "$tag" >/dev/null 2>&1; then
   echo "Tag already exists locally: $tag" >&2
@@ -47,21 +64,24 @@ if ! grep -q 'tags:' .github/workflows/release.yml || ! grep -q 'v\*\.\*\.\*' .g
   exit 1
 fi
 
-if ! .github/scripts/changelog-section.sh "$version" >/tmp/freeflow-release-notes.md; then
+notes="$(mktemp)"
+trap 'rm -f "$notes"' EXIT
+
+if ! .github/scripts/changelog-section.sh "$version" >"$notes"; then
   echo "Could not extract CHANGELOG.md section for $version" >&2
   exit 1
 fi
 
-if [[ ! -s /tmp/freeflow-release-notes.md ]]; then
+if [[ ! -s "$notes" ]]; then
   echo "Extracted changelog section is empty for $version" >&2
   exit 1
 fi
 
-if ! grep -q "^## \\[$version\\]" /tmp/freeflow-release-notes.md; then
+if ! grep -q "^## \\[$version\\]" "$notes"; then
   echo "Extracted changelog section has an unexpected heading." >&2
   exit 1
 fi
 
 echo "Release checks passed for $tag"
 echo
-cat /tmp/freeflow-release-notes.md
+cat "$notes"

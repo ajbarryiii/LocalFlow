@@ -17,6 +17,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # A release must ship the model; stop before any signing secrets are used.
+      - name: Check model bundle
+        run: make release-preflight
+
       - name: Resolve release version
         id: version
         run: |
@@ -47,7 +51,7 @@ jobs:
             echo
             echo "## Download"
             echo
-            echo "**[LocalFlow.dmg](https://github.com/ajbarryiii/LocalFlow/releases/download/${{ steps.version.outputs.tag }}/LocalFlow.dmg)** — Universal build for all Macs (Apple Silicon + Intel)."
+            echo "**[LocalFlow.dmg](https://github.com/ajbarryiii/LocalFlow/releases/download/${{ steps.version.outputs.tag }}/LocalFlow.dmg)** — For Apple Silicon Macs on macOS 26 or later."
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -117,13 +121,13 @@ jobs:
             --keychain "$KEYCHAIN_PATH"
 
       # --- Build universal ---
-      - name: Build universal
-        run: make ARCH=universal APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+      - name: Build
+        run: make ARCH=arm64 APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Create universal DMG
-        run: make dmg ARCH=universal APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+      - name: Create DMG
+        run: make dmg ARCH=arm64 APP_NAME=LocalFlow BUNDLE_ID=com.ajbarryiii.localflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Sign universal DMG
+      - name: Sign DMG
         run: codesign --force --sign "$CODESIGN_IDENTITY" build/LocalFlow.dmg
 
       - name: Notarize universal DMG

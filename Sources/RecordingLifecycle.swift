@@ -180,20 +180,82 @@ struct RecordingAttempts {
     func isCurrent(_ attempt: UInt64) -> Bool { attempt == current }
 }
 
+/// The status a teardown leaves behind.
+enum DictationCleanupStatus: Equatable {
+    /// No error; "Ready" (debug status "Idle").
+    case ready
+    /// No error; "Cancelled" (debug status "Cancelled").
+    case cancelled
+    /// The message is shown as the error with status "Error"; the debug
+    /// status is left as it was.
+    case failed(String)
+}
+
 /// What the app does at a dictation's cleanup points. AppState conforms, and
 /// runs the step lists below exactly as written, so tests with a recording
-/// fake see the real sequence.
+/// fake see the real sequence. Main actor: every action touches app state.
+@MainActor
 protocol DictationCleanupActions: AnyObject {
+    // Corrections
     /// End the correction watch, any running verification and retained audio.
     func stopCorrectionSuggestions()
     /// Withdraw a visible dictionary suggestion and void any requested one.
     func withdrawDictionarySuggestion()
+
+    // Shortcuts and attempts
     /// Make work already queued for the current recording attempt a no-op.
     func invalidateRecordingAttempt()
+    /// Drop a shortcut start still waiting for the start delay.
+    func cancelPendingShortcutStart()
+    /// Reset the shortcut session and forget the recording's trigger mode.
+    func endShortcutSession()
+    /// Stop the global shortcut monitor (it is restarted explicitly later).
+    func stopShortcutMonitor()
+
+    // Capture
     /// Stop and throw away the capture in progress (no transcription).
     func cancelDiscardedCapture()
+    /// Cancel the timer that shows the initializing overlay for a slow start.
+    func cancelRecordingInitializationTimer()
+    /// Detach the recorder's readiness and failure callbacks and its level stream.
+    func detachRecorderCallbacks()
+    /// Cancel the recording's live transcription, dropping its audio and result.
+    func cancelStreamingDictation()
+    /// Publish that the app is no longer recording.
+    func markNotRecording()
+    /// Cancel the recorder's capture; its audio file is deleted.
+    func cancelRecorderCapture()
+    /// Remove the recorder's temporary audio file.
+    func cleanUpRecorderFiles()
+    /// Unmute system output if dictation muted it.
+    func restoreAudioInterruptionIfNeeded()
+
+    // Transcription
+    /// Cancel the running transcription task and forget it.
+    func cancelTranscriptionTask()
+    /// Forget the transcription task without cancelling it (it is finishing).
+    func finishTranscriptionTask()
+    /// Publish that the app is no longer transcribing.
+    func markNotTranscribing()
+    /// Delete the saved copy of the recording being transcribed.
+    func deleteTranscribingAudio()
+    /// Forget the saved copy without deleting it: its history entry keeps it.
+    func forgetTranscribingAudio()
+
+    // Presentation and process
+    func showStatus(_ status: DictationCleanupStatus)
+    func dismissOverlay()
+    /// Return to "Ready" a moment after "Cancelled", if nothing started since.
+    func scheduleReadyStatusAfterCancel()
+    /// Allow automatic termination again.
+    func endCriticalDictationActivity()
+    /// Refresh the microphone list if a device change arrived while recording.
+    func refreshAvailableMicrophonesIfNeeded()
 }
 
+/// Each way a dictation is torn down, as one list of steps. AppState's cancel,
+/// failure and stop paths call these; each is pinned by DictationCleanupStepsTests.
+@MainActor
 enum DictationCleanupSteps {
     /// A dictation shortcut press was accepted (its start may still be
     /// delayed): correction work ends, so no verification result can present
@@ -211,5 +273,130 @@ enum DictationCleanupSteps {
         actions.stopCorrectionSuggestions()
         actions.withdrawDictionarySuggestion()
         if isRecording { actions.cancelDiscardedCapture() }
+    }
+
+    /// The capture in progress is thrown away (a too-short hold). The status
+    /// goes straight back to Ready: a discard is not a user-visible cancel.
+    static func discardCapture(_ actions: DictationCleanupActions) {
+        tearDownCapture(showing: .ready, actions)
+    }
+
+    /// Escape (or another cancel) during a Tap to Toggle session, recording or
+    /// still waiting for its start delay.
+    static func cancelToggleSession(_ actions: DictationCleanupActions) {
+        actions.cancelPendingShortcutStart()
+        actions.endShortcutSession()
+        tearDownCapture(showing: .cancelled, actions)
+        actions.scheduleReadyStatusAfterCancel()
+    }
+
+    /// Escape while transcribing. The task is cancelled first, so its result
+    /// can never be pasted; the saved recording is deleted, not kept for history.
+    static func cancelTranscription(_ actions: DictationCleanupActions) {
+        actions.cancelTranscriptionTask()
+        actions.stopCorrectionSuggestions()
+        actions.endShortcutSession()
+        actions.markNotRecording()
+        actions.markNotTranscribing()
+        actions.showStatus(.cancelled)
+        actions.dismissOverlay()
+        actions.cleanUpRecorderFiles()
+        actions.deleteTranscribingAudio()
+        actions.endCriticalDictationActivity()
+        actions.refreshAvailableMicrophonesIfNeeded()
+        actions.scheduleReadyStatusAfterCancel()
+    }
+
+    /// Before the system microphone prompt. Shortcuts stop while it is shown,
+    /// and the start in progress is unwound. Nothing was recorded, no output
+    /// was muted and no critical activity began, so none of that is undone.
+    static func awaitMicrophonePermission(_ actions: DictationCleanupActions) {
+        actions.stopShortcutMonitor()
+        actions.endShortcutSession()
+        actions.cancelRecordingInitializationTimer()
+        actions.detachRecorderCallbacks()
+        actions.dismissOverlay()
+    }
+
+    /// The recorder failed to start or failed while recording. Unlike a cancel
+    /// it cleans up rather than cancels the capture (the recorder has already
+    /// torn its session down), and it also ends any transcription in progress.
+    static func recordingFailed(message: String, _ actions: DictationCleanupActions) {
+        actions.cancelRecordingInitializationTimer()
+        actions.detachRecorderCallbacks()
+        actions.cancelStreamingDictation()
+        actions.cleanUpRecorderFiles()
+        actions.restoreAudioInterruptionIfNeeded()
+        actions.markNotRecording()
+        actions.markNotTranscribing()
+        actions.cancelTranscriptionTask()
+        actions.deleteTranscribingAudio()
+        actions.endShortcutSession()
+        actions.endCriticalDictationActivity()
+        actions.showStatus(.failed(message))
+        actions.dismissOverlay()
+        actions.refreshAvailableMicrophonesIfNeeded()
+    }
+
+    /// A recording stops normally to be transcribed. The capture itself, the
+    /// live transcription and the critical activity carry on into transcription.
+    static func stopCaptureForTranscription(_ actions: DictationCleanupActions) {
+        actions.cancelPendingShortcutStart()
+        actions.cancelRecordingInitializationTimer()
+        actions.endShortcutSession()
+        actions.detachRecorderCallbacks()
+        actions.markNotRecording()
+        actions.restoreAudioInterruptionIfNeeded()
+    }
+
+    /// The stopped recording produced no audio file.
+    static func noAudioRecorded(_ actions: DictationCleanupActions) {
+        actions.markNotTranscribing()
+        actions.cleanUpRecorderFiles()
+        actions.endCriticalDictationActivity()
+        actions.showStatus(.failed("No audio recorded"))
+        actions.dismissOverlay()
+        actions.refreshAvailableMicrophonesIfNeeded()
+    }
+
+    /// The recording finished stopping after its transcription was cancelled;
+    /// the cancel already reset everything else.
+    static func recordingStoppedAfterCancel(_ actions: DictationCleanupActions) {
+        actions.cleanUpRecorderFiles()
+        actions.refreshAvailableMicrophonesIfNeeded()
+    }
+
+    /// A transcription finished, with output or with an error: `report` shows
+    /// the result (status, overlay, paste or error, history). The saved
+    /// recording is kept because the history entry refers to it.
+    static func finishTranscription(_ actions: DictationCleanupActions, report: () -> Void) {
+        actions.finishTranscriptionTask()
+        actions.forgetTranscribingAudio()
+        actions.markNotTranscribing()
+        actions.endCriticalDictationActivity()
+        report()
+        actions.cleanUpRecorderFiles()
+        actions.refreshAvailableMicrophonesIfNeeded()
+    }
+
+    /// The transcription task observed its cancellation. Whoever cancelled it
+    /// reset the rest.
+    static func transcriptionCancelled(_ actions: DictationCleanupActions) {
+        actions.finishTranscriptionTask()
+        actions.endCriticalDictationActivity()
+    }
+
+    /// Ends a capture that is thrown away (never transcribed).
+    private static func tearDownCapture(showing status: DictationCleanupStatus, _ actions: DictationCleanupActions) {
+        actions.detachRecorderCallbacks()
+        actions.cancelRecordingInitializationTimer()
+        actions.cancelStreamingDictation()
+        actions.markNotRecording()
+        actions.showStatus(status)
+        actions.dismissOverlay()
+        actions.cancelRecorderCapture()
+        actions.restoreAudioInterruptionIfNeeded()
+        actions.endCriticalDictationActivity()
+        actions.refreshAvailableMicrophonesIfNeeded()
     }
 }

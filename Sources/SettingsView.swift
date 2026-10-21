@@ -1,6 +1,9 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import AVFoundation
+import Combine
 
 struct LocalModelSettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -614,14 +617,32 @@ struct VoiceMacroEditorView: View {
 private struct DictionaryEditorTarget: Identifiable {
     let id = UUID()
     let original: DictionaryEntry?
+    /// The apps a new word starts with: the app being shown, if any.
+    let apps: Set<String>
 }
 
 struct DictionarySettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var editor: DictionaryEditorTarget?
     @State private var confirmingReset = false
+    /// The app whose own words are listed; nil lists the words used everywhere (DESIGN §3.6).
+    @State private var selectedAppID: String?
+    @State private var confirmingAppRemoval = false
+    @State private var appError: String?
 
     static let correctionDisclosure = "When on, for up to a minute after LocalFlow pastes a dictation, it reads the pasted text and up to 40 characters around it in that field, to notice your corrections. Text stays on this Mac, is never saved, and is discarded afterwards. Password fields are never read."
+
+    private var selectedApp: DictionaryApp? {
+        selectedAppID.flatMap { id in appState.dictionaryApps.first { $0.id == id } }
+    }
+
+    /// The listed words: those used everywhere, or those limited to the selected app.
+    private var listedEntries: [DictionaryEntry] {
+        appState.dictionaryEntries.filter { entry in
+            let apps = appState.dictionaryApps(for: entry.key)
+            return selectedApp.map { apps.contains($0.id) } ?? apps.isEmpty
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -645,7 +666,7 @@ struct DictionarySettingsView: View {
             .padding(24)
         }
         .sheet(item: $editor) { target in
-            DictionaryEntryEditorView(original: target.original)
+            DictionaryEntryEditorView(original: target.original, initialApps: target.apps)
         }
     }
 
@@ -660,7 +681,7 @@ struct DictionarySettingsView: View {
                 .confirmationDialog("Reset the saved dictionary?", isPresented: $confirmingReset) {
                     Button("Reset", role: .destructive) { appState.resetSavedDictionary() }
                 } message: {
-                    Text("This removes the saved words and ignored suggestions.")
+                    Text("This removes the saved words, their apps and ignored suggestions.")
                 }
         }
     }
@@ -672,51 +693,171 @@ struct DictionarySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Add Word") { editor = DictionaryEditorTarget(original: nil) }
-                    .disabled(!appState.canEditDictionary || appState.dictionaryEntries.count >= DictionaryValidation.capacity)
+                Button("Add Word") {
+                    editor = DictionaryEditorTarget(original: nil, apps: selectedApp.map { Set([$0.id]) } ?? [])
+                }
+                .disabled(!appState.canEditDictionary || appState.dictionaryEntries.count >= DictionaryValidation.capacity)
             }
             if !appState.dictionaryEditor.canEdit {
                 Text(DictionaryEditor.unavailableMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            if appState.dictionaryEntries.isEmpty {
-                Text("No words yet. Add names, jargon or product terms that are often misheard.")
+            appBar
+            if listedEntries.isEmpty {
+                Text(selectedApp.map { "No words just for \($0.name) yet. Words used everywhere apply there too." }
+                     ?? "No words yet. Add names, jargon or product terms that are often misheard.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
             } else {
                 VStack(spacing: 1) {
-                    ForEach(Array(appState.dictionaryEntries.enumerated()), id: \.offset) { _, entry in
-                        HStack {
-                            Text(entry.text)
-                                .font(.body)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text(DictionaryValidation.label(entry.strength))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Edit") { editor = DictionaryEditorTarget(original: entry) }
-                                .buttonStyle(.borderless)
-                                .disabled(!appState.canEditDictionary)
-                                .font(.caption)
-                            Button("Delete") { appState.removeDictionaryEntry(entry.key) }
-                                .buttonStyle(.borderless)
-                                .disabled(!appState.canEditDictionary)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+                    ForEach(Array(listedEntries.enumerated()), id: \.offset) { _, entry in
+                        entryRow(entry)
                     }
                 }
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.06), lineWidth: 1))
             }
         }
+        // A removed app can no longer be shown.
+        .onChange(of: appState.dictionaryApps) { if selectedApp == nil { selectedAppID = nil } }
+    }
+
+    /// Chooses which words are listed, and adds or removes apps (DESIGN §3.6).
+    private var appBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Picker("Words for", selection: $selectedAppID) {
+                    Text("Everywhere").tag(String?.none)
+                    if !appState.dictionaryApps.isEmpty {
+                        Divider()
+                        ForEach(appState.dictionaryApps, id: \.id) { app in
+                            Text(app.name).tag(Optional(app.id))
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                Menu("Add App") {
+                    let running = runningApps
+                    if running.isEmpty {
+                        Text("No other apps are open")
+                    } else {
+                        Section("Open Apps") {
+                            ForEach(running, id: \.id) { app in
+                                Button(app.name) { add(app) }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Choose from Applications…") { chooseApp() }
+                }
+                .fixedSize()
+                .disabled(!appState.canEditDictionary || appState.dictionaryApps.count >= DictionaryAppScopes.appCapacity)
+                Spacer()
+                if let selectedApp {
+                    Button("Remove App…", role: .destructive) { confirmingAppRemoval = true }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .disabled(!appState.canEditDictionary)
+                        .confirmationDialog("Remove \(selectedApp.name)?", isPresented: $confirmingAppRemoval) {
+                            Button("Remove", role: .destructive) { appState.removeDictionaryApp(id: selectedApp.id) }
+                        } message: {
+                            Text("Words used only in \(selectedApp.name) are deleted. Words also used in other apps stay there.")
+                        }
+                }
+            }
+            Text(selectedApp.map { "Boosted only when you dictate into \($0.name)." }
+                 ?? "Boosted in every app. Pick an app to see the words boosted only there.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let appError {
+                Text(appError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func entryRow(_ entry: DictionaryEntry) -> some View {
+        HStack {
+            Text(entry.text)
+                .font(.body)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(DictionaryValidation.label(entry.strength))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if let others = otherApps(of: entry) {
+                Text("Also in \(others)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            Button("Edit") { editor = DictionaryEditorTarget(original: entry, apps: appState.dictionaryApps(for: entry.key)) }
+                .buttonStyle(.borderless)
+                .disabled(!appState.canEditDictionary)
+                .font(.caption)
+            Button("Delete") { appState.removeDictionaryEntry(entry.key) }
+                .buttonStyle(.borderless)
+                .disabled(!appState.canEditDictionary)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+    }
+
+    /// The entry's other apps, by name, when it is listed under one of them.
+    private func otherApps(of entry: DictionaryEntry) -> String? {
+        guard let selectedApp else { return nil }
+        let ids = appState.dictionaryApps(for: entry.key).subtracting([selectedApp.id])
+        let names = appState.dictionaryApps.filter { ids.contains($0.id) }.map(\.name)
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+
+    /// Open apps with a window, other than LocalFlow and apps already added, by name.
+    private var runningApps: [DictionaryApp] {
+        let known = Set(appState.dictionaryApps.map(\.id))
+        let apps = NSWorkspace.shared.runningApplications.compactMap { running -> DictionaryApp? in
+            guard running.activationPolicy == .regular, let id = running.bundleIdentifier,
+                  id != Bundle.main.bundleIdentifier, !known.contains(id) else { return nil }
+            return DictionaryApp(id: id, name: running.localizedName)
+        }
+        var seen = Set<String>()
+        return apps.filter { seen.insert($0.id).inserted }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func add(_ app: DictionaryApp) {
+        appError = appState.addDictionaryApp(app)
+        if appError == nil { selectedAppID = app.id }
+    }
+
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let bundle = Bundle(url: url)
+        let name = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+        guard let id = bundle?.bundleIdentifier, id != Bundle.main.bundleIdentifier,
+              let app = DictionaryApp(id: id, name: name) else {
+            appError = "That app can't be added: it has no valid bundle identifier."
+            return
+        }
+        add(app)
     }
 
     private var suggestionsSection: some View {
@@ -761,9 +902,13 @@ struct DictionaryEntryEditorView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     let original: DictionaryEntry?
+    /// The apps the word is limited to when the sheet opens; empty: everywhere.
+    let initialApps: Set<String>
 
     @State private var text = ""
     @State private var strength = DictionaryValidation.defaultStrength
+    @State private var limitedToApps = false
+    @State private var apps: Set<String> = []
     @State private var saveError: String?
 
     private var isBlank: Bool { text.unicodeScalars.allSatisfy(DictionaryText.isWhitespace) }
@@ -813,15 +958,17 @@ struct DictionaryEntryEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            appsSection
             HStack {
                 Button("Cancel") { dismiss() }
                 Spacer()
                 Button("Save") {
-                    saveError = appState.saveDictionaryEntry(text: text, strength: strength, replacing: original?.key)
+                    saveError = appState.saveDictionaryEntry(text: text, strength: strength, apps: limitedToApps ? apps : [],
+                                                             replacing: original?.key)
                     if saveError == nil { dismiss() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isBlank || validationError != nil)
+                .disabled(isBlank || validationError != nil || (limitedToApps && apps.isEmpty))
             }
         }
         .padding(20)
@@ -833,7 +980,37 @@ struct DictionaryEntryEditorView: View {
                 text = original.text
                 strength = original.strength
             }
+            apps = initialApps
+            limitedToApps = !initialApps.isEmpty
         }
-        .onChange(of: text) { _ in saveError = nil }
+        .onChange(of: text) { saveError = nil }
+    }
+
+    /// Everywhere, or only in some of the known apps (DESIGN §3.6).
+    private var appsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Use in")
+                .font(.caption.weight(.semibold))
+            Picker("Use in", selection: $limitedToApps) {
+                Text("Every app").tag(false)
+                Text("Only these apps").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .disabled(appState.dictionaryApps.isEmpty && !limitedToApps)
+            if limitedToApps {
+                ForEach(appState.dictionaryApps, id: \.id) { app in
+                    Toggle(app.name, isOn: Binding(
+                        get: { apps.contains(app.id) },
+                        set: { isOn in if isOn { apps.insert(app.id) } else { apps.remove(app.id) } }))
+                }
+            } else if appState.dictionaryApps.isEmpty {
+                Text("To limit a word to some apps, add them with Add App in the Dictionary settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }

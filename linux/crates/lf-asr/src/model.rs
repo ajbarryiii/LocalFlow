@@ -104,7 +104,7 @@ fn taps(w: &[f32]) -> Vec<f32> {
 const TOKENIZER_FILE: &str = "tokenizer/tokenizer.vocab";
 
 fn tokenizer(manifest: &lf_model::Manifest, vocab: &[u8]) -> Result<Tokenizer> {
-    Tokenizer::from_vocab_file(
+    crate::tokenizer::from_vocab_file(
         vocab,
         manifest
             .config

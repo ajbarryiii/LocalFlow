@@ -1,3 +1,4 @@
+// DESIGN refers to docs/dictionary/DESIGN.md; pins to docs/dictionary/DESIGN-pins.md.
 import Foundation
 
 /// Whether a finished dictation may be watched for corrections (DESIGN §3.4,

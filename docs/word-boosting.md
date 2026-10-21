@@ -13,6 +13,8 @@ The dictionary biases greedy TDT decoding towards the user's words. It uses a fi
 
 When the user corrects a misrecognized word, LocalFlow re-decodes the same audio with that word boosted at increasing strengths. It only suggests adding the word if the word then appears without disturbing the rest of the transcript. The strength that first worked becomes the entry's strength.
 
+The exact contract (rules, constants and pinned interpretations) is in [dictionary/DESIGN.md](dictionary/DESIGN.md) and [dictionary/DESIGN-pins.md](dictionary/DESIGN-pins.md).
+
 ## Experiment 1: a fixed bonus
 
 **Question:** does a fixed bonus help, and how strong should it be?

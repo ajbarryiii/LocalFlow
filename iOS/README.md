@@ -2,8 +2,10 @@
 
 A custom keyboard with a dictation button, backed by the bundled Parakeet model
 running in the containing app. [ARCHITECTURE.md](ARCHITECTURE.md) is the
-contract between the components. Like the macOS app, it builds with `swiftc`
-and `make` only, with no Xcode project and no Swift Package Manager.
+contract between the components, stated as the code is now;
+[ARCHITECTURE-HISTORY.md](ARCHITECTURE-HISTORY.md) keeps the decision log it
+replaced. Like the macOS app, it builds with `swiftc` and `make` only, with no
+Xcode project and no Swift Package Manager.
 
 ## Requirements
 

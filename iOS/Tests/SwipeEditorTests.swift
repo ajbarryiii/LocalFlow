@@ -49,6 +49,7 @@ enum SwipeEditorTests {
             ("deleteRemovesAReplacedWordWhole", testDeleteRemovesAReplacedWordWhole),
             ("deleteAfterTheStripClosedDeletesOneCharacter", testDeleteAfterTheStripClosedDeletesOneCharacter),
             ("deleteWhenTheTextNoLongerEndsWithTheWordDeletesOneCharacter", testDeleteWhenTheTextNoLongerEndsWithTheWordDeletesOneCharacter),
+            ("atMostOneSwipedEditIsRecorded", testAtMostOneSwipedEditIsRecorded),
             ("manifestReadsTheDecodeSettings", testManifestReadsTheDecodeSettings),
             ("engineRunsThePipeline", testEngineRunsThePipeline),
             ("engineFindsNothingWithoutAUsableSwipe", testEngineFindsNothingWithoutAUsableSwipe),
@@ -272,23 +273,23 @@ enum SwipeEditorTests {
         // Soft key edges read whether a tapped letter would get the space first ("Soft key edges",
         // context), without changing it: it follows the pending space exactly.
         let rig = SwipeRig("")
-        TestSupport.expect(!rig.editor.tappedLetterGetsSpace, "nothing swiped")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace(now: rig.time), "nothing swiped")
         rig.swipe(["have"])
-        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "after a swipe")
-        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "reading keeps it")
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "after a swipe")
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "reading keeps it")
         rig.press(.shift)
-        TestSupport.expect(rig.editor.tappedLetterGetsSpace, "survives Shift")
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "survives Shift")
         rig.press(.character("a"))
         TestSupport.expectEqual(rig.text, "have A")
-        TestSupport.expect(!rig.editor.tappedLetterGetsSpace, "used by the letter")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace(now: rig.time), "used by the letter")
         let spaced = SwipeRig("")
         spaced.swipe(["word"])
         spaced.press(.space)
-        TestSupport.expect(!spaced.editor.tappedLetterGetsSpace, "ended by space")
+        TestSupport.expect(!spaced.editor.tappedLetterGetsSpace(now: spaced.time), "ended by space")
         let outside = SwipeRig("x")
         outside.swipe(["word"])
         outside.document.moveCaret(to: 1)
-        TestSupport.expect(!outside.editor.tappedLetterGetsSpace, "caret no longer after the word")
+        TestSupport.expect(!outside.editor.tappedLetterGetsSpace(now: outside.time), "caret no longer after the word")
     }
 
     private static func testTapPriorContextIncludesEditsTheProxyHasNotShown() {
@@ -300,16 +301,17 @@ enum SwipeEditorTests {
         rig.press(.character("h"))
         TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
         TestSupport.expectEqual(rig.document.contextBefore, "so ")
-        TestSupport.expectEqual(rig.editor.tapPriorContext, "so th")
+        TestSupport.expectEqual(rig.editor.tapPriorContext(now: rig.time), "so th")
         for _ in 0 ..< 3 { rig.document.host.advanceFrame() }
-        TestSupport.expectEqual(rig.editor.tapPriorContext, "so th")
+        TestSupport.expectEqual(rig.editor.tapPriorContext(now: rig.time), "so th")
         // Plus the space a swiped word is owed, before the proxy shows the word too.
         let swiped = SwipeRig("")
         swiped.document.host.editContextLagFrames = 3
         swiped.swipe(["have"])
-        TestSupport.expectEqual(swiped.editor.tapPriorContext, "have ")
+        TestSupport.expectEqual(swiped.editor.tapPriorContext(now: swiped.time), "have ")
         // Without edits of ours, the proxy's text.
-        TestSupport.expectEqual(SwipeRig("ab").editor.tapPriorContext, "ab")
+        let plain = SwipeRig("ab")
+        TestSupport.expectEqual(plain.editor.tapPriorContext(now: plain.time), "ab")
         // Code review round 2: in another field the proxy already serves, before any callback reports it, the
         // first field's typing tail is not the context, even where the new field's text is a suffix of it.
         for text in ["", "th"] {
@@ -317,9 +319,9 @@ enum SwipeEditorTests {
             switched.document.host.editContextLagFrames = 3
             switched.press(.character("t"))
             switched.press(.character("h"))
-            TestSupport.expectEqual(switched.editor.tapPriorContext, "so th")
+            TestSupport.expectEqual(switched.editor.tapPriorContext(now: switched.time), "so th")
             switched.document.switchField(to: FakeTextHost(text: text), id: UUID())
-            TestSupport.expectEqual(switched.editor.tapPriorContext, text)
+            TestSupport.expectEqual(switched.editor.tapPriorContext(now: switched.time), text)
         }
     }
 
@@ -836,6 +838,53 @@ enum SwipeEditorTests {
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "a cat")
         TestSupport.expect(rig.editor.swipeStrip == nil, "the strip stayed after the deletion")
+    }
+
+    // MARK: The swiped word's recorded edit
+
+    /// The strip and the pending space refer to one recorded edit, so the editor's checks see at most one
+    /// (`KeyboardEditor.swipeEditCount`, also asserted wherever the editor consults them), between calls
+    /// and when the strip is reported changed; none once both are gone.
+    private static func testAtMostOneSwipedEditIsRecorded() {
+        func watched(_ text: String) -> SwipeRig {
+            let rig = SwipeRig(text)
+            rig.editor.onSwipeStripChanged = { [unowned rig] in
+                TestSupport.expect(rig.editor.swipeEditCount <= 1, "two edits recorded as the strip changed")
+            }
+            return rig
+        }
+        func expectRecorded(_ rig: SwipeRig, _ count: Int, file: StaticString = #filePath, line: UInt = #line) {
+            TestSupport.expectEqual(rig.editor.swipeEditCount, count, file: file, line: line)
+        }
+        // Swipe, choose a candidate, Shift closes the strip (the space stays pending), tap a letter.
+        let chosen = watched("so")
+        chosen.swipe(["word", "ward"])
+        expectRecorded(chosen, 1)
+        chosen.choose(1)
+        expectRecorded(chosen, 1)
+        chosen.press(.shift)
+        TestSupport.expect(chosen.editor.swipeStrip == nil, "Shift closes the strip")
+        expectRecorded(chosen, 1)
+        chosen.press(.character("i"))
+        TestSupport.expectEqual(chosen.text, "so ward I")
+        expectRecorded(chosen, 0)
+        // Swipe, then swipe again while the space is still pending.
+        let again = watched("")
+        again.swipe(["one"])
+        expectRecorded(again, 1)
+        again.swipe(["two", "too"])
+        expectRecorded(again, 1)
+        again.choose(1)
+        again.press(.character("a"))
+        TestSupport.expectEqual(again.text, "one too a")
+        expectRecorded(again, 0)
+        // Swipe, then delete the word.
+        let deleted = watched("a")
+        deleted.swipe(["cat"])
+        expectRecorded(deleted, 1)
+        deleted.heldDelete()
+        TestSupport.expectEqual(deleted.text, "a ")
+        expectRecorded(deleted, 0)
     }
 
     // MARK: Swipe engine (the pipeline around the encoder; Core ML itself is faked)
