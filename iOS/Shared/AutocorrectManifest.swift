@@ -111,11 +111,14 @@ struct AutocorrectManifest: Equatable, Sendable {
         stored.flatMap { models[$0] == nil ? nil : $0 } ?? defaultModel
     }
 
-    /// The model's preset names: the default first, then by name.
+    /// The model's preset names: the default first, then by name with numbers compared by value ("1:5"
+    /// before "1:10").
     func presetNames(model: String) -> [String] {
         (presets[model] ?? [:]).keys.sorted { a, b in
             if a == defaultPreset { return b != defaultPreset }
-            return b == defaultPreset ? false : a < b
+            if b == defaultPreset { return false }
+            let order = a.compare(b, options: .numeric)
+            return order == .orderedSame ? a < b : order == .orderedAscending
         }
     }
 

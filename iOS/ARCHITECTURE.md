@@ -2137,7 +2137,9 @@ their SHA-256 in `bundle.json`, and an optional `autocorrect` section:
 - `lexicon`: path of the LFWL file
 - `models`: name to `{"kind": "unigram" | "ngram" | "lstm", "path": ...}`
   (no path for unigram); `default_model`
-- `presets`: model name to preset name ("balanced", "conservative") to a
+- `presets`: model name to preset name (e.g. "balanced", "conservative", or
+  harm weights "1:1", "1:3"; Diagnostics lists the default first, then by
+  name with numbers compared by value) to a
   params object (`p_omit`, `p_insert`, `p_transpose`, `max_edits`,
   `max_edits_short`, `short_length`, `min_length`, `lm_weight`, `log_oov`,
   `margin_oov`, `margin_known`, `margin_apostrophe`, `w_repeat`, `w_slip`,

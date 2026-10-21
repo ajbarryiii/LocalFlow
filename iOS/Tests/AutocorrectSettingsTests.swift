@@ -14,6 +14,7 @@ enum AutocorrectSettingsTests {
             ("manifestRejectsPresetsOutOfTheirDomain", testManifestRejectsPresetsOutOfTheirDomain),
             ("anInvalidSectionRejectsOnlyAutocorrect", testAnInvalidSectionRejectsOnlyAutocorrect),
             ("manifestResolvesModelsAndPresets", testManifestResolvesModelsAndPresets),
+            ("presetNamesOrderNumbersByValue", testPresetNamesOrderNumbersByValue),
             ("manifestReadsTheSpellingChannel", testManifestReadsTheSpellingChannel),
             ("spellingPresetsNeedTheTables", testSpellingPresetsNeedTheTables),
             ("loaderReadsTheSpellingTables", testLoaderReadsTheSpellingTables),
@@ -226,6 +227,17 @@ enum AutocorrectSettingsTests {
         TestSupport.expectEqual(decoded.params(model: nil, preset: nil).lmWeight, 1.2)
         TestSupport.expectEqual(decoded.params(model: "w9", preset: "conservative").marginOOV, .infinity)
         TestSupport.expectEqual(decoded.params(model: "w2", preset: "conservative").logOOV, -12)
+    }
+
+    private static func testPresetNamesOrderNumbersByValue() {
+        let presets: [String: Any] = ["w0": ["1:10": preset(), "1:1": preset(), "1:5": preset(), "1:3": preset()],
+                                      "w1": ["1:3": preset()],
+                                      "w2": ["1:10": preset(), "1:3": preset()]]
+        let decoded = try! AutocorrectManifest.decode(
+            from: manifest(autocorrect: section(["presets": presets, "default_preset": "1:3"])))!
+        // The default first, then the rest with their numbers compared by value, not by character.
+        TestSupport.expectEqual(decoded.presetNames(model: "w0"), ["1:3", "1:1", "1:5", "1:10"])
+        TestSupport.expectEqual(decoded.presetNames(model: "w2"), ["1:3", "1:10"])
     }
 
     // MARK: Spelling channel
