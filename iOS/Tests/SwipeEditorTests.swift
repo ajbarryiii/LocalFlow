@@ -28,6 +28,8 @@ enum SwipeEditorTests {
             ("pendingSpaceSurvivesALaggingProxy", testPendingSpaceSurvivesALaggingProxy),
             ("unreportedHostEditBackToThePreviousTextEndsTheSwipe", testUnreportedHostEditBackToThePreviousTextEndsTheSwipe),
             ("tappedLetterIsCasedAfterTheSpace", testTappedLetterIsCasedAfterTheSpace),
+            ("pendingSpaceIsReadableForTheTapPrior", testPendingSpaceIsReadableForTheTapPrior),
+            ("tapPriorContextIncludesEditsTheProxyHasNotShown", testTapPriorContextIncludesEditsTheProxyHasNotShown),
             ("stripShowsUpToThreeInsertedFirst", testStripShowsUpToThreeInsertedFirst),
             ("tapReplacesTheInsertedWord", testTapReplacesTheInsertedWord),
             ("tapAfterAnOutsideEditDoesNothing", testTapAfterAnOutsideEditDoesNothing),
@@ -265,6 +267,62 @@ enum SwipeEditorTests {
         digit.swipe(["word"])
         digit.press(.character("4"))
         TestSupport.expectEqual(digit.text, "x word 4")
+    }
+
+    private static func testPendingSpaceIsReadableForTheTapPrior() {
+        // Soft key edges read whether a tapped letter would get the space first ("Soft key edges",
+        // context), without changing it: it follows the pending space exactly.
+        let rig = SwipeRig("")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace(now: rig.time), "nothing swiped")
+        rig.swipe(["have"])
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "after a swipe")
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "reading keeps it")
+        rig.press(.shift)
+        TestSupport.expect(rig.editor.tappedLetterGetsSpace(now: rig.time), "survives Shift")
+        rig.press(.character("a"))
+        TestSupport.expectEqual(rig.text, "have A")
+        TestSupport.expect(!rig.editor.tappedLetterGetsSpace(now: rig.time), "used by the letter")
+        let spaced = SwipeRig("")
+        spaced.swipe(["word"])
+        spaced.press(.space)
+        TestSupport.expect(!spaced.editor.tappedLetterGetsSpace(now: spaced.time), "ended by space")
+        let outside = SwipeRig("x")
+        outside.swipe(["word"])
+        outside.document.moveCaret(to: 1)
+        TestSupport.expect(!outside.editor.tappedLetterGetsSpace(now: outside.time), "caret no longer after the word")
+    }
+
+    private static func testTapPriorContextIncludesEditsTheProxyHasNotShown() {
+        // ARCHITECTURE.md, "Soft key edges" (context, code review 2026-10-18): a tap decided right after a rollover
+        // follows the letter just typed even while the proxy still shows the field without it.
+        let rig = SwipeRig("so ")
+        rig.document.host.editContextLagFrames = 3
+        rig.press(.character("t"))
+        rig.press(.character("h"))
+        TestSupport.expect(rig.document.host.isContextStale, "the proxy showed the letters at once")
+        TestSupport.expectEqual(rig.document.contextBefore, "so ")
+        TestSupport.expectEqual(rig.editor.tapPriorContext(now: rig.time), "so th")
+        for _ in 0 ..< 3 { rig.document.host.advanceFrame() }
+        TestSupport.expectEqual(rig.editor.tapPriorContext(now: rig.time), "so th")
+        // Plus the space a swiped word is owed, before the proxy shows the word too.
+        let swiped = SwipeRig("")
+        swiped.document.host.editContextLagFrames = 3
+        swiped.swipe(["have"])
+        TestSupport.expectEqual(swiped.editor.tapPriorContext(now: swiped.time), "have ")
+        // Without edits of ours, the proxy's text.
+        let plain = SwipeRig("ab")
+        TestSupport.expectEqual(plain.editor.tapPriorContext(now: plain.time), "ab")
+        // Code review round 2: in another field the proxy already serves, before any callback reports it, the
+        // first field's typing tail is not the context, even where the new field's text is a suffix of it.
+        for text in ["", "th"] {
+            let switched = SwipeRig("so ")
+            switched.document.host.editContextLagFrames = 3
+            switched.press(.character("t"))
+            switched.press(.character("h"))
+            TestSupport.expectEqual(switched.editor.tapPriorContext(now: switched.time), "so th")
+            switched.document.switchField(to: FakeTextHost(text: text), id: UUID())
+            TestSupport.expectEqual(switched.editor.tapPriorContext(now: switched.time), text)
+        }
     }
 
     private static func testPendingSpaceSurvivesShiftLayersAndReplacement() {

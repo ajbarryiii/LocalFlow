@@ -21,6 +21,8 @@ struct LocalFlowSettings {
         static let cursorTouchRate = "cursorTouchRate"
         static let cursorEventStepScale = "cursorEventStepScale"
         static let fieldLayoutOverrides = "fieldLayoutOverrides"
+        static let softKeyEdgesEnabled = "softKeyEdgesEnabled"
+        static let autocorrectEnabled = "autocorrectEnabled"
     }
 
     /// Remembered field layout choices, at most this many.
@@ -134,6 +136,20 @@ struct LocalFlowSettings {
             stored[other] = nil
         }
         defaults.set(stored, forKey: Key.fieldLayoutOverrides)
+    }
+
+    // MARK: Typing (ARCHITECTURE.md, "Soft key edges" and "Word autocorrect")
+
+    /// Soft key edges, with the bundle's default model and rule. The keyboard reads it when it appears.
+    var softKeyEdgesEnabled: Bool {
+        get { bool(Key.softKeyEdgesEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.softKeyEdgesEnabled) }
+    }
+
+    /// Word autocorrect, with the bundle's default model and preset. The keyboard reads it when it appears.
+    var autocorrectEnabled: Bool {
+        get { bool(Key.autocorrectEnabled) }
+        nonmutating set { defaults.set(newValue, forKey: Key.autocorrectEnabled) }
     }
 
     private static func isFingerprintKey(_ key: String) -> Bool {

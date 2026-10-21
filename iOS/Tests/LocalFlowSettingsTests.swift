@@ -11,6 +11,7 @@ enum LocalFlowSettingsTests {
             ("cursorMultipliersAcceptOnlyTheRange", testCursorMultipliersAcceptOnlyTheRange),
             ("cursorTouchRateIsRecordedAsNumbersOnly", testCursorTouchRateIsRecordedAsNumbersOnly),
             ("fieldLayoutChoicesAreContentFreeAndBounded", testFieldLayoutChoicesAreContentFreeAndBounded),
+            ("typingSwitchesAreOnByDefaultAndStoreOff", testTypingSwitchesAreOnByDefaultAndStoreOff),
         ]
     }
 
@@ -159,6 +160,32 @@ enum LocalFlowSettingsTests {
                 defaults.set(stored, forKey: "sessionMinutes")
                 TestSupport.expectEqual(settings.sessionMinutes, 5)
             }
+        }
+    }
+
+    // MARK: Typing
+
+    /// Autocorrect and soft key edges are on by default, like the other switches (a contract change: they were
+    /// off while experimental), and turning one off is stored and leaves the other alone.
+    private static func testTypingSwitchesAreOnByDefaultAndStoreOff() {
+        withSettings { settings, defaults in
+            TestSupport.expect(settings.autocorrectEnabled, "autocorrect off by default")
+            TestSupport.expect(settings.softKeyEdgesEnabled, "soft key edges off by default")
+            settings.autocorrectEnabled = false
+            var reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expect(!reread.autocorrectEnabled, "autocorrect off not stored")
+            TestSupport.expect(reread.softKeyEdgesEnabled, "soft key edges changed with autocorrect")
+            settings.softKeyEdgesEnabled = false
+            reread = LocalFlowSettings(defaults: defaults)
+            TestSupport.expect(!reread.softKeyEdgesEnabled, "soft key edges off not stored")
+            settings.autocorrectEnabled = true
+            TestSupport.expect(reread.autocorrectEnabled, "autocorrect on not stored")
+            TestSupport.expect(!reread.softKeyEdgesEnabled, "soft key edges changed with autocorrect")
+            // A stored value that is not a Bool reads as the default.
+            defaults.set("off", forKey: "autocorrectEnabled")
+            defaults.set("on", forKey: "softKeyEdgesEnabled")
+            TestSupport.expect(settings.autocorrectEnabled, "autocorrect invalid value")
+            TestSupport.expect(settings.softKeyEdgesEnabled, "soft key edges invalid value")
         }
     }
 }

@@ -106,7 +106,10 @@ final class KeyCalloutView: UIView {
     func show(_ text: String, over key: CGRect, within container: CGRect, compact: Bool) {
         let extra = min(12, key.width * 0.35)
         let bubbleHeight = key.height * (compact ? 1.0 : 1.15)
-        let gap: CGFloat = compact ? 6 : 10
+        // A top-row bubble must stay below the keyboard's top, where iOS clips an extension's drawing: with the
+        // 48 pt bar, 8 pt padding and a 42 pt key, a 4 pt gap leaves about 3.7 pt (ARCHITECTURE.md, "Reach above
+        // the keys"). Landscape leaves about 6 pt with its 6 pt gap.
+        let gap: CGFloat = compact ? 6 : 4
         var bubble = CGRect(x: key.midX - key.width / 2 - extra, y: key.minY - gap - bubbleHeight,
                             width: key.width + 2 * extra, height: bubbleHeight)
         bubble.origin.x = min(max(bubble.minX, container.minX + 1), container.maxX - bubble.width - 1)

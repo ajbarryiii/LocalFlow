@@ -23,26 +23,72 @@ final class SwipeStripModel: ObservableObject {
     }
 }
 
+/// The offer to never correct a reverted word (ARCHITECTURE.md, "Word autocorrect", Never correct), published only
+/// when it appears, changes or goes. Its word stays in memory and goes with the offer.
+@MainActor
+final class NeverCorrectPromptModel: ObservableObject {
+    @Published private(set) var offer: NeverCorrectOffer?
+
+    func show(_ offer: NeverCorrectOffer?) {
+        if self.offer != offer { self.offer = offer }
+    }
+}
+
+/// Where the bar's controls are, in the bar's coordinates (`DictationBarView` reports them as they lay out and
+/// forgets them as they go), so the key area can take every other touch in the bar (ARCHITECTURE.md, "Reach
+/// above the keys"). Read on touches; never published, so it re-renders nothing.
+@MainActor
+final class BarControlFrames {
+    static let space = "lf.bar"
+    private var regions = BarControlRegions()
+
+    /// The controls' frames now, with those a control left while it may still be animating there.
+    var rects: [KeyRect] { regions.rects(now: CACurrentMediaTime()) }
+
+    func set(_ id: String, _ frame: CGRect?) {
+        let rect = frame.map { KeyRect(x: Double($0.minX), y: Double($0.minY), width: Double($0.width), height: Double($0.height)) }
+        regions.set(id, rect, now: CACurrentMediaTime())
+    }
+}
+
+private extension View {
+    /// Reports this control's frame in the bar to `controls` while it is shown, inset by `inset` on every side
+    /// for a control whose tap area is smaller than its look.
+    func barControl(_ id: String, in controls: BarControlFrames, inset: CGFloat = 0) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarControlFrames.space)).insetBy(dx: inset, dy: inset) } action: {
+            controls.set(id, $0)
+        }
+            .onDisappear { controls.set(id, nil) }
+    }
+}
+
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
 /// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
-/// candidate strip instead while it shows), and the Start capsule on the right, which becomes a red
+/// candidate strip instead while it shows, and over both a revert's "Never correct" offer unless dictation's
+/// own UI is up), and the Start capsule on the right, which becomes a red
 /// Stop capsule with live level bars while recording. It renders `KeyboardDictationClient.state` and
 /// the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
     @ObservedObject var swipe: SwipeStripModel
+    @ObservedObject var neverCorrect: NeverCorrectPromptModel
+    /// Where its controls are, for the key area.
+    let controls: BarControlFrames
     var onMenu: () -> Void
     /// Any other bar action also closes the menu.
     var onAction: () -> Void
     /// A candidate of the strip was tapped.
     var onCandidate: (Int) -> Void
+    /// The "Never correct" offer was tapped.
+    var onNeverCorrect: () -> Void
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         let compact = verticalSizeClass == .compact
         let state = client.state
-        let height: CGFloat = compact ? 32 : 38
+        // The key area takes the bar away from the controls (`KeyboardMetrics.barPointGoesToKeys`).
+        let height = CGFloat(compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight)
         HStack(spacing: 8) {
             Button(action: onMenu) {
                 Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")
@@ -55,15 +101,24 @@ struct DictationBarView: View {
             .buttonStyle(PressableStyle())
             .accessibilityLabel(chrome.isMenuOpen ? "Close menu" : "LocalFlow menu")
             .accessibilityIdentifier("lf.menu")
+            .barControl("menu", in: controls)
 
             Group {
-                if let strip = swipe.strip {
+                if let offer = neverCorrect.offer,
+                   NeverCorrectOffer.barShows(offer, dictationInProgress: state.mode.isInProgress, dictationUndoShown: state.canUndo) {
+                    NeverCorrectChip(word: offer.typed, height: height - 8) {
+                        onAction()
+                        onNeverCorrect()
+                    }
+                    .barControl("neverCorrect", in: controls)
+                } else if let strip = swipe.strip {
                     CandidateStrip(strip: strip, height: height - 8) { index in
                         onAction()
                         onCandidate(index)
                     }
+                    .barControl("strip", in: controls)
                 } else {
-                    Middle(client: client, state: state, height: height - 8, onAction: onAction)
+                    Middle(client: client, state: state, height: height - 8, controls: controls, onAction: onAction)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -78,15 +133,19 @@ struct DictationBarView: View {
                         .foregroundStyle(.primary)
                         .frame(width: height - 6, height: height - 6)
                         .background(Circle().fill(Color(uiColor: KeyPalette.fill)))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
                 .accessibilityLabel("Cancel dictation")
                 .accessibilityIdentifier("lf.cancel")
+                .barControl("cancel", in: controls)
             }
             StartCapsule(client: client, state: state, height: height, onAction: onAction, onUnavailable: onMenu)
+                .barControl("start", in: controls, inset: StartCapsule.hitInset)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .coordinateSpace(.named(BarControlFrames.space))
         .animation(.easeOut(duration: 0.2), value: state.canUndo)
         .animation(.easeOut(duration: 0.2), value: state.canInsertLast)
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
@@ -99,6 +158,7 @@ private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
+    let controls: BarControlFrames
     let onAction: () -> Void
 
     var body: some View {
@@ -110,6 +170,7 @@ private struct Middle: View {
                 }
                 .accessibilityLabel("Undo last dictation")
                 .accessibilityIdentifier("lf.undo")
+                .barControl("undo", in: controls)
             }
             if state.canInsertLast, !state.mode.isRecording {
                 Chip(title: "Insert last", symbol: "text.insert", height: height) {
@@ -118,6 +179,7 @@ private struct Middle: View {
                 }
                 .accessibilityLabel("Insert last dictation")
                 .accessibilityIdentifier("lf.insertLast")
+                .barControl("insertLast", in: controls)
             }
             if let notice = state.notice {
                 // Notices render on their own, ahead of any idle hint or status, in every mode.
@@ -148,8 +210,9 @@ private struct Middle: View {
     }
 }
 
-/// Up to three swipe candidates side by side, as on Apple's predictive bar; the one in the field now is
-/// emphasized. A tap replaces the inserted word (the editor decides whether it still can).
+/// Up to three candidates side by side (a swipe's, or autocorrect's after a commit key), as on Apple's
+/// predictive bar; the one in the field now is emphasized. A tap replaces the inserted word (the editor
+/// decides whether it still can).
 private struct CandidateStrip: View {
     let strip: SwipeStrip
     let height: CGFloat
@@ -186,6 +249,34 @@ private struct CandidateStrip: View {
     }
 }
 
+/// "Never correct “word”": the word in the field after a revert, shown in full where it fits and shortened in the
+/// middle where it does not.
+private struct NeverCorrectChip: View {
+    let word: String
+    let height: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Never correct \u{201C}\(word)\u{201D}", systemImage: "text.badge.checkmark")
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .frame(height: height)
+                .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
+                .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityLabel("Never correct \(word)")
+        .accessibilityHint("Autocorrect leaves this word alone from now on")
+        .accessibilityIdentifier("lf.neverCorrect")
+    }
+}
+
 private struct Chip: View {
     let title: String
     let symbol: String
@@ -202,6 +293,7 @@ private struct Chip: View {
                 .frame(height: height)
                 .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
                 .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+                .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .fixedSize()
@@ -211,6 +303,10 @@ private struct Chip: View {
 /// The primary control: "Start" with a waveform glyph, a red "Stop" with live levels and the elapsed
 /// time while starting or recording, and a spinner while transcribing.
 private struct StartCapsule: View {
+    /// The tap area is the capsule inset this much on every side; the keys take the rest (user decision,
+    /// 2026-10-18: the capsule is never missed, and fast top-row taps land around it). It looks the same.
+    static let hitInset: CGFloat = 6
+
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
@@ -231,7 +327,7 @@ private struct StartCapsule: View {
                 .padding(.horizontal, 14)
                 .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
                 .background(Capsule().fill(fill))
-                .contentShape(Capsule())
+                .contentShape(Rectangle().inset(by: Self.hitInset))
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.

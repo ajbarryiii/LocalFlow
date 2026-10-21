@@ -15,9 +15,18 @@ import Foundation
 ///   v4 and swipe typing", amending "Typing model v3"). Every key's touch-down first ends trackpad
 ///   settlement (`keyDown`).
 /// - Swipe: with `swipeEnabled`, on the letters layer, an uncommitted character touch that is the only
-///   finger becomes a swipe once any sample of its path (a coalesced move or the lift) is `swipeThreshold`
-///   from its touch-down point. It types nothing, its callout ends, other touches are ignored until it
-///   ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
+///   finger becomes a swipe once any sample of a move (a coalesced touch; never the lift) is
+///   `swipeThreshold` from its touch-down point. It types nothing, its callout ends, other touches are
+///   ignored until it ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
+/// - Skid: a swipe younger than `skidDuration`, none of whose samples was a full letter pitch from its
+///   touch-down point, is a tap that skidded. Released, it types its touch-down key as a tap would; a new
+///   finger first commits it so, in press order, and is then handled as usual (ARCHITECTURE.md, "Dropped
+///   taps: reach, skids and counters").
+/// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
+///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
+///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"), unless the keyboard decided its key at
+///   touch-down (`decideTap`): then it types that key, which its callout shows, with its touch-down point
+///   (`typeDecided`, for autocorrect). Slides, other layers and every other key are unchanged.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
@@ -48,6 +57,15 @@ struct KeyTouchModel: Equatable, Sendable {
         var field: UUID?
         /// The finger's path while it may still become a swipe (from its touch-down point); empty otherwise.
         var samples: [SwipeSample] = []
+        /// It touched down on a letter key of the letters layer: with `softTapsEnabled`, its character is
+        /// re-decided where it would type (`tap`).
+        var onLetters = false
+        /// The key decided for this soft tap at touch-down (`decideTap`): shown in its callout and typed instead
+        /// of `action` while soft taps stay on.
+        var decided: KeyAction?
+        /// The letters were laid out anew while it was held (a resize or rotation): its touch-down point belongs
+        /// to the old geometry, so it types its key (or decision) with no point.
+        var geometryChanged = false
     }
 
     enum Effect: Equatable, Sendable {
@@ -68,12 +86,23 @@ struct KeyTouchModel: Equatable, Sendable {
         /// A swipe was released: its samples from the touch-down point through the lift, and the field it
         /// touched down in (ARCHITECTURE.md, "Typing model v4 and swipe typing").
         case swipe([SwipeSample], field: UUID?)
+        /// With `softTapsEnabled`, a character tap by a finger that touched down on a letter key, where it
+        /// would otherwise `type`: the key nearest its touch-down point, that point, and its field, so the
+        /// keyboard can re-decide the key (ARCHITECTURE.md, "Soft key edges").
+        case tap(KeyAction, x: Double, y: Double, field: UUID?)
+        /// With `softTapsEnabled`, a tap whose key was decided at touch-down (`decideTap`), where it would
+        /// otherwise `type`: the decided key, typed as it is, with the touch-down point and the field, so
+        /// autocorrect can record where the tap landed (ARCHITECTURE.md, "Word autocorrect", Taps).
+        case typeDecided(KeyAction, x: Double, y: Double, field: UUID?)
     }
 
     var parameters = TrackpadParameters.standard
     /// Whether a drag on a letter may become a swipe: true only while the swipe engine is loaded and the
     /// field is not secure text entry.
     var swipeEnabled = false
+    /// Whether a letter tap is emitted as `tap` (or `typeDecided`) with its touch-down point: true only while
+    /// soft key edges have loaded or autocorrect is on, and the field is not secure text entry.
+    var softTapsEnabled = false
     private(set) var keys: [PlacedKey] = []
     private(set) var layer = KeyboardLayer.letters
     /// Held fingers in press order.
@@ -89,6 +118,14 @@ struct KeyTouchModel: Equatable, Sendable {
     private(set) var swipeField: UUID?
     /// The running swipe's samples so far.
     private(set) var swipeSamples: [SwipeSample] = []
+    /// The touch that became the running swipe, as it was then: what a skid types.
+    private var swipeOrigin: Touch?
+    /// The letters layer's key frames as last laid out: a held letter's point is only good for these.
+    private var letterFrames: [KeyRect]?
+
+    /// A swipe younger than this (seconds from its touch-down) that never strayed a full letter pitch from
+    /// its touch-down point is a skid: a tap.
+    static let skidDuration: TimeInterval = 0.15
 
     var isTrackpadActive: Bool { trackpadTouch != nil }
     var isSwipeActive: Bool { swipeTouch != nil }
@@ -110,8 +147,26 @@ struct KeyTouchModel: Equatable, Sendable {
         }
     }
 
-    /// The character to show in a callout (`calloutTouch`).
-    var calloutAction: KeyAction? { calloutTouch?.action }
+    /// The character to show in a callout (`calloutTouch`): a soft tap's decided key, when it has one.
+    var calloutAction: KeyAction? { calloutTouch.flatMap(shownAction) }
+
+    /// What a touch's callout shows: a soft tap's decided key while soft taps are on, otherwise its key.
+    func shownAction(_ touch: Touch) -> KeyAction? {
+        softTapsEnabled ? touch.decided ?? touch.action : touch.action
+    }
+
+    /// The touch is an uncommitted soft tap with no decision yet (ARCHITECTURE.md, "Soft key edges").
+    func needsTapDecision(_ id: TouchID) -> Bool {
+        guard let touch = touches.first(where: { $0.id == id }) else { return false }
+        return softTapsEnabled && touch.role == .character && touch.onLetters && !touch.committed && touch.decided == nil
+    }
+
+    /// The keyboard decided a soft tap's key at touch-down: it shows in the callout and types at release or
+    /// rollover. Ignored for any touch that does not `needsTapDecision`.
+    mutating func decideTap(_ id: TouchID, as action: KeyAction) {
+        guard needsTapDecision(id), let index = touches.firstIndex(where: { $0.id == id }) else { return }
+        touches[index].decided = action
+    }
 
     /// Whether the touch's moves should bring every coalesced sample (`moved(_:x:y:t:coalesced:)`): it is
     /// a swipe, or may still become one.
@@ -123,7 +178,13 @@ struct KeyTouchModel: Equatable, Sendable {
 
     /// `t`: the touch's timestamp in seconds. `field`: the field the keyboard serves at this touch-down.
     mutating func began(_ id: TouchID, x: Double, y: Double, t: TimeInterval = 0, field: UUID? = nil) -> [Effect] {
-        guard trackpadTouch == nil, swipeTouch == nil, let action = nearestAction(x: x, y: y) else { return [] }
+        guard trackpadTouch == nil else { return [] }
+        if swipeTouch != nil {
+            // A skid is committed as a tap below (rollover); any other swipe ignores the new finger.
+            guard isSkid(at: t) else { return [] }
+            restoreSkid()
+        }
+        guard let action = nearestAction(x: x, y: y) else { return [] }
         // The globe is a UIKit button with its own touches; a touch that lands near it is ignored.
         if action == .nextKeyboard { return commitPending() }
         var effects: [Effect] = [.keyDown] + commitPending()
@@ -131,6 +192,7 @@ struct KeyTouchModel: Equatable, Sendable {
         switch action {
         case .character:
             // Typed at release or rollover (v4); a possible swipe until then.
+            touch.onLetters = layer == .letters
             if swipeEnabled, layer == .letters { touch.samples = [SwipeSample(x: x, y: y, t: t)] }
         case .nextKeyboard:
             break
@@ -207,23 +269,24 @@ struct KeyTouchModel: Equatable, Sendable {
         if id == swipeTouch {
             var samples = swipeSamples
             let lift = SwipeSample(x: x, y: y, t: t)
+            if isSkid(at: t, lift: lift), var touch = swipeOrigin, let action = touch.action {
+                touch.field = swipeField
+                endSwipe()
+                return [characterEffect(touch, action)]
+            }
             if samples.last != lift { samples.append(lift) }
             let field = swipeField
             endSwipe()
             return [.swipe(samples, field: field)]
         }
+        // The lift never makes a swipe: a finger first past the threshold as it lifts skidded (a tap).
         guard let index = touches.firstIndex(where: { $0.id == id }) else { return [] }
-        // A flick whose first position past the threshold is the lift is a swipe too.
-        if mayBecomeSwipe(touches[index]), reachesSwipeThreshold(touches[index], x: x, y: y) {
-            beginSwipe(index)
-            return ended(id, x: x, y: y, t: t)
-        }
         let touch = touches.remove(at: index)
         var effects: [Effect] = []
         switch touch.role {
         case .character, .slide:
             guard !touch.committed, let action = touch.action, action.isCharacter else { break }
-            effects.append(.type(action, field: touch.field))
+            effects.append(characterEffect(touch, action))
             // A number slid to from the layer key returns to letters, as on Apple's keyboard.
             if touch.role == .slide, layer != .letters { effects.append(.type(.layer(.letters))) }
         case .space:
@@ -269,6 +332,12 @@ struct KeyTouchModel: Equatable, Sendable {
         self.keys = keys
         self.layer = layer
         if layer == .letters, let threshold = Self.swipeThreshold(in: keys) { swipeThreshold = threshold }
+        var resized = false
+        if layer == .letters {
+            let frames = keys.map(\.frame)
+            resized = letterFrames.map { $0 != frames } ?? false
+            letterFrames = frames
+        }
         var effects: [Effect] = []
         var kept: [Touch] = []
         for var touch in touches {
@@ -278,7 +347,8 @@ struct KeyTouchModel: Equatable, Sendable {
             }
             switch touch.role {
             case .character:
-                kept.append(touch)
+                if resized { touch.geometryChanged = true }
+                kept.append(pinnedIfMoved(touch))
             case .slide, .layer:
                 touch.action = nearestAction(x: touch.x, y: touch.y)
                 kept.append(touch)
@@ -291,7 +361,23 @@ struct KeyTouchModel: Equatable, Sendable {
             }
         }
         touches = kept
+        if var origin = swipeOrigin {
+            if resized { origin.geometryChanged = true }
+            swipeOrigin = pinnedIfMoved(origin)
+        }
         return effects
+    }
+
+    /// A decided soft tap whose touch-down point is no longer nearest the key it touched (a resize) types and
+    /// shows that key instead (ARCHITECTURE.md, "Soft key edges"). Only the letters layer is checked: another
+    /// layer's keys say nothing about where the letters are.
+    private func pinnedIfMoved(_ touch: Touch) -> Touch {
+        guard touch.decided != nil, layer == .letters, nearestAction(x: touch.startX, y: touch.startY) != touch.action else {
+            return touch
+        }
+        var pinned = touch
+        pinned.decided = touch.action
+        return pinned
     }
 
     /// Another field became current (`field`, ARCHITECTURE.md, "Typing model v2"): fingers that touched
@@ -370,6 +456,18 @@ struct KeyTouchModel: Equatable, Sendable {
         return (last - first) / Double(centers.count - 1) / 2
     }
 
+    /// What a held character types: for a character touch that touched down on a letter key while
+    /// `softTapsEnabled`, its decided key (`typeDecided`), or without one a soft tap (`tap`), each with its
+    /// touch-down point, unless the letters were laid out anew while it was held (then its key or decision,
+    /// with no point); otherwise the key itself. Slides never are.
+    private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
+        guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
+        // Its point no longer matches the keys: its key, or its decision, without one.
+        if touch.geometryChanged { return .type(touch.decided ?? action, field: touch.field) }
+        if let decided = touch.decided { return .typeDecided(decided, x: touch.startX, y: touch.startY, field: touch.field) }
+        return .tap(action, x: touch.startX, y: touch.startY, field: touch.field)
+    }
+
     /// Rollover: commits every earlier finger's key, in press order.
     private mutating func commitPending() -> [Effect] {
         var effects: [Effect] = []
@@ -378,7 +476,7 @@ struct KeyTouchModel: Equatable, Sendable {
             switch touch.role {
             case .character, .slide:
                 guard let action = touch.action, action.isCharacter else { continue }
-                effects.append(.type(action, field: touch.field))
+                effects.append(characterEffect(touch, action))
             case .space:
                 guard touch.action == .space else { continue }
                 effects += [.cancelHoldTimer(touch.id), .type(.space, field: touch.field)]
@@ -404,12 +502,38 @@ struct KeyTouchModel: Equatable, Sendable {
     /// The finger leaves the keys: it types nothing, and other touches are ignored until it ends.
     private mutating func beginSwipe(_ index: Int) {
         let touch = touches.remove(at: index)
+        swipeOrigin = touch
         swipeTouch = touch.id
         swipeField = touch.field
         swipeSamples = touch.samples
     }
 
+    /// The running swipe is a skid at time `t`, counting `lift` too: younger than `skidDuration`, and no
+    /// sample a full letter pitch (2 × `swipeThreshold`) or more from its touch-down point.
+    private func isSkid(at t: TimeInterval, lift: SwipeSample? = nil) -> Bool {
+        guard let origin = swipeOrigin, let touchDown = swipeSamples.first, t - touchDown.t < Self.skidDuration else {
+            return false
+        }
+        let pitch = 2 * swipeThreshold
+        func strayed(_ sample: SwipeSample) -> Bool {
+            let dx = sample.x - origin.startX, dy = sample.y - origin.startY
+            return (dx * dx + dy * dy).squareRoot() >= pitch
+        }
+        return !swipeSamples.contains(where: strayed) && !(lift.map(strayed) ?? false)
+    }
+
+    /// A skid goes back to the keys as the uncommitted character it was, first in press order and bound to
+    /// the swipe's field, for the rollover to commit.
+    private mutating func restoreSkid() {
+        guard var touch = swipeOrigin else { return }
+        touch.field = swipeField
+        touch.samples = []
+        endSwipe()
+        touches.insert(touch, at: 0)
+    }
+
     private mutating func endSwipe() {
+        swipeOrigin = nil
         swipeTouch = nil
         swipeField = nil
         swipeSamples = []

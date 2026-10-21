@@ -25,10 +25,38 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// timestamps, from the touch-down point through the lift, and the field it touched down in. A
     /// cancelled swipe never arrives.
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval)
+    /// A letter tap to re-decide (only while `softTapsEnabled`; ARCHITECTURE.md, "Soft key edges"), where it
+    /// would otherwise be `typed`: the key nearest the touch-down point, that point in key-area points, and
+    /// the field it touched down in. The delegate types the key it decides on.
+    func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
+    /// A letter tap to decide at touch-down (only while `softTapsEnabled`; ARCHITECTURE.md, "Soft key edges"):
+    /// its nearest key, the touch-down point and its field. The key returned shows in its callout and types
+    /// at release or rollover; nil leaves it to `tapped`.
+    func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction?
+    /// A letter tap decided at touch-down, typed now (only while `softTapsEnabled`): the decided key, the
+    /// touch-down point and the field, for autocorrect to record (ARCHITECTURE.md, "Word autocorrect").
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval)
+    /// The letters layer's geometry changed (a resize, a rotation or the globe key shown or hidden), not merely
+    /// the layer shown: touch-down points recorded before no longer match the keys.
+    func keyAreaChangedLetterGeometry(_ keyArea: KeyAreaView)
 }
 
 extension KeyAreaViewDelegate {
+    func keyAreaChangedLetterGeometry(_ keyArea: KeyAreaView) {}
+
+    func keyArea(_ keyArea: KeyAreaView, decideTap action: KeyAction, x: Double, y: Double, field: UUID?) -> KeyAction? {
+        nil
+    }
+
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {}
+
+    func keyArea(_ keyArea: KeyAreaView, tapped action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        self.keyArea(keyArea, typed: action, field: field, timestamp: timestamp)
+    }
+
+    func keyArea(_ keyArea: KeyAreaView, typed action: KeyAction, x: Double, y: Double, field: UUID?, timestamp: TimeInterval) {
+        self.keyArea(keyArea, typed: action, field: field, timestamp: timestamp)
+    }
 }
 
 /// The key area: one view that tracks every touch itself, with nearest-key hit testing so gaps are
@@ -57,6 +85,17 @@ final class KeyAreaView: UIView {
         get { model.swipeEnabled }
         set { model.swipeEnabled = newValue }
     }
+    /// Whether letter taps come with their touch-down point, `tapped` to be re-decided or `typed` as decided
+    /// (`KeyTouchModel.softTapsEnabled`): only while soft key edges have loaded or autocorrect is on, and the
+    /// field is not secure text entry.
+    var softTapsEnabled: Bool {
+        get { model.softTapsEnabled }
+        set { model.softTapsEnabled = newValue }
+    }
+    /// Whether the view takes a touch at this point above its top (in its own coordinates): one in the bar
+    /// away from the bar's controls (`KeyboardMetrics.barPointGoesToKeys`). Such a touch is an ordinary key
+    /// touch, on the top row. Never while the menu is open.
+    var takesTouchAbove: (CGPoint) -> Bool = { _ in false }
     /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
     var spaceTitle = "LocalFlow" {
         didSet { if spaceTitle != oldValue { relabel() } }
@@ -74,7 +113,10 @@ final class KeyAreaView: UIView {
     private var model = KeyTouchModel()
     private var keyViews: [KeyCapView] = []
     private var builtSize = CGSize.zero
-    private let globeButton = UIButton(type: .system)
+    /// The size and globe the letters layer was last laid out for (any layer's rebuild lays out the same
+    /// letters for them), to tell the delegate when that geometry changes.
+    private var letterGeometry: (size: CGSize, showsGlobe: Bool)?
+    private let globeButton = GlobeButton(type: .system)
     private let callout = KeyCalloutView()
     private var keyHaptics: UIImpactFeedbackGenerator?
     /// Stable small IDs for the model, one per live `UITouch`.
@@ -111,6 +153,13 @@ final class KeyAreaView: UIView {
         globeButton.tintColor = .label
         globeButton.accessibilityLabel = "Next keyboard"
         globeButton.accessibilityIdentifier = "lf.globe"
+        // Its whole nearest-key region, so no point beside it is dead (ARCHITECTURE.md, "A stricter space bar").
+        globeButton.claims = { [weak self] point in
+            guard let self else { return false }
+            let keys = placedKeys
+            return KeyboardLayout.nearestKey(toX: Double(point.x), y: Double(point.y), in: keys)
+                .map { keys[$0].action == .nextKeyboard } ?? false
+        }
         addSubview(trail)
         addSubview(callout)
     }
@@ -145,6 +194,10 @@ final class KeyAreaView: UIView {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let metrics = KeyboardMetrics(width: Double(bounds.width), height: Double(bounds.height))
         let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
+        if let previous = letterGeometry, previous.size != bounds.size || previous.showsGlobe != showsGlobe {
+            delegate?.keyAreaChangedLetterGeometry(self)
+        }
+        letterGeometry = (bounds.size, showsGlobe)
         // Held fingers follow the new keys before anything is drawn or typed from them.
         let effects = model.keysChanged(keys, layer: keyLayer)
         while keyViews.count < keys.count {
@@ -233,6 +286,11 @@ final class KeyAreaView: UIView {
         haptics.impactOccurred()
     }
 
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if bounds.contains(point) { return true }
+        return point.y < bounds.minY && point.x >= bounds.minX && point.x <= bounds.maxX && takesTouchAbove(point)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
@@ -241,6 +299,12 @@ final class KeyAreaView: UIView {
                                       field: currentField())
             if model.touches.last?.id == touchID { keyTouchedDown() }
             perform(effects, timestamp: touch.timestamp)
+            // Decided after earlier fingers have typed, before the callout shows (ARCHITECTURE.md, "Soft key edges").
+            if model.needsTapDecision(touchID), let held = model.touches.first(where: { $0.id == touchID }),
+               let action = held.action,
+               let decided = delegate?.keyArea(self, decideTap: action, x: held.startX, y: held.startY, field: held.field) {
+                model.decideTap(touchID, as: decided)
+            }
         }
         refreshPressed()
     }
@@ -334,6 +398,10 @@ final class KeyAreaView: UIView {
                 delegate?.keyAreaEndedTrackpad(self, timestamp: timestamp, cancelled: cancelled)
             case .swipe(let samples, let field):
                 delegate?.keyArea(self, swiped: samples, field: field, timestamp: timestamp)
+            case .tap(let action, let x, let y, let field):
+                delegate?.keyArea(self, tapped: action, x: x, y: y, field: field, timestamp: timestamp)
+            case .typeDecided(let action, let x, let y, let field):
+                delegate?.keyArea(self, typed: action, x: x, y: y, field: field, timestamp: timestamp)
             }
         }
     }
@@ -353,7 +421,7 @@ final class KeyAreaView: UIView {
         }
         // A swipe has no callout: the model no longer counts it as a held character.
         let target = isBlank ? nil : model.calloutTouch
-        let callout = target.flatMap { touch in touch.action.map { (touch: touch.id, action: $0) } }
+        let callout = target.flatMap { touch in model.shownAction(touch).map { (touch: touch.id, action: $0) } }
         guard callout?.touch != shownCallout?.touch || callout?.action != shownCallout?.action else { return }
         shownCallout = callout
         if let callout, case .character(let character) = callout.action,
@@ -478,6 +546,19 @@ final class KeyAreaView: UIView {
             elements.append(element)
         }
         accessibilityElements = elements
+    }
+}
+
+/// The globe key: a system button, so the system's input-mode list works. It also takes touches outside its
+/// frame whose nearest key is the globe (`claims`, given a point in its superview), which the key area would
+/// otherwise ignore.
+private final class GlobeButton: UIButton {
+    var claims: (CGPoint) -> Bool = { _ in false }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if super.point(inside: point, with: event) { return true }
+        guard let superview else { return false }
+        return claims(convert(point, to: superview))
     }
 }
 

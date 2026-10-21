@@ -58,6 +58,27 @@ struct KeyboardMetrics: Equatable, Sendable {
     static let regularHeight: Double = 216
     static let compactHeight: Double = 162
 
+    /// The dictation bar above the keys, and its controls, centred in it (ARCHITECTURE.md, "Top row").
+    static let barHeight: Double = 48
+    static let compactBarHeight: Double = 40
+    static let barControlHeight: Double = 38
+    static let compactBarControlHeight: Double = 32
+
+    /// How far above its top the key area takes touches: the strip of the bar below its controls
+    /// (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
+    static func reachAboveKeys(compact: Bool) -> Double {
+        compact ? (compactBarHeight - compactBarControlHeight) / 2 : (barHeight - barControlHeight) / 2
+    }
+
+    /// Whether a touch at (x, y) in the bar's own coordinates goes to the keys: anywhere in the bar outside every
+    /// control's frame (an edge is the control's; each control's tap area is exactly its frame); with no control
+    /// frames known, only the strip below the controls (`reachAboveKeys`). ARCHITECTURE.md, "Reach above the keys".
+    static func barPointGoesToKeys(x: Double, y: Double, barHeight: Double, compact: Bool, controls: [KeyRect]) -> Bool {
+        guard y >= 0, y <= barHeight else { return false }
+        guard !controls.isEmpty else { return y >= barHeight - reachAboveKeys(compact: compact) }
+        return controls.allSatisfy { $0.distanceSquared(toX: x, y: y) > 0 }
+    }
+
     init(width: Double, height: Double) {
         self.width = width
         self.height = height
@@ -139,11 +160,29 @@ enum KeyboardLayout {
         return keys
     }
 
-    /// The key under a touch, or the nearest one, so gaps between keys are never dead.
+    /// A point outside the space bar counts as this much farther from it (points): the biggest key gets the
+    /// least of the gaps around it (ARCHITECTURE.md, "A stricter space bar").
+    static let spaceMissPenalty: Double = 8
+    /// The delete key's frame reaches this much further left, towards M, for the nearest key (points)
+    /// (ARCHITECTURE.md, "A wider delete key").
+    static let deleteReachLeft: Double = 8
+
+    /// The key under a touch, or the nearest one, so gaps between keys are never dead. Distances are to the
+    /// frame (the delete key's reaching `deleteReachLeft` further left), the space bar's plus
+    /// `spaceMissPenalty` outside it; ties go to the nearer center, then the earlier key.
     static func nearestKey(toX x: Double, y: Double, in keys: [PlacedKey]) -> Int? {
         var best: (index: Int, distance: Double, center: Double)?
         for (index, key) in keys.enumerated() {
-            let distance = key.frame.distanceSquared(toX: x, y: y)
+            var frame = key.frame
+            if key.action == .delete {
+                frame.x -= deleteReachLeft
+                frame.width += deleteReachLeft
+            }
+            var distance = frame.distanceSquared(toX: x, y: y)
+            if key.action == .space, distance > 0 {
+                let penalized = distance.squareRoot() + spaceMissPenalty
+                distance = penalized * penalized
+            }
             let dx = key.frame.midX - x, dy = key.frame.midY - y
             let center = dx * dx + dy * dy
             if let current = best, distance > current.distance || (distance == current.distance && center >= current.center) {

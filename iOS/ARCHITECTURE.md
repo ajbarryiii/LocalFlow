@@ -22,7 +22,10 @@ contract.
 | "Typing model v2", "Typing model v2: immediate execution" | [Typing model](#typing-model); late gesture reports and echoes in [Editing core](#editing-core-editingcore); a key ending the gesture and the accepted residual in [Trackpad and keys](#trackpad-and-keys) |
 | "Typing model v3" | [Typing model](#typing-model) |
 | "Typing model v4 and swipe typing" | key timing in [Typing model](#typing-model); the swipe gesture, the decoding pipeline (its steps 1–5), insertion, the candidate strip and the trace in [Swipe typing](#swipe-typing) |
-| "Inserting a swiped word", "Candidate strip", "Swipe trace", "decoding pipeline" | [Swipe typing](#swipe-typing) |
+| "Inserting a swiped word", "Candidate strip", "Swipe trace", "decoding pipeline", "Space before a tapped word" | [Swipe typing](#swipe-typing) |
+| "Owned words", "Taps", "Spelling channel", "Never correct" (sub-rules of "Word autocorrect") | [Word autocorrect](#word-autocorrect) |
+| "Dropped taps: reach, skids and counters", "Dropped taps" | the reach and the bar's regions in [Reach and touch regions](#reach-and-touch-regions); skids in [Swipe typing](#swipe-typing) |
+| "Reach above the keys", "A stricter space bar", "A wider delete key" | [Reach and touch regions](#reach-and-touch-regions) |
 | "Undo ownership v2", "Undo last dictation" | [Undo last dictation](#undo-last-dictation); attribution in [Editing core](#editing-core-editingcore) |
 | "Trackpad safety", "Probes only where units can differ" | [Trackpad: units, probes and attribution](#trackpad-units-probes-and-attribution) and [Trackpad and keys](#trackpad-and-keys) |
 | "Measured Apple keyboard behavior" | [Trackpad: activation and motion](#trackpad-activation-and-motion) and [Delete key](#delete-key) |
@@ -104,8 +107,9 @@ iOS/
 ```
 
 - `Shared/`, `HostCore/` and `KeyboardCore/` import only Foundation, plus
-  CoreFoundation for Darwin notifications in `Shared/`, so they compile for
-  the macOS test runner. UIKit, SwiftUI, AVFoundation and Core ML belong in
+  CoreFoundation for Darwin notifications in `Shared/` and Accelerate for the
+  tap and word models in `KeyboardCore/`, so they compile for the macOS test
+  runner. UIKit, SwiftUI, AVFoundation and Core ML belong in
   `App/` and `Keyboard/`.
 - The app is compiled from `App/`, `Shared/`, `HostCore/` and these macOS
   sources:
@@ -421,9 +425,13 @@ suite. Every boolean defaults to on.
 | `cursorSensitivity`, `cursorAcceleration` | 0.25...4; default 1 | trackpad tuning (Diagnostics) |
 | `cursorTouchRate`, `cursorEventStepScale` | 1...1000 and 0.5...2.5 | the keyboard's measured touch rate, for Diagnostics |
 | `fieldLayoutOverrides` | at most 64 fingerprint keys → `messages` or `fullWidth` | [Field profiles](#field-profiles) |
+| `softKeyEdgesEnabled` | Bool | [Soft key edges](#soft-key-edges) ("Soft key edges" on Home) |
+| `autocorrectEnabled` | Bool | [Word autocorrect](#word-autocorrect) ("Autocorrect" on Home) |
 
 Out-of-range or malformed values read as the default and are not written. No
-transcript history is stored.
+transcript history is stored. The words autocorrect must never correct are a
+file in the App Group, not a setting ("Never correct",
+[Word autocorrect](#word-autocorrect)).
 
 ### DarwinNotifier (Shared/DarwinNotifier.swift)
 
@@ -774,9 +782,10 @@ transcripts or other user data.
     it continues.
   - Home: the session card (start or end, idle time left, the
     microphone-indicator explanation), model state, session length, the
-    dictation settings, "Use iPhone microphone", "Typing haptics", and links
-    to Try it, keyboard setup, Dictionary, Diagnostics, Report a bug and the
-    public privacy policy (opened in the browser only on a tap).
+    dictation settings, "Use iPhone microphone", a "Keyboard" section with
+    "Autocorrect", "Soft key edges" and "Typing haptics", and links to Try
+    it, keyboard setup, Dictionary, Diagnostics, Report a bug and the public
+    privacy policy (opened in the browser only on a tap).
   - Try it: two plain text fields for the destination-binding test and a
     multi-line cursor practice field with invented text. The text lives in
     view state only.
@@ -790,7 +799,8 @@ transcripts or other user data.
     "Release model now", the last preparation, and the last dictations'
     content-free measurements (audio seconds, wait and transcription time,
     compute units, foreground or background, memory footprint), held in
-    memory only.
+    memory only. Its "Autocorrect" section has only "Forget never-correct
+    words (N)" ("Never correct", [Word autocorrect](#word-autocorrect)).
 - **Self-test build** (`-D LOCALFLOW_SELFTEST`, never in normal or App Store
   builds). Environment variables: `LOCALFLOW_SELFTEST_AUDIO`,
   `LOCALFLOW_SELFTEST_EXPECTED`, `LOCALFLOW_SELFTEST_COMPUTE`,
@@ -810,8 +820,9 @@ transcripts or other user data.
   `DictationBarView` (the top row) in a `UIHostingController`, above the UIKit
   `KeyAreaView`, plus a SwiftUI `MenuPanelView` over the key area when the
   menu is open.
-  - Heights: the top row is 54 pt in portrait and 44 pt in compact height;
-    the key area is 216 pt and 162 pt (`KeyboardMetrics`).
+  - Heights (`KeyboardMetrics`): the top row is 48 pt in portrait and 40 pt
+    in compact height, with its controls 38 pt and 32 pt tall, centred in
+    it; the key area is 216 pt and 162 pt.
   - Its input view adopts `UIInputViewAudioFeedback`, so key presses play the
     system click, which follows the user's Keyboard Clicks setting.
   - It sets `hasDictationKey = true` in `viewDidAppear`, so iOS drops its own
@@ -820,8 +831,8 @@ transcripts or other user data.
     the menu panel's hosting view use `KeyAreaView.touchableBackground`, grey
     at 2% alpha, because in a keyboard extension iOS ignores touches on fully
     transparent points. A tap in a gap reaches the key area, whose nearest-key
-    hit testing covers every point; a tap in the bar's empty space does
-    nothing.
+    hit testing covers every point, and a tap in the bar outside its controls
+    goes to the keys ([Reach and touch regions](#reach-and-touch-regions)).
 - **`KeyboardDictationClient`** runs the keyboard's side of the protocol while
   visible:
   - With Full Access it polls status and results every 0.2 s, observes
@@ -849,7 +860,10 @@ transcripts or other user data.
   on a `CADisplayLink` (60–120 Hz) while a gesture is active and builds the
   TextKit layout of the field's profile (`TextKitAdapters`). **`SwipeEngine`**
   loads the swipe bundle and runs the Core ML encoder
-  ([Swipe typing](#swipe-typing)).
+  ([Swipe typing](#swipe-typing)). `KeyboardInput` also loads the soft key
+  edges model and, through **`AutocorrectLoader`**, the corrector from the
+  same bundle ([Soft key edges](#soft-key-edges),
+  [Word autocorrect](#word-autocorrect)).
 - **Feedback.** Haptics play only with Full Access and the matching setting:
   `keyHapticsEnabled` for a light impact on every key touch-down,
   `hapticsEnabled` for dictation (the mic, cancel and Undo taps, recording
@@ -859,8 +873,11 @@ transcripts or other user data.
 
 ### Top row
 
-`DictationBarView` (SwiftUI) renders `KeyboardDictationClient.state` and the
-swipe candidate strip only, so typing never re-renders it.
+`DictationBarView` (SwiftUI) renders `KeyboardDictationClient.state`, the
+candidate strip and the "Never correct" offer only, so typing never
+re-renders it. It reports its controls' frames to the key area, which takes
+every other point of the bar
+([Reach and touch regions](#reach-and-touch-regions)).
 
 - **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
   dictation control. While starting or recording it is a red "Stop" capsule
@@ -875,16 +892,19 @@ swipe candidate strip only, so typing never re-renders it.
   working. A tap outside the panel's card, or on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
-  status (model preparation, errors, notices). The swipe candidate strip
-  replaces the chips while it shows.
+  status (model preparation, errors, notices). The candidate strip, after a
+  swipe ([Swipe typing](#swipe-typing)) or a commit key
+  ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
+  The "Never correct" chip after an autocorrect revert replaces both while it
+  shows ([Word autocorrect](#word-autocorrect)).
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
 
 ## Keyboard core (KeyboardCore/)
 
-Everything here is Foundation-only, pure where possible, and tested on the
-Mac through the same entry points the UIKit layer calls. Context read from the
+Everything here is Foundation-only (plus Accelerate for the tap and word
+models), pure where possible, and tested on the Mac through the same entry points the UIKit layer calls. Context read from the
 proxy (`documentContextBeforeInput`, `documentContextAfterInput`,
 `documentIdentifier`, whether text is selected) is held in memory only, never
 stored, logged or transmitted, and dropped when the operation ends or the
@@ -905,6 +925,66 @@ keyboard hides.
   a swipe shows none.
 - `IsASCIICapable` is false, because dictation emits non-ASCII text.
 
+### Reach and touch regions
+
+Every point of the keyboard is a key's or a top-row control's; none is dead.
+The views are touchable ("Touchable backgrounds",
+[Keyboard extension](#keyboard-extension-keyboard)).
+
+- **Reach above the keys.** The key area also takes touches up to
+  `KeyboardMetrics.reachAboveKeys(compact:)` above it: the strip of the bar
+  below its controls, (bar height − control height) / 2, 5 pt in portrait and
+  4 pt in compact height. Such a touch is an ordinary key touch, and its
+  nearest key is in the top row. While the menu panel is open the reach
+  is 0.
+- **The bar outside its controls.** The key area also takes any touch in the
+  bar outside every control's frame
+  (`KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`, in
+  the bar's own coordinates; a point on a frame's edge is the control's). It
+  types the top-row key nearest it.
+  - The controls are the menu button, the Cancel button, the Start capsule,
+    the Undo and "Insert last" chips, the candidate strip and the "Never
+    correct" chip. The bar reports their frames as they lay out and forgets
+    them as they go (`BarControlFrames`).
+  - Each control's tap area is exactly the rectangle it reports
+    (`contentShape(Rectangle())`), so every point of the bar is a control's
+    or the keys'.
+  - The Start/Stop capsule's tap area, and the frame it reports, is its frame
+    inset by `StartCapsule.hitInset` (6 pt) on every side; it looks the same,
+    and the keys take the ring around it.
+  - Two places inside a control's frame take no tap: the 1 pt dividers
+    between candidates, and the Start capsule while it shows the transcribing
+    spinner.
+  - Until the bar has reported any frame, only the reach above the keys goes
+    to them.
+  - **Linger.** A control that moves or goes also keeps its previous frame
+    for `BarControlRegions.linger` (0.6 s) (`BarControlRegions`, pure),
+    because the bar animates its controls and reports their destination
+    frames.
+- **Callouts.** A top-row key's callout bubble stays below the keyboard's
+  top, where iOS clips an extension's drawing: its gap above the key is 4 pt
+  in portrait and 6 pt in compact height.
+- **A stricter space bar.** `KeyboardLayout.nearestKey` counts a point outside
+  the space bar's frame as `KeyboardLayout.spaceMissPenalty` (8 pt) farther
+  from it than it is. Inside its frame the space bar is unchanged, and so is
+  every other key. In portrait the space bar gets 2 pt of the 12 pt gap above
+  it and the bottom letter row 10 pt. It gets none of the gap to `123`, the
+  globe or Return, nor of the row gap in compact height, and still takes the
+  bottom padding.
+- **A wider delete key.** For the nearest key, the delete key's frame reaches
+  `KeyboardLayout.deleteReachLeft` (8 pt) further left, towards M; it looks
+  the same. A point inside M's frame is never within 8 pt of delete, so M
+  keeps its whole frame. Ties among keys at distance 0 go to the nearer
+  centre, then the earlier key.
+- **The globe** is a system button. It takes every touch whose nearest key is
+  the globe, including points outside its frame; the key area ignores those
+  touches.
+- Every user of the nearest key follows these rules: taps, the space bar's
+  hold, slides and soft key edges ([Soft key edges](#soft-key-edges)). So
+  does the reference: localflow-swipe `tap/geometry.py` `nearest_key` and
+  `tap/decide.py` `nearest_keys`, pinned by its Swift-generated layout
+  fixture.
+
 ### Typing model
 
 - **Touch-down.** Every key's touch-down except the globe emits `.keyDown`
@@ -913,7 +993,8 @@ keyboard hides.
   layer keys act on touch-down. Delete starts its deletion schedule on
   touch-down ([Delete key](#delete-key)).
 - **Characters** type at release, or at rollover. The key is the one nearest
-  the touch-down point and is never hit-tested again, so a tap that rolls onto
+  the touch-down point, or the one soft key edges decided at touch-down
+  ([Soft key edges](#soft-key-edges)), and is never hit-tested again, so a tap that rolls onto
   space, delete or Shift still types its own key. A system-cancelled touch
   types nothing.
 - **Space and Return** type at release or rollover, so a held space can
@@ -932,9 +1013,11 @@ keyboard hides.
   current one are both identified and differ; a nil identity never blocks a
   key. A change to another identified field drops held, uncommitted keys and a
   running swipe.
-- Keys are ignored while the trackpad runs or a swipe is in progress.
-- There is no autocorrect, prediction or learning. The only suggestions are
-  swipe typing's candidates.
+- Keys are ignored while the trackpad runs or a swipe that is not a skid is
+  in progress ([Swipe typing](#swipe-typing)).
+- The only predictions are soft key edges' and autocorrect's, from fixed
+  models ([Soft key edges](#soft-key-edges),
+  [Word autocorrect](#word-autocorrect)). Nothing is learned from typing.
 
 ### Shift, caps lock and spacing (TypingRules)
 
@@ -1213,11 +1296,25 @@ widths (`FieldLayoutParameters`):
 - A touch becomes a swipe when all of these hold: swipe typing is enabled
   (`swipeEnabled`: the swipe engine has loaded and the field is not secure
   text entry), the layer is letters, the touch started on a character key,
-  it is not committed, no other finger is held, and the finger has moved at
-  least `swipeThreshold` (half a letter-key pitch, `(letterWidth + keyGap) /
-  2`, about 20 pt in portrait) from its touch-down point.
+  it is not committed, no other finger is held, and a move (not the lift)
+  has taken the finger at least `swipeThreshold` (half a letter-key pitch,
+  `(letterWidth + keyGap) / 2`, about 20 pt in portrait) from its touch-down
+  point. A touch that first reaches the threshold at its lift is a tap of its
+  touch-down key.
 - Once a swipe, the touch types nothing, its callout ends, and other touches
-  are ignored until it ends.
+  are ignored until it ends, unless it is a skid.
+- **Skids.** A swipe is a skid while it is younger than
+  `KeyTouchModel.skidDuration` (0.15 s from its touch-down timestamp) and none
+  of its samples so far, the lift included, is a full letter pitch
+  (2 × `swipeThreshold`) or more from its touch-down point.
+  - A released skid types its touch-down key as a tap would (a soft tap when
+    soft taps are on, [Soft key edges](#soft-key-edges)), with the swipe's
+    field, instead of emitting `.swipe`.
+  - A new finger touching down during a skid first commits it as that tap, in
+    press order (rollover), and is then handled as usual. The skid's finger
+    stays as a committed character, so its moves and lift do nothing.
+  - A cancelled skid types nothing, as a cancelled swipe does.
+  - Timing uses the touch timestamps (the `t` of samples and events).
 - Samples are `SwipeSample(x:y:t:)`: key-area points and touch timestamps in
   seconds, from the touch-down point and every coalesced move, through the
   lift. At release the model emits `.swipe([SwipeSample], field:)`; a
@@ -1255,7 +1352,9 @@ generated from it.
 
 **Bundle.** `SWIPE_BUNDLE_DIR` holds `SwipeEncoder.mlmodelc/`, `lexicon.bin`
 and `bundle.json` (`format` 1; `decode`: `beam`, `top_k`, `length_power`,
-`freq_weight`, `length_bonus`; a SHA-256 for every other file). The build
+`freq_weight`, `length_bonus`; a SHA-256 for every other file; optional `tap`
+and `autocorrect` sections, [Soft key edges](#soft-key-edges) and
+[Word autocorrect](#word-autocorrect)). The build
 copies exactly the listed files into `LocalFlowKeyboard.appex/Swipe/`, checks
 each hash, and adds `bundle.json` and the licenses in `Resources/Swipe/`.
 Without `SWIPE_BUNDLE_DIR` the keyboard has no swipe typing and long drags
@@ -1284,6 +1383,8 @@ range, leaves swipe typing off.
 
 **Candidate strip.** After a swipe, the middle of the top row shows up to
 three candidates, cased the same way, the inserted word emphasized.
+Autocorrect shows its choices in the same strip after a commit key
+([Word autocorrect](#word-autocorrect)).
 
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
@@ -1291,9 +1392,26 @@ three candidates, cased the same way, the inserted word emphasized.
   closes.
 - The strip closes on any other key action, a dictation insert, a field
   change, the trackpad, an outside text change, or hiding.
-- While the strip shows, the first deletion (a tap, or a held delete's first
-  deletion) removes the whole swiped word, leaving the space before it.
-  Repeats continue as usual.
+- While the strip shows after a swipe, the first deletion (a tap, or a held
+  delete's first deletion) removes the whole swiped word, leaving the space
+  before it. Repeats continue as usual.
+
+**Swipe anchors** (`KeyboardEditor`, `ExpectedDocument`). The edit that put
+the swiped word in (an insertion, or a candidate's replacement) is recorded
+in the editor's `ExpectedDocument`: window rule, the word as its witness, no
+time limit. The strip and the pending space refer to that one record, and the
+editor holds at most one between calls. "Still ends with it and nothing else
+has edited the field", above, means the record holds:
+
+- the same field, the edit generation unchanged, and nothing selected;
+- the editor's text before the caret ends with the word;
+- the proxy shows the text after the caret the edit left and, before the
+  caret, either the text the edit left (confirmed) or, until the proxy has
+  been seen showing the edit, exactly its reading before the edit (pending).
+  Anything else contradicts it.
+
+Autocorrect's commits use the same record ("Commit record",
+[Word autocorrect](#word-autocorrect)).
 
 **Swipe trace** (`SwipeTrail`). While a touch is a swipe, the key area draws
 a trail of the last 0.15 s of samples (at least the last two), above the keys
@@ -1305,6 +1423,453 @@ memory only.
 
 **Privacy.** Swipe samples, candidates and decoder state stay in memory. They
 are never logged, stored or sent, and nothing is learned from them.
+
+### Soft key edges
+
+A tap near a key's edge may type the likelier neighbour, which a small
+character model predicts from the text before the caret. A tap near a key's
+centre always types that key.
+
+- **When.** On while `softKeyEdgesEnabled` is on (default on;
+  [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
+  bundle has a valid `tap` section whose default model has loaded. The
+  keyboard reads the switch when it appears. Without Full Access it cannot
+  read settings, and soft key edges are off. They are also off in secure
+  text entry. While they are off, a tap types its nearest key.
+- **Which taps.** Only a character tap on the letters layer by a finger that
+  touched down on a letter key (`Role.character`, not a slide). A skid is a
+  tap here ([Swipe typing](#swipe-typing)); swipes are not affected. Space,
+  delete, Return, Shift, the layer keys and the globe are never re-decided,
+  and taps on them never become letters. A re-decided tap types a letter or
+  a space.
+- **Soft taps.** `KeyTouchModel.softTapsEnabled` is true while soft key edges
+  or autocorrect has its model loaded, outside secure text entry. Such a
+  tap carries its touch-down point. With soft key edges off it types its
+  nearest key; autocorrect still records the point
+  ([Word autocorrect](#word-autocorrect)).
+- **Decided at touch-down.** The key is decided right after the touch-down's
+  effects, once earlier fingers have committed (rollover). The key area asks
+  `KeyAreaViewDelegate.keyArea(_:decideTap:x:y:field:)` and records the
+  answer with `KeyTouchModel.decideTap(_:as:)`.
+  - The callout shows the decided key, over that key. A space has no
+    callout.
+  - At release or rollover the tap emits `.typeDecided(key, x:, y:, field:)`.
+  - A tap with no decision emits `.tap(KeyAction, x:, y:, field:)` with its
+    nearest key and touch-down point, and is decided when it types. If soft
+    taps are off by then (a secure field), the nearest key types.
+  - If the keys move under the touch-down point before the tap types (a
+    resize or a rebuild of the letters layer), so that its nearest key is no
+    longer the one recorded at touch-down, the recorded key types. A decision
+    goes back to the recorded key, which the callout then shows too.
+  - A finger held through a change of the letters layer's geometry keeps its
+    key (or decision) but types with no point (`.type`), and is not
+    re-decided.
+- A tap bound to another identified field is not predicted (the editor
+  refuses it).
+
+**Decision** (`TapDecoder`, pure; reference: localflow-swipe `tap/decide.py`,
+rule "strict", and `tap/touch.py`). Lengths are in letter pitches: the
+distance between neighbouring top-row letter centres. The touch model and the
+rule are the bundle's `tap` section's.
+
+- **Centre box.** If the touch-down point is inside the nearest key's frame
+  shrunk about its centre to `centre` of its width and height, the nearest
+  key types. The nearest key and its frame follow
+  [Reach and touch regions](#reach-and-touch-regions).
+- **Otherwise** score = log prior + log touch likelihood for every letter and
+  the space bar, and the best replaces the nearest key only if:
+  - its score beats the nearest key's by at least log(`margin`) (posterior
+    odds of `margin`:1)
+  - the recent surprise is at most `max_surprise`
+- **Touch likelihood.** A tap aimed at a key lands at its centre plus
+  (0, `offset_y`) plus noise. The noise is a mixture: weight
+  1 − `tail_weight` of a Gaussian with sd (σ, σ·`ratio`), and `tail_weight`
+  of the same scaled by `tail_scale`. For the space bar the target is uniform
+  along the middle `space_spread` of its width. The likelihood ignores the
+  nearest-key penalties, so a tap in the gap above the space bar may still
+  type a space when the text strongly predicts one.
+
+**Prior** (`TapPrior`, pure; reference: localflow-swipe `tap/neural.py` and
+`tap/export_ios.py`):
+
+- **Context.** The text the character would follow
+  (`KeyboardEditor.tapPriorContext`): the text before the caret as the editor
+  knows it, plus the space the editor would insert first after a swiped word
+  ("Space before a tapped word", [Swipe typing](#swipe-typing)). That text is
+  the proxy's `documentContextBeforeInput`, or the typing tail while the
+  proxy has not yet shown the keyboard's own edits, so a tap decided right
+  after a rollover follows the letter just typed.
+  - The typing tail counts only in the field it was typed in: if the proxy
+    already serves another field, before any callback reports it, the
+    proxy's text is the context. Fields without an identity cannot be told
+    apart, as everywhere in the keyboard: while neither has one, the tail
+    counts.
+  - It is normalized as `normalize_context`: only the current line counts
+    (after the last line break); accents are dropped (NFKD, combining marks
+    removed), the text is lowercased, and curly apostrophes and backticks
+    become "'"; a–z, space and "'" stay, any digit becomes "0", `. ! ?`
+    become "." and anything else becomes "#"; whitespace runs become one
+    space, leading whitespace is dropped, and trailing whitespace stays as
+    one space.
+- **Model.** A one-layer character GRU in the "LFTP" version 1 file format
+  (`tap/export_ios.py`). A context shorter than its `context_length` is read
+  as BOS then the context; a longer one as its last `context_length` symbols
+  from a zero state. The prior is log_softmax(logits / temperature) over a–z
+  and space.
+- **Recent surprise.** The mean, over the context's last `surprise_window`
+  letters and spaces, of −log2 P(that character | the context before it),
+  each computed the same way; 0 when there are none.
+- **Running.** The prior runs on the main thread when a tap is decided. It
+  caches log probabilities by normalized prefix in memory (at most
+  `TapPrior.cacheLimit`, 64 entries), bound to the field they came from, so a
+  typical tap costs one GRU step. Matrix products use Accelerate.
+- **Parity.** `iOS/Tests/TapFixtures.swift` is generated by
+  `python -m tap.export_ios fixtures` from synthetic weights, contexts and
+  taps.
+
+**Bundle** (`SoftKeyEdgesManifest`). The models ride in the swipe bundle as
+`tap/gru-*.bin`, listed with their SHA-256 in `bundle.json` like every other
+file, with an optional `tap` section:
+
+- `format` 1
+- `models`: size name to path, e.g. `"67k": "tap/gru-e32-h128.bin"`; at least
+  one, each path inside the bundle
+- `default_model`: one of `models`
+- `touch`: `sigma`, `ratio`, `offset_y`, `tail_weight`, `tail_scale` and
+  `space_spread`; all finite, `sigma`, `ratio` and `tail_scale` above 0,
+  `tail_weight` in [0, 1), `space_spread` in (0, 1]
+- `rule`: `centre` (0.3–0.9), `margin` (1–10), `max_surprise` (2–8 bits) and
+  `surprise_window` (1–64)
+
+The keyboard runs `default_model` with the touch model and rule as given;
+there are no settings for them. A bundle without the section has no soft key
+edges, and an invalid section, or a model file that is missing or invalid,
+turns off soft key edges only, never the swipe bundle. The default model
+loads off the main thread when the keyboard appears with the switch on; until
+it has loaded, taps type the nearest key.
+
+**Privacy.** The context, its normalized form, the cache and every prediction
+stay in the instance's memory. They are dropped when the keyboard hides or the
+field changes, and are never logged, stored, sent or learned from. The models
+are fixed; nothing on the device trains them.
+
+### Word autocorrect
+
+When a commit key types right after a word the keyboard typed, the word may
+first be replaced by a lexicon word. A Delete right after puts the typed word
+back.
+
+- **When.** On while `autocorrectEnabled` is on (default on;
+  [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
+  bundle has a valid `autocorrect` section whose default model has loaded.
+  The keyboard reads the switch when it appears. Without Full Access it
+  cannot read settings, and autocorrect is off. Until the model has loaded,
+  words commit as typed.
+- **Commit keys.** Space, Return, or one of `. , ! ? ; :` (from any layer).
+- **The word** is the keyboard's own ("Owned words" below): the run of letters
+  and apostrophes it typed, without leading or trailing apostrophes
+  (`tap/words.py` `tokens`).
+- **Not corrected** when:
+  - the keyboard does not own it: text it did not type, a swipe, or anything
+    in between that could have moved the caret;
+  - it holds a character other than a–z, A–Z and apostrophes;
+  - it was reverted earlier in this keyboard instance ("Revert" below), or it
+    is a never-correct word ("Never correct" below);
+  - text is selected (the commit key replaces the selection);
+  - the field is secure text entry, or turns autocorrection off
+    (`autocorrectionType == .no`, as SwiftUI's `.autocorrectionDisabled()`
+    does). `.default` and `.yes` are corrected.
+
+**Owned words** (`WordTapRecord`). A word is corrected only if this keyboard
+typed every character of it, in this keyboard appearance and this field,
+right after a space or commit key (any character other than a letter or
+apostrophe) it also typed. Nothing may come in between: no caret move,
+trackpad gesture, selection change, host-reported text change it did not
+make, swipe, dictation, undo, or hiding and showing.
+
+- **Field start.** The start of a field counts as such a boundary only where
+  the keyboard sees the field empty (nothing before or after the caret,
+  nothing selected): when it appears, when another field becomes current, and
+  after a host-reported change (a field the host emptied).
+- **The record is the word.** The record holds the word's characters as
+  typed, outer apostrophes included, each with the touch-down point of the
+  tap that typed it (key-area points), or none (another layer). It is the
+  source of truth: the word is never read from the proxy. Only the text
+  before it, for the word model's context, comes from the editor's text
+  before the caret.
+- **Points.** A tap is recorded with the key it typed, after soft key edges
+  decided it. With autocorrect on, letter taps are soft taps and carry their
+  point ([Soft key edges](#soft-key-edges)). When the letters layer's
+  geometry changes between the taps and the commit key (a resize, a
+  rotation, the globe key shown or hidden), the record keeps its characters
+  and every recorded point becomes none, as do the points a pending revert
+  would restore. Points are never rebased.
+- **Deletion.** Delete within the word removes its last characters. Deleting
+  past the word's start, or any other edit, leaves no word owned until the
+  keyboard's next own separator.
+- **Owned and shown by the host.** A correction also needs the proxy's current
+  `documentContextBeforeInput` to end with exactly the owned word, because a
+  host may reject typed characters (HTML `maxlength`, a native length limit).
+  If the word did not start at the field's start, the character before it
+  must be the separator the keyboard typed; at a field's start, the reading
+  must be exactly the word. A missing, lagging or different reading vetoes
+  the correction: the commit key types as usual and the word is disowned.
+  This check only ever blocks a correction. **A lagging proxy means a missed
+  correction, never a wrong one.**
+- **Replacement.** The correction deletes exactly the word's characters the
+  keyboard typed (and any apostrophes after them), counted from the record,
+  so it never touches text the keyboard did not type, wherever the host has
+  the caret. Trailing apostrophes stay after the replacement. The correction
+  is inserted first, then the commit key's text as its own `insertText`, so a
+  host that acts on `text == "\n"` (Send, Next) still sees Return alone.
+
+**Correction** (`Autocorrector`, pure; reference: localflow-swipe
+`tap/autocorrect.py`, the contract there, which this port matches on the
+generated fixtures). Inputs: the normalized context before the word
+(`TapPrior.normalizeContext`), the word lowercased (a curly apostrophe as
+"'"), its points (none for characters without one), the letters layout
+(`[PlacedKey]`), the touch model (`TapDecoder.TouchModel`) and
+`AutocorrectParams`. Output: the word to commit, the typed word itself (keep)
+or a lexicon form.
+
+- **Candidates:** lexicon keys within optimal-string-alignment distance
+  `maxEdits` (`maxEditsShort` for words of at most `shortLength` letters).
+- **Score:** channel (touch likelihood of each tap at the aligned letter, plus
+  omission, insertion and transposition costs; insertions expect a repeat of
+  the previous letter or a slip onto its neighbours; with `wSpelling` > 0
+  each edit may also be a spelling error, "Spelling channel" below) +
+  `lmWeight` × word-model log probability given the sentence's previous
+  words.
+- **Margin:** the best replaces the word only if it beats keeping the word by
+  log(margin): `marginOOV` for a word outside the lexicon, `marginKnown` for a
+  lexicon word, `marginApostrophe` when the best is the same word with
+  apostrophes ("cant" → "can't"). An infinite margin never replaces.
+- **Keep.** A result equal to the typed word ignoring case keeps the word.
+- **Case.** The result is lowercased, then takes the typed word's case: all
+  capitals (two letters or more) → all capitals; a capital first letter →
+  capital first letter; otherwise lowercase.
+
+**Word models** (`WordModel`; reference: `tap/wordlm.py`, `tap/wordlstm.py`).
+All give log P(word | the sentence's previous words) over the lexicon's forms
+plus "<unk>" and "</s>", and cache by sentence context:
+
+- `unigram` (W0): the lexicon's AOSP frequencies; no file.
+- `ngram` (W1): an interpolated Kneser-Ney word trigram, pruned to a size
+  budget; "LFWN" file.
+- `lstm` (W2): a small word LSTM with tied embeddings; "LFWR" file. Matrix
+  products use Accelerate.
+
+The binary formats ("LFWL" lexicon, "LFWN", "LFWR", "LFWE" spelling tables)
+are defined in localflow-swipe `tap/export_word_ios.py`, little-endian, and
+read by mapping the file (the tables are not copied into memory; the small
+LFWE tables are widened to Double once). Parity:
+`iOS/Tests/AutocorrectFixtures.swift` is generated by
+`python -m tap.export_word_ios fixtures` from synthetic lexicons and models.
+
+**Spelling channel.** The channel above models the finger: a tap far from the
+intended key, a doubled or slipped letter. The spelling channel adds a second
+explanation of each edit: the writer misspelled the word and the finger typed
+it as aimed. Reference: localflow-swipe `tap/autocorrect.py` ("Spelling
+channel") and `tap/spelling.py` (`SpellingTables`); this port matches it on
+the fixtures and on a brute-force transcription in the tests.
+
+- **Tables** (`SpellingTables`): natural-log edit probabilities, letters a–z
+  0–25 and 26 for the start of a word (START): `sub[c, x]` (x typed for
+  intended c), `dele[p, c]` (c left out after p), `ins[p, x]` (x typed extra
+  after p), `trans[c, d]` ("dc" typed for "cd"). The `sub` and `trans`
+  diagonals are −∞; every other entry is finite and at most 0.
+- **Score.** With `wSpelling` > 0 and tables, each step of an alignment that
+  is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its
+  score above and, with m = log(1 − pOmit − pInsert − pTranspose) and t(x)
+  the step's tap's touch log likelihood at key x (0 for a letter without a
+  tap typed as x):
+  - typed x at candidate letter c ≠ x: m + `sub[c, x]` + t(x) (a letter
+    without a tap can be a substitution through this term only);
+  - candidate letter c omitted after candidate letter p (START for the
+    first): `dele[p, c]`;
+  - typed x inserted after candidate letter c (START before the first; the
+    motor term still judges it against the first): m + `ins[c, x]` + t(x);
+  - candidate letters p, c typed as c, p: 2m + `trans[p, c]` + the motor
+    term's two touch log likelihoods.
+
+  A match has no spelling alternative, so keep's score is unchanged. Edits
+  count against the limit as before. Suggestions rank the same scores.
+- **Off is exact.** `wSpelling` 0 (the default) ignores the tables: the
+  scores are the motor channel's, bit for bit.
+- **Invalid weights.** A negative, NaN or infinite `wSpelling` keeps every
+  word. A corrector without tables ignores `wSpelling` and scores motor-only;
+  the bundle checks keep a preset from reaching that.
+- **Data.** The tables are aggregated edit probabilities learned in
+  localflow-swipe from Wikipedia's "Lists of common misspellings/For
+  machines" (CC BY-SA 4.0) and the Aalto typing37k dataset (Palin et al.
+  2019). No word or sentence of either ships.
+  `Resources/Swipe/LICENSE-spelling-data.txt` credits both and rides in the
+  bundle with the other licences.
+- **Cost.** The omission and transposition terms mixed with the motor costs
+  are computed once per parameters and cached, and three rows of 26 per typed
+  letter once per word, before the candidates are scored. The alignment's
+  inner loops only read them, with no allocation.
+
+**Commit record.** A commit that shows the strip or arms a revert (below)
+records its edit in the editor's `ExpectedDocument`, the same record as a
+swiped word's ("Swipe anchors", [Swipe typing](#swipe-typing)): the deleted
+word and the inserted correction (or nothing), then the commit key's text,
+witnessed by the strip's word (the correction when one was made) followed by
+the commit key's text. The strip and the pending revert share that one
+record, so the editor holds at most one between calls, the swipe anchors'
+included. "The record holds" below means the swipe anchors' rule for it.
+
+**Revert.** Delete pressed right after an autocorrection, with nothing typed
+or moved in between, replaces the correction and its commit key's text with
+the typed word, the caret right after it. It deletes only what the keyboard
+inserted.
+
+- It applies only in an identified field with the identity the correction
+  was made in, while the commit record holds. Return never arms a revert, as
+  it can move focus before the proxy reports the next field. Otherwise Delete
+  is a plain Delete.
+- A revert restores the word's record, owned, and remembers the typed word,
+  lowercased, as reverted for the life of the keyboard instance (in memory,
+  across hiding). Reverted words are checked before the corrector is asked.
+- Any other key action (Shift and layer keys included), a swipe, dictation, a
+  caret move, the trackpad, a field change and hiding end the pending revert.
+- A revert never stores the word; it makes the "Never correct" offer (below).
+
+**Suggestion strip.** After a commit key other than Return (which may move
+focus), the candidate strip ([Swipe typing](#swipe-typing)) shows what
+autocorrect considered:
+
+- **Its words:** the typed word first, then the correction (if any), then the
+  corrector's suggestions, up to three, each in the typed word's case with
+  its trailing apostrophes. The word in the field is emphasized.
+- **When:** only when there is a choice: a correction was made, or the word
+  is outside the lexicon and has suggestions. A lexicon word kept as typed
+  shows no strip, so ordinary typing keeps the chips.
+- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms ranked
+  exactly as the correction ranks its candidates (channel + `lmWeight` ×
+  model log probability; ties to the higher frequency, then the first form),
+  with no margin. None for a lexicon word, or where the corrector keeps the
+  word without looking. The best suggestion is the correction whenever there
+  is one.
+- **A choice** replaces the word and puts the commit key's text back after
+  it, while the commit record holds; otherwise the tap does nothing and the
+  strip closes. Choosing the typed word over a correction is a revert (it is
+  remembered as one); choosing the correction back undoes that. A choice ends
+  the pending revert. The next word is still the keyboard's own.
+- **Closing:** any key closes it, as after a swipe. Delete deletes one
+  character (or reverts a correction), never the whole word.
+
+**Never correct.** A revert offers to keep the word uncorrected for good, and
+nothing is stored unless the user accepts:
+
+- **The offer** (`KeyboardEditor.neverCorrectOffer`): right after a revert (a
+  Delete right after a correction, or the typed word chosen on the strip),
+  the top row shows a chip, `Never correct “Kanye”`: the word as typed,
+  without trailing apostrophes. Only with a store bound (below) and a word
+  the store can keep.
+- **Where:** in the middle of the top row, over the chips, the status line
+  and the candidate strip, which after a strip revert stays open underneath
+  and shows again only if the offer goes without anything else closing it.
+  Dictation's own UI wins (`NeverCorrectOffer.barShows`): while a dictation
+  is starting, recording or transcribing, or its Undo chip shows, the offer
+  is not shown, and it still ends as below.
+- **Accepting** (`acceptNeverCorrect`) adds the word to the store, makes the
+  words in memory what the store now holds, ends the offer and closes the
+  strip. The word is then never corrected or offered, in this instance and
+  every later one, in any case, and the corrector is not asked.
+- **Ending without storing:** any key action (a Delete after the revert,
+  Shift and layer keys included), another strip choice (the correction chosen
+  back), a swipe, dictation or its undo, the trackpad, a caret move or outside
+  edit, another field, and hiding. A rotation and the host's echoes of the
+  revert do not end it. It has no timeout.
+- **The store** (`NeverCorrectStore`, Shared): one JSON file,
+  `{"schema": 1, "words": [...]}`, least recently added first, at
+  `<App Group container>/Library/Application Support/LocalFlowAutocorrect/never-correct-words.json`.
+  The directory is created excluded from backup (best effort, as for the
+  dictation store), so the words stay on this iPhone. Data protection class A
+  on devices: while locked a read gives no words and a write fails, leaving
+  the file as it was.
+- **Bounds:** at most 1,000 words (`NeverCorrectWords.limit`); adding one past
+  that drops the least recently added, and adding a stored word again makes
+  it the most recent. Only words as the corrector sees them: 1–48 characters
+  of lowercase a–z and `'`, starting and ending with a letter. A longer word
+  is reverted for the instance, without an offer.
+- **Robust:** writes go to a staging file renamed over the file, so a reader
+  sees the old or the new list; a failed write leaves the file as it was, and
+  the words in memory still hold the accepted word. A missing, unreadable,
+  corrupt or oversized (over 256 KB) file, or another schema, reads as no
+  words, and the next accepted word replaces it; invalid or repeated entries
+  in a valid file are dropped. A write first reads the file, so a clear made
+  since is kept. Staging files a crashed write left (older than a minute) go
+  at the next write.
+- **Serialized:** an add (its read, change and write) and a clear each hold
+  an exclusive advisory `flock` on
+  `Library/Application Support/.never-correct.lock`, beside the store's
+  directory, so a clear (which removes the directory) keeps it. The app and
+  the keyboard open the same file in the App Group, so a clear never lands
+  between an add's read and its write, and a cleared word comes back only
+  with a new tap. The lock is held for one small read and write, never across
+  a suspension; if the lock file cannot be opened the operation runs
+  unlocked. Reads take no lock.
+- **Loading:** the keyboard binds the store (`useNeverCorrectStore`) each time
+  it appears with autocorrect on, which loads the words and replaces those in
+  memory. With autocorrect off or without Full Access it binds none and holds
+  none of them.
+- **Clearing:** Diagnostics' "Autocorrect" section has "Forget never-correct
+  words (N)", with N the stored count. The app reads only the count, never
+  the words, when the section appears and each time the app becomes active.
+  The button is enabled even at a count of 0 (whenever the App Group is
+  available), since the count can be stale and a clear also removes a corrupt
+  or staging file that reads as no words. It removes the
+  store's directory. The keyboard is the file's only writer and the app only
+  removes it. A keyboard instance still in memory picks the clear up the next
+  time it appears; its own reverted words hold until the instance ends.
+
+**Bundle** (`AutocorrectManifest`, `AutocorrectLoader`). The files ride in the
+swipe bundle like the tap models, listed with their SHA-256 in `bundle.json`,
+with an optional `autocorrect` section:
+
+- `format` 1
+- `lexicon`: path of the LFWL file
+- `models`: name to `{"kind": "unigram" | "ngram" | "lstm", "path": ...}`;
+  `default_model`, one of them
+- `presets`: model name to preset name to a params object (`p_omit`,
+  `p_insert`, `p_transpose`, `max_edits`, `max_edits_short`, `short_length`,
+  `min_length`, `lm_weight`, `log_oov`, `margin_oov`, `margin_known`,
+  `margin_apostrophe`, `w_repeat`, `w_slip`, optionally `w_spelling`;
+  `null` margins are infinite, and a missing `w_spelling` is 0);
+  `default_preset`
+- `touch`: optional; the touch model the corrector assumes, else the `tap`
+  section's, else `TapDecoder.TouchModel.standard`
+- `spelling`: optional; path of the LFWE spelling tables
+
+The keyboard runs `default_model` with its `default_preset` preset as given;
+there are no settings for the model, the preset or the parameters. The
+section's checks:
+
+- Every path stays inside the bundle. A `unigram` model has no path; the
+  others must have one.
+- Every model has presets, which include `default_preset`, and no preset
+  names a model the section lacks.
+- Each preset's values are in their domains: probabilities in (0, 1),
+  margins ≥ 1 or null, edits 0–3, lengths 1–32, `log_oov` < 0, `w_repeat` +
+  `w_slip` at most 1, `w_spelling` finite and ≥ 0.
+- A preset with `w_spelling` > 0 needs a `spelling` file.
+- The loader reads the LFWE file strictly (magic, version, exact length,
+  every value in the tables' domain).
+
+An invalid section, or a named file that is missing or invalid, means no
+corrector. It never turns off the swipe bundle or soft key edges. The default
+model loads off the main thread when the keyboard appears with the switch on.
+A correction runs on the main thread at the commit key.
+
+**Privacy.** The context, the word, its points, the strip's words, the
+reverted words and a "Never correct" offer stay in the instance's memory. They
+are dropped when the keyboard hides (the reverted words when the instance
+ends), and are never logged, stored, sent or learned from, with one
+exception: a word the user taps "Never correct" for is stored on this iPhone
+only, in the never-correct store, until the user clears it in Diagnostics. The
+app reads only the count. The models are fixed.
 
 ## Build and targets (iOS/Makefile)
 
@@ -1368,7 +1933,8 @@ are never logged, stored or sent, and nothing is learned from them.
   UserDefaults (`CA92.1` for the app's own preferences, `1C8F.1` for the App
   Group settings; the keyboard declares only `1C8F.1`), system boot time
   (`35F9.1`, elapsed-time measurement) and file timestamps (`C617.1`,
-  expiring the App Group's dictation files). A new use of a required-reason
+  expiring the App Group's dictation files and the never-correct store's
+  leftover staging files). A new use of a required-reason
   API must be added to the manifest and to the checker's required reasons.
 - **Packaging.** `make ipa` zips exactly the signed app under `Payload/`.
   `make appstore-check` runs `scripts/check-appstore-bundle.sh` on the app
@@ -1398,10 +1964,11 @@ are never logged, stored or sent, and nothing is learned from them.
 5. The keyboard reads `documentContextBeforeInput`,
    `documentContextAfterInput`, `documentIdentifier` and whether text is
    selected in memory only, for spacing, result binding, shift, cursor
-   movement, word deletion, Undo and swipe insertion. It never stores, logs
-   or transmits them, and drops them when the operation ends or the keyboard
-   hides. What it persists about fields is content-free: trait fingerprints
-   and layout choices.
+   movement, word deletion, Undo, swipe insertion, predicting the next letter
+   (soft key edges) and correcting the word before the caret (autocorrect).
+   It never stores, logs or transmits them, and drops them when the operation
+   ends or the keyboard hides. What it persists about fields is content-free:
+   trait fingerprints and layout choices.
 6. Capture requires a session started in the foreground. Recording requires a
    fresh keyboard intent that the host admits. Recording ends at the maximum
    duration or when the keyboard has been gone too long. Device lock cancels
@@ -1411,6 +1978,10 @@ are never logged, stored or sent, and nothing is learned from them.
    never in the App Group, a log or a bug report.
 8. A bug report is a draft the user reviews and sends; it carries only version
    and generic device metadata.
+9. The only words the keyboard stores are those the user taps "Never correct"
+   for, in the never-correct store on this iPhone until the user clears it;
+   the app reads only their count ("Never correct",
+   [Word autocorrect](#word-autocorrect)).
 
 ## Testing and verification
 
@@ -1418,7 +1989,7 @@ are never logged, stored or sent, and nothing is learned from them.
 
 - The host test binary is compiled for macOS from `Shared/`, `HostCore/`,
   `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
-  `Sources/Dictionary/*.swift`,
+  `Keyboard/AutocorrectLoader.swift`, `Sources/Dictionary/*.swift`,
   `Sources/Parakeet/LocalParakeetCore.swift`,
   `Sources/Parakeet/ParakeetSilenceCompactor.swift` and `Tests/`. Every pure
   rule in this contract has tests there. They use synthetic fixtures only.
@@ -1489,6 +2060,18 @@ merge (AGENTS.md).
   (the keyboard is universal, the app runs in iPhone compatibility mode).
 - **Swipe typing:** recognition, the candidate strip, the trace, and spacing
   around tapped words.
+- **Touch regions:** fast taps on the top and bottom rows, and taps in the bar
+  outside its controls, type without dropped letters; the Start capsule and
+  the chips still take their taps; a quick skid types its key; a low tap
+  above the space bar types the bottom row; delete takes taps just right
+  of M.
+- **Soft key edges and autocorrect:** the Home switches (applied when the
+  keyboard next appears; off without Full Access); edge taps typing the
+  likelier neighbour and centre taps never re-decided; corrections at each
+  commit key and their case; revert, the strip after a commit key, the
+  "Never correct" offer, a kept word surviving a keyboard restart, and the
+  Diagnostics forget button; swiped words and password fields left alone;
+  Notes, Messages, Safari and a WebKit field with a lagging proxy.
 - **App:** privacy policy link; Report a bug draft and its no-email-app
   fallback; dictionary edits and "Find strength".
 

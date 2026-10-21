@@ -37,10 +37,11 @@ import Foundation
 ///
 /// The owners today and how each one's rule maps onto this one. Only the swipe anchors use this type
 /// yet; the others are later migrations, and the differences listed are what those must reconcile.
-/// - **Swipe anchors** (`KeyboardEditor`, the strip and the pending space): `.window`, the witness is the
-///   swiped word, one expectation at a time, no time limit (`lifetime` `.infinity`). The editor adds the
-///   conditions that are not about the reading: no selection, its own field, and its best estimate of the
-///   text before the caret ending with the word.
+/// - **Swipe anchors** (`KeyboardEditor`, the strip and the pending space, and autocorrect's strip and pending
+///   revert after a commit key, which share one record): `.window`, the witness is the swiped word (after a
+///   commit key, the word and the key's text), one expectation at a time, no time limit (`lifetime`
+///   `.infinity`). The editor adds the conditions that are not about the reading: no selection, its own
+///   field, and its best estimate of the text before the caret ending with the word.
 /// - **`EditingCore.ownEdits`** (a host's reports of our edits): `.exact` on the whole context, at most
 ///   32 for 1 s. Differences: it keeps only hashes, no text; a report matching any owed state settles
 ///   the oldest owed one (consumption, not latching); an outside change does not end what is owed (no

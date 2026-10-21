@@ -15,6 +15,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private lazy var input = KeyboardInput(controller: self, keyArea: keyArea)
     private let chrome = KeyboardChrome()
     private let swipeStrip = SwipeStripModel()
+    private let neverCorrect = NeverCorrectPromptModel()
+    private let barControls = BarControlFrames()
     private var bar: UIHostingController<DictationBarView>?
     private var menuPanel: UIHostingController<MenuPanelView>?
     private var barHeight: NSLayoutConstraint?
@@ -25,7 +27,18 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// predictive bar's place, a little taller for the Start capsule, as on Wispr Flow's keyboard.
     private var heights: (bar: CGFloat, keys: CGFloat) {
         traitCollection.verticalSizeClass == .compact
-            ? (44, CGFloat(KeyboardMetrics.compactHeight)) : (54, CGFloat(KeyboardMetrics.regularHeight))
+            ? (CGFloat(KeyboardMetrics.compactBarHeight), CGFloat(KeyboardMetrics.compactHeight))
+            : (CGFloat(KeyboardMetrics.barHeight), CGFloat(KeyboardMetrics.regularHeight))
+    }
+
+    /// Whether a touch above the key area (in its coordinates) goes to the keys: one in the bar away from its
+    /// controls (ARCHITECTURE.md, "Reach above the keys"), never while the menu panel is open.
+    private func keysTakeTouch(above point: CGPoint) -> Bool {
+        guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
+        let inBar = keyArea.convert(point, to: barView)
+        return KeyboardMetrics.barPointGoesToKeys(x: Double(inBar.x), y: Double(inBar.y), barHeight: Double(barView.bounds.height),
+                                                  compact: traitCollection.verticalSizeClass == .compact,
+                                                  controls: barControls.rects)
     }
 
     override func loadView() {
@@ -45,18 +58,25 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
         input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
+        // Read at each commit key: autocorrect needs the App Group (Full Access).
+        input.sharedSettings = { [weak self] in self?.fieldSettings }
         input.onSwipeStripChanged = { [weak self] in
             guard let self else { return }
             swipeStrip.show(input.swipeStrip)
+        }
+        input.onNeverCorrectOfferChanged = { [weak self] in
+            guard let self else { return }
+            neverCorrect.show(input.neverCorrectOffer)
         }
         // Swipe typing comes on once its bundle has loaded off the main thread.
         input.loadSwipeEngine()
 
         let bar = UIHostingController(rootView: DictationBarView(
-            client: client, chrome: chrome, swipe: swipeStrip,
+            client: client, chrome: chrome, swipe: swipeStrip, neverCorrect: neverCorrect, controls: barControls,
             onMenu: { [weak self] in self?.setMenu(visible: self?.chrome.isMenuOpen != true) },
             onAction: { [weak self] in self?.setMenu(visible: false) },
-            onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) }))
+            onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) },
+            onNeverCorrect: { [weak self] in self?.input.acceptNeverCorrect() }))
         bar.view.backgroundColor = KeyAreaView.touchableBackground
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false
@@ -87,6 +107,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         ])
         self.barHeight = barHeight
         self.totalHeight = totalHeight
+        keyArea.takesTouchAbove = { [weak self] point in self?.keysTakeTouch(above: point) ?? false }
         registerForTraitChanges([UITraitVerticalSizeClass.self]) { (controller: KeyboardViewController, _: UITraitCollection) in
             let heights = controller.heights
             controller.barHeight?.constant = heights.bar
@@ -103,6 +124,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.viewWillAppear(animated)
         documentDidChange()
         input.reset()
+        // Soft key edges and autocorrect (ARCHITECTURE.md, "Soft key edges" and "Word autocorrect") are read when
+        // the keyboard appears, each on or off with the bundle's defaults; both stay off without Full Access.
+        let settings = fieldSettings
+        input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false)
+        input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false)
+        // The words never to correct, from the App Group (which `fieldSettings` already needs Full Access for).
+        input.configureNeverCorrect(store: settings?.autocorrectEnabled == true
+                                    ? LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:)) : nil)
         client.start()
     }
 
@@ -156,7 +185,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// written (no Full Access).
     private var layoutChoices: [String: FieldLayout] = [:]
 
-    /// Remembered choices live in the App Group, which needs Full Access.
+    /// Remembered choices, and the soft-key-edge and autocorrect switches, live in the App Group, which needs
+    /// Full Access.
     private var fieldSettings: LocalFlowSettings? {
         guard hasFullAccess, let configuration = LocalFlowConfiguration.main else { return nil }
         return LocalFlowSettings(configuration: configuration)

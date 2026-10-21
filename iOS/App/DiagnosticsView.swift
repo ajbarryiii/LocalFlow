@@ -1,8 +1,9 @@
 import CoreML
 import SwiftUI
 
-/// Device experiments: cursor tuning, the runtime (compute units read-only, as the policy is fixed)
-/// and content-free measurements of recent dictations, held in memory only.
+/// Device experiments: cursor tuning, the autocorrect never-correct list (only its count is shown), the
+/// runtime (compute units read-only, as the policy is fixed) and content-free measurements of recent
+/// dictations, held in memory only.
 struct DiagnosticsView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
@@ -10,6 +11,8 @@ struct DiagnosticsView: View {
     var body: some View {
         List {
             CursorTuningSection(settings: host.settings.settings)
+
+            NeverCorrectSection()
 
             Section("Runtime") {
                 LabeledContent("Model", value: modelText)
@@ -123,6 +126,40 @@ private struct CursorTuningSection: View {
                 .accessibilityValue(String(format: "%.2f times", value.wrappedValue))
                 .accessibilityIdentifier(identifier)
         }
+    }
+}
+
+/// The words the user asked autocorrect never to correct, in the App Group (ARCHITECTURE.md, "Word
+/// autocorrect", Never correct): only their count is read here, never the words, and the button clears them.
+private struct NeverCorrectSection: View {
+    private static let store = LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:))
+    @State private var count = 0
+    /// The keyboard may store a word while the app is in the background: the count is read again on return.
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Section {
+            // Always enabled (with a store): the count can be stale, and a clear also removes a corrupt file or a
+            // staging file a crashed write left, which read as no words.
+            Button("Forget never-correct words (\(count))", role: .destructive) {
+                Self.store?.clear()
+                load()
+            }
+            .disabled(Self.store == nil)
+            .accessibilityIdentifier("diagnostics.autocorrectForgetNeverCorrect")
+        } header: {
+            Text("Autocorrect")
+        } footer: {
+            Text("Words you asked autocorrect never to correct, kept on this iPhone and not in backups. The keyboard picks up a clear the next time it appears.")
+        }
+        .onAppear(perform: load)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { load() }
+        }
+    }
+
+    private func load() {
+        count = Self.store?.load().count ?? 0
     }
 }
 

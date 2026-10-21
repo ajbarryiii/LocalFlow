@@ -1,8 +1,9 @@
 import Foundation
 
 /// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"): up to three
-/// candidates, cased as the inserted word was, best first, and which one is in the field now. In memory
-/// only; never logged or stored.
+/// candidates, cased as the inserted word was, best first, and which one is in the field now. Autocorrect's
+/// suggestions after a commit key use it too (ARCHITECTURE.md, "Word autocorrect"). In memory only; never
+/// logged or stored.
 struct SwipeStrip: Equatable, Sendable {
     var candidates: [String]
     var inserted: Int
@@ -10,6 +11,22 @@ struct SwipeStrip: Equatable, Sendable {
     static let limit = 3
 
     var insertedWord: String { candidates[inserted] }
+}
+
+/// A reverted word the user may ask autocorrect never to correct again (ARCHITECTURE.md, "Word autocorrect", Never
+/// correct): the top row offers it right after a revert, and only a tap on that offer stores it. In memory only
+/// until then.
+struct NeverCorrectOffer: Equatable, Sendable {
+    /// As the corrector saw it (lowercased): what the store keeps.
+    var word: String
+    /// As typed, without trailing apostrophes: what the prompt shows.
+    var typed: String
+
+    /// Whether the top row shows the offer: dictation's own top-row UI wins, so not while a dictation is
+    /// starting, recording or transcribing, nor while its Undo chip shows. Hidden, the offer still ends as usual.
+    static func barShows(_ offer: NeverCorrectOffer?, dictationInProgress: Bool, dictationUndoShown: Bool) -> Bool {
+        offer != nil && !dictationInProgress && !dictationUndoShown
+    }
 }
 
 /// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model v2: immediate
@@ -41,7 +58,14 @@ struct SwipeStrip: Equatable, Sendable {
 ///   edited the field (`EditingCore.generation`) and the text before the caret still ends with it. The
 ///   swiped word's edit is recorded in an `ExpectedDocument`, which tells a lagging proxy from a changed
 ///   field.
-/// Context is read in memory only; the typing tail and the strip are dropped on hiding.
+/// - **Autocorrect** (ARCHITECTURE.md, "Word autocorrect"): the current word's taps are recorded
+///   (`wordTaps`); a commit key may first replace the word before the caret (`WordAutocorrect`), in the same
+///   edit, and a Delete right after puts the typed word back (`revertedWords`). The strip then offers the
+///   typed word, the correction and suggestions; a choice replaces the word before the commit key's text,
+///   under the same conditions as a swiped word's, and the commit's edit is recorded the same way. A revert
+///   offers to never correct the word (`neverCorrectOffer`); only accepting it stores the word, in the store
+///   the keyboard binds.
+/// Context is read in memory only; the typing tail, the strip and the word's taps are dropped on hiding.
 final class KeyboardEditor {
     /// How long after an own edit the shift keeps following the proxy, which may show the edit late and
     /// with no callback.
@@ -76,9 +100,22 @@ final class KeyboardEditor {
 
     /// The strip shown after a swipe, nil when closed.
     var swipeStrip: SwipeStrip? { swipe?.strip }
-    /// The strip, and the edit that put its word in (`swipeEdits`). Held in memory only while the strip
-    /// shows.
-    private var swipe: (strip: SwipeStrip, edit: ExpectedDocument.ID)? {
+    /// Whether a letter or digit typed now would get the space owed after a swiped word first ("Space
+    /// before a tapped word"), as `press` would decide. For the soft-key-edge prior's context (ARCHITECTURE.md,
+    /// "Soft key edges"); it only reads whether the proxy now shows the word.
+    func tappedLetterGetsSpace(now: TimeInterval) -> Bool { pendingSpaceApplies(now: now) }
+    /// The text a tapped letter would follow, for the soft-key-edge prior: the text before the caret as this
+    /// keyboard knows it (`currentBefore`, which includes own edits the proxy has not shown yet), plus the
+    /// space a swiped word is owed (ARCHITECTURE.md, "Soft key edges", context). The typing tail belongs to the
+    /// field our edits went to: in another one the proxy serves, before a callback reports it, only the proxy
+    /// knows. Fields without an identity cannot be told apart, as elsewhere in the keyboard.
+    func tapPriorContext(now: TimeInterval) -> String {
+        let before = core.documentID == document.documentID ? currentBefore : document.contextBefore
+        return (before ?? "") + (tappedLetterGetsSpace(now: now) ? " " : "")
+    }
+    /// The strip, the edit that put its word in (`swipeEdits`), and for autocorrect's strip the commit it
+    /// follows. Held in memory only while the strip shows.
+    private var swipe: (strip: SwipeStrip, edit: ExpectedDocument.ID, commit: StripCommit?)? {
         didSet {
             releaseSwipeEdits()
             if swipe?.strip != oldValue?.strip { onSwipeStripChanged?() }
@@ -89,6 +126,42 @@ final class KeyboardEditor {
     /// while this survives them. In memory only.
     private var pendingSpace: ExpectedDocument.ID? {
         didSet { releaseSwipeEdits() }
+    }
+
+    /// Autocorrect's corrector and inputs, read at each commit key (ARCHITECTURE.md, "Word autocorrect"); nil
+    /// while autocorrect is off, without Full Access, or before its model has loaded.
+    var autocorrect: () -> AutocorrectSetup? = { nil }
+    /// The current word's characters with their taps' touch-down points. In memory only; dropped on hiding.
+    private(set) var wordTaps = WordTapRecord()
+    /// Typed words a Delete put back after their autocorrection, lowercased: never corrected again while this
+    /// keyboard instance lives. In memory only; kept across hiding, gone with the instance.
+    private(set) var revertedWords: Set<String> = []
+    /// The words the user asked never to correct (ARCHITECTURE.md, "Word autocorrect", Never correct), as the
+    /// bound store holds them: never corrected or offered, like `revertedWords`. None without a store.
+    private(set) var neverCorrectWords: Set<String> = []
+    /// Where accepted offers are stored; nil (autocorrect off or no Full Access when the keyboard appeared)
+    /// offers nothing.
+    private var neverCorrectStore: NeverCorrectStore?
+    /// The word a revert just offered to never correct, until it is accepted or anything else happens: any key
+    /// action (a Delete after the revert included), a strip choice, a swipe, dictation or its undo, the trackpad,
+    /// a caret move, an outside edit, another field, or hiding. No timeout.
+    private(set) var neverCorrectOffer: NeverCorrectOffer? {
+        didSet { if neverCorrectOffer != oldValue { onNeverCorrectOfferChanged?() } }
+    }
+    /// The offer appeared, changed or went. Never called while there is none, so typing re-renders nothing.
+    var onNeverCorrectOfferChanged: (() -> Void)?
+    /// The last autocorrection while a Delete can still revert it: its edit (the replacement and the commit
+    /// key; the record its strip refers to too, witnessed by both), and the text it replaced with the record to
+    /// restore.
+    private var pendingRevert: (edit: ExpectedDocument.ID, correction: WordAutocorrect.Correction)? {
+        didSet { releaseSwipeEdits() }
+    }
+
+    /// What autocorrect's strip follows: the commit key's text after the word (the edit's witness is the strip's
+    /// word, then this), and when the commit corrected the word, the typed word as the corrector saw it.
+    private struct StripCommit {
+        var keyText: String
+        var corrected: String?
     }
     /// Each swiped word's own edit (an insertion or a replacement) and where it left the caret, as this
     /// keyboard knows it, with the word as its witness. The proxy may show the edit late and with no
@@ -134,6 +207,8 @@ final class KeyboardEditor {
         core.reset()
         swipe = nil
         pendingSpace = nil
+        forgetWord()
+        ownWordIfFieldEmpty()
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -150,6 +225,7 @@ final class KeyboardEditor {
         core.hide()
         swipe = nil
         pendingSpace = nil
+        forgetWord()
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -179,6 +255,8 @@ final class KeyboardEditor {
             // starts over.
             swipe = nil
             pendingSpace = nil
+            forgetWord()
+            ownWordIfFieldEmpty()
             trackpad.abort()
             typing.resetTiming()
             tail.forget()
@@ -200,6 +278,8 @@ final class KeyboardEditor {
         trackpad.fieldChanged()
         swipe = nil
         pendingSpace = nil
+        forgetWord()
+        ownWordIfFieldEmpty()
         tail.forget()
         untrustedReading = nil
         contextWatchUntil = nil
@@ -218,13 +298,19 @@ final class KeyboardEditor {
 
     /// A key acted: characters, shift and layer keys on touch-down; space and return on release or
     /// rollover; delete only from VoiceOver (the held delete key uses `heldDelete`). `field` is the
-    /// field identified when the key was pressed (nil if none was).
-    func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
+    /// field identified when the key was pressed (nil if none was). `point`: a letters-layer tap's
+    /// touch-down point, recorded with the character it types for autocorrect.
+    func press(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval, point: TapPoint? = nil) {
         // Every key sees whether the proxy now shows a swiped word, before anything changes.
         observeShownSwipeEdits(now: now)
-        // VoiceOver's delete is the strip's first deletion like the held delete key's.
+        // Any key action ends the offer to never correct a word (a revert by this key offers anew).
+        neverCorrectOffer = nil
+        // VoiceOver's delete reverts an autocorrection, or is the strip's first deletion, like the held delete
+        // key's.
+        if action == .delete, revertCorrection(field: field, now: now) { return }
         if action == .delete, deleteSwipedWord(field: field, now: now) { return }
-        // Any other key action closes the strip, typed or refused.
+        // Any other key forgets the pending revert, and any other key action closes the strip, typed or refused.
+        pendingRevert = nil
         swipe = nil
         // A letter or digit tapped right after a swiped word goes in after a space. Shift and layer keys
         // keep that space pending; every other key ends it.
@@ -239,7 +325,7 @@ final class KeyboardEditor {
         default: pendingSpace = nil
         }
         if spaced, case .character(let character) = action {
-            type(field: field, now: now) { [self] before in
+            type(field: field, now: now, point: point) { [self] before in
                 // Cased as if the space had been typed: a shift the user set still decides.
                 let text = Self.swipeCased(character, shift: swipeShift(after: (before ?? "") + " "))
                 typing.didTypeCharacter(text)
@@ -259,7 +345,11 @@ final class KeyboardEditor {
         case .nextKeyboard:
             break
         case .character, .space, .returnKey, .delete:
-            type(field: field, now: now) { [self] before in resolve(action, before: before, at: timestamp) }
+            if WordAutocorrect.isCommitKey(action) {
+                commit(action, field: field, at: timestamp, now: now)
+            } else {
+                type(field: field, now: now, point: point) { [self] before in resolve(action, before: before, at: timestamp) }
+            }
         }
     }
 
@@ -268,6 +358,9 @@ final class KeyboardEditor {
     /// swiped word instead; the strip closes, so repeats are the usual ones.
     func heldDelete(_ unit: DeleteRepeat.Unit, field: UUID?, now: TimeInterval) {
         pendingSpace = nil
+        neverCorrectOffer = nil
+        observeShownSwipeEdits(now: now)
+        if revertCorrection(field: field, now: now) { return }
         if deleteSwipedWord(field: field, now: now) { return }
         swipe = nil
         type(field: field, now: now) { [self] before in
@@ -295,6 +388,7 @@ final class KeyboardEditor {
         guard !text.isEmpty else { return }
         swipe = nil
         pendingSpace = nil
+        forgetWord()
         adoptCurrentField()
         trackpad.interrupt(at: now)
         tail.forget()
@@ -321,16 +415,31 @@ final class KeyboardEditor {
     /// A key's edit, now: refused only when it was pressed in another identified field; any gesture
     /// ends first, so the key reads where the caret lands. False if refused. `recordEachDeletion`: every
     /// deletion is recorded as an own edit, for a host that reports each one (a whole word goes at once).
+    /// The word's tap record follows the edit: `point` is the tap that typed it.
     @discardableResult
-    private func type(field: UUID?, now: TimeInterval, recordEachDeletion: Bool = false,
+    private func type(field: UUID?, now: TimeInterval, recordEachDeletion: Bool = false, point: TapPoint? = nil,
                       resolve: (String?) -> (deletes: Int, text: String)) -> Bool {
+        typeInParts(field: field, now: now, recordEachDeletion: recordEachDeletion, point: point) { before in
+            let edit = resolve(before)
+            return (edit.deletes, [edit.text])
+        }
+    }
+
+    /// `type`, with the text inserted in parts, each its own `insertText` (an autocorrection, then its commit
+    /// key: hosts act on a Return inserted alone).
+    @discardableResult
+    private func typeInParts(field: UUID?, now: TimeInterval, recordEachDeletion: Bool = false, point: TapPoint? = nil,
+                             resolve: (String?) -> (deletes: Int, texts: [String])) -> Bool {
         if let field, let current = document.documentID, field != current { return false }
         adoptCurrentField()
         trackpad.interrupt(at: now)
+        // Typing over a selection replaces text the record does not know.
+        if document.hasSelection { wordTaps.clear() }
         let edit = resolve(currentBefore)
         userEdit()
         if edit.deletes > 0 { deleteGraphemes(edit.deletes, now: now, recordEach: recordEachDeletion) }
-        if !edit.text.isEmpty { insert(edit.text, now: now) }
+        for text in edit.texts where !text.isEmpty { insert(text, now: now) }
+        wordTaps.edited(deleted: edit.deletes, inserted: edit.texts.joined(), point: point)
         contextWatchUntil = now + Self.contextWatch
         updateAutomaticShift()
         return true
@@ -349,6 +458,9 @@ final class KeyboardEditor {
     func insertSwipe(_ candidates: [SwipeCandidate], field: UUID?, now: TimeInterval) {
         let words = candidates.map(\.word).filter { !$0.isEmpty }
         guard !words.isEmpty else { return }
+        neverCorrectOffer = nil
+        // A swipe forgets a pending revert, as any other key does.
+        pendingRevert = nil
         var strip: SwipeStrip?
         var context: SwipeEditContext?
         let typed = type(field: field, now: now) { [self] before in
@@ -366,6 +478,8 @@ final class KeyboardEditor {
                                        before: (before ?? "") + space + cased[0])
             return (0, space + cased[0])
         }
+        // A swiped word is never this keyboard's own typing for autocorrect: the decoder chose it.
+        wordTaps.clear()
         guard typed, let strip, let context else {
             // A refused swipe is still a key action: the strip closes, and no space is pending.
             swipe = nil
@@ -375,36 +489,61 @@ final class KeyboardEditor {
         let placed = recordSwipeEdit(of: strip.insertedWord, context, now: now)
         // The pending space first, so the old word's edit is let go before the strip is reported changed.
         pendingSpace = placed
-        swipe = (strip, placed)
+        swipe = (strip, placed, nil)
         observeShownSwipeEdits(now: now)
     }
 
-    /// A tap on the strip's candidate `index`: it replaces the inserted word, but only while nothing else
-    /// has edited the field and the text before the caret still ends with the word. Otherwise the tap
-    /// does nothing and the strip closes.
+    /// A tap on the strip's candidate `index`: it replaces the inserted word (and after a commit key, puts the
+    /// key's text back after it), but only while nothing else has edited the field and the text before the caret
+    /// still ends with the word (and the key's text). Otherwise the tap does nothing and the strip closes. After a
+    /// commit key, choosing the typed word over a correction reverts it as a Delete would, and choosing the
+    /// correction back undoes that.
     func chooseSwipeCandidate(at index: Int, now: TimeInterval) {
         guard let shown = swipe else { return }
+        neverCorrectOffer = nil
         guard let strip = currentSwipe(now: now) else {
             swipe = nil
             pendingSpace = nil
             return
         }
-        guard strip.candidates.indices.contains(index), index != strip.inserted else { return }
-        let old = strip.insertedWord.count
-        let new = strip.candidates[index]
+        guard strip.candidates.indices.contains(index) else { return }
+        guard index != strip.inserted else {
+            // The word already in the field, confirmed after a commit key: a Delete after it is a plain Delete.
+            if shown.commit != nil { pendingRevert = nil }
+            return
+        }
+        let keyText = shown.commit?.keyText ?? ""
+        let old = (strip.insertedWord + keyText).count
+        let new = strip.candidates[index] + keyText
         var context: SwipeEditContext?
         let replaced = type(field: swipeEdits[shown.edit]?.documentID, now: now, recordEachDeletion: true) { [self] before in
             context = SwipeEditContext(reading: proxyReading, deleted: old, inserted: new,
                                        before: String((before ?? "").dropLast(old)) + new)
             return (old, new)
         }
+        // A swiped word stays the decoder's; after a commit key, the record already follows the edit: the next word
+        // is this keyboard's own, after the key's text.
+        if shown.commit == nil { wordTaps.clear() }
+        pendingRevert = nil
         guard replaced, let context else {
             swipe = nil
             return
         }
         let placed = recordSwipeEdit(of: new, context, now: now)
-        pendingSpace = placed
-        swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed)
+        if let commit = shown.commit {
+            swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed, commit)
+            if let typed = commit.corrected, index == 0 {
+                revertedWords.insert(typed)
+                offerNeverCorrect(typed, typed: strip.candidates[index])
+            } else {
+                // The correction chosen back undoes its revert.
+                if let typed = commit.corrected, index == 1 { revertedWords.remove(typed) }
+            }
+        } else {
+            // The pending space first, so the old word's edit is let go before the strip is reported changed.
+            pendingSpace = placed
+            swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed, nil)
+        }
         observeShownSwipeEdits(now: now)
     }
 
@@ -412,6 +551,7 @@ final class KeyboardEditor {
     func closeSwipeStrip() {
         swipe = nil
         pendingSpace = nil
+        forgetWord()
     }
 
     /// A swiped word's edit as it is typed: the proxy's reading before it, the graphemes it deletes and the
@@ -436,9 +576,9 @@ final class KeyboardEditor {
                           generation: core.generation, at: now)
     }
 
-    /// Forgets every swiped word's edit that neither the strip nor the pending space refers to.
+    /// Forgets every recorded edit that neither the strip, the pending space nor the pending revert refers to.
     private func releaseSwipeEdits() {
-        swipeEdits.removeAll(keeping: Set([swipe?.edit, pendingSpace].compactMap { $0 }))
+        swipeEdits.removeAll(keeping: Set([swipe?.edit, pendingSpace, pendingRevert?.edit].compactMap { $0 }))
     }
 
     /// Whether the caret is still where the recorded edit left it: the same field, no edit by anything
@@ -467,7 +607,7 @@ final class KeyboardEditor {
 
     /// Marks each recorded edit the proxy now shows: its reading before the edit is retired for good.
     private func observeShownSwipeEdits(now: TimeInterval) {
-        assert(swipeEditCount <= 1, "The strip and the pending space refer to at most one recorded edit")
+        assert(swipeEditCount <= 1, "The strip, the pending space and the pending revert refer to at most one recorded edit")
         guard swipeEdits.expectations.contains(where: { !$0.shown }) else { return }
         swipeEdits.observe(proxyReading, generation: core.generation, now: now)
     }
@@ -486,10 +626,11 @@ final class KeyboardEditor {
         return swipe.strip
     }
 
-    /// The strip's first deletion: the whole swiped word, not the space before it. False (nothing
-    /// deleted) when the word can no longer be deleted whole or the press is refused.
+    /// The strip's first deletion after a swipe: the whole swiped word, not the space before it. False (nothing
+    /// deleted) when the word can no longer be deleted whole, the strip follows a commit key, or the press is
+    /// refused.
     private func deleteSwipedWord(field: UUID?, now: TimeInterval) -> Bool {
-        guard let strip = currentSwipe(now: now) else { return false }
+        guard swipe?.commit == nil, let strip = currentSwipe(now: now) else { return false }
         let count = strip.insertedWord.count
         let deleted = type(field: field, now: now, recordEachDeletion: true) { [self] _ in
             typing.didDelete()
@@ -527,6 +668,141 @@ final class KeyboardEditor {
         return !last.isWhitespace && !swipeSpaceOpeners.contains(last)
     }
 
+    // MARK: Autocorrect
+
+    /// A commit key (`WordAutocorrect.isCommitKey`): the owned word before it (`wordTaps`) may first be replaced
+    /// by its correction, in the same edit as the key: exactly the word's characters this keyboard typed are
+    /// deleted, the correction is inserted, and then the key's text as its own insertion. A Delete right after
+    /// can revert it. The strip then shows the review's choices, except after Return (which may move focus).
+    private func commit(_ action: KeyAction, field: UUID?, at timestamp: TimeInterval, now: TimeInterval) {
+        var made: (correction: WordAutocorrect.Correction, context: SwipeEditContext)?
+        var offered: (review: WordAutocorrect.Review, keyText: String, context: SwipeEditContext)?
+        typeInParts(field: field, now: now, recordEachDeletion: true) { [self] before in
+            let text = before ?? ""
+            // Owned AND shown by the host: the proxy must show exactly the word after its separator (a host may
+            // have rejected characters, or not show our edits yet). A veto only: the deletions still come from
+            // the record. Not over a selection either, which the first deletion would remove instead.
+            let shown = wordTaps.isShown(before: document.contextBefore)
+            if !shown { wordTaps.clear() }
+            let setup = document.hasSelection || !shown ? nil : autocorrect()
+            let review = WordAutocorrect.review(before: text, record: wordTaps, reverted: revertedWords,
+                                                neverCorrect: neverCorrectWords, setup: setup)
+            guard let review, let correction = review.correction else {
+                let edit = resolve(action, before: before, at: timestamp)
+                // A key that deletes (a double space's period) follows a space, never a word; kept for safety.
+                if let review, edit.deletes == 0, text.hasSuffix(review.typed) {
+                    offered = (review, edit.text, SwipeEditContext(reading: proxyReading, deleted: 0, inserted: edit.text,
+                                                                   before: text + edit.text))
+                }
+                return (edit.deletes, [edit.text])
+            }
+            let corrected = String(text.dropLast(correction.typed.count)) + correction.replacement
+            let edit = resolve(action, before: corrected, at: timestamp)
+            guard edit.deletes == 0 else { return (edit.deletes, [edit.text]) }
+            let context = SwipeEditContext(reading: proxyReading, deleted: correction.typed.count,
+                                           inserted: correction.replacement + edit.text, before: corrected + edit.text)
+            made = (correction, context)
+            offered = (review, edit.text, context)
+            return (correction.typed.count, [correction.replacement, edit.text])
+        }
+        guard let offered else { return }
+        let review = offered.review
+        let showsStrip = action != .returnKey && !review.choices.isEmpty
+        // Return can move focus before the proxy reports the next field, where a revert's deletions would land:
+        // it never arms one. Nor does a field without an identity, which cannot be told from the next.
+        let armsRevert = made != nil && action != .returnKey && document.documentID != nil
+        guard showsStrip || armsRevert else { return }
+        // One record for both: with a correction, the strip's word (the review's inserted choice) is the
+        // replacement.
+        let witness = (made?.correction.replacement ?? review.choices[review.inserted]) + offered.keyText
+        let placed = recordSwipeEdit(of: witness, offered.context, now: now)
+        if showsStrip {
+            swipe = (SwipeStrip(candidates: review.choices, inserted: review.inserted), placed,
+                     StripCommit(keyText: offered.keyText, corrected: review.correction?.word))
+        }
+        if armsRevert, let made { pendingRevert = (placed, made.correction) }
+        observeShownSwipeEdits(now: now)
+    }
+
+    /// A Delete right after an autocorrection, while the field still ends with it and nothing else has edited
+    /// it: the replacement and its commit key give way to the typed word, the caret right after it, and the word
+    /// is never corrected again in this keyboard instance. False (nothing done) otherwise; the pending revert
+    /// is gone either way.
+    private func revertCorrection(field: UUID?, now: TimeInterval) -> Bool {
+        guard let pending = pendingRevert, let witness = swipeEdits[pending.edit]?.witness else {
+            pendingRevert = nil
+            return false
+        }
+        // Provably the same field: identified, the same identity the correction was made in, and the edit holds.
+        // Checked before the revert is let go, which may release its record.
+        let applies = document.documentID != nil && document.documentID == swipeEdits[pending.edit]?.documentID
+            && holds(pending.edit, now: now)
+        pendingRevert = nil
+        guard applies else { return false }
+        let reverted = type(field: field, now: now, recordEachDeletion: true) { [self] _ in
+            typing.didDelete()
+            return (witness.count, pending.correction.typed)
+        }
+        guard reverted else { return false }
+        swipe = nil
+        wordTaps = pending.correction.record
+        revertedWords.insert(pending.correction.word)
+        offerNeverCorrect(pending.correction.word, typed: pending.correction.typed)
+        return true
+    }
+
+    // MARK: Never correct (ARCHITECTURE.md, "Word autocorrect", Never correct)
+
+    /// Binds the store of words never to correct and loads them, replacing those in memory, so a clear made in the
+    /// app applies from the keyboard's next appearance. The keyboard binds it each time it appears with
+    /// autocorrect on (which needs Full Access); nil there drops the words from memory and offers nothing.
+    func useNeverCorrectStore(_ store: NeverCorrectStore?) {
+        neverCorrectStore = store
+        neverCorrectWords = Set(store?.load().words ?? [])
+        if store == nil { neverCorrectOffer = nil }
+    }
+
+    /// The user tapped the offer: its word is added to the store (and to the words in memory, as the store now
+    /// holds them), the offer goes, and the strip closes, its choice made. Nothing without an offer or a store.
+    func acceptNeverCorrect() {
+        guard let offer = neverCorrectOffer, let neverCorrectStore else { return }
+        neverCorrectOffer = nil
+        // What the store holds, or would if the write failed: the word is not corrected in this instance either way.
+        neverCorrectWords = Set(neverCorrectStore.add(offer.word).words)
+        swipe = nil
+    }
+
+    /// A revert offers to never correct its word, with a store bound and a word the store can keep.
+    private func offerNeverCorrect(_ word: String, typed: String) {
+        guard neverCorrectStore != nil, NeverCorrectWords.isStorable(word), !neverCorrectWords.contains(word) else { return }
+        var shown = typed
+        while let last = shown.last, WordTapRecord.apostrophes.contains(last) { shown.removeLast() }
+        neverCorrectOffer = NeverCorrectOffer(word: word, typed: shown)
+    }
+
+    /// The letters layer was laid out anew (a resize or rotation): the current word's recorded points belong to
+    /// the old geometry, so they become none; its characters stay.
+    func layoutChanged() {
+        wordTaps.forgetPoints()
+        // So for the record a revert would restore.
+        pendingRevert?.correction.record.forgetPoints()
+    }
+
+    /// The caret moved, the field changed or something else edited it: no word is this keyboard's own any more,
+    /// and a pending revert no longer applies. The reverted words stay.
+    private func forgetWord() {
+        wordTaps.clear()
+        pendingRevert = nil
+        neverCorrectOffer = nil
+    }
+
+    /// The start of a field this keyboard sees empty (nothing before or after the caret, nothing selected) is a
+    /// boundary: a word typed there is its own.
+    private func ownWordIfFieldEmpty() {
+        guard (document.contextBefore ?? "").isEmpty, (document.contextAfter ?? "").isEmpty, !document.hasSelection else { return }
+        wordTaps.startOwned()
+    }
+
     /// A field the proxy serves before its first callback is the current one: what the old one left
     /// (the gesture, the typing tail, the space and shift timing) goes, and the shift follows its text.
     private func adoptCurrentField() {
@@ -562,6 +838,8 @@ final class KeyboardEditor {
     /// The trackpad session ended: the caret is where the gesture left it, or on its way there, so typing
     /// reads the text before it there until the proxy shows it.
     private func trackpadFinished(completed: Bool) {
+        // The caret moved.
+        forgetWord()
         if let landing = trackpad.finishedLanding {
             tail.moved(before: landing, proxyBefore: document.contextBefore, at: trackpad.lastTimestamp)
         } else if trackpad.finishedByKey {
@@ -580,6 +858,7 @@ final class KeyboardEditor {
         if trackpad.isActive { trackpad.stop() }
         swipe = nil
         pendingSpace = nil
+        forgetWord()
         userEdit()
         tail.forget()
         untrustedReading = nil
@@ -597,6 +876,7 @@ final class KeyboardEditor {
     func beginUndo(now: TimeInterval) -> UndoTracker.Step {
         guard !isBusy else { return .stopped }
         tail.forget()
+        forgetWord()
         return finishUndoStep(core.beginUndo(now: now), now: now)
     }
 

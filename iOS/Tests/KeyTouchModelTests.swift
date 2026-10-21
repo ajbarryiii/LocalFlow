@@ -28,7 +28,9 @@ enum KeyTouchModelTests {
             ("swipeNeedsEveryCondition", testSwipeNeedsEveryCondition),
             ("swipeThresholdBoundary", testSwipeThresholdBoundary),
             ("anyCoalescedSamplePastTheThresholdSwipes", testAnyCoalescedSamplePastTheThresholdSwipes),
-            ("flickPastTheThresholdAtTheLiftSwipes", testFlickPastTheThresholdAtTheLiftSwipes),
+            ("theLiftNeverStartsASwipe", testTheLiftNeverStartsASwipe),
+            ("aReleasedSkidIsATap", testAReleasedSkidIsATap),
+            ("aNewFingerCommitsASkid", testANewFingerCommitsASkid),
             ("swipeSamplesStartAtTouchDownAndKeepEveryCoalescedTouch", testSwipeSamplesStartAtTouchDownAndKeepEveryCoalescedTouch),
             ("cancelledSwipeEmitsNothing", testCancelledSwipeEmitsNothing),
             ("touchesAreIgnoredDuringASwipe", testTouchesAreIgnoredDuringASwipe),
@@ -38,6 +40,14 @@ enum KeyTouchModelTests {
             ("swipeTrailKeepsAtLeastTwoPoints", testSwipeTrailKeepsAtLeastTwoPoints),
             ("swipeTrailToleratesDisorderedTimestamps", testSwipeTrailToleratesDisorderedTimestamps),
             ("swipeTrailTapersAndFadesTowardsItsTail", testSwipeTrailTapersAndFadesTowardsItsTail),
+            ("softTapsComeAtReleaseWithTheTouchDownPoint", testSoftTapsComeAtReleaseWithTheTouchDownPoint),
+            ("softTapsComeAtRollover", testSoftTapsComeAtRollover),
+            ("softTapsAreOnlyLetterTouches", testSoftTapsAreOnlyLetterTouches),
+            ("softTapsLeaveFunctionKeysAndSwipesAlone", testSoftTapsLeaveFunctionKeysAndSwipesAlone),
+            ("softTapsOffTypeAsBefore", testSoftTapsOffTypeAsBefore),
+            ("aDecidedTapShowsAndTypesItsDecision", testADecidedTapShowsAndTypesItsDecision),
+            ("aResizeUnderADecidedTapTypesTheTouchedKey", testAResizeUnderADecidedTapTypesTheTouchedKey),
+            ("aTapHeldThroughAResizeLosesItsPoint", testATapHeldThroughAResizeLosesItsPoint),
         ]
     }
 
@@ -47,9 +57,10 @@ enum KeyTouchModelTests {
         KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: false)
     }
 
-    private static func model(_ layer: KeyboardLayer = .letters, swipe: Bool = false) -> KeyTouchModel {
+    private static func model(_ layer: KeyboardLayer = .letters, swipe: Bool = false, softTaps: Bool = false) -> KeyTouchModel {
         var model = KeyTouchModel()
         model.swipeEnabled = swipe
+        model.softTapsEnabled = softTaps
         _ = model.keysChanged(keys(layer), layer: layer)
         return model
     }
@@ -546,18 +557,18 @@ extension KeyTouchModelTests {
                                         field: nil)])
         TestSupport.expect(!model.collectsSamples(1), "an ended swipe collects samples")
         // Only an exact repeat of the last sample is skipped: a lift where the finger last was, but later,
-        // still counts.
+        // still counts. (Moves after `skidDuration`, so neither is a skid; 2026-10-18.)
         var still = self.model(swipe: true)
         _ = still.began(1, x: d.x, y: d.y, t: 20)
-        _ = still.moved(1, x: d.x + 30, y: d.y, t: 20.05)
-        TestSupport.expectEqual(still.ended(1, x: d.x + 30, y: d.y, t: 20.05),
-                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 20), SwipeSample(x: d.x + 30, y: d.y, t: 20.05)], field: nil)])
+        _ = still.moved(1, x: d.x + 30, y: d.y, t: 20.2)
+        TestSupport.expectEqual(still.ended(1, x: d.x + 30, y: d.y, t: 20.2),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 20), SwipeSample(x: d.x + 30, y: d.y, t: 20.2)], field: nil)])
         var later = self.model(swipe: true)
         _ = later.began(1, x: d.x, y: d.y, t: 20)
-        _ = later.moved(1, x: d.x + 30, y: d.y, t: 20.05)
-        TestSupport.expectEqual(later.ended(1, x: d.x + 30, y: d.y, t: 20.1),
-                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 20), SwipeSample(x: d.x + 30, y: d.y, t: 20.05),
-                                         SwipeSample(x: d.x + 30, y: d.y, t: 20.1)], field: nil)])
+        _ = later.moved(1, x: d.x + 30, y: d.y, t: 20.2)
+        TestSupport.expectEqual(later.ended(1, x: d.x + 30, y: d.y, t: 20.3),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 20), SwipeSample(x: d.x + 30, y: d.y, t: 20.2),
+                                         SwipeSample(x: d.x + 30, y: d.y, t: 20.3)], field: nil)])
         // Only touches that are or may become a swipe collect samples.
         var other = self.model(swipe: true)
         let space = center(.space), s = center(.character("s"))
@@ -657,8 +668,10 @@ extension KeyTouchModelTests {
                           SwipeSample(x: d.x + 5, y: d.y, t: 1.012)]
         TestSupport.expectEqual(model.moved(1, x: d.x + 5, y: d.y, t: 1.012, coalesced: outAndBack), [])
         TestSupport.expect(model.isSwipeActive, "a coalesced touch past the threshold did not make a swipe")
-        TestSupport.expectEqual(model.ended(1, x: d.x + 5, y: d.y, t: 1.012),
-                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1)] + outAndBack, field: nil)])
+        // Released after `skidDuration`, so it is no skid (2026-10-18).
+        TestSupport.expectEqual(model.ended(1, x: d.x + 5, y: d.y, t: 1.2),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1)] + outAndBack + [SwipeSample(x: d.x + 5, y: d.y, t: 1.2)],
+                                        field: nil)])
         // Ineligible touches are unaffected: with another finger held, the same move stays a tap.
         var held = self.model(swipe: true)
         let s = center(.character("s"))
@@ -669,25 +682,31 @@ extension KeyTouchModelTests {
         TestSupport.expectEqual(held.ended(2, x: d.x + 5, y: d.y, t: 1.012), [.type(.character("d"))])
     }
 
-    fileprivate static func testFlickPastTheThresholdAtTheLiftSwipes() {
-        // Regression: a quick flick first reported past the threshold at its release typed the touch-down
-        // letter. The lift counts as a sample of the path: the touch swipes, through the lift.
+}
+
+// MARK: Skids (ARCHITECTURE.md, "Dropped taps: reach, skids and counters")
+
+extension KeyTouchModelTests {
+    fileprivate static func testTheLiftNeverStartsASwipe() {
+        // Contract change (2026-10-18), replacing the flick rule of 2026-10-15: only moves turn a touch into a
+        // swipe. A finger first reported past the threshold at its release (it skidded as it lifted) types its
+        // touch-down letter, with its field.
         let d = center(.character("d")), far = 2 * threshold
         let field = UUID()
-        var flick = model(swipe: true)
-        _ = flick.began(1, x: d.x, y: d.y, t: 1, field: field)
-        TestSupport.expectEqual(flick.moved(1, x: d.x + 5, y: d.y, t: 1.008), [])
-        TestSupport.expect(!flick.isSwipeActive, "a swipe short of the threshold")
-        TestSupport.expectEqual(flick.ended(1, x: d.x + far, y: d.y, t: 1.016),
-                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1), SwipeSample(x: d.x + 5, y: d.y, t: 1.008),
-                                         SwipeSample(x: d.x + far, y: d.y, t: 1.016)], field: field)])
-        TestSupport.expect(!flick.isSwipeActive && flick.touches.isEmpty, "the flick outlived its lift")
-        // With no move at all.
+        var skid = model(swipe: true)
+        _ = skid.began(1, x: d.x, y: d.y, t: 1, field: field)
+        TestSupport.expectEqual(skid.moved(1, x: d.x + 5, y: d.y, t: 1.008), [])
+        TestSupport.expectEqual(skid.ended(1, x: d.x + far, y: d.y, t: 1.016), [.type(.character("d"), field: field)])
+        TestSupport.expect(!skid.isSwipeActive && skid.touches.isEmpty, "the skid outlived its lift")
+        // With no move at all, however long the touch was held and however far the lift.
         var bare = model(swipe: true)
         _ = bare.began(1, x: d.x, y: d.y, t: 1)
-        TestSupport.expectEqual(bare.ended(1, x: d.x + far, y: d.y, t: 1.01),
-                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 1), SwipeSample(x: d.x + far, y: d.y, t: 1.01)], field: nil)])
-        // A lift within the threshold is still a tap.
+        TestSupport.expectEqual(bare.ended(1, x: d.x + 3 * far, y: d.y, t: 2), [.type(.character("d"))])
+        // With soft taps on: a soft tap from the touch-down point.
+        var soft = model(swipe: true, softTaps: true)
+        _ = soft.began(1, x: d.x, y: d.y, t: 1)
+        TestSupport.expectEqual(soft.ended(1, x: d.x + far, y: d.y, t: 1.01), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
+        // A lift within the threshold is a tap too.
         var tap = model(swipe: true)
         _ = tap.began(1, x: d.x, y: d.y, t: 1)
         TestSupport.expectEqual(tap.ended(1, x: d.x + threshold - 0.01, y: d.y, t: 1.01), [.type(.character("d"))])
@@ -711,6 +730,111 @@ extension KeyTouchModelTests {
         _ = committed.began(2, x: s.x, y: s.y, t: 1)
         _ = committed.ended(2, x: s.x, y: s.y, t: 1.005)
         TestSupport.expectEqual(committed.ended(1, x: d.x + far, y: d.y, t: 1.01), [])
+    }
+
+    /// The first position at least `distance` right of `x`, and the one just before it.
+    private static func boundary(from x: Double, at distance: Double) -> (at: Double, below: Double) {
+        var at = x + distance
+        while at - x < distance { at = at.nextUp }
+        while (at.nextDown - x) >= distance { at = at.nextDown }
+        return (at, at.nextDown)
+    }
+
+    fileprivate static func testAReleasedSkidIsATap() {
+        // A swipe released within `skidDuration` of its touch-down, none of whose samples (the lift included)
+        // was a full letter pitch from the touch-down point, types its touch-down key as a tap, with its field.
+        TestSupport.expectEqual(KeyTouchModel.skidDuration, 0.15)
+        let d = center(.character("d")), pitch = 2 * threshold
+        // Past the threshold: d.x + threshold itself can round to just short of it.
+        let over = threshold + 1
+        let field = UUID()
+        var skid = model(swipe: true)
+        _ = skid.began(1, x: d.x, y: d.y, t: 0, field: nil)
+        TestSupport.expectEqual(skid.moved(1, x: d.x + over, y: d.y, t: 0.05), [])
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        TestSupport.expectEqual(skid.fieldChanged(to: field), [])
+        TestSupport.expectEqual(skid.ended(1, x: d.x + over + 5, y: d.y, t: 0.1), [.type(.character("d"), field: field)])
+        TestSupport.expect(!skid.isSwipeActive && skid.touches.isEmpty, "the skid outlived its lift")
+        // With soft taps on: a soft tap from the touch-down point.
+        var soft = model(swipe: true, softTaps: true)
+        _ = soft.began(1, x: d.x, y: d.y, t: 0)
+        _ = soft.moved(1, x: d.x, y: d.y - over, t: 0.05)
+        TestSupport.expectEqual(soft.ended(1, x: d.x, y: d.y - over, t: 0.1),
+                                [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
+        // Released at `skidDuration`: a swipe.
+        var late = model(swipe: true)
+        _ = late.began(1, x: d.x, y: d.y, t: 0)
+        _ = late.moved(1, x: d.x + over, y: d.y, t: 0.05)
+        TestSupport.expectEqual(late.ended(1, x: d.x + over, y: d.y, t: KeyTouchModel.skidDuration),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 0), SwipeSample(x: d.x + over, y: d.y, t: 0.05),
+                                         SwipeSample(x: d.x + over, y: d.y, t: KeyTouchModel.skidDuration)], field: nil)])
+        // A sample a full pitch away, even one only coalesced that the finger came back from: a swipe, however
+        // quick. Just short of a pitch, it is a skid.
+        let edge = boundary(from: d.x, at: pitch)
+        for (x, swipes) in [(edge.at, true), (edge.below, false)] {
+            var model = model(swipe: true)
+            _ = model.began(1, x: d.x, y: d.y, t: 0)
+            let path = [SwipeSample(x: d.x + over, y: d.y, t: 0.01), SwipeSample(x: x, y: d.y, t: 0.02),
+                        SwipeSample(x: d.x + 5, y: d.y, t: 0.03)]
+            _ = model.moved(1, x: d.x + 5, y: d.y, t: 0.03, coalesced: path)
+            let lift = SwipeSample(x: d.x + 5, y: d.y, t: 0.04)
+            TestSupport.expectEqual(model.ended(1, x: lift.x, y: lift.y, t: lift.t),
+                                    swipes ? [.swipe([SwipeSample(x: d.x, y: d.y, t: 0)] + path + [lift], field: nil)]
+                                        : [.type(.character("d"))])
+        }
+        // The lift counts towards the distance.
+        var flick = model(swipe: true)
+        _ = flick.began(1, x: d.x, y: d.y, t: 0)
+        _ = flick.moved(1, x: d.x + over, y: d.y, t: 0.01)
+        TestSupport.expectEqual(flick.ended(1, x: edge.at, y: d.y, t: 0.02),
+                                [.swipe([SwipeSample(x: d.x, y: d.y, t: 0), SwipeSample(x: d.x + over, y: d.y, t: 0.01),
+                                         SwipeSample(x: edge.at, y: d.y, t: 0.02)], field: nil)])
+        // A cancelled skid types nothing.
+        var cancelled = model(swipe: true)
+        _ = cancelled.began(1, x: d.x, y: d.y, t: 0)
+        _ = cancelled.moved(1, x: d.x + over, y: d.y, t: 0.01)
+        TestSupport.expectEqual(cancelled.cancelled(1), [])
+        TestSupport.expectEqual(cancelled.ended(1, x: d.x + over, y: d.y, t: 0.02), [])
+    }
+
+    fileprivate static func testANewFingerCommitsASkid() {
+        // Rollover: a finger touching down during a skid first commits it as a tap of its touch-down key, with
+        // its field, then acts as usual. The skid's finger is a committed character: its moves and lift do
+        // nothing.
+        let d = center(.character("d")), k = center(.character("k")), space = center(.space)
+        let over = threshold + 1
+        let field = UUID()
+        var model = model(swipe: true)
+        _ = model.began(1, x: d.x, y: d.y, t: 0, field: field)
+        _ = model.moved(1, x: d.x + over, y: d.y, t: 0.05)
+        TestSupport.expect(model.isSwipeActive, "no swipe")
+        TestSupport.expectEqual(model.began(2, x: k.x, y: k.y, t: 0.1, field: field),
+                                [.keyDown, .type(.character("d"), field: field)])
+        TestSupport.expect(!model.isSwipeActive, "the skid is still a swipe")
+        TestSupport.expectEqual(model.calloutAction, .character("k"))
+        TestSupport.expect(!model.collectsSamples(1), "the committed skid collects samples")
+        TestSupport.expectEqual(model.moved(1, x: d.x + 3 * threshold, y: d.y, t: 0.12), [])
+        TestSupport.expectEqual(model.ended(1, x: d.x + 3 * threshold, y: d.y, t: 0.14), [])
+        TestSupport.expectEqual(model.ended(2, x: k.x, y: k.y, t: 0.2), [.type(.character("k"), field: field)])
+        // Onto a function key with soft taps on, in press order: the letter's soft tap, then the space bar's
+        // own effects.
+        var spaced = self.model(swipe: true, softTaps: true)
+        _ = spaced.began(1, x: d.x, y: d.y, t: 0)
+        _ = spaced.moved(1, x: d.x, y: d.y + over, t: 0.05)
+        TestSupport.expectEqual(spaced.began(2, x: space.x, y: space.y, t: 0.1),
+                                [.keyDown, .tap(.character("d"), x: d.x, y: d.y, field: nil), .startHoldTimer(2)])
+        TestSupport.expectEqual(spaced.ended(2, x: space.x, y: space.y, t: 0.2), [.cancelHoldTimer(2), .type(.space)])
+        // At `skidDuration`, or once a pitch away, the swipe goes on and the new finger is ignored, as before.
+        var late = self.model(swipe: true)
+        _ = late.began(1, x: d.x, y: d.y, t: 0)
+        _ = late.moved(1, x: d.x + over, y: d.y, t: 0.05)
+        TestSupport.expectEqual(late.began(2, x: k.x, y: k.y, t: KeyTouchModel.skidDuration), [])
+        TestSupport.expect(late.isSwipeActive && late.touches.isEmpty, "a late finger ended the swipe")
+        var far = self.model(swipe: true)
+        _ = far.began(1, x: d.x, y: d.y, t: 0)
+        _ = far.moved(1, x: d.x + 3 * threshold, y: d.y, t: 0.05)
+        TestSupport.expectEqual(far.began(2, x: k.x, y: k.y, t: 0.1), [])
+        TestSupport.expect(far.isSwipeActive && far.touches.isEmpty, "a new finger ended a long swipe")
     }
 }
 
@@ -780,5 +904,232 @@ extension KeyTouchModelTests {
         let equal = SwipeTrail.points(from: samples([5, 5, 5]))
         TestSupport.expectEqual(equal.map(\.width), [0, 4, 8])
         TestSupport.expect(close(equal[1].alpha, 0.225), "equal \(equal)")
+    }
+
+    // MARK: Soft key edges
+
+    private static func testSoftTapsComeAtReleaseWithTheTouchDownPoint() {
+        // ARCHITECTURE.md, "Soft key edges": the key nearest the touch-down point, and that point, wherever
+        // the finger lifts; the field is the touch-down one.
+        let field = UUID()
+        var model = model(softTaps: true)
+        let a = frame(.character("a")), s = center(.character("s"))
+        let x = a.maxX - 2, y = a.y + 3
+        TestSupport.expectEqual(model.began(1, x: x, y: y, field: field), [.keyDown])
+        TestSupport.expectEqual(model.calloutAction, .character("a"))
+        TestSupport.expectEqual(model.moved(1, x: s.x, y: s.y), [])
+        TestSupport.expectEqual(model.ended(1, x: s.x, y: s.y), [.tap(.character("a"), x: x, y: y, field: field)])
+        TestSupport.expect(model.touches.isEmpty, "touch kept")
+        // A cancelled tap still types nothing.
+        _ = model.began(2, x: x, y: y)
+        TestSupport.expectEqual(model.cancelled(2), [])
+    }
+
+    private static func testSoftTapsComeAtRollover() {
+        var model = model(softTaps: true)
+        let a = center(.character("a")), s = center(.character("s")), space = center(.space)
+        _ = model.began(1, x: a.x, y: a.y)
+        TestSupport.expectEqual(model.began(2, x: s.x, y: s.y), [.keyDown, .tap(.character("a"), x: a.x, y: a.y, field: nil)])
+        TestSupport.expectEqual(model.ended(1, x: a.x, y: a.y), [])
+        // Press order holds across a space: the letter commits first, the space types as before.
+        TestSupport.expectEqual(model.began(3, x: space.x, y: space.y),
+                                [.keyDown, .tap(.character("s"), x: s.x, y: s.y, field: nil), .startHoldTimer(3)])
+        TestSupport.expectEqual(model.ended(2, x: s.x, y: s.y), [])
+        TestSupport.expectEqual(model.ended(3, x: space.x, y: space.y), [.cancelHoldTimer(3), .type(.space)])
+    }
+
+    private static func testSoftTapsAreOnlyLetterTouches() {
+        // Another layer's characters type as before, even after the keys return to letters under the finger.
+        var numbers = model(.numbers, softTaps: true)
+        let one = center(.character("1"), .numbers)
+        _ = numbers.began(1, x: one.x, y: one.y)
+        TestSupport.expectEqual(numbers.ended(1, x: one.x, y: one.y), [.type(.character("1"))])
+        _ = numbers.began(2, x: one.x, y: one.y)
+        TestSupport.expectEqual(numbers.keysChanged(keys(.letters), layer: .letters), [])
+        TestSupport.expectEqual(numbers.ended(2, x: one.x, y: one.y), [.type(.character("1"))])
+        // A slide from the layer key onto a letter is not a tap.
+        var slide = model(softTaps: true)
+        let layer = center(.layer(.numbers)), a = center(.character("a"))
+        TestSupport.expectEqual(slide.began(1, x: layer.x, y: layer.y), [.keyDown, .type(.layer(.numbers))])
+        TestSupport.expectEqual(slide.moved(1, x: a.x, y: a.y), [])
+        TestSupport.expectEqual(slide.ended(1, x: a.x, y: a.y), [.type(.character("a"))])
+    }
+
+    private static func testSoftTapsLeaveFunctionKeysAndSwipesAlone() {
+        // Space, delete, Return, Shift and the layer key act exactly as with soft taps off.
+        for action in [KeyAction.space, .delete, .returnKey, .shift, .layer(.numbers)] {
+            var on = model(softTaps: true), off = model()
+            let point = center(action)
+            TestSupport.expectEqual(on.began(1, x: point.x, y: point.y), off.began(1, x: point.x, y: point.y))
+            TestSupport.expectEqual(on.ended(1, x: point.x, y: point.y), off.ended(1, x: point.x, y: point.y))
+            // And when a letter rolls over them.
+            let a = center(.character("a"))
+            TestSupport.expectEqual(on.began(2, x: point.x, y: point.y), off.began(2, x: point.x, y: point.y))
+            TestSupport.expectEqual(on.began(3, x: a.x, y: a.y), off.began(3, x: a.x, y: a.y))
+        }
+        // A swipe is still a swipe, with no tap.
+        var swipe = model(swipe: true, softTaps: true)
+        let a = center(.character("a"))
+        _ = swipe.began(1, x: a.x, y: a.y, t: 0)
+        TestSupport.expectEqual(swipe.moved(1, x: a.x + threshold, y: a.y, t: 0.1), [])
+        TestSupport.expect(swipe.isSwipeActive, "swipe began")
+        let effects = swipe.ended(1, x: a.x + threshold + 5, y: a.y, t: 0.2)
+        TestSupport.expectEqual(effects.count, 1)
+        if case .swipe = effects.first {} else { TestSupport.expect(false, "swipe emitted: \(effects)") }
+        // A short drag (below the threshold) with swipe typing on is a soft tap from its touch-down point.
+        _ = swipe.began(2, x: a.x, y: a.y, t: 1)
+        _ = swipe.moved(2, x: a.x + 3, y: a.y, t: 1.05)
+        TestSupport.expectEqual(swipe.ended(2, x: a.x + 3, y: a.y, t: 1.1), [.tap(.character("a"), x: a.x, y: a.y, field: nil)])
+    }
+
+    private static func testSoftTapsOffTypeAsBefore() {
+        var model = model()
+        TestSupport.expect(!model.softTapsEnabled, "off by default")
+        let a = center(.character("a")), s = center(.character("s"))
+        _ = model.began(1, x: a.x, y: a.y)
+        TestSupport.expectEqual(model.began(2, x: s.x, y: s.y), [.keyDown, .type(.character("a"))])
+        TestSupport.expectEqual(model.ended(2, x: s.x, y: s.y), [.type(.character("s"))])
+        // Turned off while a finger is held: it types as before.
+        var switched = Self.model(softTaps: true)
+        _ = switched.began(1, x: a.x, y: a.y)
+        switched.softTapsEnabled = false
+        TestSupport.expectEqual(switched.ended(1, x: a.x, y: a.y), [.type(.character("a"))])
+    }
+
+    private static func testADecidedTapShowsAndTypesItsDecision() {
+        // ARCHITECTURE.md, "Soft key edges" (2026-10-18): the key is decided at touch-down; the callout shows the
+        // decision and it types at release, with the touch-down field.
+        let field = UUID()
+        let d = frame(.character("d")), f = center(.character("f"))
+        let x = d.maxX - 2, y = d.midY
+        var model = model(softTaps: true)
+        TestSupport.expectEqual(model.began(1, x: x, y: y, field: field), [.keyDown])
+        TestSupport.expect(model.needsTapDecision(1), "a soft tap needs no decision")
+        TestSupport.expectEqual(model.calloutAction, .character("d"))
+        model.decideTap(1, as: .character("f"))
+        TestSupport.expect(!model.needsTapDecision(1), "a decided tap needs another decision")
+        TestSupport.expectEqual(model.calloutAction, .character("f"))
+        TestSupport.expectEqual(model.ended(1, x: f.x, y: f.y), [.typeDecided(.character("f"), x: x, y: y, field: field)])
+        // At rollover too, in press order.
+        var rolled = self.model(softTaps: true)
+        let a = center(.character("a"))
+        _ = rolled.began(1, x: x, y: y)
+        rolled.decideTap(1, as: .space)
+        TestSupport.expectEqual(rolled.began(2, x: a.x, y: a.y), [.keyDown, .typeDecided(.space, x: x, y: y, field: nil)])
+        TestSupport.expectEqual(rolled.ended(1, x: x, y: y), [])
+        // Turned off before it types (a secure field): the nearest key types.
+        var switched = self.model(softTaps: true)
+        _ = switched.began(1, x: x, y: y)
+        switched.decideTap(1, as: .character("f"))
+        switched.softTapsEnabled = false
+        TestSupport.expectEqual(switched.ended(1, x: x, y: y), [.type(.character("d"))])
+        // Only an uncommitted soft tap takes a decision: not with soft taps off, not a slide or another layer,
+        // not a function key, not a committed letter, not an unknown touch.
+        var off = self.model()
+        _ = off.began(1, x: x, y: y)
+        TestSupport.expect(!off.needsTapDecision(1), "soft taps off")
+        off.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(off.calloutAction, .character("d"))
+        TestSupport.expectEqual(off.ended(1, x: x, y: y), [.type(.character("d"))])
+        var numbers = self.model(.numbers, softTaps: true)
+        let one = center(.character("1"), .numbers)
+        _ = numbers.began(1, x: one.x, y: one.y)
+        TestSupport.expect(!numbers.needsTapDecision(1), "another layer")
+        var functions = self.model(softTaps: true)
+        let space = center(.space)
+        _ = functions.began(1, x: space.x, y: space.y)
+        TestSupport.expect(!functions.needsTapDecision(1), "the space bar")
+        functions.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(functions.ended(1, x: space.x, y: space.y), [.cancelHoldTimer(1), .type(.space)])
+        var committed = self.model(softTaps: true)
+        _ = committed.began(1, x: x, y: y)
+        _ = committed.began(2, x: a.x, y: a.y)
+        TestSupport.expect(!committed.needsTapDecision(1), "a committed letter")
+        TestSupport.expect(!committed.needsTapDecision(9), "an unknown touch")
+        // Without a decision, the tap is re-decided when it types, as before.
+        var undecided = self.model(softTaps: true)
+        _ = undecided.began(1, x: x, y: y)
+        TestSupport.expectEqual(undecided.ended(1, x: x, y: y), [.tap(.character("d"), x: x, y: y, field: nil)])
+        // A skid keeps its decision.
+        var skid = self.model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: x, y: y, t: 0)
+        skid.decideTap(1, as: .character("f"))
+        _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.typeDecided(.character("f"), x: x, y: y, field: nil)])
+    }
+
+    private static func testAResizeUnderADecidedTapTypesTheTouchedKey() {
+        // ARCHITECTURE.md, "Soft key edges" (code review 2026-10-18): if the keys change under a decided tap's
+        // touch-down point so that its nearest key is no longer the one it touched, the touched key types and
+        // shows, as an undecided tap's re-decision would give.
+        let d = frame(.character("d"))
+        let x = d.maxX - 2, y = d.midY
+        let narrow = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 330, height: KeyboardMetrics.regularHeight),
+                                         showsGlobe: false)
+        let moved = KeyboardLayout.nearestKey(toX: x, y: y, in: narrow).map { narrow[$0].action }
+        TestSupport.expect(moved != .character("d"), "the narrow layout still has d under the point")
+        var model = model(softTaps: true)
+        _ = model.began(1, x: x, y: y)
+        model.decideTap(1, as: .character("f"))
+        TestSupport.expectEqual(model.keysChanged(narrow, layer: .letters), [])
+        TestSupport.expectEqual(model.calloutAction, .character("d"))
+        TestSupport.expectEqual(model.ended(1, x: x, y: y), [.type(.character("d"))])
+        // A rebuild that keeps the touched key under the point keeps the decision.
+        var same = self.model(softTaps: true)
+        _ = same.began(1, x: x, y: y)
+        same.decideTap(1, as: .character("f"))
+        _ = same.keysChanged(keys(.letters), layer: .letters)
+        TestSupport.expectEqual(same.ended(1, x: x, y: y), [.typeDecided(.character("f"), x: x, y: y, field: nil)])
+        // So for a skid, whose touch is held aside while it swipes.
+        var skid = self.model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: x, y: y, t: 0)
+        skid.decideTap(1, as: .character("f"))
+        _ = skid.moved(1, x: x + threshold + 1, y: y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        _ = skid.keysChanged(narrow, layer: .letters)
+        TestSupport.expectEqual(skid.ended(1, x: x + threshold + 1, y: y, t: 0.1), [.type(.character("d"))])
+    }
+
+    private static func testATapHeldThroughAResizeLosesItsPoint() {
+        // ARCHITECTURE.md, "Word autocorrect" (code review round 2, 2026-10-19): a finger held while the letters
+        // are laid out anew keeps its key (and decision) but carries no point: its touch-down point belongs to the
+        // old geometry. Undecided, it types its touch-down key as is (no re-decision without a point).
+        let d = center(.character("d"))
+        let wider = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 430, height: KeyboardMetrics.regularHeight),
+                                        showsGlobe: false)
+        TestSupport.expectEqual(KeyboardLayout.nearestKey(toX: d.x, y: d.y, in: wider).map { wider[$0].action }, .character("d"))
+        var undecided = model(softTaps: true)
+        _ = undecided.began(1, x: d.x, y: d.y)
+        _ = undecided.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(undecided.ended(1, x: d.x, y: d.y), [.type(.character("d"))])
+        var decided = model(softTaps: true)
+        _ = decided.began(1, x: d.x, y: d.y)
+        decided.decideTap(1, as: .character("f"))
+        _ = decided.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(decided.ended(1, x: d.x, y: d.y), [.type(.character("f"))])
+        // At rollover too.
+        var rolled = model(softTaps: true)
+        _ = rolled.began(1, x: d.x, y: d.y)
+        _ = rolled.keysChanged(wider, layer: .letters)
+        let a = KeyboardLayout.nearestKey(toX: 0, y: d.y, in: wider).map { wider[$0].frame }!
+        TestSupport.expectEqual(rolled.began(2, x: a.midX, y: a.midY), [.keyDown, .type(.character("d"))])
+        // A skid held through the resize.
+        var skid = model(swipe: true, softTaps: true)
+        _ = skid.began(1, x: d.x, y: d.y, t: 0)
+        _ = skid.moved(1, x: d.x + threshold + 1, y: d.y, t: 0.05)
+        TestSupport.expect(skid.isSwipeActive, "no swipe")
+        _ = skid.keysChanged(wider, layer: .letters)
+        TestSupport.expectEqual(skid.ended(1, x: d.x + threshold + 1, y: d.y, t: 0.1), [.type(.character("d"))])
+        // The same layout again, a layer change or a shift relabel is no resize: the point stays.
+        var same = model(softTaps: true)
+        _ = same.began(1, x: d.x, y: d.y)
+        _ = same.keysChanged(keys(.letters), layer: .letters)
+        TestSupport.expectEqual(same.ended(1, x: d.x, y: d.y), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
+        // Taps after the resize carry their points.
+        var after = model(softTaps: true)
+        _ = after.keysChanged(wider, layer: .letters)
+        _ = after.began(1, x: d.x, y: d.y)
+        TestSupport.expectEqual(after.ended(1, x: d.x, y: d.y), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
     }
 }
