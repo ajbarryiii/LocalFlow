@@ -518,15 +518,17 @@ decode, including at most 10 symbols per frame. The differences:
 `Sources/Dictionary/BiasGraph.swift:158-188`; `testBiasedDecode`)
 
 Each transcription decodes with one immutable `DictionarySnapshot`
-(entries and revision). If the saved dictionary is unreadable, the
-snapshot is empty. The graph is built on the model queue and cached by
-revision. (`AppState.dictionarySnapshot`, `Sources/AppState.swift:327-330`;
+(entries, revision and, on macOS, the app of §3.6). If the saved dictionary
+is unreadable, the snapshot is empty. The graph is built on the model queue
+and cached by revision and app (`BiasGraphCache`, §3.6).
+(`AppState.dictionarySnapshot`, `Sources/AppState.swift:327-330`;
 `LocalParakeetRuntime.graph(for:)`,
 `Sources/Parakeet/LocalParakeetService.swift:534-542`)
 
 ### §3.2 Storage
 
-UserDefaults holds two keys (`DictionaryStorage`,
+UserDefaults holds two keys, plus a third on macOS for app limits (§3.6)
+(`DictionaryStorage`,
 `Sources/Dictionary/DictionaryEntry.swift:139-200`;
 `AppState.dictionaryStorageKey` and `dictionaryIgnoreStorageKey`,
 `Sources/AppState.swift:295-332`):
@@ -535,6 +537,7 @@ UserDefaults holds two keys (`DictionaryStorage`,
 |---|---|
 | `custom_dictionary` | `{"entries":[{"strength":…,"text":…}],"version":1}` |
 | `custom_dictionary_ignore` | `{"ignore":[…],"version":1}` |
+| `custom_dictionary_apps` (macOS) | `{"apps":[…],"version":1,"words":[…]}` (§3.6) |
 
 Both are JSON with sorted keys. Loading accepts each payload only up to
 2 MiB (`DictionaryStorage.maxBytes`). Saving does not check the size
@@ -743,18 +746,107 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
   `Sources/RecordingOverlay.swift:275-300`; `testSuggestionGate`;
   `testSuggestionWithdrawal`)
 - The actions are:
-  - **Add:** saves the word at the verified strength, through §3.3.
+  - **Add:** saves the word at the verified strength, through §3.3. When the
+    dictation had an app, it is **Add to <App>**, beside **Add everywhere**
+    (§3.6).
   - **Don't suggest:** adds the key to the ignore list.
   - **Not now:** does nothing.
 
   (`AppState.handleDictionarySuggestionAction`, `AppState.swift:2251-2266`)
+
+### §3.6 App-specific words (macOS)
+
+A word can be limited to apps, so it is boosted only when dictating into
+them. A word with no apps applies everywhere, as before. iOS and Linux have
+no app limits: they never read or write them, and §1 is unchanged.
+
+**Apps**
+
+- An app is a bundle identifier and the last name seen for it. A bundle
+  identifier is 1 to 155 ASCII letters, digits, `.` and `-`. A name is
+  trimmed, has its control characters removed and is cut to 100 scalars; an
+  empty name falls back to the bundle identifier.
+- At most 32 apps are known (`appsFull`). An app stays known, with its
+  words, after it is deleted from the Mac, under its last name.
+- An app is added from Settings (a running app, or one chosen in
+  /Applications) or by accepting "Add to <App>". Adding a known app updates
+  its name.
+
+**Words**
+
+- Each entry has a set of app bundle identifiers; empty means everywhere.
+  Every app in a set is known (`unknownApp` otherwise), and the sets live
+  beside the entries, keyed by identity key.
+- The 1000-entry capacity (§1.1) counts every entry, whatever its apps. The
+  ignore list stays global.
+- Saving an entry sets its apps. Editing an entry's text keeps its apps
+  under the new key. Removing an entry removes its apps.
+- Removing an app removes it from every set. An entry whose only app it was
+  is removed too; it never becomes global.
+
+**Which words a dictation uses**
+
+- The app is the frontmost app when the recording begins, unless it is
+  LocalFlow itself or has no valid bundle identifier; then there is none.
+  Switching apps during the recording changes nothing.
+- The snapshot holds the entries that apply everywhere plus those limited to
+  that app, in entry order. It records the app only when that app has
+  limited words, so every other app shares the global graph.
+- The graph cache holds up to 4 graphs for the current revision, keyed by
+  revision and app; a new revision drops the older graphs.
+- A retried history item uses the words that apply everywhere.
+
+**Suggestions**
+
+- Correction checks run against the dictation's snapshot, so a word limited
+  to another app can still be suggested. A suggestion is offered only if the
+  word does not already apply in the dictation's app and is not ignored, and
+  only while the whole dictionary has room.
+- With an app, the actions are **Add to <App>**, **Add everywhere**, **Not
+  now** and **Don't suggest**. Without one, they are **Add**, which adds
+  everywhere, **Not now** and **Don't suggest**.
+- Add to <App> registers the app. For a new word it saves the word limited
+  to that app. For an existing word it keeps the word's text, raises its
+  strength to the verified one if that is higher, and adds the app unless
+  the word already applies everywhere.
+- Add everywhere saves a new word everywhere, or makes an existing word
+  apply everywhere, with the same strength rule.
+
+**Storage**
+
+A third UserDefaults key, `custom_dictionary_apps`, holds
+`{"apps":[{"id":…,"name":…}],"version":1,"words":[{"apps":[…],"key":…}]}`,
+JSON with sorted keys, words sorted by key and each word's apps sorted.
+Loading accepts it only up to 8 MiB, above the largest payload 32 apps and
+1000 words in all of them can encode to. It validates:
+
+- version 1, at most 32 apps, each stored exactly as normalized, with no
+  repeated bundle identifiers;
+- at most 1000 words, each key valid under pin P6 with no repeats, and each
+  with a non-empty set of known apps and no repeats.
+
+A word whose key is no longer an entry is dropped while loading: a build
+from before app limits can remove or rename entries without touching this
+key, and treats every word as global. Anything else that fails makes the
+whole dictionary unreadable as in §3.2, and the reset removes all three
+keys.
+
+Edits go through `ScopedDictionaryEditor`, which follows §3.3 and refuses
+everything without a vocabulary. Errors never quote a word or an app.
+
+(`DictionaryApp`, `DictionaryAppScopes`, `ScopedDictionary`,
+`ScopedDictionaryEditor` and `DictionaryAppStorage`,
+`Sources/DictionaryApps.swift`; `BiasGraphCache`,
+`Sources/Parakeet/LocalParakeetService.swift`; `AppState.dictionarySnapshot`
+and `AppState.dictationApp`, `Sources/AppState.swift`; tests in
+`Tests/DictionaryAppTests.swift`)
 
 ## Platform differences
 
 | Aspect | macOS | iOS | Linux |
 |---|---|---|---|
 | Implementation | Swift, `Sources/Dictionary` | the same Swift sources (`iOS/ARCHITECTURE.md`, "Custom dictionary") | Rust: `lf-asr`, `lf-cpu`, `lf-dictation`, `lf-daemon` |
-| Storage | two UserDefaults keys (§3.2) | the same keys in the host app's UserDefaults, never the App Group | one 0600 file with entries and ignore list (§2.1) |
+| Storage | two UserDefaults keys (§3.2), plus app limits (§3.6) | the same keys in the host app's UserDefaults, never the App Group | one 0600 file with entries and ignore list (§2.1) |
 | Vocabulary file | `vocabulary.json` | `vocabulary.json` | `tokenizer.vocab`, with scores checked (§1.3) |
 | How corrections are found | Accessibility watcher on the pasted text (§3.5) | none: entries are added by hand | user-initiated `localflowctl correct` (§2.5) |
 | Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode that has at least one edit block against the unboosted transcript, where every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`, `Tests/StrengthProbeTests.swift`) | the strength verified from a correction |
@@ -762,5 +854,6 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 | Candidates that failed at every strength | remembered per dictation (`ExhaustedCandidates`) | not applicable | not remembered (inferred: no such cache in `verify_with_clock`, `worker.rs`) |
 | Full dictionary | nothing verified or offered (`DictionarySuggestionFinder.find`) | not applicable | still verified; `dict-add` then fails with `full` (inferred: no capacity check in `submit_correction` or `verify_with_clock`) |
 | Phrase order before building the graph | first seen (`BiasGraph.phrases`) | first seen | sorted by token sequence (`phrases`); the graph does not depend on order (vectors `graph`, "G2 reversed") |
-| Suggestion UI | overlay, 12 s, Add / Not now / Don't suggest | not applicable | rofi prompt, Add / Not now / Don't suggest |
+| Suggestion UI | overlay, 12 s, Add (or Add to <App> / Add everywhere) / Not now / Don't suggest | not applicable | rofi prompt, Add / Not now / Don't suggest |
 | Project words | none | none | agent-link words are boosted and never end a session (§2.2) |
+| App-specific words | words limited to apps, chosen by the frontmost app at recording start (§3.6) | none | none |

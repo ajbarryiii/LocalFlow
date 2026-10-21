@@ -353,12 +353,48 @@ private final class ParakeetCancellation: @unchecked Sendable {
 }
 
 /// An immutable dictionary: decoding never reads mutable dictionary state.
-/// `revision` identifies the snapshot for graph caching.
+/// `revision` and `appID` identify the snapshot for graph caching: on macOS a
+/// revision's entries differ by the app dictated into (DESIGN §3.6).
 struct DictionarySnapshot: Sendable {
     let revision: UInt64
     let entries: [DictionaryEntry]
+    /// The app whose limited words `entries` includes; nil for the words that apply everywhere.
+    let appID: String?
+
+    init(revision: UInt64, entries: [DictionaryEntry], appID: String? = nil) {
+        self.revision = revision
+        self.entries = entries
+        self.appID = appID
+    }
 
     static let empty = DictionarySnapshot(revision: 0, entries: [])
+}
+
+/// Bias graphs of the current revision, by app, least recently used first. A
+/// new revision drops the older graphs (DESIGN §3.6).
+struct BiasGraphCache {
+    static let capacity = 4
+
+    private var revision: UInt64?
+    private var graphs: [(appID: String?, graph: BiasGraph?)] = []
+
+    /// An empty snapshot has no graph, so decoding takes the unbiased path.
+    mutating func graph(for snapshot: DictionarySnapshot, build: () -> BiasGraph?) -> BiasGraph? {
+        guard !snapshot.entries.isEmpty else { return nil }
+        if revision != snapshot.revision {
+            revision = snapshot.revision
+            graphs.removeAll()
+        }
+        if let index = graphs.firstIndex(where: { $0.appID == snapshot.appID }) {
+            let cached = graphs.remove(at: index)
+            graphs.append(cached)
+            return cached.graph
+        }
+        let graph = build()
+        if graphs.count == Self.capacity { graphs.removeFirst() }
+        graphs.append((snapshot.appID, graph))
+        return graph
+    }
 }
 
 struct TranscriptionResult: Sendable {
@@ -428,7 +464,7 @@ private final class LocalParakeetRuntime {
     let vocabulary: [String]
     /// Scalar-keyed BPE over the same vocabulary, for dictionary phrases.
     let encoder: BPEEncoder
-    private var cachedGraph: (revision: UInt64, graph: BiasGraph?)?
+    private var graphs = BiasGraphCache()
     private let models = ParakeetModelCache<MLModel>()
     private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
@@ -531,14 +567,10 @@ private final class LocalParakeetRuntime {
         return transcript.text
     }
 
-    /// Built here, on the model queue, and cached by snapshot revision. An
-    /// empty dictionary has no graph, so decoding takes the unbiased path.
+    /// Built here, on the model queue, and cached by snapshot revision and app.
+    /// An empty dictionary has no graph, so decoding takes the unbiased path.
     func graph(for snapshot: DictionarySnapshot) -> BiasGraph? {
-        guard !snapshot.entries.isEmpty else { return nil }
-        if let cachedGraph, cachedGraph.revision == snapshot.revision { return cachedGraph.graph }
-        let graph = BiasGraph.build(entries: snapshot.entries, encoder: encoder)
-        cachedGraph = (snapshot.revision, graph)
-        return graph
+        graphs.graph(for: snapshot) { BiasGraph.build(entries: snapshot.entries, encoder: encoder) }
     }
 
     // Installs also run on this queue, so readiness is fixed for the recording.

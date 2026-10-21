@@ -34,6 +34,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/Dictionary/StrengthProbe.swift \
 	Sources/Dictionary/SuggestionPresentationGate.swift \
 	Sources/Dictionary/VerifyDecision.swift \
+	Sources/DictionaryApps.swift \
 	Sources/Parakeet/LocalParakeetCore.swift \
 	Sources/Parakeet/LocalParakeetService.swift \
 	Sources/Parakeet/ParakeetAudioReader.swift \

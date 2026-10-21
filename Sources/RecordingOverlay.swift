@@ -12,6 +12,14 @@ final class RecordingOverlayState: ObservableObject {
     @Published var toastID: UUID?
     /// The only copy of a visible suggestion; cleared whenever it leaves the screen.
     @Published var suggestionGate = SuggestionPresentationGate()
+    /// The app of the suggestion presented with this id (DESIGN §3.6). It applies
+    /// only while that id is still `suggestionGate.activeID`.
+    @Published var suggestionApp: (id: UUID, app: DictionaryApp?)?
+
+    var visibleSuggestionApp: DictionaryApp? {
+        guard let suggestionApp, suggestionApp.id == suggestionGate.activeID else { return nil }
+        return suggestionApp.app
+    }
 }
 
 enum OverlayPhase: Equatable {
@@ -101,7 +109,7 @@ final class RecordingOverlayManager {
     var onStopButtonPressed: (() -> Void)?
     var onUpdateOverlayPressed: (() -> Void)?
     /// Called on the main thread at most once per suggestion, only for the one on screen.
-    var onDictionarySuggestionAction: ((DictionarySuggestion, DictionarySuggestionAction) -> Void)?
+    var onDictionarySuggestionAction: ((DictionarySuggestion, DictionaryApp?, DictionarySuggestionAction) -> Void)?
 
     /// The screen the overlay should drop down on. The user picks one of
     /// three modes in Settings, stored in UserDefaults under
@@ -272,12 +280,13 @@ final class RecordingOverlayManager {
     /// 12 s; a stale timer or click cannot act on a later phase.
     /// Main thread only. A withdrawal issued after this call (a recording press,
     /// a dictionary edit) voids it before it reaches the screen.
-    func showDictionarySuggestion(_ suggestion: DictionarySuggestion) {
+    func showDictionarySuggestion(_ suggestion: DictionarySuggestion, app: DictionaryApp?) {
         dispatchPrecondition(condition: .onQueue(.main))
         let requested = overlayState.suggestionGate.withdrawals
         DispatchQueue.main.async { [self] in
             guard self.overlayWindow == nil || self.overlayState.phase.isDictionarySuggestion,
                   let id = self.overlayState.suggestionGate.present(suggestion, requestedAt: requested) else { return }
+            self.overlayState.suggestionApp = (id, app)
             self.lockedOverlayWidth = nil
             self.overlayState.phase = .dictionarySuggestion(id: id)
             self.showOverlayPanel(animatedResize: true)
@@ -301,13 +310,15 @@ final class RecordingOverlayManager {
     }
 
     private func resolveSuggestion(id: UUID, action: DictionarySuggestionAction) {
+        let app = overlayState.visibleSuggestionApp
         guard let suggestion = overlayState.suggestionGate.resolve(id) else { return }
         dismissAll()
-        onDictionarySuggestionAction?(suggestion, action)
+        onDictionarySuggestionAction?(suggestion, app, action)
     }
 
     private func preemptSuggestion() {
         overlayState.suggestionGate.preempt()
+        overlayState.suggestionApp = nil
     }
 
     private func showOverlayPanel(animatedResize: Bool) {
@@ -505,7 +516,8 @@ final class RecordingOverlayManager {
         }
 
         if overlayState.phase.isDictionarySuggestion {
-            let suggestionWidth = DictionarySuggestionOverlayView.width(for: overlayState.suggestionGate.suggestion?.word ?? "")
+            let suggestionWidth = DictionarySuggestionOverlayView.width(for: overlayState.suggestionGate.suggestion?.word ?? "",
+                                                                         appName: overlayState.visibleSuggestionApp?.name)
             guard screenHasNotch else { return suggestionWidth }
             return max(notchWidth, suggestionWidth)
         }
@@ -539,6 +551,7 @@ final class RecordingOverlayManager {
     private func dismissAll() {
         // Whatever closes the panel, no suggested word stays in memory.
         overlayState.suggestionGate.preempt()
+        overlayState.suggestionApp = nil
         lockedOverlayWidth = nil
         overlayState.updateVersion = ""
         if let panel = overlayWindow {
@@ -1035,7 +1048,9 @@ struct RecordingOverlayView: View {
             } else if state.phase == .updateAvailable {
                 UpdateAvailableOverlayView(onPress: onUpdateOverlayPressed)
             } else if case .dictionarySuggestion(let id) = state.phase, let suggestion = state.suggestionGate.suggestion {
-                DictionarySuggestionOverlayView(word: suggestion.word) { onSuggestionAction(id, $0) }
+                DictionarySuggestionOverlayView(word: suggestion.word, appName: state.visibleSuggestionApp?.name) {
+                    onSuggestionAction(id, $0)
+                }
             } else {
                 ZStack {
                     Group {
@@ -1147,13 +1162,26 @@ struct UpdateAvailableOverlayView: View {
 struct DictionarySuggestionOverlayView: View {
     static let height: CGFloat = 62
 
-    static func width(for word: String) -> CGFloat {
+    /// Longest app name shown in full on the Add to <App> button.
+    static let maxAppNameCharacters = 18
+
+    static func width(for word: String, appName: String?) -> CGFloat {
         let characters = min(word.count, 40)
-        return min(460, max(300, CGFloat(characters) * 7 + 190))
+        let title = CGFloat(characters) * 7 + 190
+        // Add to <App>, Add everywhere, Not now and Don't suggest.
+        let buttons = appName.map { CGFloat(min($0.count, maxAppNameCharacters)) * 7 + 380 } ?? 0
+        return min(560, max(300, title, buttons))
     }
 
     let word: String
+    /// The dictation's app; without one, Add puts the word everywhere (DESIGN §3.6).
+    let appName: String?
     let onAction: (DictionarySuggestionAction) -> Void
+
+    private var shortAppName: String? {
+        guard let appName, appName.count > Self.maxAppNameCharacters else { return appName }
+        return String(appName.prefix(Self.maxAppNameCharacters - 1)) + "…"
+    }
 
     var body: some View {
         VStack(spacing: 7) {
@@ -1163,7 +1191,12 @@ struct DictionarySuggestionOverlayView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             HStack(spacing: 6) {
-                button("Add", prominent: true) { onAction(.add) }
+                if let shortAppName {
+                    button("Add to \(shortAppName)", prominent: true) { onAction(.add) }
+                    button("Add everywhere", prominent: false) { onAction(.addEverywhere) }
+                } else {
+                    button("Add", prominent: true) { onAction(.add) }
+                }
                 button("Not now", prominent: false) { onAction(.notNow) }
                 button("Don't suggest", prominent: false) { onAction(.dontSuggest) }
             }
