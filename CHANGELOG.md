@@ -9,6 +9,30 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.5] - 2026-10-20
+
+Seventh LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.4.
+
+### Added
+
+- Dictionary words can be limited to apps. In Settings → Dictionary, add an
+  app from the open apps or from Applications, then choose for each word
+  whether it is used in every app or only in chosen apps. A dictation uses
+  the words for every app plus those of the app in front when recording
+  starts. Correction suggestions in an app offer "Add to <App>" and "Add
+  everywhere". Removing an app deletes the words that only it used. The
+  1000-word limit covers all words together, and the ignore list still
+  applies everywhere. LocalFlow saves the name and bundle ID of each app you
+  add, and nothing else about the apps you dictate into.
+
+### Fixed
+
+- Pressing Escape during transcription and starting a new dictation right
+  away could leave the new dictation unable to be cancelled.
+- A very large ignore list could make the dictionary unreadable at the next
+  launch.
+
 ## [2.1.4] - 2026-10-17
 
 Sixth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
