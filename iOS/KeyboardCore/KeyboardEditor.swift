@@ -131,8 +131,6 @@ final class KeyboardEditor {
     /// Autocorrect's corrector and inputs, read at each commit key (ARCHITECTURE.md, "Word autocorrect"); nil
     /// while autocorrect is off, without Full Access, or before its model has loaded.
     var autocorrect: () -> AutocorrectSetup? = { nil }
-    /// An autocorrect event, for the TestFlight counters (counts only).
-    var onAutocorrectEvent: ((WordAutocorrect.Event) -> Void)?
     /// The current word's characters with their taps' touch-down points. In memory only; dropped on hiding.
     private(set) var wordTaps = WordTapRecord()
     /// Typed words a Delete put back after their autocorrection, lowercased: never corrected again while this
@@ -461,6 +459,8 @@ final class KeyboardEditor {
         let words = candidates.map(\.word).filter { !$0.isEmpty }
         guard !words.isEmpty else { return }
         neverCorrectOffer = nil
+        // A swipe forgets a pending revert, as any other key does.
+        pendingRevert = nil
         var strip: SwipeStrip?
         var context: SwipeEditContext?
         let typed = type(field: field, now: now) { [self] before in
@@ -534,12 +534,10 @@ final class KeyboardEditor {
             swipe = (SwipeStrip(candidates: strip.candidates, inserted: index), placed, commit)
             if let typed = commit.corrected, index == 0 {
                 revertedWords.insert(typed)
-                onAutocorrectEvent?(.reverted)
                 offerNeverCorrect(typed, typed: strip.candidates[index])
             } else {
                 // The correction chosen back undoes its revert.
                 if let typed = commit.corrected, index == 1 { revertedWords.remove(typed) }
-                onAutocorrectEvent?(.chosen)
             }
         } else {
             // The pending space first, so the old word's edit is let go before the strip is reported changed.
@@ -578,9 +576,9 @@ final class KeyboardEditor {
                           generation: core.generation, at: now)
     }
 
-    /// Forgets every swiped word's edit that neither the strip nor the pending space refers to.
+    /// Forgets every recorded edit that neither the strip, the pending space nor the pending revert refers to.
     private func releaseSwipeEdits() {
-        swipeEdits.removeAll(keeping: Set([swipe?.edit, pendingSpace].compactMap { $0 }))
+        swipeEdits.removeAll(keeping: Set([swipe?.edit, pendingSpace, pendingRevert?.edit].compactMap { $0 }))
     }
 
     /// Whether the caret is still where the recorded edit left it: the same field, no edit by anything
@@ -688,8 +686,7 @@ final class KeyboardEditor {
             if !shown { wordTaps.clear() }
             let setup = document.hasSelection || !shown ? nil : autocorrect()
             let review = WordAutocorrect.review(before: text, record: wordTaps, reverted: revertedWords,
-                                                neverCorrect: neverCorrectWords, setup: setup,
-                                                checked: { onAutocorrectEvent?(.checked) })
+                                                neverCorrect: neverCorrectWords, setup: setup)
             guard let review, let correction = review.correction else {
                 let edit = resolve(action, before: before, at: timestamp)
                 // A key that deletes (a double space's period) follows a space, never a word; kept for safety.
@@ -708,7 +705,6 @@ final class KeyboardEditor {
             offered = (review, edit.text, context)
             return (correction.typed.count, [correction.replacement, edit.text])
         }
-        if made != nil { onAutocorrectEvent?(.corrected) }
         guard let offered else { return }
         let review = offered.review
         let showsStrip = action != .returnKey && !review.choices.isEmpty
@@ -751,7 +747,6 @@ final class KeyboardEditor {
         swipe = nil
         wordTaps = pending.correction.record
         revertedWords.insert(pending.correction.word)
-        onAutocorrectEvent?(.reverted)
         offerNeverCorrect(pending.correction.word, typed: pending.correction.typed)
         return true
     }
@@ -775,7 +770,6 @@ final class KeyboardEditor {
         // What the store holds, or would if the write failed: the word is not corrected in this instance either way.
         neverCorrectWords = Set(neverCorrectStore.add(offer.word).words)
         swipe = nil
-        onAutocorrectEvent?(.neverCorrected)
     }
 
     /// A revert offers to never correct its word, with a store bound and a word the store can keep.
@@ -784,7 +778,6 @@ final class KeyboardEditor {
         var shown = typed
         while let last = shown.last, WordTapRecord.apostrophes.contains(last) { shown.removeLast() }
         neverCorrectOffer = NeverCorrectOffer(word: word, typed: shown)
-        onAutocorrectEvent?(.offered)
     }
 
     /// The letters layer was laid out anew (a resize or rotation): the current word's recorded points belong to

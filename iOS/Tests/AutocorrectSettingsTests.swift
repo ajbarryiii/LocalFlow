@@ -1,9 +1,8 @@
 import Foundation
 
 /// ARCHITECTURE.md, "Word autocorrect": the bundle's optional `autocorrect` section (`AutocorrectManifest`), the
-/// loader that builds the corrector from an invented bundle (`AutocorrectLoader`), and the App Group settings
-/// (`LocalFlowSettings`): the switch, the model and preset choices, the per-parameter overrides merged over the
-/// preset, and the reset. Invented manifests, files and values only.
+/// parameters the keyboard uses (the default model's default preset), and the loader that builds the corrector
+/// from an invented bundle (`AutocorrectLoader`). Invented manifests, files and values only.
 enum AutocorrectSettingsTests {
     static var tests: [TestCase] {
         [
@@ -13,18 +12,10 @@ enum AutocorrectSettingsTests {
             ("manifestRejectsAnInvalidSection", testManifestRejectsAnInvalidSection),
             ("manifestRejectsPresetsOutOfTheirDomain", testManifestRejectsPresetsOutOfTheirDomain),
             ("anInvalidSectionRejectsOnlyAutocorrect", testAnInvalidSectionRejectsOnlyAutocorrect),
-            ("manifestResolvesModelsAndPresets", testManifestResolvesModelsAndPresets),
-            ("presetNamesOrderNumbersByValue", testPresetNamesOrderNumbersByValue),
+            ("keyboardUsesTheDefaultModelsDefaultPreset", testKeyboardUsesTheDefaultModelsDefaultPreset),
             ("manifestReadsTheSpellingChannel", testManifestReadsTheSpellingChannel),
             ("spellingPresetsNeedTheTables", testSpellingPresetsNeedTheTables),
             ("loaderReadsTheSpellingTables", testLoaderReadsTheSpellingTables),
-            ("spellingOverrideAcceptsItsRangeAndMerges", testSpellingOverrideAcceptsItsRangeAndMerges),
-            ("settingsAreOffAndUnsetByDefault", testSettingsAreOffAndUnsetByDefault),
-            ("overridesAcceptOnlyTheirRanges", testOverridesAcceptOnlyTheirRanges),
-            ("overridesMergeOverThePreset", testOverridesMergeOverThePreset),
-            ("malformedOverridesReadAsThePreset", testMalformedOverridesReadAsThePreset),
-            ("insertionWeightsOverOneReadAsThePreset", testInsertionWeightsOverOneReadAsThePreset),
-            ("resetClearsOnlyTheOverrides", testResetClearsOnlyTheOverrides),
         ]
     }
 
@@ -93,13 +84,6 @@ enum AutocorrectSettingsTests {
         } catch {
             return error as? AutocorrectManifest.ManifestError
         }
-    }
-
-    private static func withSettings(_ body: (LocalFlowSettings, UserDefaults) -> Void) {
-        let suite = "LocalFlowIOSTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        body(LocalFlowSettings(defaults: defaults), defaults)
     }
 
     // MARK: Manifest
@@ -210,34 +194,24 @@ enum AutocorrectSettingsTests {
                                 SwipeDecodeConfig(beam: 4, topK: 3, lengthPower: 0.5, freqWeight: 0.01, lengthBonus: 0.25))
     }
 
-    private static func testManifestResolvesModelsAndPresets() {
+    private static func testKeyboardUsesTheDefaultModelsDefaultPreset() {
+        // The default model's ("w1") default preset ("balanced"), whatever the other models and presets hold.
         let decoded = try! AutocorrectManifest.decode(from: manifest(autocorrect: section()))!
-        // Unigram, then n-gram, then LSTM.
-        TestSupport.expectEqual(decoded.modelNames, ["w0", "w1", "w2"])
-        TestSupport.expectEqual(decoded.modelName("w2"), "w2")
-        TestSupport.expectEqual(decoded.modelName("w9"), "w1")
-        TestSupport.expectEqual(decoded.modelName(nil), "w1")
-        // The default preset first.
-        TestSupport.expectEqual(decoded.presetNames(model: "w0"), ["balanced", "conservative"])
-        TestSupport.expectEqual(decoded.presetNames(model: "w2"), ["balanced"])
-        TestSupport.expectEqual(decoded.presetName("conservative", model: "w0"), "conservative")
-        TestSupport.expectEqual(decoded.presetName("conservative", model: "w2"), "balanced")
-        TestSupport.expectEqual(decoded.presetName(nil, model: "w1"), "balanced")
-        TestSupport.expectEqual(decoded.params(model: "w0", preset: "conservative").marginOOV, 10)
-        TestSupport.expectEqual(decoded.params(model: nil, preset: nil).lmWeight, 1.2)
-        TestSupport.expectEqual(decoded.params(model: "w9", preset: "conservative").marginOOV, .infinity)
-        TestSupport.expectEqual(decoded.params(model: "w2", preset: "conservative").logOOV, -12)
-    }
-
-    private static func testPresetNamesOrderNumbersByValue() {
-        let presets: [String: Any] = ["w0": ["1:10": preset(), "1:1": preset(), "1:5": preset(), "1:3": preset()],
-                                      "w1": ["1:3": preset()],
-                                      "w2": ["1:10": preset(), "1:3": preset()]]
-        let decoded = try! AutocorrectManifest.decode(
-            from: manifest(autocorrect: section(["presets": presets, "default_preset": "1:3"])))!
-        // The default first, then the rest with their numbers compared by value, not by character.
-        TestSupport.expectEqual(decoded.presetNames(model: "w0"), ["1:3", "1:1", "1:5", "1:10"])
-        TestSupport.expectEqual(decoded.presetNames(model: "w2"), ["1:3", "1:10"])
+        var expected = presetParams
+        expected.lmWeight = 1.2
+        TestSupport.expectEqual(decoded.defaultParams, expected)
+        // A preset named like the bundle's ("1:3"), among others of the default model.
+        let presets: [String: Any] = ["w0": ["1:3": preset()],
+                                      "w1": ["1:1": preset(["margin_oov": 1.0]), "1:3": preset(["margin_oov": 3.0]),
+                                             "1:10": preset(["margin_oov": 10.0])],
+                                      "w2": ["1:3": preset(["log_oov": -12.0])]]
+        let named = try! AutocorrectManifest.decode(from: manifest(autocorrect: section(["presets": presets, "default_preset": "1:3"])))!
+        TestSupport.expectEqual(named.defaultParams.marginOOV, 3)
+        TestSupport.expectEqual(named.defaultParams.logOOV, -9)
+        // Another default model, its own default preset.
+        let lstm = try! AutocorrectManifest.decode(from: manifest(autocorrect: section(["presets": presets, "default_preset": "1:3",
+                                                                                        "default_model": "w2"])))!
+        TestSupport.expectEqual(lstm.defaultParams.logOOV, -12)
     }
 
     // MARK: Spelling channel
@@ -311,7 +285,7 @@ enum AutocorrectSettingsTests {
             // Named: read, widened from float32; the corrector uses them (a cognitive misspelling is corrected).
             let corrector = load(named, url)
             TestSupport.expect(corrector?.spelling == (try! SpellingTables(data: good)), "tables loaded")
-            let p = named.params(model: "w0", preset: nil)
+            let p = named.presets["w0"]!["balanced"]!
             var motor = p
             motor.wSpelling = 0
             let points = AutocorrectCoreTests.centreTaps("recieve"), keys = AutocorrectCoreTests.keys
@@ -333,181 +307,6 @@ enum AutocorrectSettingsTests {
         for (name, data) in [("bad magic", badMagic), ("short", good.dropLast(4)), ("long", good + Data(count: 8)), ("bad value", badValue),
                              ("empty", Data())] {
             withBundle(spelling: Data(data)) { url in TestSupport.expect(load(named, url) == nil, "\(name) tables loaded") }
-        }
-    }
-
-    private static func testSpellingOverrideAcceptsItsRangeAndMerges() {
-        withSettings { settings, defaults in
-            TestSupport.expectEqual(AutocorrectSetting.wSpelling.range, 0 ... 1)
-            for value in [0, 0.001, 0.03, 1] {
-                settings.setAutocorrectOverride(.wSpelling, value)
-                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == value, "\(value) not stored")
-            }
-            for value in [-0.1, 1.5, .nan, .infinity, -.infinity] {
-                settings.setAutocorrectOverride(.wSpelling, value)
-                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == 1, "\(value) stored")
-            }
-            for stored: Any in ["0.1", true, -1.0, 3.0] {
-                defaults.set(stored, forKey: "autocorrectParam.w_spelling")
-                TestSupport.expect(settings.autocorrectOverride(.wSpelling) == nil, "\(stored) read")
-            }
-            var preset = presetParams
-            preset.wSpelling = 0.3
-            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.3)
-            settings.setAutocorrectOverride(.wSpelling, 0.01)
-            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.01)
-            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams).wSpelling, 0.01)
-            settings.resetAutocorrectParams()
-            TestSupport.expectEqual(settings.autocorrectParams(over: preset).wSpelling, 0.3)
-        }
-    }
-
-    // MARK: Settings
-
-    private static func testSettingsAreOffAndUnsetByDefault() {
-        withSettings { settings, defaults in
-            TestSupport.expect(!settings.autocorrectEnabled, "on by default")
-            TestSupport.expectEqual(settings.autocorrectModel, nil)
-            TestSupport.expectEqual(settings.autocorrectPreset, nil)
-            for setting in AutocorrectSetting.allCases {
-                TestSupport.expectEqual(settings.autocorrectOverride(setting), nil)
-                TestSupport.expectEqual(defaults.object(forKey: "autocorrectParam.\(setting.rawValue)") == nil, true)
-            }
-            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams), presetParams)
-            settings.autocorrectEnabled = true
-            settings.autocorrectModel = "w2"
-            settings.autocorrectPreset = "conservative"
-            let reread = LocalFlowSettings(defaults: defaults)
-            TestSupport.expect(reread.autocorrectEnabled, "enabled stored")
-            TestSupport.expectEqual(reread.autocorrectModel, "w2")
-            TestSupport.expectEqual(reread.autocorrectPreset, "conservative")
-            // Invalid names forget the choice; an invalid stored value reads as unset.
-            settings.autocorrectModel = ""
-            TestSupport.expectEqual(settings.autocorrectModel, nil)
-            settings.autocorrectPreset = String(repeating: "p", count: 65)
-            TestSupport.expectEqual(settings.autocorrectPreset, nil)
-            defaults.set(3, forKey: "autocorrectModel")
-            TestSupport.expectEqual(settings.autocorrectModel, nil)
-            defaults.set("yes", forKey: "autocorrectEnabled")
-            TestSupport.expect(!settings.autocorrectEnabled, "invalid enabled value")
-            // The names are the contract (w_spelling since the spelling channel, 2026-10-20).
-            TestSupport.expectEqual(AutocorrectSetting.allCases.map(\.rawValue),
-                                    ["log_oov", "margin_oov", "margin_known", "margin_apostrophe", "lm_weight", "p_omit", "p_insert",
-                                     "p_transpose", "w_repeat", "w_slip", "short_length", "w_spelling"])
-        }
-    }
-
-    private static func testOverridesAcceptOnlyTheirRanges() {
-        withSettings { settings, defaults in
-            let accepted: [(AutocorrectSetting, [Double])] = [
-                (.logOOV, [log(1e-10), log(1e-5), log(1e-1)]), (.marginOOV, [1, 12.5, 30]), (.marginKnown, [1, 300, 1000, .infinity]),
-                (.marginApostrophe, [1, 1000, .infinity]), (.lmWeight, [0.25, 2]), (.pOmit, [0.001, 0.1]), (.pInsert, [0.05]),
-                (.pTranspose, [0.001]), (.wRepeat, [0, 1]), (.wSlip, [0.5]), (.shortLength, [3, 4, 5]),
-            ]
-            for (setting, values) in accepted {
-                for value in values {
-                    settings.setAutocorrectOverride(setting, value)
-                    TestSupport.expect(settings.autocorrectOverride(setting) == value, "\(setting) \(value) not stored")
-                }
-            }
-            // Infinity is stored as text; property lists have none.
-            TestSupport.expectEqual(defaults.object(forKey: "autocorrectParam.margin_known") as? String, "inf")
-            let rejected: [(AutocorrectSetting, [Double])] = [
-                (.logOOV, [log(1e-11), 0, -.infinity]), (.marginOOV, [0.5, 31, .infinity]), (.marginKnown, [0.9, 1001, .nan]),
-                (.lmWeight, [0.2, 2.5]), (.pOmit, [0.0009, 0.2]), (.wRepeat, [-0.1, 1.1]), (.shortLength, [2, 6, 3.5]),
-            ]
-            for (setting, values) in rejected {
-                let before = settings.autocorrectOverride(setting)
-                for value in values {
-                    settings.setAutocorrectOverride(setting, value)
-                    TestSupport.expect(settings.autocorrectOverride(setting) == before, "\(setting) \(value) stored")
-                }
-            }
-            // Nil forgets.
-            settings.setAutocorrectOverride(.lmWeight, nil)
-            TestSupport.expectEqual(settings.autocorrectOverride(.lmWeight), nil)
-        }
-    }
-
-    private static func testOverridesMergeOverThePreset() {
-        withSettings { settings, _ in
-            settings.setAutocorrectOverride(.logOOV, log(1e-5))
-            settings.setAutocorrectOverride(.marginOOV, 20)
-            settings.setAutocorrectOverride(.marginKnown, 300)
-            settings.setAutocorrectOverride(.marginApostrophe, .infinity)
-            settings.setAutocorrectOverride(.lmWeight, 1.5)
-            settings.setAutocorrectOverride(.pOmit, 0.05)
-            settings.setAutocorrectOverride(.pInsert, 0.002)
-            settings.setAutocorrectOverride(.pTranspose, 0.01)
-            settings.setAutocorrectOverride(.wRepeat, 0.6)
-            settings.setAutocorrectOverride(.wSlip, 0.2)
-            settings.setAutocorrectOverride(.shortLength, 5)
-            let merged = settings.autocorrectParams(over: presetParams)
-            TestSupport.expectEqual(merged, AutocorrectParams(
-                pOmit: 0.05, pInsert: 0.002, pTranspose: 0.01, maxEdits: 2, maxEditsShort: 1, shortLength: 5, minLength: 2,
-                lmWeight: 1.5, logOOV: log(1e-5), marginOOV: 20, marginKnown: 300, marginApostrophe: .infinity, wRepeat: 0.6,
-                wSlip: 0.2))
-            // Merged over whichever preset is selected.
-            var other = presetParams
-            other.maxEdits = 1
-            other.marginKnown = 2
-            TestSupport.expectEqual(settings.autocorrectParams(over: other).maxEdits, 1)
-            TestSupport.expectEqual(settings.autocorrectParams(over: other).marginKnown, 300)
-        }
-    }
-
-    private static func testMalformedOverridesReadAsThePreset() {
-        withSettings { settings, defaults in
-            let malformed: [(String, Any)] = [
-                ("log_oov", "1e-5"), ("margin_oov", "inf"), ("margin_known", "infinity"), ("margin_apostrophe", true),
-                ("lm_weight", 9.0), ("p_omit", [0.01]), ("p_insert", 0.5), ("p_transpose", false), ("w_repeat", "0.2"),
-                ("w_slip", -1.0), ("short_length", 4.5),
-            ]
-            for (name, value) in malformed { defaults.set(value, forKey: "autocorrectParam.\(name)") }
-            for setting in AutocorrectSetting.allCases {
-                TestSupport.expect(settings.autocorrectOverride(setting) == nil, "\(setting) read")
-            }
-            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams), presetParams)
-            // A stored whole number of another type still reads.
-            defaults.set(4, forKey: "autocorrectParam.short_length")
-            TestSupport.expectEqual(settings.autocorrectOverride(.shortLength), 4)
-        }
-    }
-
-    private static func testInsertionWeightsOverOneReadAsThePreset() {
-        withSettings { settings, _ in
-            settings.setAutocorrectOverride(.wRepeat, 0.7)
-            // 0.7 + 0.35 (the preset's w_slip) is over 1: both read as the preset's.
-            var merged = settings.autocorrectParams(over: presetParams)
-            TestSupport.expectEqual(merged.wRepeat, 0.4)
-            TestSupport.expectEqual(merged.wSlip, 0.35)
-            settings.setAutocorrectOverride(.wSlip, 0.3)
-            merged = settings.autocorrectParams(over: presetParams)
-            TestSupport.expectEqual(merged.wRepeat, 0.7)
-            TestSupport.expectEqual(merged.wSlip, 0.3)
-            // Exactly 1 is allowed.
-            settings.setAutocorrectOverride(.wSlip, 0.3 + 1e-12)
-            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams).wRepeat, 0.7)
-        }
-    }
-
-    private static func testResetClearsOnlyTheOverrides() {
-        withSettings { settings, defaults in
-            settings.autocorrectEnabled = true
-            settings.autocorrectModel = "w2"
-            settings.autocorrectPreset = "conservative"
-            for setting in AutocorrectSetting.allCases {
-                settings.setAutocorrectOverride(setting, setting.range.lowerBound)
-            }
-            settings.resetAutocorrectParams()
-            for setting in AutocorrectSetting.allCases {
-                TestSupport.expectEqual(settings.autocorrectOverride(setting), nil)
-                TestSupport.expect(defaults.object(forKey: "autocorrectParam.\(setting.rawValue)") == nil, "\(setting) kept")
-            }
-            TestSupport.expectEqual(settings.autocorrectParams(over: presetParams), presetParams)
-            TestSupport.expect(settings.autocorrectEnabled, "reset turned autocorrect off")
-            TestSupport.expectEqual(settings.autocorrectModel, "w2")
-            TestSupport.expectEqual(settings.autocorrectPreset, "conservative")
         }
     }
 }

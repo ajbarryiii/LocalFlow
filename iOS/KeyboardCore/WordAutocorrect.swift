@@ -1,8 +1,8 @@
 import Foundation
 
 /// What the editor needs to autocorrect at a commit key (ARCHITECTURE.md, "Word autocorrect"): the corrector,
-/// the letters layout its points are in, the parameters read now, and whether the field is secure text
-/// entry. The keyboard gives none while autocorrect is off, without Full Access or before a model has loaded.
+/// the letters layout its points are in, the parameters (the bundle's default preset), and whether the field is
+/// secure text entry. The keyboard gives none while autocorrect is off, without Full Access or before a model has loaded.
 struct AutocorrectSetup {
     var corrector: WordCorrecting
     var keys: [PlacedKey]
@@ -16,13 +16,6 @@ struct AutocorrectSetup {
 /// which word is before the caret, whether it may be corrected, the corrector's inputs and the correction's
 /// case. `KeyboardEditor` applies them.
 enum WordAutocorrect {
-    /// Events for the TestFlight counters: a word was given to the corrector, replaced, or put back (by a Delete
-    /// or by choosing it on the strip), or another word was chosen on the strip after a commit key; a revert offered
-    /// to never correct its word, and the user accepted.
-    enum Event: Equatable, Sendable {
-        case checked, corrected, reverted, chosen, offered, neverCorrected
-    }
-
     /// The characters that commit a word, from any layer, besides space and Return.
     static let commitCharacters: Set<String> = [".", ",", "!", "?", ";", ":"]
 
@@ -96,9 +89,9 @@ enum WordAutocorrect {
     /// text before the caret as the editor knows it, for the word model only). Nil without a setup, in a secure
     /// field or one that turns autocorrection off, for an unowned record or one without a letter, or for a word
     /// holding other characters, reverted in this keyboard session, or one the user asked never to correct
-    /// (`neverCorrect`). `checked` is called when the corrector is asked.
+    /// (`neverCorrect`).
     static func review(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
-                       setup: AutocorrectSetup?, checked: () -> Void = {}) -> Review? {
+                       setup: AutocorrectSetup?) -> Review? {
         guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, record.owned,
               let found = word(before: record.text) else { return nil }
         let entries = record.entries
@@ -110,7 +103,6 @@ enum WordAutocorrect {
         // The text before the word, when the editor's text ends with it (it always should); none otherwise.
         let leading = entries.count - found.word.lowerBound
         let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
-        checked()
         let corrected = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                 params: setup.params)
         let suggested = setup.corrector.suggestions(context: context, word: lowered, points: points, keys: setup.keys,

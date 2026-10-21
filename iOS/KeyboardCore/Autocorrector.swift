@@ -33,7 +33,7 @@ import Foundation
 /// Where the reference raises (taps of the wrong count, a word with characters other than a–z and
 /// apostrophes, invalid parameters, a negative, NaN or infinite `wSpelling`, keys without a letter pitch),
 /// this keeps the word. One exception: `wSpelling` > 0 without tables scores the motor channel alone (the
-/// reference raises; the manifest refuses such presets, so only a stale override gets here). Main thread
+/// reference raises; the manifest refuses such presets, so the keyboard never gets here). Main thread
 /// only: the word model caches by context until `forgetContext()`, and the corrector its letters layout
 /// and spelling constants. Nothing here logs, stores or sends its inputs.
 final class Autocorrector: WordCorrecting {

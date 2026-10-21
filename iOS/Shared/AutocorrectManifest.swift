@@ -12,7 +12,7 @@ import Foundation
 ///                     "touch": {sigma, ratio, offset_y, tail_weight, tail_scale, space_spread},
 ///                     "spelling": "autocorrect/spelling.lfwe"}
 ///
-/// Shared so the app can list the models and presets; the keyboard runs them. A bundle without the section
+/// The keyboard runs the default model with its default preset (`defaultParams`). A bundle without the section
 /// has no autocorrect; an invalid section rejects autocorrect, never the swipe bundle or soft key edges.
 struct AutocorrectManifest: Equatable, Sendable {
     static let format = 1
@@ -98,43 +98,9 @@ struct AutocorrectManifest: Equatable, Sendable {
             spelling: section.spelling)
     }
 
-    /// The model names: unigram, then n-gram, then LSTM models, each by name.
-    var modelNames: [String] {
-        models.keys.sorted { a, b in
-            let ka = Self.kindOrder(models[a]?.kind), kb = Self.kindOrder(models[b]?.kind)
-            return ka != kb ? ka < kb : a < b
-        }
-    }
-
-    /// The stored model when the bundle has it, otherwise the bundle's default.
-    func modelName(_ stored: String?) -> String {
-        stored.flatMap { models[$0] == nil ? nil : $0 } ?? defaultModel
-    }
-
-    /// The model's preset names: the default first, then by name with numbers compared by value ("1:5"
-    /// before "1:10").
-    func presetNames(model: String) -> [String] {
-        (presets[model] ?? [:]).keys.sorted { a, b in
-            if a == defaultPreset { return b != defaultPreset }
-            if b == defaultPreset { return false }
-            let order = a.compare(b, options: .numeric)
-            return order == .orderedSame ? a < b : order == .orderedAscending
-        }
-    }
-
-    /// The stored preset when the model has it, otherwise the bundle's default.
-    func presetName(_ stored: String?, model: String) -> String {
-        stored.flatMap { presets[model]?[$0] == nil ? nil : $0 } ?? defaultPreset
-    }
-
-    /// The parameters of a model's preset (both resolved as `modelName` and `presetName` do).
-    func params(model stored: String?, preset storedPreset: String?) -> AutocorrectParams {
-        let model = modelName(stored)
-        return presets[model]?[presetName(storedPreset, model: model)] ?? .standard
-    }
-
-    private static func kindOrder(_ kind: ModelKind?) -> Int {
-        kind.flatMap { ModelKind.allCases.firstIndex(of: $0) } ?? ModelKind.allCases.count
+    /// The parameters the keyboard uses: the default model's default preset (which `decode` requires).
+    var defaultParams: AutocorrectParams {
+        presets[defaultModel]?[defaultPreset] ?? .standard
     }
 
     /// A relative path of plain components: never absolute, never "." or "..".
@@ -198,8 +164,7 @@ struct AutocorrectManifest: Equatable, Sendable {
 
         /// Each value in its domain: probabilities strictly between 0 and 1, bounded edits and lengths, a
         /// non-negative LM weight, a negative `log_oov`, margins of at least 1 (or infinite), insertion
-        /// weights in 0–1 summing to at most 1, and a finite, non-negative `w_spelling`. The sliders' narrower
-        /// ranges are not required here.
+        /// weights in 0–1 summing to at most 1, and a finite, non-negative `w_spelling`.
         var isValid: Bool {
             let p = params
             let probabilities = [p.pOmit, p.pInsert, p.pTranspose].allSatisfy { $0.isFinite && $0 > 0 && $0 < 1 }

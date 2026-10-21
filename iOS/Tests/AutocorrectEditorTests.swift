@@ -183,7 +183,7 @@ enum AutocorrectEditorTests {
             rig.press(key)
             TestSupport.expectEqual(rig.text, "so the" + text)
             TestSupport.expectEqual(rig.document.host.caret, ("so the" + text).utf16.count)
-            TestSupport.expectEqual(rig.events, [.checked, .corrected])
+            TestSupport.expectEqual(rig.corrector.calls.count, 1)
         }
     }
 
@@ -216,7 +216,7 @@ enum AutocorrectEditorTests {
         upper.tap("paris")
         upper.press(.space)
         TestSupport.expectEqual(upper.text, "paris ")
-        TestSupport.expectEqual(upper.events, [.checked])
+        TestSupport.expectEqual(upper.corrector.calls.count, 1)
     }
 
     private static func testApostrophesAreKeptAroundTheWord() {
@@ -244,7 +244,7 @@ enum AutocorrectEditorTests {
         rig.tap("hello")
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "hello ")
-        TestSupport.expectEqual(rig.events, [.checked])
+        TestSupport.expectEqual(rig.corrector.calls.count, 1)
         // Nothing to revert: delete deletes the space.
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "hello")
@@ -291,7 +291,6 @@ enum AutocorrectEditorTests {
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "teh ")
         TestSupport.expectEqual(rig.corrector.calls.count, 0)
-        TestSupport.expectEqual(rig.events, [])
     }
 
     private static func testOtherCharactersAreNotCorrected() {
@@ -537,7 +536,6 @@ enum AutocorrectEditorTests {
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "teh ")
         TestSupport.expectEqual(rig.corrector.calls.count, 0)
-        TestSupport.expectEqual(rig.events, [])
         rig.autocorrectionDisabled = false
         rig.tap("teh")
         rig.press(.space)
@@ -653,7 +651,8 @@ enum AutocorrectEditorTests {
         same.press(.returnKey)
         same.heldDelete()
         TestSupport.expectEqual(same.text, "the")
-        TestSupport.expectEqual(same.events, [.checked, .corrected])
+        TestSupport.expectEqual(same.corrector.calls.count, 1)
+        TestSupport.expect(same.editor.revertedWords.isEmpty, "Return armed a revert")
     }
 
     private static func testStaleReadingAfterHidingIsNotCorrected() {
@@ -741,7 +740,6 @@ enum AutocorrectEditorTests {
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "so teh")
         TestSupport.expectEqual(rig.document.host.caret, 6)
-        TestSupport.expectEqual(rig.events, [.checked, .corrected, .reverted])
         TestSupport.expectEqual(rig.editor.revertedWords, ["teh"])
         // Committed again, it stays; so does any case of it later, without asking the corrector.
         rig.press(.space)
@@ -770,7 +768,7 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(rig.text, "so te")
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "so t")
-        TestSupport.expectEqual(rig.events, [.checked, .corrected, .reverted])
+        TestSupport.expectEqual(rig.editor.revertedWords, ["teh"])
     }
 
     private static func testRevertRestoresTheTypedWordsTaps() {
@@ -797,7 +795,6 @@ enum AutocorrectEditorTests {
             rig.heldDelete()
             TestSupport.expectEqual(rig.text, String(before.dropLast()))
             TestSupport.expect(rig.editor.revertedWords.isEmpty, "\(key) kept the revert")
-            TestSupport.expect(!rig.events.contains(.reverted), "\(key) kept the revert")
         }
         // A swipe, dictation or the trackpad too.
         let swiped = AutocorrectRig("", corrections: ["teh": "the"])
@@ -883,7 +880,6 @@ enum AutocorrectEditorTests {
         let plain = run(off), kept = run(keeping)
         TestSupport.expectEqual(plain.0, "teh. Wrld\nTeh?can")
         TestSupport.expectEqual(off.corrector.calls.count, 0)
-        TestSupport.expectEqual(off.events, [])
         TestSupport.expect(plain == kept, "\(plain) differs from \(kept)")
     }
 
@@ -924,7 +920,7 @@ enum AutocorrectEditorTests {
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "hi wrld ")
         TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["wrld", "world", "would"], inserted: 0))
-        TestSupport.expectEqual(rig.events, [.checked])
+        TestSupport.expectEqual(rig.corrector.calls.count, 1)
         // Every commit key but Return, which may move focus.
         for (key, text) in [(KeyAction.character("."), "."), (.character("?"), "?"), (.returnKey, "\n")] {
             let other = AutocorrectRig("", corrections: [:], alternatives: ["wrld": ["world"]])
@@ -979,9 +975,10 @@ enum AutocorrectEditorTests {
         rig.choose(0)
         TestSupport.expectEqual(rig.text, "hi wrld,")
         // Choosing the word already in the field does nothing.
+        let insertions = rig.document.insertions.count
         rig.choose(0)
         TestSupport.expectEqual(rig.text, "hi wrld,")
-        TestSupport.expectEqual(rig.events, [.checked, .chosen, .chosen, .chosen])
+        TestSupport.expectEqual(rig.document.insertions.count, insertions)
         TestSupport.expect(rig.editor.revertedWords.isEmpty, "a kept word chosen back is not reverted")
         // The next word is still this keyboard's own: corrected at its commit key.
         rig.press(.space)
@@ -997,7 +994,6 @@ enum AutocorrectEditorTests {
         chosen.heldDelete()
         TestSupport.expectEqual(chosen.text, "so ten")
         TestSupport.expect(chosen.editor.revertedWords.isEmpty, "a Delete after a choice reverted")
-        TestSupport.expectEqual(chosen.events, [.checked, .corrected, .chosen])
     }
 
     private static func testChoosingTheTypedWordRevertsTheCorrection() {
@@ -1009,7 +1005,6 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(rig.text, "so Teh ")
         TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["Teh", "The"], inserted: 0))
         TestSupport.expectEqual(rig.editor.revertedWords, ["teh"])
-        TestSupport.expectEqual(rig.events, [.checked, .corrected, .reverted])
         // Never corrected or offered again in this keyboard instance.
         rig.tap("teh")
         rig.press(.space)
@@ -1024,7 +1019,6 @@ enum AutocorrectEditorTests {
         back.choose(0)
         back.choose(1)
         TestSupport.expectEqual(back.text, "the ")
-        TestSupport.expectEqual(back.events, [.checked, .corrected, .reverted, .chosen])
         TestSupport.expect(back.editor.revertedWords.isEmpty, "the correction chosen back stays reverted")
         // Tapping the correction already in the field confirms it: a Delete after is a plain Delete.
         let confirmed = AutocorrectRig("", corrections: ["teh": "the"])
@@ -1034,7 +1028,6 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(confirmed.text, "the ")
         confirmed.heldDelete()
         TestSupport.expectEqual(confirmed.text, "the")
-        TestSupport.expectEqual(confirmed.events, [.checked, .corrected])
         TestSupport.expect(confirmed.editor.revertedWords.isEmpty, "a confirmed correction was reverted")
     }
 
@@ -1075,7 +1068,6 @@ enum AutocorrectEditorTests {
         moved.choose(1)
         TestSupport.expectEqual(moved.text, "wrld wrld ")
         TestSupport.expectEqual(moved.strip, nil)
-        TestSupport.expectEqual(moved.events, [.checked])
     }
 
     // MARK: Through the key area
@@ -1156,7 +1148,6 @@ final class AutocorrectRig {
     var secure = false
     var autocorrectionDisabled = false
     var autocapitalization: AutocapitalizationMode = .none
-    private(set) var events: [WordAutocorrect.Event] = []
     private var time: TimeInterval = 100
 
     init(_ text: String, corrections: [String: String], alternatives: [String: [String]] = [:], editCallbackDelay: Int? = nil,
@@ -1173,7 +1164,6 @@ final class AutocorrectRig {
             return AutocorrectSetup(corrector: self.corrector, keys: Self.keys, params: self.params, secureTextEntry: self.secure,
                                     autocorrectionDisabled: self.autocorrectionDisabled)
         }
-        editor.onAutocorrectEvent = { [unowned self] in self.events.append($0) }
         editor.reset(numeric: false)
     }
 

@@ -23,7 +23,7 @@ enum TapCoreTests {
             ("logNdtrIsFiniteAndContinuous", testLogNdtrIsFiniteAndContinuous),
             ("manifestReadsTheTapSection", testManifestReadsTheTapSection),
             ("manifestRejectsAnInvalidTapSection", testManifestRejectsAnInvalidTapSection),
-            ("ruleTakesSettingsOverBundleDefaults", testRuleTakesSettingsOverBundleDefaults),
+            ("ruleIsTheBundlesWithTheGateOn", testRuleIsTheBundlesWithTheGateOn),
         ]
     }
 
@@ -315,14 +315,10 @@ enum TapCoreTests {
         let decoded = try! SoftKeyEdgesManifest.decode(from: manifest(tapSection()))!
         TestSupport.expectEqual(decoded.models, ["18k": "tap/a.bin", "67k": "tap/b.bin", "232k": "tap/c.bin"])
         TestSupport.expectEqual(decoded.defaultModel, "67k")
-        TestSupport.expectEqual(decoded.modelNames, ["18k", "67k", "232k"])
         TestSupport.expectEqual(decoded.touch, SoftKeyEdgesManifest.Touch(sigma: 0.25, ratio: 1, offsetY: 0.1, tailWeight: 0.05,
                                                                          tailScale: 2, spaceSpread: 0.6))
         TestSupport.expectEqual(TapDecoder.TouchModel(decoded.touch), .standard)
         TestSupport.expectEqual(decoded.rule, SoftKeyEdgesManifest.Rule(centre: 0.6, margin: 3, maxSurprise: 3, surpriseWindow: 8))
-        TestSupport.expectEqual(decoded.modelName("18k"), "18k")
-        TestSupport.expectEqual(decoded.modelName("1M"), "67k")
-        TestSupport.expectEqual(decoded.modelName(nil), "67k")
         // No section: no soft key edges, and the swipe settings read as before.
         TestSupport.expectEqual(try! SoftKeyEdgesManifest.decode(from: manifest(nil)), nil)
         TestSupport.expectEqual(try? SwipeBundleManifest.decodeConfig(from: manifest(tapSection())),
@@ -344,28 +340,25 @@ enum TapCoreTests {
         for path in ["/tap/a.bin", "../a.bin", "tap/../a.bin", "tap//a.bin", "./a.bin", ""] {
             TestSupport.expect(error(tapSection(models: "{\"67k\": \"\(path)\"}")) == .invalidModels, path)
         }
+        // The rule's values within their ranges: centre 0.3–0.9, margin 1–10, maximum surprise 2–8 bits.
+        TestSupport.expectEqual(SoftKeyEdgesManifest.Rule.centreRange, 0.3 ... 0.9)
+        TestSupport.expectEqual(SoftKeyEdgesManifest.Rule.marginRange, 1 ... 10)
+        TestSupport.expectEqual(SoftKeyEdgesManifest.Rule.maxSurpriseRange, 2 ... 8)
         TestSupport.expectEqual(error(tapSection(centre: 0.95)), .invalidSettings)
+        TestSupport.expectEqual(error(tapSection(centre: 0.25)), .invalidSettings)
+        TestSupport.expectEqual(error(tapSection(centre: 0.3)), nil)
+        TestSupport.expectEqual(error(tapSection(centre: 0.9)), nil)
         TestSupport.expectEqual(error(tapSection(tailWeight: 1)), .invalidSettings)
         TestSupport.expectEqual(error(tapSection(window: 0)), .invalidSettings)
         // A section of the wrong shape throws too (the keyboard then has no soft key edges).
         TestSupport.expect((try? SoftKeyEdgesManifest.decode(from: manifest(#"{"format": 1}"#))) == nil, "incomplete section")
     }
 
-    private static func testRuleTakesSettingsOverBundleDefaults() {
-        let defaults = SoftKeyEdgesManifest.Rule(centre: 0.6, margin: 3, maxSurprise: 3, surpriseWindow: 8)
-        TestSupport.expectEqual(TapDecoder.Rule(defaults: defaults, settings: nil), TapDecoder.Rule(centre: 0.6, margin: 3, maxSurprise: 3))
-        let suite = "LocalFlowIOSTests.\(UUID().uuidString)"
-        let store = UserDefaults(suiteName: suite)!
-        defer { store.removePersistentDomain(forName: suite) }
-        let settings = LocalFlowSettings(defaults: store)
-        TestSupport.expectEqual(TapDecoder.Rule(defaults: defaults, settings: settings), TapDecoder.Rule(centre: 0.6, margin: 3, maxSurprise: 3))
-        settings.softKeyEdgesCentre = 0.45
-        settings.softKeyEdgesMargin = 5
-        settings.softKeyEdgesMaxSurprise = 6
-        TestSupport.expectEqual(TapDecoder.Rule(defaults: defaults, settings: settings), TapDecoder.Rule(centre: 0.45, margin: 5, maxSurprise: 6))
-        settings.softKeyEdgesSurpriseGate = false
-        TestSupport.expectEqual(TapDecoder.Rule(defaults: defaults, settings: settings), TapDecoder.Rule(centre: 0.45, margin: 5, maxSurprise: nil))
-        settings.resetSoftKeyEdgesTuning()
-        TestSupport.expectEqual(TapDecoder.Rule(defaults: defaults, settings: settings), TapDecoder.Rule(centre: 0.6, margin: 3, maxSurprise: 3))
+    /// The keyboard decides with the bundle's rule as it is, the surprise gate on.
+    private static func testRuleIsTheBundlesWithTheGateOn() {
+        let bundled = SoftKeyEdgesManifest.Rule(centre: 0.45, margin: 5, maxSurprise: 6, surpriseWindow: 8)
+        TestSupport.expectEqual(TapDecoder.Rule(bundled), TapDecoder.Rule(centre: 0.45, margin: 5, maxSurprise: 6))
+        let decoded = try! SoftKeyEdgesManifest.decode(from: manifest(tapSection()))!
+        TestSupport.expectEqual(TapDecoder.Rule(decoded.rule), TapDecoder.Rule(centre: 0.6, margin: 3, maxSurprise: 3))
     }
 }

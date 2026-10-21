@@ -312,7 +312,6 @@ enum NeverCorrectTests {
             deleted.heldDelete()
             TestSupport.expectEqual(deleted.text, "Teh'")
             TestSupport.expectEqual(deleted.editor.neverCorrectOffer, NeverCorrectOffer(word: "teh", typed: "Teh"))
-            TestSupport.expectEqual(deleted.events, [.checked, .corrected, .reverted, .offered])
             // By choosing the typed word on the strip, which stays open underneath.
             let chosen = rig(store, alternatives: ["teh": ["the"]])
             chosen.tap("TEH")
@@ -321,7 +320,6 @@ enum NeverCorrectTests {
             TestSupport.expectEqual(chosen.text, "TEH,")
             TestSupport.expectEqual(chosen.editor.neverCorrectOffer, NeverCorrectOffer(word: "teh", typed: "TEH"))
             TestSupport.expectEqual(chosen.strip, SwipeStrip(candidates: ["TEH", "THE"], inserted: 0))
-            TestSupport.expectEqual(chosen.events, [.checked, .corrected, .reverted, .offered])
             TestSupport.expect(storeIsEmpty(store), "an offer stored its word")
         }
     }
@@ -335,11 +333,11 @@ enum NeverCorrectTests {
             TestSupport.expectEqual(first.editor.neverCorrectOffer, nil)
             TestSupport.expectEqual(store.load().words, ["wrld", "teh"])
             TestSupport.expectEqual(first.editor.neverCorrectWords, ["wrld", "teh"])
-            TestSupport.expectEqual(first.events, [.checked, .corrected, .reverted, .offered, .neverCorrected])
             // Accepting again does nothing.
             first.editor.acceptNeverCorrect()
-            TestSupport.expectEqual(first.events.last, .neverCorrected)
-            TestSupport.expectEqual(first.events.count, 5)
+            TestSupport.expectEqual(first.editor.neverCorrectOffer, nil)
+            TestSupport.expectEqual(store.load().words, ["wrld", "teh"])
+            TestSupport.expectEqual(first.editor.neverCorrectWords, ["wrld", "teh"])
             // A new instance never corrects or offers it, in any case, without asking the corrector.
             let second = rig(NeverCorrectStore(directory: store.directory), alternatives: ["teh": ["the"]])
             second.tap("TEH")
@@ -350,7 +348,6 @@ enum NeverCorrectTests {
             TestSupport.expectEqual(second.strip, nil)
             TestSupport.expectEqual(second.corrector.calls.count, 0)
             TestSupport.expectEqual(second.corrector.suggestionCalls.count, 0)
-            TestSupport.expectEqual(second.events, [])
             // Other words still are.
             second.corrector.corrections["hte"] = "the"
             second.press(.space)
@@ -370,7 +367,6 @@ enum NeverCorrectTests {
             TestSupport.expectEqual(rig.strip, nil)
             TestSupport.expectEqual(rig.text, "teh ")
             TestSupport.expectEqual(store.load().words, ["teh"])
-            TestSupport.expectEqual(rig.events, [.checked, .corrected, .reverted, .offered, .neverCorrected])
         }
     }
 
@@ -438,9 +434,11 @@ enum NeverCorrectTests {
         let unbound = AutocorrectRig("", corrections: ["teh": "the"])
         revert(unbound)
         TestSupport.expectEqual(unbound.editor.neverCorrectOffer, nil)
-        TestSupport.expectEqual(unbound.events, [.checked, .corrected, .reverted])
+        TestSupport.expectEqual(unbound.editor.revertedWords, ["teh"])
+        let reverted = unbound.text
         unbound.editor.acceptNeverCorrect()
-        TestSupport.expectEqual(unbound.events, [.checked, .corrected, .reverted])
+        TestSupport.expectEqual(unbound.text, reverted)
+        TestSupport.expectEqual(unbound.editor.neverCorrectWords, [])
         // A word longer than the store keeps is reverted in this instance only, without an offer.
         withStore { store in
             let long = String(repeating: "q", count: NeverCorrectWords.maximumLength + 1)

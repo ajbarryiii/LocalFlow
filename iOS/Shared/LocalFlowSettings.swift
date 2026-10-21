@@ -22,17 +22,7 @@ struct LocalFlowSettings {
         static let cursorEventStepScale = "cursorEventStepScale"
         static let fieldLayoutOverrides = "fieldLayoutOverrides"
         static let softKeyEdgesEnabled = "softKeyEdgesEnabled"
-        static let softKeyEdgesModel = "softKeyEdgesModel"
-        static let softKeyEdgesCentre = "softKeyEdgesCentre"
-        static let softKeyEdgesMargin = "softKeyEdgesMargin"
-        static let softKeyEdgesSurpriseGate = "softKeyEdgesSurpriseGate"
-        static let softKeyEdgesMaxSurprise = "softKeyEdgesMaxSurprise"
         static let autocorrectEnabled = "autocorrectEnabled"
-        static let autocorrectModel = "autocorrectModel"
-        static let autocorrectPreset = "autocorrectPreset"
-        static func autocorrectParam(_ setting: AutocorrectSetting) -> String { "autocorrectParam.\(setting.rawValue)" }
-        static let typingCountersEnabled = "typingCountersEnabled"
-        static let typingCounters = "typingCounters"
     }
 
     /// Remembered field layout choices, at most this many.
@@ -44,14 +34,6 @@ struct LocalFlowSettings {
     /// it derives (`TouchRateEstimator.scaleRange`).
     static let cursorTouchRateRange: ClosedRange<Double> = 1...1_000
     static let cursorEventStepScaleRange: ClosedRange<Double> = 0.5...2.5
-
-    /// Accepted soft-key-edge rule values (ARCHITECTURE.md, "Soft key edges"): the centre box as a fraction
-    /// of a key's width and height, the margin as posterior odds, and the surprise gate in bits.
-    static let softKeyEdgesCentreRange: ClosedRange<Double> = 0.3...0.9
-    static let softKeyEdgesMarginRange: ClosedRange<Double> = 1...10
-    static let softKeyEdgesMaxSurpriseRange: ClosedRange<Double> = 2...8
-    /// Longest accepted model name; the names themselves come from the bundle.
-    static let softKeyEdgesModelNameLimit = 64
 
     let defaults: UserDefaults
 
@@ -156,189 +138,18 @@ struct LocalFlowSettings {
         defaults.set(stored, forKey: Key.fieldLayoutOverrides)
     }
 
-    // MARK: Soft key edges (ARCHITECTURE.md, "Soft key edges")
+    // MARK: Typing (ARCHITECTURE.md, "Soft key edges" and "Word autocorrect")
 
-    /// Off by default, unlike the other booleans. The keyboard reads it when it appears.
+    /// Soft key edges, with the bundle's default model and rule. The keyboard reads it when it appears.
     var softKeyEdgesEnabled: Bool {
-        get { defaults.object(forKey: Key.softKeyEdgesEnabled) as? Bool ?? false }
+        get { bool(Key.softKeyEdgesEnabled) }
         nonmutating set { defaults.set(newValue, forKey: Key.softKeyEdgesEnabled) }
     }
 
-    /// The chosen model's size name; nil when unset, so the bundle's default applies. Whether the
-    /// bundle has it is the reader's check (`SoftKeyEdgesManifest.modelName`). Setting nil, an empty
-    /// name or one over `softKeyEdgesModelNameLimit` characters forgets the choice.
-    var softKeyEdgesModel: String? {
-        get {
-            guard let name = defaults.object(forKey: Key.softKeyEdgesModel) as? String, Self.isModelName(name) else {
-                return nil
-            }
-            return name
-        }
-        nonmutating set {
-            guard let newValue, Self.isModelName(newValue) else {
-                defaults.removeObject(forKey: Key.softKeyEdgesModel)
-                return
-            }
-            defaults.set(newValue, forKey: Key.softKeyEdgesModel)
-        }
-    }
-
-    /// The rule values the user set; nil when unset or invalid, so the bundle's default applies.
-    /// Setting nil forgets the value; values outside the range are ignored when written.
-    var softKeyEdgesCentre: Double? {
-        get { number(Key.softKeyEdgesCentre, in: Self.softKeyEdgesCentreRange) }
-        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesCentre, in: Self.softKeyEdgesCentreRange) }
-    }
-
-    var softKeyEdgesMargin: Double? {
-        get { number(Key.softKeyEdgesMargin, in: Self.softKeyEdgesMarginRange) }
-        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesMargin, in: Self.softKeyEdgesMarginRange) }
-    }
-
-    /// Whether the surprise gate applies (`softKeyEdgesMaxSurprise`). Default on.
-    var softKeyEdgesSurpriseGate: Bool {
-        get { bool(Key.softKeyEdgesSurpriseGate) }
-        nonmutating set { defaults.set(newValue, forKey: Key.softKeyEdgesSurpriseGate) }
-    }
-
-    var softKeyEdgesMaxSurprise: Double? {
-        get { number(Key.softKeyEdgesMaxSurprise, in: Self.softKeyEdgesMaxSurpriseRange) }
-        nonmutating set { setNumber(newValue, forKey: Key.softKeyEdgesMaxSurprise, in: Self.softKeyEdgesMaxSurpriseRange) }
-    }
-
-    /// Back to the bundle's defaults: forgets the model choice and the rule values, and turns the gate
-    /// back on. Whether the feature is on is left alone.
-    func resetSoftKeyEdgesTuning() {
-        for key in [Key.softKeyEdgesModel, Key.softKeyEdgesCentre, Key.softKeyEdgesMargin, Key.softKeyEdgesSurpriseGate,
-                    Key.softKeyEdgesMaxSurprise] {
-            defaults.removeObject(forKey: key)
-        }
-    }
-
-    // MARK: Word autocorrect (ARCHITECTURE.md, "Word autocorrect")
-
-    /// How an infinite margin override is stored (property lists have no infinity).
-    static let autocorrectInfinity = "inf"
-
-    /// Off by default. The keyboard reads it when it appears.
+    /// Word autocorrect, with the bundle's default model and preset. The keyboard reads it when it appears.
     var autocorrectEnabled: Bool {
-        get { defaults.object(forKey: Key.autocorrectEnabled) as? Bool ?? false }
+        get { bool(Key.autocorrectEnabled) }
         nonmutating set { defaults.set(newValue, forKey: Key.autocorrectEnabled) }
-    }
-
-    /// The chosen word model's name; nil when unset, so the bundle's default applies. Whether the bundle has
-    /// it is the reader's check (`AutocorrectManifest.modelName`). Setting nil or an invalid name forgets it.
-    var autocorrectModel: String? {
-        get { name(Key.autocorrectModel) }
-        nonmutating set { setName(newValue, forKey: Key.autocorrectModel) }
-    }
-
-    /// The chosen preset of that model; nil when unset, so the bundle's default applies
-    /// (`AutocorrectManifest.presetName`). Setting nil or an invalid name forgets it.
-    var autocorrectPreset: String? {
-        get { name(Key.autocorrectPreset) }
-        nonmutating set { setName(newValue, forKey: Key.autocorrectPreset) }
-    }
-
-    /// The user's value for a parameter, nil when unset or invalid (out of range, not a number, a fraction
-    /// for a whole number, or infinity where it is not allowed), so the preset's applies.
-    func autocorrectOverride(_ setting: AutocorrectSetting) -> Double? {
-        let stored = defaults.object(forKey: Key.autocorrectParam(setting))
-        if let text = stored as? String {
-            return text == Self.autocorrectInfinity && setting.allowsInfinity ? .infinity : nil
-        }
-        // A Bool also bridges to NSNumber; only a real number counts.
-        guard let number = stored as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        let value = number.doubleValue
-        return value.isFinite && setting.accepts(value) ? value : nil
-    }
-
-    /// Sets (or, with nil, forgets) a parameter's override; values it does not accept are ignored.
-    func setAutocorrectOverride(_ setting: AutocorrectSetting, _ value: Double?) {
-        let key = Key.autocorrectParam(setting)
-        guard let value else {
-            defaults.removeObject(forKey: key)
-            return
-        }
-        guard setting.accepts(value) else { return }
-        if value == .infinity {
-            defaults.set(Self.autocorrectInfinity, forKey: key)
-        } else {
-            defaults.set(value, forKey: key)
-        }
-    }
-
-    /// The parameters the keyboard uses: the user's overrides merged over `preset`. An override that is
-    /// invalid reads as the preset's value; if the merged insertion weights (`w_repeat` + `w_slip`) would sum
-    /// to more than 1, both read as the preset's.
-    func autocorrectParams(over preset: AutocorrectParams) -> AutocorrectParams {
-        var merged = preset
-        for setting in AutocorrectSetting.allCases {
-            if let value = autocorrectOverride(setting) { setting.set(value, in: &merged) }
-        }
-        if merged.wRepeat + merged.wSlip > 1 + AutocorrectManifest.weightSumTolerance {
-            merged.wRepeat = preset.wRepeat
-            merged.wSlip = preset.wSlip
-        }
-        return merged
-    }
-
-    /// Back to the selected preset: forgets every parameter override. Whether autocorrect is on, and the model
-    /// and preset chosen, are left alone.
-    func resetAutocorrectParams() {
-        for setting in AutocorrectSetting.allCases { defaults.removeObject(forKey: Key.autocorrectParam(setting)) }
-    }
-
-    // MARK: Typing counters (ARCHITECTURE.md, "Dropped taps: reach, skids and counters"; TestFlight only)
-
-    /// Off by default. The keyboard reads it when it appears.
-    var typingCountersEnabled: Bool {
-        get { defaults.object(forKey: Key.typingCountersEnabled) as? Bool ?? false }
-        nonmutating set { defaults.set(newValue, forKey: Key.typingCountersEnabled) }
-    }
-
-    /// The counts so far; anything invalid stored there reads as no counts.
-    var typingCounters: TypingCounters {
-        TypingCounters(stored: defaults.dictionary(forKey: Key.typingCounters))
-    }
-
-    /// Adds the keyboard's pending counts to the stored ones.
-    func addTypingCounters(_ counters: TypingCounters) {
-        guard !counters.isEmpty else { return }
-        var total = typingCounters
-        total.merge(counters)
-        defaults.set(total.stored, forKey: Key.typingCounters)
-    }
-
-    /// Forgets every count; whether counting is on is left alone.
-    func resetTypingCounters() {
-        defaults.removeObject(forKey: Key.typingCounters)
-    }
-
-    private static func isModelName(_ name: String) -> Bool {
-        !name.isEmpty && name.count <= softKeyEdgesModelNameLimit
-    }
-
-    private func name(_ key: String) -> String? {
-        guard let name = defaults.object(forKey: key) as? String, Self.isModelName(name) else { return nil }
-        return name
-    }
-
-    private func setName(_ name: String?, forKey key: String) {
-        guard let name, Self.isModelName(name) else {
-            defaults.removeObject(forKey: key)
-            return
-        }
-        defaults.set(name, forKey: key)
-    }
-
-    private func setNumber(_ value: Double?, forKey key: String, in range: ClosedRange<Double>) {
-        guard let value else {
-            defaults.removeObject(forKey: key)
-            return
-        }
-        guard value.isFinite, range.contains(value) else { return }
-        defaults.set(value, forKey: key)
     }
 
     private static func isFingerprintKey(_ key: String) -> Bool {

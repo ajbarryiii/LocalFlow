@@ -46,6 +46,8 @@ final class SharedSettingsModel: ObservableObject {
     @Published var pressEnterEnabled: Bool { didSet { settings?.pressEnterEnabled = pressEnterEnabled } }
     @Published var hapticsEnabled: Bool { didSet { settings?.hapticsEnabled = hapticsEnabled } }
     @Published var keyHapticsEnabled: Bool { didSet { settings?.keyHapticsEnabled = keyHapticsEnabled } }
+    @Published var autocorrectEnabled: Bool { didSet { settings?.autocorrectEnabled = autocorrectEnabled } }
+    @Published var softKeyEdgesEnabled: Bool { didSet { settings?.softKeyEdgesEnabled = softKeyEdgesEnabled } }
 
     init(settings: LocalFlowSettings?) {
         self.settings = settings
@@ -55,5 +57,7 @@ final class SharedSettingsModel: ObservableObject {
         pressEnterEnabled = settings?.pressEnterEnabled ?? true
         hapticsEnabled = settings?.hapticsEnabled ?? true
         keyHapticsEnabled = settings?.keyHapticsEnabled ?? true
+        autocorrectEnabled = settings?.autocorrectEnabled ?? true
+        softKeyEdgesEnabled = settings?.softKeyEdgesEnabled ?? true
     }
 }

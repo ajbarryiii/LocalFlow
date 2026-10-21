@@ -171,13 +171,8 @@ extension TapDecoder.TouchModel {
 }
 
 extension TapDecoder.Rule {
-    /// The user's settings over the bundle's defaults: a value unset or invalid in the settings reads as
-    /// the default; with the gate off there is no surprise limit. Without settings (no Full Access) the
-    /// defaults apply with the gate on.
-    init(defaults: SoftKeyEdgesManifest.Rule, settings: LocalFlowSettings?) {
-        let gate = settings?.softKeyEdgesSurpriseGate ?? true
-        self.init(centre: settings?.softKeyEdgesCentre ?? defaults.centre,
-                  margin: settings?.softKeyEdgesMargin ?? defaults.margin,
-                  maxSurprise: gate ? settings?.softKeyEdgesMaxSurprise ?? defaults.maxSurprise : nil)
+    /// The bundle's rule, with the surprise gate on.
+    init(_ manifest: SoftKeyEdgesManifest.Rule) {
+        self.init(centre: manifest.centre, margin: manifest.margin, maxSurprise: manifest.maxSurprise)
     }
 }

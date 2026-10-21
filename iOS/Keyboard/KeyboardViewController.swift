@@ -58,7 +58,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         input.trackpadMultipliers = { [weak self] in self?.cursorMultipliers ?? (1, 1) }
         input.onTouchRateMeasured = { [weak self] rate, scale in self?.recordTouchRate(rate, scale: scale) }
         input.fieldLayout = { [weak self] in self?.layoutForGesture() ?? FieldLayoutParameters.standard.defaultLayout }
-        // Read on every tap soft key edges re-decide, so slider changes apply to the next tap.
+        // Read at each commit key: autocorrect needs the App Group (Full Access).
         input.sharedSettings = { [weak self] in self?.fieldSettings }
         input.onSwipeStripChanged = { [weak self] in
             guard let self else { return }
@@ -124,17 +124,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.viewWillAppear(animated)
         documentDidChange()
         input.reset()
-        // Soft key edges (on or off, and the model) are read when the keyboard appears.
+        // Soft key edges and autocorrect (ARCHITECTURE.md, "Soft key edges" and "Word autocorrect") are read when
+        // the keyboard appears, each on or off with the bundle's defaults; both stay off without Full Access.
         let settings = fieldSettings
-        input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false, model: settings?.softKeyEdgesModel)
-        // So are autocorrect, its model and preset (ARCHITECTURE.md, "Word autocorrect"); the parameters at each word.
-        input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false, model: settings?.autocorrectModel,
-                                   preset: settings?.autocorrectPreset)
+        input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false)
+        input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false)
         // The words never to correct, from the App Group (which `fieldSettings` already needs Full Access for).
         input.configureNeverCorrect(store: settings?.autocorrectEnabled == true
                                     ? LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:)) : nil)
-        // TestFlight only (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
-        input.configureTypingCounters(enabled: settings?.typingCountersEnabled ?? false)
         client.start()
     }
 
@@ -188,7 +185,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// written (no Full Access).
     private var layoutChoices: [String: FieldLayout] = [:]
 
-    /// Remembered choices, and the soft-key-edge settings, live in the App Group, which needs Full Access.
+    /// Remembered choices, and the soft-key-edge and autocorrect switches, live in the App Group, which needs
+    /// Full Access.
     private var fieldSettings: LocalFlowSettings? {
         guard hasFullAccess, let configuration = LocalFlowConfiguration.main else { return nil }
         return LocalFlowSettings(configuration: configuration)

@@ -70,6 +70,15 @@ struct HomeView: View {
                 .tint(Theme.violet)
 
                 Section {
+                    // The keyboard reads both when it next appears.
+                    SettingToggle(title: "Autocorrect",
+                                  detail: "Fixes typos when you tap space or punctuation; Delete right after puts your word back. Needs Full Access.",
+                                  isOn: $settings.autocorrectEnabled)
+                        .accessibilityIdentifier("settings.autocorrect")
+                    SettingToggle(title: "Soft key edges",
+                                  detail: "A tap near a key’s edge types the letter that fits what you’re writing. Needs Full Access.",
+                                  isOn: $settings.softKeyEdgesEnabled)
+                        .accessibilityIdentifier("settings.softKeyEdges")
                     SettingToggle(title: "Typing haptics", detail: "A light tap as you press each key. Needs Full Access.",
                                   isOn: $settings.keyHapticsEnabled)
                         .accessibilityIdentifier("settings.keyHaptics")
