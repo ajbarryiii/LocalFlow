@@ -604,7 +604,7 @@ watcher abandonment, or by expiry. Nothing observes trust changes
 directly. A later loss of trust releases the audio when the watcher's next
 safety check finds it: the watch is abandoned and `onAbandon` calls
 `stopCorrectionSuggestions` (`CorrectionWatcher.poll`,
-`CorrectionWatcher.swift:504-520`; `AppState.swift:552-554`). The same
+`CorrectionWatcher.swift:541-557`; `AppState.swift:552-554`). The same
 happens when a reported edit's check finds trust missing
 (`AppState.handleCorrectionEdit`).
 
@@ -656,9 +656,10 @@ and `dictionaryDidChange`, `AppState.swift:2142-2169,2199-2209,2318-2323`;
 `releaseCorrectionSession`, `LocalParakeetService.swift:244-301`)
 
 A field can be captured and the watch still fail to begin, for example
-because the paste no longer ends at the caret. Nothing is released early
-then: the audio stays until the 90 s expiry or one of the events above.
-(`CorrectionWatcher.start`, `CorrectionWatcher.swift:449-457`)
+because the paste never ends at the caret within the start attempts.
+Nothing is released early then: the audio stays until the 90 s expiry or
+one of the events above. (`CorrectionWatcher.start`,
+`CorrectionWatcher.swift:469-493`)
 
 ### §3.5 Correction watcher and suggestion presentation (macOS)
 
@@ -671,16 +672,16 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 
 | Watcher constant | Value | Source |
 |---|---|---|
-| Capture deadline (the paste waits for the capture, at most this long) | 0.3 s | `CorrectionWatcher.captureDeadline` and `capture` (`CorrectionWatcher.swift:389,423-446`); `AppState.pasteAtCursorWhenShortcutReleased` (`AppState.swift:2142-2169`) |
-| Settle delay after the paste | 0.15 s | `CorrectionWatcher.settleDelay` and `start` (`CorrectionWatcher.swift:390,449-464`) |
-| Poll interval | 0.5 s | `CorrectionWatcher.pollInterval` (`CorrectionWatcher.swift:391`) |
-| Longest watch | 60 s | `CorrectionWatchSession.maxDuration` (`CorrectionWatcher.swift:99`) |
-| Quiet period before an edit is checked | 1.5 s | `CorrectionWatchSession.quietPeriod` (`CorrectionWatcher.swift:98`) |
-| Checks per paste (the last ends the watch) | 3 | `CorrectionWatchSession.maxChecks` (`CorrectionWatcher.swift:100-101`) |
-| Longest paste watched | 4097 UTF-16 units (4096 bytes plus the trailing space) | `CorrectionWatchSession.maxPastedUnits` (`CorrectionWatcher.swift:95`) |
-| Context kept on each side | 40 units | `CorrectionWatchSession.contextUnits` (`CorrectionWatcher.swift:93`) |
-| Span growth or shrinkage tolerated | 200 units | `CorrectionWatchSession.maxGrowth` (`CorrectionWatcher.swift:94`) |
-| Read window at begin / per poll | 4200 / 4600 units | `CorrectionWatchSession.beginWindowLimit`/`pollWindowLimit` (`CorrectionWatcher.swift:96-97`) |
+| Capture deadline (the paste waits for the capture, at most this long) | 0.3 s | `CorrectionWatcher.captureDeadline` and `capture` (`CorrectionWatcher.swift:404,444-467`); `AppState.pasteAtCursorWhenShortcutReleased` (`AppState.swift:2142-2169`) |
+| Start attempts after the paste | 0.15, 0.4, 1 and 2 s | `CorrectionWatcher.startAttempts` and `start` (`CorrectionWatcher.swift:405-408,469-501`) |
+| Poll interval | 0.5 s | `CorrectionWatcher.pollInterval` (`CorrectionWatcher.swift:409`) |
+| Longest watch | 60 s | `CorrectionWatchSession.maxDuration` (`CorrectionWatcher.swift:105`) |
+| Quiet period before an edit is checked | 1.5 s | `CorrectionWatchSession.quietPeriod` (`CorrectionWatcher.swift:104`) |
+| Checks per paste (the last ends the watch) | 3 | `CorrectionWatchSession.maxChecks` (`CorrectionWatcher.swift:106-107`) |
+| Longest paste watched | 4097 UTF-16 units (4096 bytes plus the trailing space) | `CorrectionWatchSession.maxPastedUnits` (`CorrectionWatcher.swift:101`) |
+| Context kept on each side | 40 units | `CorrectionWatchSession.contextUnits` (`CorrectionWatcher.swift:99`) |
+| Span growth or shrinkage tolerated | 200 units | `CorrectionWatchSession.maxGrowth` (`CorrectionWatcher.swift:100`) |
+| Read window at begin / per poll | 4200 / 4600 units | `CorrectionWatchSession.beginWindowLimit`/`pollWindowLimit` (`CorrectionWatcher.swift:102-103`) |
 | Accessibility messaging timeout | 0.25 s | `AccessibilityTextFieldReader.messagingTimeout` (`AccessibilityTextFieldReader.swift:12`) |
 
 **Watching**
@@ -690,20 +691,30 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 - Only these attributes are read: role, subrole, focus, character count,
   selection, and `AXStringForRange`. The full `AXValue` is never requested.
   (`AccessibilityTextFieldReader`, `AccessibilityTextFieldReader.swift:5-14`)
-- At begin, the pasted text must end exactly at an empty selection.
+- At begin, the pasted text must end exactly at an empty selection. A
+  browser can update the field's text a moment after the paste, so a start
+  that finds the old text or a failed read is tried again at the next
+  attempt; any other failure, or a cancel, ends it.
+  (`CorrectionWatcher.start`, `CorrectionDiscardReason.allowsStartRetry`,
+  `CorrectionWatcher.swift:50-54,469-501`; `testStartRetriesWhileTheFieldCatchesUp`)
+- A no-break space (U+00A0) read from the field, or in the paste, counts as
+  a space. Browsers show trailing and repeated spaces that way and switch
+  them back as the text changes; a switch alone is not an edit.
+  (`CorrectionWatchSession.read`, `CorrectionWatcher.swift:333-346`;
+  `testNoBreakSpacesCountAsSpaces`)
 - Each poll locates the span from its recorded context. The before-context
   must sit right before the span (or the span starts the document). The
   after-context must occur exactly once (or the span runs to the end).
   (`CorrectionWatchSession.begin` and `locate`,
-  `CorrectionWatcher.swift:143-178,242-285`; `testSpanTracking`)
+  `CorrectionWatcher.swift:149-185,249-292`; `testSpanTracking`)
 - Before every read, three things are checked: permission, the same process
   and element, and a non-secure field. Cancellation is checked before and
   after that safety check. Past the 60 s window, no text is read.
   (`CorrectionWatchSession.poll`, `guardedRead` and `safetyCheck`,
-  `CorrectionWatcher.swift:184-213,287-324`; `testDeadlineStopsReads`)
+  `CorrectionWatcher.swift:191-220,294-331`; `testDeadlineStopsReads`)
 - An edit unchanged for the quiet period is reported for checking, and the
   watch continues. (`CorrectionWatchSession.poll` and `report`,
-  `CorrectionWatcher.swift:201-225`)
+  `CorrectionWatcher.swift:208-232`)
 
 **Ending a watch**
 
@@ -712,7 +723,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
 - Cancel, lost permission and a secure field discard everything and abandon
   edits already reported. (`CorrectionDiscardReason.forbidsCapturedText`,
   `CorrectionWatchSession.end` and `expire`,
-  `CorrectionWatcher.swift:39-49,227-240`; `testWatchEndsWithCapturedEdit`;
+  `CorrectionWatcher.swift:39-55,234-247`; `testWatchEndsWithCapturedEdit`;
   `testForbiddenStopAbandonsReportedEdits`)
 
 **Checks**
@@ -724,7 +735,7 @@ persisted or transmitted. (The `CorrectionWatcher.swift` header comment,
   ends the watch, so there is one suggestion per dictation.
 
 (`AppState.handleCorrectionEdit`, `AppState.swift:2220-2249`;
-`CorrectionWatcher.claim`, `CorrectionWatcher.swift:471-479`;
+`CorrectionWatcher.claim`, `CorrectionWatcher.swift:508-516`;
 `testClaimingAWatch`; `testCorrectionChecksKeepTheirOrder`)
 
 **Presentation**

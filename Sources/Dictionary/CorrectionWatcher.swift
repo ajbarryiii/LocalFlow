@@ -46,6 +46,12 @@ enum CorrectionDiscardReason: Error, Equatable {
     var forbidsCapturedText: Bool {
         self == .cancelled || self == .notTrusted || self == .secureField
     }
+
+    /// Start failures that a field still catching up with the paste produces:
+    /// it shows the old text or a read fails. Only these try the start again.
+    var allowsStartRetry: Bool {
+        self == .pasteNotAtCaret || self == .readFailed
+    }
 }
 
 enum CorrectionAnchor: Equatable {
@@ -142,10 +148,11 @@ final class CorrectionWatchSession {
 
     /// Reads just after the paste: the pasted text must end exactly at an empty
     /// selection. Records the span and up to 40 units of context on each side.
+    /// A no-break space counts as a space, in the paste as in the field.
     static func begin(reader: TextFieldReader, target: TextFieldTarget, pasted: String, dictationID: UInt64,
                       now: TimeInterval, isCancelled: @escaping () -> Bool = { false },
                       clock: (() -> TimeInterval)? = nil) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
-        let units = Array(pasted.utf16)
+        let units = Array(foldingNoBreakSpaces(pasted).utf16)
         guard !units.isEmpty else { return .failure(.pasteNotAtCaret) }
         guard units.count <= maxPastedUnits else { return .failure(.tooLong) }
         let count: Int, selection: TextFieldRange, window: (text: String, units: [UInt16])
@@ -323,12 +330,20 @@ final class CorrectionWatchSession {
         }
     }
 
+    /// Browsers show a trailing or repeated space as a no-break space and
+    /// switch it back as the text changes, so every read counts it as a space.
     private static func read(reader: TextFieldReader, target: TextFieldTarget, from start: Int,
                              to end: Int) -> (text: String, units: [UInt16])? {
         guard start >= 0, end >= start,
-              let text = reader.string(target, range: TextFieldRange(location: start, length: end - start)) else { return nil }
+              let read = reader.string(target, range: TextFieldRange(location: start, length: end - start)) else { return nil }
+        let text = foldingNoBreakSpaces(read)
         let units = Array(text.utf16)
         return units.count == end - start ? (text, units) : nil
+    }
+
+    /// U+00A0 becomes U+0020, one UTF-16 unit for another, so offsets are kept.
+    private static func foldingNoBreakSpaces(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{00A0}", with: " ", options: .literal)
     }
 
     static func isValidUTF16(_ units: [UInt16]) -> Bool {
@@ -387,10 +402,14 @@ struct CorrectionCapture {
 /// watch has ended.
 final class CorrectionWatcher: @unchecked Sendable {
     static let captureDeadline: TimeInterval = 0.3
-    static let settleDelay: TimeInterval = 0.15
+    /// When the start is tried, in seconds after the paste was posted. A
+    /// browser can update the field's accessibility text a moment late, so a
+    /// start that fails with `allowsStartRetry` is tried at the next one.
+    static let startAttempts: [TimeInterval] = [0.15, 0.4, 1, 2]
     static let pollInterval: TimeInterval = 0.5
 
     private let reader: TextFieldReader
+    private let startAttempts: [TimeInterval]
     private let queue = DispatchQueue(label: "localflow.correction-watcher", qos: .utility)
     private let generation = CorrectionWatchGeneration()
     // Queue-only state.
@@ -405,8 +424,10 @@ final class CorrectionWatcher: @unchecked Sendable {
     /// already made stale on the watcher's queue; the app stops their checks.
     var onAbandon: (() -> Void)?
 
-    init(reader: TextFieldReader) {
+    init(reader: TextFieldReader, startAttempts: [TimeInterval] = CorrectionWatcher.startAttempts) {
+        precondition(!startAttempts.isEmpty, "At least one start attempt")
         self.reader = reader
+        self.startAttempts = startAttempts
     }
 
     /// The generation a finished dictation's paste is bound to. Any cancel
@@ -445,15 +466,31 @@ final class CorrectionWatcher: @unchecked Sendable {
         }
     }
 
-    /// Begins watching about 150 ms after the paste was posted.
+    /// Begins watching about 150 ms after the paste was posted, trying again
+    /// up to 2 s after it while the field has not caught up.
     func start(_ capture: CorrectionCapture, pasted: String, dictationID: UInt64) {
-        queue.asyncAfter(deadline: .now() + Self.settleDelay) { [weak self] in
+        attemptStart(capture, pasted: pasted, dictationID: dictationID, attempt: 0, postedAt: .now())
+    }
+
+    private func attemptStart(_ capture: CorrectionCapture, pasted: String, dictationID: UInt64,
+                              attempt: Int, postedAt: DispatchTime) {
+        queue.asyncAfter(deadline: postedAt + startAttempts[attempt]) { [weak self] in
             guard let self, self.generation.isCurrent(capture.generation) else { return }
             let begun = CorrectionWatchSession.begin(reader: self.reader, target: capture.target, pasted: pasted,
                                                      dictationID: dictationID, now: ProcessInfo.processInfo.systemUptime,
                                                      isCancelled: { [generation = self.generation] in !generation.isCurrent(capture.generation) },
                                                      clock: { ProcessInfo.processInfo.systemUptime })
-            guard case .success(let session) = begun else { return }
+            let session: CorrectionWatchSession
+            switch begun {
+            case .success(let begun):
+                session = begun
+            case .failure(let reason):
+                if reason.allowsStartRetry, attempt + 1 < self.startAttempts.count {
+                    self.attemptStart(capture, pasted: pasted, dictationID: dictationID,
+                                      attempt: attempt + 1, postedAt: postedAt)
+                }
+                return
+            }
             self.session = session
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             timer.schedule(deadline: .now() + Self.pollInterval, repeating: Self.pollInterval, leeway: .milliseconds(100))
