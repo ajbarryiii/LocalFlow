@@ -1585,15 +1585,12 @@ enum DictionaryTests {
             ("Failed reads", { (r: FakeTextFieldReader) in r.paste("cart"); r.failReads = true }, { $0.failReads = false }),
         ] {
             let reader = FakeTextFieldReader("Note: ")
-            final class Reads { var atRetry: Int? }
-            let reads = Reads()
             reader.onCharacterCount = { [unowned reader] in
-                guard reader.countReads == 2 else { return }
-                reads.atRetry = reader.rangeReads.count
-                settle(reader)
+                if reader.countReads == 2 { settle(reader) }
             }
             let (watcher, edits) = start(reader, afterCapture: stale)
-            spin(timeout: 2) { reads.atRetry.map { reader.rangeReads.count > $0 } == true }
+            // The third count is the watch's first poll, so the start has finished.
+            spin(timeout: 3) { reader.countReads >= 3 }
             reader.replace("cart", with: "chart")
             spin(timeout: 4) { !edits.list.isEmpty }
             TestSupport.expect(edits.list.count == 1 && edits.list.first.map { s($0.edited) == s("chart") } == true,
@@ -1606,6 +1603,7 @@ enum DictionaryTests {
             let reader = FakeTextFieldReader("Note: ")
             let (watcher, edits) = start(reader)
             spin(timeout: 2) { reader.countReads >= attempts.count }
+            spin(timeout: 0.3)  // the last attempt finishes reading the old text
             TestSupport.expectEqual(reader.countReads, attempts.count)
             reader.paste("cart")
             reader.replace("cart", with: "chart")
