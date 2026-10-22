@@ -1577,20 +1577,27 @@ enum DictionaryTests {
             return (watcher, edits)
         }
 
-        // The field catches up after the first attempt: the old text, or failed reads.
+        // The field catches up only once the second attempt reads it: the old
+        // text, or failed reads. The change happens inside that read, so the
+        // first attempt always sees the stale field.
         for (name, stale, settle) in [
             ("Old text", { (_: FakeTextFieldReader) in }, { (r: FakeTextFieldReader) in r.paste("cart") }),
             ("Failed reads", { (r: FakeTextFieldReader) in r.paste("cart"); r.failReads = true }, { $0.failReads = false }),
         ] {
             let reader = FakeTextFieldReader("Note: ")
+            final class Reads { var atRetry: Int? }
+            let reads = Reads()
+            reader.onCharacterCount = { [unowned reader] in
+                guard reader.countReads == 2 else { return }
+                reads.atRetry = reader.rangeReads.count
+                settle(reader)
+            }
             let (watcher, edits) = start(reader, afterCapture: stale)
-            spin(timeout: 0.15)
-            settle(reader)
-            spin(timeout: 0.5)
+            spin(timeout: 2) { reads.atRetry.map { reader.rangeReads.count > $0 } == true }
             reader.replace("cart", with: "chart")
             spin(timeout: 4) { !edits.list.isEmpty }
             TestSupport.expect(edits.list.count == 1 && edits.list.first.map { s($0.edited) == s("chart") } == true,
-                               "\(name): a later attempt starts the watch, got \(edits.list.map(\.edited))")
+                               "\(name): the second attempt starts the watch, got \(edits.list.map(\.edited))")
             watcher.cancel()
         }
 
@@ -1598,13 +1605,48 @@ enum DictionaryTests {
         do {
             let reader = FakeTextFieldReader("Note: ")
             let (watcher, edits) = start(reader)
-            spin(timeout: 1)
+            spin(timeout: 2) { reader.countReads >= attempts.count }
             TestSupport.expectEqual(reader.countReads, attempts.count)
             reader.paste("cart")
             reader.replace("cart", with: "chart")
-            spin(timeout: 2.2)
+            spin(timeout: 1.5)
             TestSupport.expectEqual(reader.countReads, attempts.count)
             TestSupport.expect(edits.list.isEmpty, "No watch after the last attempt")
+            watcher.cancel()
+        }
+
+        // Review r1 #1: a retry must find the paste where the selection started
+        // before it. A caret moved after an older copy of the text is no match.
+        do {
+            let reader = FakeTextFieldReader("cart Note: ")
+            reader.onCharacterCount = { [unowned reader] in
+                guard reader.countReads == 2 else { return }
+                reader.failReads = false
+                reader.caret = 4
+            }
+            let (watcher, edits) = start(reader) { $0.failReads = true }
+            spin(timeout: 2) { reader.countReads >= attempts.count }
+            reader.replace("cart", with: "chart")
+            spin(timeout: 2.5)
+            TestSupport.expectEqual(reader.countReads, attempts.count)
+            TestSupport.expect(edits.list.isEmpty, "An older copy of the text is not watched, got \(edits.list.map(\.edited))")
+            watcher.cancel()
+        }
+
+        // Without the selection from before the paste there is nothing to bind
+        // a retry to, so only the first attempt runs.
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            reader.failReads = true
+            reader.onCharacterCount = { [unowned reader] in
+                if reader.countReads == 2 { reader.failReads = false }
+            }
+            let (watcher, edits) = start(reader)
+            spin(timeout: 1) { reader.countReads >= 1 }
+            spin(timeout: 1)
+            TestSupport.expectEqual(reader.countReads, 1)
+            TestSupport.expect(edits.list.isEmpty, "No retry without an insertion point")
             watcher.cancel()
         }
 
@@ -1624,12 +1666,14 @@ enum DictionaryTests {
         do {
             let reader = FakeTextFieldReader("Note: ")
             let (watcher, edits) = start(reader)
-            spin(timeout: 0.15)
+            spin(timeout: 1) { reader.countReads >= 1 }
             watcher.cancel()
+            spin(timeout: 0.1)
+            let afterCancel = reader.countReads
             reader.paste("cart")
             reader.replace("cart", with: "chart")
             spin(timeout: 2.2)
-            TestSupport.expectEqual(reader.countReads, 1)
+            TestSupport.expectEqual(reader.countReads, afterCancel)
             TestSupport.expect(edits.list.isEmpty, "A cancelled start reports nothing")
         }
     }

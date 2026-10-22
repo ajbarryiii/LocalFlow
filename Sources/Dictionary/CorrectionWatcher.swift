@@ -148,9 +148,10 @@ final class CorrectionWatchSession {
 
     /// Reads just after the paste: the pasted text must end exactly at an empty
     /// selection. Records the span and up to 40 units of context on each side.
-    /// A no-break space counts as a space, in the paste as in the field.
+    /// A no-break space counts as a space, in the paste as in the field. With
+    /// `expectedStart`, the paste must also start there.
     static func begin(reader: TextFieldReader, target: TextFieldTarget, pasted: String, dictationID: UInt64,
-                      now: TimeInterval, isCancelled: @escaping () -> Bool = { false },
+                      now: TimeInterval, expectedStart: Int? = nil, isCancelled: @escaping () -> Bool = { false },
                       clock: (() -> TimeInterval)? = nil) -> Result<CorrectionWatchSession, CorrectionDiscardReason> {
         let units = Array(foldingNoBreakSpaces(pasted).utf16)
         guard !units.isEmpty else { return .failure(.pasteNotAtCaret) }
@@ -165,6 +166,7 @@ final class CorrectionWatchSession {
             }
             caret = selection.location
             spanStart = caret - units.count
+            if let expectedStart, spanStart != expectedStart { return .failure(.pasteNotAtCaret) }
             let windowStart = max(0, spanStart - contextUnits)
             let windowEnd = min(count, caret + contextUnits)
             guard windowEnd - windowStart <= beginWindowLimit else { return .failure(.tooLong) }
@@ -394,6 +396,9 @@ final class CorrectionWatchGeneration: @unchecked Sendable {
 struct CorrectionCapture {
     let target: TextFieldTarget
     let generation: UInt64
+    /// Where the selection started just before the paste, if it could be
+    /// read: a retried start must find the paste there.
+    let insertionPoint: Int?
 }
 
 /// Runs one session at a time on a dedicated serial queue: one read in
@@ -457,8 +462,9 @@ final class CorrectionWatcher: @unchecked Sendable {
         }
         queue.async { [reader, generation] in
             let target = generation.isCurrent(token) && reader.isTrusted() ? reader.captureFocusedTextField() : nil
+            let insertionPoint = target.flatMap { reader.selectedRange($0)?.location }
             DispatchQueue.main.async {
-                deliver(target.map { CorrectionCapture(target: $0, generation: token) })
+                deliver(target.map { CorrectionCapture(target: $0, generation: token, insertionPoint: insertionPoint) })
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.captureDeadline) {
@@ -476,8 +482,11 @@ final class CorrectionWatcher: @unchecked Sendable {
                               attempt: Int, postedAt: DispatchTime) {
         queue.asyncAfter(deadline: postedAt + startAttempts[attempt]) { [weak self] in
             guard let self, self.generation.isCurrent(capture.generation) else { return }
+            // A retry must find the paste where the selection started, so a
+            // caret moved meanwhile cannot bind it to an older copy of the text.
             let begun = CorrectionWatchSession.begin(reader: self.reader, target: capture.target, pasted: pasted,
                                                      dictationID: dictationID, now: ProcessInfo.processInfo.systemUptime,
+                                                     expectedStart: attempt == 0 ? nil : capture.insertionPoint,
                                                      isCancelled: { [generation = self.generation] in !generation.isCurrent(capture.generation) },
                                                      clock: { ProcessInfo.processInfo.systemUptime })
             let session: CorrectionWatchSession
@@ -485,7 +494,7 @@ final class CorrectionWatcher: @unchecked Sendable {
             case .success(let begun):
                 session = begun
             case .failure(let reason):
-                if reason.allowsStartRetry, attempt + 1 < self.startAttempts.count {
+                if reason.allowsStartRetry, capture.insertionPoint != nil, attempt + 1 < self.startAttempts.count {
                     self.attemptStart(capture, pasted: pasted, dictationID: dictationID,
                                       attempt: attempt + 1, postedAt: postedAt)
                 }
