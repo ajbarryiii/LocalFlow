@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run synthetic startup comparisons without changing the app or its caches.
+"""Run synthetic startup measurements without changing the app or its caches.
 
 Use Python 3.9 or later and the upstream macguard launcher. All generated model copies,
 synthetic fixtures, binary outputs and timings stay outside the repository.
@@ -18,7 +18,6 @@ import time
 
 
 REPO = Path(__file__).resolve().parents[1]
-ARMS = ("all", "fifteen-first", "fifteen-background")
 # Matches the app's Makefile: Apple Silicon, macOS 26 deployment target, and the
 # new Accelerate headers for the decoder's CBLAS calls.
 SWIFT_TARGET_FLAGS = ["-target", "arm64-apple-macosx26.0", "-Xcc", "-DACCELERATE_NEW_LAPACK"]
@@ -85,7 +84,6 @@ def main():
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new experiment directory outside Git")
     parser.add_argument("--guard", type=Path, required=True, help="upstream ios/macguard")
-    parser.add_argument("--arms", nargs="+", choices=ARMS, default=list(ARMS))
     parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64" or args.repeats < 1:
@@ -130,26 +128,24 @@ def main():
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     save()
     for repeat in range(args.repeats):
-        arms = args.arms if repeat % 2 == 0 else list(reversed(args.arms))
-        for arm in arms:
-            work = output / f"repeat-{repeat + 1}-{arm}"
-            work.mkdir()
-            bundle = work / "bundle"
-            copy_bundle(source, bundle, manifest)
-            for phase in ("new-path", "same-path-fresh-process"):
-                print(f"Starting {arm}: {phase}, repeat {repeat + 1}", flush=True)
-                command = [executable, arm, bundle, fixtures]
-                start = time.perf_counter()
-                stdout, metrics = run(command)
-                records = [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
-                result = records[-1]
-                result.update(phase=phase, repeat=repeat + 1, process_wall_seconds=time.perf_counter() - start)
-                result.update(metrics)
-                report["runs"].append(result)
-                save()
-                print(json.dumps({"arm": arm, "phase": phase, "first_transcript_ready_seconds":
-                                  result["first_transcript_ready_seconds"]}), flush=True)
-    print("Synthetic startup comparison complete; results.json saved outside Git.", flush=True)
+        work = output / f"repeat-{repeat + 1}"
+        work.mkdir()
+        bundle = work / "bundle"
+        copy_bundle(source, bundle, manifest)
+        for phase in ("new-path", "same-path-fresh-process"):
+            print(f"Starting {phase}, repeat {repeat + 1}", flush=True)
+            command = [executable, bundle, fixtures]
+            start = time.perf_counter()
+            stdout, metrics = run(command)
+            records = [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
+            result = records[-1]
+            result.update(phase=phase, repeat=repeat + 1, process_wall_seconds=time.perf_counter() - start)
+            result.update(metrics)
+            report["runs"].append(result)
+            save()
+            print(json.dumps({"phase": phase, "first_transcript_ready_seconds":
+                              result["first_transcript_ready_seconds"]}), flush=True)
+    print("Synthetic startup measurement complete; results.json saved outside Git.", flush=True)
 
 
 if __name__ == "__main__":
@@ -159,5 +155,5 @@ if __name__ == "__main__":
         print(str(error), file=sys.stderr)
         sys.exit(1)
     except Exception:
-        print("Startup comparison failed; partial results are preserved outside Git.", file=sys.stderr)
+        print("Startup measurement failed; partial results are preserved outside Git.", file=sys.stderr)
         sys.exit(1)

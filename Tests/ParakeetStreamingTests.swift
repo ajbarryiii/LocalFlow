@@ -253,7 +253,7 @@ enum ParakeetStreamingTests {
     // cancelled session throws CancellationError.
     private static func testServiceWithoutModel() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst)
+        let service = LocalParakeetService()
         let missing = service.beginStreamingTranscription(directory: directory, dictionary: .empty, retainForCorrection: true)
         missing.append(samples(1_000, seed: 21).map { $0 / 64 })
         TestSupport.expectEqual(failureMessage(wait { try await missing.finish() }),

@@ -766,8 +766,8 @@ transcripts or other user data.
     iOS otherwise mutes the keyboard's haptics for the whole session.
   - Audio is never written to disk or logged.
 - **`ParakeetTranscriber`** wraps `TranscriptionEngine` with the Parakeet
-  runtime, `LocalParakeetService(startupStrategy: .fifteenSecondsFirst)`, which
-  loads one encoder function to bound memory. The model loads from the app
+  runtime, `LocalParakeetService`, which loads only the 15 s encoder function
+  (as on macOS) to bound memory. The model loads from the app
   bundle (`LocalFlow.app/Parakeet/`). At launch it removes, off the main
   thread, model copies that earlier test builds left in Application Support
   and the App Group container. It keeps the last 10 dictation measurements in

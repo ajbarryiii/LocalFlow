@@ -1,39 +1,33 @@
-# Progressive Parakeet startup
+# Parakeet startup
 
-This branch prepares the 15-second Core ML function first at app launch,
-using the same completed 250,000-step ternary Parakeet checkpoint already
-shipped with the app. After initial readiness, it prepares the smaller functions
-on a separate queue and adopts each successful result. The earlier cold-start
-app tested only the first stage; this progressive version needs manual app
-testing. No second model, runtime, kernel payload, permission request or
-production logging is added. The MLX experiment code has been removed.
+The app loads, warms and uses only the 15-second Core ML encoder function
+(`b15`), using the same completed 250,000-step ternary Parakeet checkpoint
+already shipped with the app. The bundle still contains 4-, 8- and 30-second
+functions; they are never loaded. No second model, runtime, kernel payload,
+permission request or production logging is added. The MLX experiment code
+has been removed.
+
+Earlier versions prepared b15 first and then the other functions in the
+background, choosing the smallest ready function per chunk and splitting
+recordings at the largest ready one. Neural Engine memory is held per loaded
+function, so all four functions cost about three times as much memory as
+b15 alone (670 MB versus 209 MB of process plus Neural Engine memory on an
+M1 Pro, measured with an experimental 1-bit encoder bundle; the shipped
+ternary bundle was not measured separately). Recordings are transcribed while they are recorded, so after
+release a dictation waits only for its last chunk of at most 15 seconds; a
+smaller function would save little of that.
 
 ## Startup and recording length
 
 `AppState.init` calls `prepareLocalTranscriptionIfNeeded()` before onboarding
 permissions are granted. Preparation does not wait for microphone or
 Accessibility permission, or the first dictation. The service's serial queue
-warms the 15-second function with synthetic zero input before marking it ready.
-Dictation initially uses this prepared function, including shorter inputs through
-padding. As smaller functions finish warming, each chunk uses the smallest
-ready function large enough for its input. Longer recordings retain the existing
-independent 15-second chunks; this does not impose a 15-second recording limit or improve
-boundary context.
-
-A utility queue loads and warms separate 2/4/8-second encoder instances, one
-at a time. A successful warmup hands its model to the foreground queue for
-installation; that queue alone owns the cache, frontend, decoder and routing.
-Thus background compilation does not occupy the dictation queue. Shared CPU,
-Core ML and ANE resources can still affect latency and must be measured.
-Failures preserve the ready functions and do not change the app's ready state;
-a later explicit service preparation request retries only failed background
-functions. Runtime replacement cancels pending work and discards an in-flight
-result from the old runtime. Active synchronous Core ML calls must finish.
-
-The harness can select `all` (previous all-function startup), `fifteen-first`
-(the earlier test without optimization) or `fifteen-background` (this progressive
-policy). The application's default is `fifteen-background`. Repeated initial
-preparation is idempotent and does not duplicate an active background pass.
+loads b15 and warms it with synthetic zero input before marking it ready.
+Repeated preparation is idempotent; a failed preparation is retried by the
+next request, such as Settings' retry. Every chunk runs on b15, shorter
+inputs through padding. Recordings are split into 15-second chunks that
+overlap by 2 seconds and are joined on a word both heard; this does not
+impose a 15-second recording limit.
 
 The final checkpoint export SHA-256 is
 `a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503`.
@@ -55,15 +49,15 @@ python3 scripts/benchmark-parakeet-startup.py \
 ```
 
 `IOS`, `MODEL_BUNDLE`, and `NEW_ARTIFACT_DIRECTORY` refer to existing local
-paths. Output must be a new directory outside this Git checkout. The default
-arms are `all`, `fifteen-first` and `fifteen-background`; `--repeats 2` reverses
-their order on the second repeat. Each arm gets a copied inference-only bundle at a new path,
-followed by a fresh process using the same path. No cache is deleted.
+paths. Output must be a new directory outside this Git checkout. Each repeat
+gets a copied inference-only bundle at a new path, followed by a fresh process
+using the same path. No cache is deleted.
 
 The runner hash-verifies the bundle, builds an optimized standalone Swift
 executable, generates an invented sentence with the installed Samantha voice,
-and pads it to 2/4/7/14 seconds. The 18-second fixture repeats the sentence across
-two chunks. Only match flags, timing statistics and function-bucket IDs are
+and pads it to 2/4/7/14 seconds. The 18- and 33-second fixtures repeat the
+sentence after long pauses, which silence compaction shortens before chunking.
+Only match flags, timing statistics and function-bucket IDs are
 printed. It never launches the app, records a microphone, reads user settings/history/context, or contacts
 a transcription provider. Generated model copies and synthetic fixtures stay
 outside Git. Existing metadata labeling normalizes the LocalFlow model ID
@@ -71,15 +65,15 @@ without changing trained weight bytes.
 
 Copying the bundle, compiling the benchmark and generating speech are excluded
 from startup timings. Runtime integrity verification, weight loading, device
-specialization and the first inference are included. The progressive arm keeps
-transcribing generated fixtures once per second during remaining preparation,
-then verifies successful transcripts and actual function selection after handoff:
-2s → b2, 4s → b4, 7s → b8, 14s → b15, and 18s → b15 plus b4. The optional
-bucket observer is installed only by the synthetic harness; the app records
-nothing. The report also includes readiness snapshots, background sample count,
-median/p95/maximum latency and completion time.
+specialization and the first inference are included. The runner verifies each
+transcript and that every encoder pass used b15. The optional bucket observer
+is installed only by the synthetic harness; the app records nothing.
 
 ## Results: shared M1 Pro, macOS 27.0, 2026-10-05
+
+Superseded: this and the next two sections measured runtimes that loaded more
+than one function, with the earlier harness arms (`all`, `fifteen-first`,
+`fifteen-background`).
 
 [The timing record](parakeet-startup-results.json) contains the Core ML runs.
 Times below run from CLI initialization to the first matched transcript.
@@ -195,8 +189,8 @@ The padded fixtures contain short speech, with lighter decoder work than fully
 voiced recordings. Guard RSS polling can miss peaks and excludes system
 services. Normal desktop work and a brief verification build overlapped the run.
 
-Regression tests cover default bootstrap routing, foreground progress during
-a blocked background warmup, atomic installation, failure/retry, duplicate-start
-prevention, cancellation of an obsolete runtime and prepared-model reuse. `make check` and `git diff --check` are
-required. The harness does not verify microphone permissions, shortcuts,
+Regression tests cover loading and warming only b15, idempotent preparation,
+retry after a failed load or warm-up, prepared-model reuse, b15 for 2- to
+15-second inputs and 15-second chunks with a 2-second overlap for longer
+recordings. `make check` and `git diff --check` are required. The harness does not verify microphone permissions, shortcuts,
 Accessibility paste or real-user audio; it does not change app permissions.

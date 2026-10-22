@@ -133,7 +133,7 @@ final class ParakeetTranscriber: ObservableObject {
     }
 }
 
-/// `LocalParakeetService` as a `SpeechRuntime`: one encoder function (`.fifteenSecondsFirst`) to bound
+/// `LocalParakeetService` as a `SpeechRuntime`: only the 15 s encoder function, to bound
 /// memory. Dropping the last reference releases the model. The model loads from the bundle: a stable
 /// copy (`ParakeetModelStore`, macOS) does not survive iOS updates, because iOS compiles the Neural
 /// Engine program again for each installed build (TestFlight 20 → 21 reused the copy's cache entry
@@ -159,7 +159,7 @@ private final class ParakeetRuntime: SpeechRuntime {
 
     init(units: ComputePolicy.Units, directory: URL?, dictionary: DictionarySnapshotBox) {
         _ = Self.removeTestCopies
-        service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: units.mlComputeUnits)
+        service = LocalParakeetService(computeUnits: units.mlComputeUnits)
         self.directory = directory
         self.dictionary = dictionary
     }

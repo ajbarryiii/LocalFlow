@@ -39,7 +39,8 @@ final class NeverCorrectPromptModel: ObservableObject {
 /// above the keys"). Read on touches; never published, so it re-renders nothing.
 @MainActor
 final class BarControlFrames {
-    static let space = "lf.bar"
+    // An immutable name, read from SwiftUI's Sendable geometry closure.
+    nonisolated static let space = "lf.bar"
     private var regions = BarControlRegions()
 
     /// The controls' frames now, with those a control left while it may still be animating there.

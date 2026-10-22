@@ -114,7 +114,7 @@ enum SelfTest {
             guard LocalParakeetService.isAvailable, let directory = LocalParakeetService.bundleDirectory else {
                 throw SelfTestFailure.modelMissing
             }
-            let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst, computeUnits: computeUnits)
+            let service = LocalParakeetService(computeUnits: computeUnits)
             stage = "prepare"
             var start = Date()
             try await service.prepare(directory: directory)

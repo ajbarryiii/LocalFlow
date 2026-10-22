@@ -5,7 +5,7 @@
 <h1 align="center">LocalFlow</h1>
 
 <p align="center">
-  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.6/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
+  <a href="https://github.com/ajbarryiii/LocalFlow/releases/download/2.1.7/LocalFlow-Dev.dmg"><b>⬇ Download LocalFlow beta DMG</b></a><br>
   <sub>Apple Silicon · macOS 26 or later</sub><br>
   <sub>Developer ID signed · Apple-notarized beta</sub>
 </p>
@@ -38,9 +38,9 @@ while it is on, holds shorter than 0.3 seconds are discarded.
 The model prepares in the background at startup and stays in memory for the
 session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
-Recordings use chunks of up to 30 seconds once optimization completes, or 15
-seconds while it is still in progress. Consecutive chunks overlap by 2 seconds
-and are joined on a word both heard, so chunk edges do not add sentence breaks.
+Recordings use chunks of up to 15 seconds. Consecutive chunks overlap by 2
+seconds and are joined on a word both heard, so chunk edges do not add sentence
+breaks.
 There is no cloud fallback.
 
 Voice macros match complete phrases locally and paste predefined text. An
