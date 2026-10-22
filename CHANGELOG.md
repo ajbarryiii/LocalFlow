@@ -9,6 +9,24 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.7] - 2026-10-21
+
+Ninth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.6.
+
+### Changed
+
+- LocalFlow keeps one version of its speech model in memory instead of four,
+  so it uses much less memory while it runs. On Macs with limited memory the
+  model is less likely to be pushed out of memory, which should keep
+  transcription fast.
+- After the first launch, LocalFlow no longer spends several minutes
+  preparing three extra model versions in the background.
+- Recordings longer than 15 seconds are transcribed in 15-second sections
+  instead of 30-second ones. For dictations between 15 and 30 seconds, most
+  of the audio is now transcribed while you are still speaking, so the text
+  arrives sooner after you stop.
+
 ## [2.1.6] - 2026-10-21
 
 Eighth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
