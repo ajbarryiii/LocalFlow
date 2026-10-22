@@ -3,8 +3,8 @@ import AVFoundation
 import CoreML
 import Foundation
 
-/// Runtime/cache/decoder state belongs to queue. A separate worker prepares
-/// unused encoder instances and transfers them only after warmup succeeds.
+/// Runtime/cache/decoder state belongs to queue. Only the 15 s encoder
+/// function is loaded, warmed with synthetic input before it is used.
 /// Audio and text stay in memory; this backend never writes diagnostics.
 final class LocalParakeetService: @unchecked Sendable {
     // The app loads the model from its stable copy; scripts have no bundle identifier and no store.
@@ -21,12 +21,10 @@ final class LocalParakeetService: @unchecked Sendable {
         return false
     }
     private let queue = DispatchQueue(label: "localflow.local-model", qos: .userInitiated)
-    private let preparationQueue = DispatchQueue(label: "localflow.local-model-optimization", qos: .utility)
     private var runtime: LocalParakeetRuntime?
     // The directory a caller asked for; the runtime may load from its store copy.
     private var runtimeSource: URL?
     private let modelStore: ParakeetModelStore?
-    private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
     private let onBucketUsed: (@Sendable (Int) -> Void)?
     // Retained correction audio; queue only. Memory only, never written.
@@ -35,15 +33,11 @@ final class LocalParakeetService: @unchecked Sendable {
     private let verificationLock = NSLock()
     private var verification: ParakeetCancellation?
 
-    // Dictation becomes ready after 15s; optional 4/8/30s warmups do not occupy
-    // its serial queue. Benchmarks can compare startup policies explicitly.
     // A host that may lose the Neural Engine in the background can use .cpuOnly.
     // With a model store, each directory is loaded from its stable copy when possible.
-    init(startupStrategy: ParakeetStartupStrategy = .applicationDefault,
-         computeUnits: MLComputeUnits = .cpuAndNeuralEngine,
+    init(computeUnits: MLComputeUnits = .cpuAndNeuralEngine,
          onBucketUsed: (@Sendable (Int) -> Void)? = nil,
          modelStore: ParakeetModelStore? = nil) {
-        self.startupStrategy = startupStrategy
         self.modelStore = modelStore
         self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
@@ -61,8 +55,8 @@ final class LocalParakeetService: @unchecked Sendable {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
-                    // The runtime has prepared its initial functions.
-                    try self.runtime(for: directory).startBackgroundPreparation()
+                    // A runtime is kept only once its encoder function is prepared.
+                    _ = try self.runtime(for: directory)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation failed. Retry model preparation in Settings."))
@@ -71,29 +65,15 @@ final class LocalParakeetService: @unchecked Sendable {
         }
     }
 
-    // Content-free progress for the standalone synthetic benchmark. No logging,
-    // microphone access or user settings/history are involved.
-    func preparationProgress(directory: URL) async throws -> ParakeetPreparationProgress {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do { continuation.resume(returning: try self.runtime(for: directory).preparationProgress) }
-                catch { continuation.resume(throwing: LocalParakeetError.invalid("Local model preparation is unavailable.")) }
-            }
-        }
-    }
-
     // Call only on queue. Keep the runtime and any loaded models alive.
     private func runtime(for directory: URL) throws -> LocalParakeetRuntime {
         if let runtime, runtimeSource == directory { return runtime }
         let make = { (directory: URL) in
-            try LocalParakeetRuntime(directory: directory, startupStrategy: self.startupStrategy,
-                                     computeUnits: self.computeUnits,
-                                     ownerQueue: self.queue, preparationQueue: self.preparationQueue,
-                                     onBucketUsed: self.onBucketUsed)
+            try LocalParakeetRuntime(directory: directory, computeUnits: self.computeUnits, onBucketUsed: self.onBucketUsed)
         }
-        // The initial functions load here, so a store copy that fails the integrity
+        // The encoder function loads here, so a store copy that fails the integrity
         // check or Core ML's first load is removed and the bundle is used instead.
-        let prepare = { (runtime: LocalParakeetRuntime) in try runtime.prepare(buckets: self.startupStrategy.initialBuckets) }
+        let prepare = { (runtime: LocalParakeetRuntime) in try runtime.prepare() }
         let runtime: LocalParakeetRuntime
         if let modelStore {
             runtime = try modelStore.open(bundle: directory, make: make, prepare: prepare)
@@ -101,7 +81,6 @@ final class LocalParakeetService: @unchecked Sendable {
             runtime = try make(directory)
             try prepare(runtime)
         }
-        self.runtime?.cancelBackgroundPreparation()
         self.runtime = runtime
         runtimeSource = directory
         return runtime
@@ -466,16 +445,11 @@ private final class LocalParakeetRuntime {
     let encoder: BPEEncoder
     private var graphs = BiasGraphCache()
     private let models = ParakeetModelCache<MLModel>()
-    private let startupStrategy: ParakeetStartupStrategy
     private let computeUnits: MLComputeUnits
-    private var backgroundPreparation: ParakeetBackgroundPreparation<MLModel>?
     private let onBucketUsed: (@Sendable (Int) -> Void)?
 
-    init(directory: URL, startupStrategy: ParakeetStartupStrategy, computeUnits: MLComputeUnits,
-         ownerQueue: DispatchQueue, preparationQueue: DispatchQueue,
-         onBucketUsed: (@Sendable (Int) -> Void)?) throws {
+    init(directory: URL, computeUnits: MLComputeUnits, onBucketUsed: (@Sendable (Int) -> Void)?) throws {
         self.directory = directory
-        self.startupStrategy = startupStrategy
         self.computeUnits = computeUnits
         self.onBucketUsed = onBucketUsed
         let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
@@ -500,29 +474,10 @@ private final class LocalParakeetRuntime {
         }
         vocabulary = (0..<1024).map { vocab[String($0)]! }
         encoder = BPEEncoder(pieces: vocabulary)
-        if !startupStrategy.backgroundBuckets.isEmpty {
-            backgroundPreparation = ParakeetBackgroundPreparation(
-                ownerQueue: ownerQueue, workerQueue: preparationQueue, buckets: startupStrategy.backgroundBuckets,
-                makeReady: { bucket in
-                    try autoreleasepool {
-                        let model = try ParakeetEncoder.load(bucket: bucket, directory: directory, computeUnits: computeUnits)
-                        try ParakeetEncoder.warm(bucket: bucket, model: model)
-                        return model
-                    }
-                }, install: { [weak self] bucket, model in self?.models.installPrepared(model, for: bucket) })
-        }
     }
 
-    var preparationProgress: ParakeetPreparationProgress {
-        ParakeetPreparationProgress(preparedBuckets: models.preparedBuckets,
-                                     isOptimizing: backgroundPreparation?.isPreparing ?? false)
-    }
-
-    func startBackgroundPreparation() { backgroundPreparation?.start() }
-    func cancelBackgroundPreparation() { backgroundPreparation?.cancel() }
-
-    func prepare(buckets: [Int]) throws {
-        try models.prepare(buckets: buckets, load: loadModel, warm: ParakeetEncoder.warm)
+    func prepare() throws {
+        try models.prepare(load: loadModel, warm: ParakeetEncoder.warm)
     }
 
     private func loadModel(bucket: Int) throws -> MLModel {
@@ -573,13 +528,9 @@ private final class LocalParakeetRuntime {
         graphs.graph(for: snapshot) { BiasGraph.build(entries: snapshot.entries, encoder: encoder) }
     }
 
-    // Installs also run on this queue, so readiness is fixed for the recording.
     // Silence is compacted before chunking, so chunk ranges and word starts
     // are positions in the compacted model input, not in the recording.
-    func makeTranscription() -> ParakeetChunkedTranscription {
-        ParakeetChunkedTranscription(size: models.chunkSamples(strategy: startupStrategy), overlap: LocalParakeetCore.chunkOverlapSamples,
-                                     compactor: ParakeetSilenceCompactor())
-    }
+    func makeTranscription() -> ParakeetChunkedTranscription { .recording() }
 
     func transcribeChunk(_ chunk: ParakeetChunk, bias: BiasGraph?, retained: inout RetainedAudio?,
                          check: () throws -> Void) throws -> [ParakeetWord] {
@@ -603,8 +554,8 @@ private final class LocalParakeetRuntime {
         if input.allSatisfy({ $0 == 0 }) { return nil }
         // NeMo's unbiased per-feature normalization needs at least two frames.
         let pcm = input.count < 480 ? input + [Float](repeating: 0, count: 480 - input.count) : input
-        let bucket = try models.transcriptionBucket(samples: pcm.count, strategy: startupStrategy)
-        let model = try models.model(for: bucket, load: loadModel)
+        let bucket = try LocalParakeetCore.bucket(samples: pcm.count)
+        let model = try models.model(load: loadModel)
         try check()
         let features = frontend.compute(pcm)
         let size = bucket * 100 + 1

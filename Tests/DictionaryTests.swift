@@ -1757,7 +1757,7 @@ enum DictionaryTests {
     /// cancelling the calling task cancels its check.
     private static func testCorrectionChecksKeepTheirOrder() {
         final class Box: @unchecked Sendable { var result: DictionarySuggestion?? = .none }
-        let service = LocalParakeetService(startupStrategy: .fifteenSecondsFirst)
+        let service = LocalParakeetService()
         let older = service.beginCorrectionCheck()
         let newer = service.beginCorrectionCheck()
         TestSupport.expect(older.isCancelled && !newer.isCancelled, "Registering a newer check cancels the older one")

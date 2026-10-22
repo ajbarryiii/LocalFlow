@@ -18,8 +18,13 @@ enum LocalParakeetError: LocalizedError {
 enum LocalParakeetCore {
     static let modelID = "localflow"
     static let sampleRate = 16_000
-    static let maxSamples = 30 * sampleRate
-    static let buckets = [4, 8, 15, 30]
+    /// The one encoder function LocalFlow runs (`b15`). Bundles also hold 4, 8
+    /// and 30 s functions; they are never loaded, because the Neural Engine
+    /// holds memory for every loaded function.
+    static let encoderSeconds = 15
+    /// Recordings are split into windows of at most this many samples, each
+    /// one pass of the 15 s function.
+    static let chunkSamples = encoderSeconds * sampleRate
     // 10 ms features, subsampled 8x by the encoder.
     static let samplesPerEncoderFrame = 1280
     // Consecutive chunks share this much audio, so the seam between them can
@@ -48,11 +53,13 @@ enum LocalParakeetCore {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The encoder function, in seconds, that runs a chunk of `samples`:
+    /// always the 15 s one, with shorter chunks zero-padded.
     static func bucket(samples: Int) throws -> Int {
-        guard samples > 0, samples <= maxSamples else {
-            throw LocalParakeetError.invalid("Local transcription chunk must contain 1–480000 samples.")
+        guard samples > 0, samples <= chunkSamples else {
+            throw LocalParakeetError.invalid("Local transcription chunk must contain 1–240000 samples.")
         }
-        return buckets.first { samples <= $0 * sampleRate }!
+        return encoderSeconds
     }
 
     /// Whitespace-separated words, each starting at the recording sample where
@@ -178,6 +185,13 @@ struct ParakeetChunkedTranscription {
     init(size: Int, overlap: Int, compactor: ParakeetSilenceCompactor? = nil) {
         self.compactor = compactor
         chunker = ParakeetChunker(size: size, overlap: overlap)
+    }
+
+    /// How every dictation is split, whatever its length: silence compacted,
+    /// then 15 s windows that overlap by 2 s.
+    static func recording() -> ParakeetChunkedTranscription {
+        ParakeetChunkedTranscription(size: LocalParakeetCore.chunkSamples, overlap: LocalParakeetCore.chunkOverlapSamples,
+                                     compactor: ParakeetSilenceCompactor())
     }
 
     mutating func append(_ samples: [Float], transcribe: (ParakeetChunk) throws -> [ParakeetWord]) rethrows {
@@ -454,140 +468,27 @@ struct ParakeetTranscriptAssembler {
     }
 }
 
-enum ParakeetStartupStrategy: String {
-    case allBuckets = "all"
-    case fifteenSecondsFirst = "fifteen-first"
-    case fifteenSecondsThenOthers = "fifteen-background"
-
-    // Dictation becomes usable after one function rather than all four.
-    static let applicationDefault: Self = .fifteenSecondsThenOthers
-
-    var initialBuckets: [Int] {
-        self == .allBuckets ? LocalParakeetCore.buckets : [15]
-    }
-
-    // Short functions first; the 30s function is the slowest to prepare.
-    var backgroundBuckets: [Int] {
-        self == .fifteenSecondsThenOthers ? [4, 8, 30] : []
-    }
-}
-
-/// Used only on the service's serial queue. Failed warmups can be retried,
-/// while successful preparation and transcription reuse the same model.
+/// Used only on the service's serial queue. Holds the 15 s encoder function:
+/// loaded once and kept, and prepared once its synthetic warm-up succeeds. A
+/// failed load or warm-up is retried by the next preparation.
 final class ParakeetModelCache<Model> {
-    private var models: [Int: Model] = [:]
-    private var prepared: Set<Int> = []
+    private var loaded: Model?
+    private(set) var isPrepared = false
 
-    var preparedBuckets: [Int] { prepared.sorted() }
-
-    // Install only after prediction succeeds, and only on the owning queue.
-    func installPrepared(_ model: Model, for bucket: Int) {
-        guard !prepared.contains(bucket) else { return }
-        models[bucket] = model
-        prepared.insert(bucket)
-    }
-
-    func model(for bucket: Int, load: (Int) throws -> Model) throws -> Model {
-        if let model = models[bucket] { return model }
-        let model = try load(bucket)
-        models[bucket] = model
+    /// The 15 s function, loaded on first use.
+    func model(load: (Int) throws -> Model) throws -> Model {
+        if let loaded { return loaded }
+        let model = try load(LocalParakeetCore.encoderSeconds)
+        loaded = model
         return model
     }
 
-    // Recordings split at the largest ready function, so 30s chunks are used
-    // only after that function is prepared. Until then chunks stay at 15s.
-    func chunkSamples(strategy: ParakeetStartupStrategy) -> Int {
-        (prepared.union(strategy.initialBuckets).max() ?? 15) * LocalParakeetCore.sampleRate
+    /// Loads the function if needed and warms it; does nothing once prepared.
+    func prepare(load: (Int) throws -> Model, warm: (Int, Model) throws -> Void) throws {
+        guard !isPrepared else { return }
+        try warm(LocalParakeetCore.encoderSeconds, try model(load: load))
+        isPrepared = true
     }
-
-    func transcriptionBucket(samples: Int, strategy: ParakeetStartupStrategy) throws -> Int {
-        let preferred = try LocalParakeetCore.bucket(samples: samples)
-        if strategy != .allBuckets {
-            // Use the smallest ready function that can hold the input. A failed
-            // 4s warmup can still benefit from a ready 8s or 15s function.
-            return LocalParakeetCore.buckets.first { $0 >= preferred && prepared.contains($0) } ?? preferred
-        }
-        return preferred
-    }
-
-    func prepare(buckets: [Int] = LocalParakeetCore.buckets,
-                 load: (Int) throws -> Model, warm: (Int, Model) throws -> Void) throws {
-        for bucket in buckets where !prepared.contains(bucket) {
-            let model = try model(for: bucket, load: load)
-            try warm(bucket, model)
-            prepared.insert(bucket)
-        }
-    }
-}
-
-struct ParakeetPreparationProgress: Sendable {
-    let preparedBuckets: [Int]
-    let isOptimizing: Bool
-}
-
-/// Control state and installation belong exclusively to ownerQueue. Only
-/// makeReady runs on workerQueue, with a fresh model that is not yet in use.
-/// A completed model crosses queues once, after its synchronous warmup returns.
-final class ParakeetBackgroundPreparation<Model>: @unchecked Sendable {
-    private let ownerQueue: DispatchQueue
-    private let workerQueue: DispatchQueue
-    private let buckets: [Int]
-    private let makeReady: (Int) throws -> Model
-    private let install: (Int, Model) -> Void
-    private var completed: Set<Int> = []
-    private var pending: [Int] = []
-    private var cancelled = false
-    private(set) var isPreparing = false
-
-    init(ownerQueue: DispatchQueue, workerQueue: DispatchQueue, buckets: [Int],
-         makeReady: @escaping (Int) throws -> Model, install: @escaping (Int, Model) -> Void) {
-        self.ownerQueue = ownerQueue
-        self.workerQueue = workerQueue
-        self.buckets = buckets
-        self.makeReady = makeReady
-        self.install = install
-    }
-
-    // Both calls must be made on ownerQueue. Each start attempts failed buckets
-    // once; repeated starts during an active pass do not duplicate work.
-    func start() {
-        dispatchPrecondition(condition: .onQueue(ownerQueue))
-        guard !cancelled, !isPreparing else { return }
-        pending = buckets.filter { !completed.contains($0) }
-        scheduleNext()
-    }
-
-    func cancel() {
-        dispatchPrecondition(condition: .onQueue(ownerQueue))
-        cancelled = true
-        pending.removeAll()
-        // An active synchronous load/prediction must finish. Its result is
-        // discarded, and subsequent jobs are never scheduled for this runtime.
-    }
-
-    private func scheduleNext() {
-        guard !cancelled, !pending.isEmpty else { isPreparing = false; return }
-        isPreparing = true
-        let bucket = pending.removeFirst()
-        workerQueue.async {
-            let transfer = ParakeetPreparedTransfer(Result { try self.makeReady(bucket) })
-            self.ownerQueue.async {
-                if !self.cancelled, case .success(let model) = transfer.result {
-                    self.install(bucket, model)
-                    self.completed.insert(bucket)
-                }
-                // A failed optimization never changes readiness of other models.
-                self.scheduleNext()
-            }
-        }
-    }
-}
-
-// Immutable handoff envelope. The background worker stops accessing the model
-// before the owning queue adopts it; the model is never predicted concurrently.
-private final class ParakeetPreparedTransfer<Model>: @unchecked Sendable {
-    let result: Result<Model, Error>
-    init(_ result: Result<Model, Error>) { self.result = result }
 }
 
 enum LocalParakeetPreparationState {

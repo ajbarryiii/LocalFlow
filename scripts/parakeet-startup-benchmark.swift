@@ -14,18 +14,15 @@ struct ParakeetStartupBenchmark {
                 try makeFixtures(source: URL(fileURLWithPath: args[1]), directory: URL(fileURLWithPath: args[2]))
                 return
             }
-            guard args.count == 3, let strategy = ParakeetStartupStrategy(rawValue: args[0]) else {
-                throw LocalParakeetError.invalid("Invalid benchmark arguments")
-            }
-            let directory = URL(fileURLWithPath: args[1])
-            let fixtures = URL(fileURLWithPath: args[2])
+            guard args.count == 2 else { throw LocalParakeetError.invalid("Invalid benchmark arguments") }
+            let directory = URL(fileURLWithPath: args[0])
+            let fixtures = URL(fileURLWithPath: args[1])
             let trace = BucketTrace()
-            let service = LocalParakeetService(startupStrategy: strategy, onBucketUsed: { trace.record($0) })
+            let service = LocalParakeetService(onBucketUsed: { trace.record($0) })
             let clock = ContinuousClock()
             let start = clock.now
             try await service.prepare(directory: directory)
             let preparation = seconds(start.duration(to: clock.now))
-            let initialProgress = try await service.preparationProgress(directory: directory)
             var timings: [[String: Any]] = []
             var firstTranscriptReady = 0.0
             for duration in [14, 2, 4, 7, 18, 33] {
@@ -37,66 +34,22 @@ struct ParakeetStartupBenchmark {
                 let expected = expectedText(duration)
                 let normalized = text.lowercased().filter { $0.isLetter || $0.isWhitespace }
                 let match = normalized == expected
+                // Every encoder pass, of any recording, uses the 15 s function.
+                let buckets = trace.take()
                 timings.append(["audio_seconds": duration, "transcription_seconds": elapsed,
-                                "expected_match": match, "buckets_used": trace.take()])
-                guard match else { throw LocalParakeetError.invalid("Synthetic benchmark mismatch") }
-            }
-            var backgroundTimes: [Double] = []
-            var backgroundMatches = true
-            var backgroundBucketCounts: [String: Int] = [:]
-            let durations = [2, 4, 7, 14, 18, 33]
-            while try await service.preparationProgress(directory: directory).isOptimizing {
-                let duration = durations[backgroundTimes.count % durations.count]
-                let predictionStart = clock.now
-                let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
-                                                        directory: directory)
-                backgroundTimes.append(seconds(predictionStart.duration(to: clock.now)))
-                let expected = expectedText(duration)
-                backgroundMatches = backgroundMatches && text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
-                guard backgroundMatches else { throw LocalParakeetError.invalid("Synthetic background mismatch") }
-                for bucket in trace.take() { backgroundBucketCounts[String(bucket), default: 0] += 1 }
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            let backgroundCompletion = seconds(start.duration(to: clock.now))
-            let finalProgress = try await service.preparationProgress(directory: directory)
-            var optimized: [[String: Any]] = []
-            if !strategy.backgroundBuckets.isEmpty {
-                guard finalProgress.preparedBuckets == LocalParakeetCore.buckets else {
-                    throw LocalParakeetError.invalid("Synthetic optimization did not finish")
-                }
-                for duration in [2, 4, 7, 14, 18, 33] {
-                    let predictionStart = clock.now
-                    let text = try await service.transcribe(fileURL: fixtures.appendingPathComponent("synthetic-\(duration).aiff"),
-                                                            directory: directory)
-                    let elapsed = seconds(predictionStart.duration(to: clock.now))
-                    let expected = expectedText(duration)
-                    let match = text.lowercased().filter { $0.isLetter || $0.isWhitespace } == expected
-                    let buckets = trace.take()
-                    let expectedBuckets = duration == 18 ? [30] : duration == 33 ? [30, 8] : [try LocalParakeetCore.bucket(samples: duration * 16000)]
-                    guard match, buckets == expectedBuckets else { throw LocalParakeetError.invalid("Synthetic handoff mismatch") }
-                    optimized.append(["audio_seconds": duration, "transcription_seconds": elapsed,
-                                      "expected_match": match, "buckets_used": buckets])
+                                "expected_match": match, "buckets_used": buckets])
+                guard match, !buckets.isEmpty, buckets.allSatisfy({ $0 == LocalParakeetCore.encoderSeconds }) else {
+                    throw LocalParakeetError.invalid("Synthetic benchmark mismatch")
                 }
             }
             let repeatedStart = clock.now
             try await service.prepare(directory: directory)
-            var report: [String: Any] = [
-                "schema": 1, "strategy": strategy.rawValue, "preparation_seconds": preparation,
+            let report: [String: Any] = [
+                "schema": 2, "encoder_seconds": LocalParakeetCore.encoderSeconds, "preparation_seconds": preparation,
                 "first_transcript_ready_seconds": firstTranscriptReady,
                 "repeated_preparation_seconds": seconds(repeatedStart.duration(to: clock.now)),
-                "fixtures": timings, "initial_prepared_buckets": initialProgress.preparedBuckets,
-                "final_prepared_buckets": finalProgress.preparedBuckets
+                "fixtures": timings
             ]
-            if !strategy.backgroundBuckets.isEmpty {
-                let sorted = backgroundTimes.sorted()
-                report["optimization_finished_seconds"] = backgroundCompletion
-                report["optimized_fixtures"] = optimized
-                report["during_optimization"] = ["samples": sorted.count, "all_expected_matches": backgroundMatches,
-                    "bucket_counts": backgroundBucketCounts,
-                    "median_seconds": sorted.isEmpty ? NSNull() : sorted[sorted.count / 2] as Any,
-                    "p95_seconds": sorted.isEmpty ? NSNull() : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))] as Any,
-                    "max_seconds": sorted.last.map { $0 as Any } ?? NSNull()]
-            }
             let json = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
             print(String(decoding: json, as: UTF8.self))
         } catch {
@@ -134,8 +87,7 @@ struct ParakeetStartupBenchmark {
             let samples = padded.floatChannelData![0]
             samples.initialize(repeating: 0, count: count)
             samples.update(from: input.floatChannelData![0], count: Int(input.frameLength))
-            // Repeats follow the 15s split, cross the 28–30s overlap of 30s
-            // windows and fall in the remainder window after 30s.
+            // Repeats follow long pauses, which are shortened before chunking.
             for start in repeatOffsets[duration] ?? [] {
                 let offset = Int(start * file.processingFormat.sampleRate)
                 guard offset + Int(input.frameLength) <= count else {
