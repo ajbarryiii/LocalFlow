@@ -41,6 +41,8 @@ enum DictionaryTests {
         testExhaustedCandidatesAreSkipped()
         testWatcherReportsAndContinues()
         testForbiddenStopAbandonsReportedEdits()
+        testStartRetriesWhileTheFieldCatchesUp()
+        testNoBreakSpacesCountAsSpaces()
         testCorrectionChecksKeepTheirOrder()
         DictionaryVectorTests.run()
     }
@@ -1551,6 +1553,163 @@ enum DictionaryTests {
         testClaimingAWatch()
     }
 
+    /// A browser can update a field's accessibility text a moment after the
+    /// paste (DESIGN §3.5). The start is tried again while the field still
+    /// shows the old text or a read fails, up to the last attempt; any other
+    /// failure, or a cancel, ends it at once.
+    private static func testStartRetriesWhileTheFieldCatchesUp() {
+        let schedule = CorrectionWatcher.startAttempts
+        TestSupport.expect(schedule.first == 0.15 && schedule.last == 2
+                           && zip(schedule, schedule.dropFirst()).allSatisfy { $0 < $1 },
+                           "Attempts rise from 0.15 s to 2 s after the paste, got \(schedule)")
+        let attempts: [TimeInterval] = [0.05, 0.3, 0.6]
+        final class Edits { var list: [CorrectionEdit] = [] }
+        func start(_ reader: FakeTextFieldReader, afterCapture: (FakeTextFieldReader) -> Void = { _ in })
+            -> (CorrectionWatcher, Edits) {
+            let watcher = CorrectionWatcher(reader: reader, startAttempts: attempts)
+            let edits = Edits()
+            watcher.onEdit = { edit, _, _ in edits.list.append(edit) }
+            var captured: CorrectionCapture?
+            watcher.capture(expecting: watcher.currentGeneration) { captured = $0 }
+            spin(timeout: 1) { captured != nil }
+            afterCapture(reader)
+            watcher.start(captured!, pasted: "cart", dictationID: 7)
+            return (watcher, edits)
+        }
+
+        // The field catches up only once the second attempt reads it: the old
+        // text, or failed reads. The change happens inside that read, so the
+        // first attempt always sees the stale field.
+        for (name, stale, settle) in [
+            ("Old text", { (_: FakeTextFieldReader) in }, { (r: FakeTextFieldReader) in r.paste("cart") }),
+            ("Failed reads", { (r: FakeTextFieldReader) in r.paste("cart"); r.failReads = true }, { $0.failReads = false }),
+        ] {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.onCharacterCount = { [unowned reader] in
+                if reader.countReads == 2 { settle(reader) }
+            }
+            let (watcher, edits) = start(reader, afterCapture: stale)
+            // The third count is the watch's first poll, so the start has finished.
+            spin(timeout: 3) { reader.countReads >= 3 }
+            reader.replace("cart", with: "chart")
+            spin(timeout: 4) { !edits.list.isEmpty }
+            TestSupport.expect(edits.list.count == 1 && edits.list.first.map { s($0.edited) == s("chart") } == true,
+                               "\(name): the second attempt starts the watch, got \(edits.list.map(\.edited))")
+            watcher.cancel()
+        }
+
+        // A field that never catches up is tried once per attempt, then left alone.
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            let (watcher, edits) = start(reader)
+            spin(timeout: 2) { reader.countReads >= attempts.count }
+            spin(timeout: 0.3)  // the last attempt finishes reading the old text
+            TestSupport.expectEqual(reader.countReads, attempts.count)
+            reader.paste("cart")
+            reader.replace("cart", with: "chart")
+            spin(timeout: 1.5)
+            TestSupport.expectEqual(reader.countReads, attempts.count)
+            TestSupport.expect(edits.list.isEmpty, "No watch after the last attempt")
+            watcher.cancel()
+        }
+
+        // Review r1 #1: a retry must find the paste where the selection started
+        // before it. A caret moved after an older copy of the text is no match.
+        do {
+            let reader = FakeTextFieldReader("cart Note: ")
+            reader.onCharacterCount = { [unowned reader] in
+                guard reader.countReads == 2 else { return }
+                reader.failReads = false
+                reader.caret = 4
+            }
+            let (watcher, edits) = start(reader) { $0.failReads = true }
+            spin(timeout: 2) { reader.countReads >= attempts.count }
+            reader.replace("cart", with: "chart")
+            spin(timeout: 2.5)
+            TestSupport.expectEqual(reader.countReads, attempts.count)
+            TestSupport.expect(edits.list.isEmpty, "An older copy of the text is not watched, got \(edits.list.map(\.edited))")
+            watcher.cancel()
+        }
+
+        // Without the selection from before the paste there is nothing to bind
+        // a retry to, so only the first attempt runs.
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            reader.failReads = true
+            reader.onCharacterCount = { [unowned reader] in
+                if reader.countReads == 2 { reader.failReads = false }
+            }
+            let (watcher, edits) = start(reader)
+            spin(timeout: 1) { reader.countReads >= 1 }
+            spin(timeout: 1)
+            TestSupport.expectEqual(reader.countReads, 1)
+            TestSupport.expect(edits.list.isEmpty, "No retry without an insertion point")
+            watcher.cancel()
+        }
+
+        // Other failures are not retried.
+        for (name, change) in [("Focus moved", { (r: FakeTextFieldReader) in r.focused = false }),
+                               ("A secure field", { $0.secure = true }),
+                               ("Lost permission", { $0.trusted = false })] {
+            let reader = FakeTextFieldReader("Note: ")
+            reader.paste("cart")
+            let (watcher, _) = start(reader, afterCapture: change)
+            spin(timeout: 1)
+            TestSupport.expect(reader.checks <= 1 && reader.countReads == 0, "\(name) is tried once, got \(reader.checks) checks")
+            watcher.cancel()
+        }
+
+        // A cancel (a new recording, the setting turned off) ends the attempts.
+        do {
+            let reader = FakeTextFieldReader("Note: ")
+            let (watcher, edits) = start(reader)
+            spin(timeout: 1) { reader.countReads >= 1 }
+            watcher.cancel()
+            spin(timeout: 0.1)
+            let afterCancel = reader.countReads
+            reader.paste("cart")
+            reader.replace("cart", with: "chart")
+            spin(timeout: 2.2)
+            TestSupport.expectEqual(reader.countReads, afterCancel)
+            TestSupport.expect(edits.list.isEmpty, "A cancelled start reports nothing")
+        }
+    }
+
+    /// Browsers show a trailing or repeated space as a no-break space
+    /// (U+00A0) and switch it back as the text changes (DESIGN §3.5). Read
+    /// from the field it counts as a space: the paste still matches, a switch
+    /// alone is no edit, and a real edit reads with ordinary spaces.
+    private static func testNoBreakSpacesCountAsSpaces() {
+        let nbsp = "\u{00A0}"
+        do {
+            let reader = FakeTextFieldReader("Note:" + nbsp)
+            reader.paste("cart" + nbsp)
+            guard case .success(let session) = begin(reader, pasted: "cart ") else {
+                TestSupport.expect(false, "A trailing no-break space matches the pasted space")
+                return
+            }
+            let (switched, _) = pollUntilDone(session, to: 5) {
+                if $0 == 1 {
+                    reader.replace("Note:" + nbsp, with: "Note: ")
+                    reader.replace("cart" + nbsp, with: "cart ")
+                }
+            }
+            TestSupport.expect(switched == .watching, "Switching spaces is no edit, got \(switched)")
+            let (edited, _) = pollUntilDone(session, from: 6, to: 12) {
+                if $0 == 6 { reader.replace("cart ", with: "chart" + nbsp) }
+            }
+            expectSettled(edited, typed: "cart ", edited: "chart ")
+        }
+        do {
+            let reader = FakeTextFieldReader("Intro" + nbsp + nbsp + "line.\n")
+            reader.paste("ten  kg ")
+            TestSupport.expect(begin(reader, pasted: "ten" + nbsp + " kg ").isSuccess, "A pasted no-break space matches a space")
+            reader.replace("ten  kg ", with: "ten  kh ")
+            TestSupport.expect(begin(reader, pasted: "ten  kg ") == .failure(.pasteNotAtCaret), "Other differences still fail")
+        }
+    }
+
     /// Review F3 #1: using a result claims its watch atomically. A claimed
     /// watch stops reading, cannot be claimed again, and is not abandoned by
     /// a later secure field.
@@ -1784,6 +1943,8 @@ final class FakeTextFieldReader: TextFieldReader {
     /// Reads not preceded by a safety check since the previous read.
     private(set) var uncheckedReads = 0
     private(set) var captureCalls = 0
+    private(set) var checks = 0
+    private(set) var countReads = 0
     /// Runs inside the character-count request, as if during an in-flight AX call.
     var onCharacterCount: (() -> Void)?
     private var checkedSinceRead = false
@@ -1826,6 +1987,7 @@ final class FakeTextFieldReader: TextFieldReader {
 
     func check(_ target: TextFieldTarget) -> TextFieldCheck {
         checkedSinceRead = true
+        checks += 1
         guard focused, target.pid == 4242, target.element === element else { return .focusChanged }
         return secure ? .secure : .ok
     }
@@ -1837,6 +1999,7 @@ final class FakeTextFieldReader: TextFieldReader {
 
     func characterCount(_ target: TextFieldTarget) -> Int? {
         noteRead()
+        countReads += 1
         onCharacterCount?()
         return failReads ? nil : units.count
     }
