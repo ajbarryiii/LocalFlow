@@ -9,6 +9,20 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.6] - 2026-10-21
+
+Eighth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.5.
+
+### Fixed
+
+- Dictionary suggestions from corrections could fail to appear in browsers
+  and Electron apps such as Chrome and T3 Code. These apps can update a text
+  field a moment after the paste, so LocalFlow now tries again for up to two
+  seconds before giving up on watching it.
+- Text fields that show spaces as no-break spaces, as many web editors do,
+  no longer stop the correction watcher from finding the pasted text.
+
 ## [2.1.5] - 2026-10-20
 
 Seventh LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
