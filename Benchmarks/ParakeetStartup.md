@@ -12,7 +12,8 @@ background, choosing the smallest ready function per chunk and splitting
 recordings at the largest ready one. Neural Engine memory is held per loaded
 function, so all four functions cost about three times as much memory as
 b15 alone (670 MB versus 209 MB of process plus Neural Engine memory on an
-M1 Pro). Recordings are transcribed while they are recorded, so after
+M1 Pro, measured with an experimental 1-bit encoder bundle; the shipped
+ternary bundle was not measured separately). Recordings are transcribed while they are recorded, so after
 release a dictation waits only for its last chunk of at most 15 seconds; a
 smaller function would save little of that.
 
