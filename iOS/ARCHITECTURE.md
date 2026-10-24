@@ -1546,7 +1546,13 @@ there are no settings for them. A bundle without the section has no soft key
 edges, and an invalid section, or a model file that is missing or invalid,
 turns off soft key edges only, never the swipe bundle. The default model
 loads off the main thread when the keyboard appears with the switch on; until
-it has loaded, taps type the nearest key.
+it has loaded, taps type the nearest key. The load is bookkept by
+`ModelLoadSlot` (KeyboardCore): appearing again while it is in flight, as when
+switching to the emoji keyboard and back, starts no second load. Turning the
+switch off drops the model and discards a load that ends while it is off; a
+load still in flight when the switch comes back on is kept and installed. A load
+that failed or was discarded is tried again the next time the keyboard
+appears with the switch on.
 
 **Privacy.** The context, its normalized form, the cache and every prediction
 stay in the instance's memory. They are dropped when the keyboard hides or the
@@ -1860,7 +1866,9 @@ section's checks:
 
 An invalid section, or a named file that is missing or invalid, means no
 corrector. It never turns off the swipe bundle or soft key edges. The default
-model loads off the main thread when the keyboard appears with the switch on.
+model loads off the main thread when the keyboard appears with the switch on,
+at most once at a time, like the soft key edges model (`ModelLoadSlot`,
+[Soft key edges](#soft-key-edges)).
 A correction runs on the main thread at the commit key.
 
 **Privacy.** The context, the word, its points, the strip's words, the

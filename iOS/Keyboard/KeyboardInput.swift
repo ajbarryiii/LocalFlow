@@ -79,13 +79,13 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// the prior with its cache. Nil keeps letter taps as they are.
     private var softKeys: SoftKeyEdgesManifest?
     private var tapPrior: TapPrior?
-    /// Bumped by every configuration, so a load that finishes after a newer one is dropped.
-    private var softKeysGeneration = 0
+    /// The soft key edges load: at most one in flight, and only a load for the bundle still wanted is installed.
+    private var softKeysLoad = ModelLoadSlot<URL>()
     /// Autocorrect once its model has loaded (`configureAutocorrect`): the default preset's parameters and the
     /// corrector. Nil keeps words as typed.
     private var autocorrect: (params: AutocorrectParams, corrector: WordCorrecting)?
-    /// Bumped by every configuration, so a load that finishes after a newer one is dropped.
-    private var autocorrectGeneration = 0
+    /// The autocorrect load: at most one in flight, and only a load for the bundle still wanted is installed.
+    private var autocorrectLoad = ModelLoadSlot<URL>()
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -196,22 +196,23 @@ final class KeyboardInput: KeyAreaViewDelegate {
     // MARK: Soft key edges
 
     /// The keyboard appeared with soft key edges on or off (ARCHITECTURE.md, "Soft key edges"): off drops the
-    /// model; on loads the bundle's default one off the main thread, unless it is already loaded. Until it has
-    /// loaded, and for good if the bundle has no `tap` section or a file is missing or invalid, letter taps type
-    /// their nearest key.
+    /// model; on loads the bundle's default one off the main thread, unless it is already loaded or loading
+    /// (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no `tap` section or a file is
+    /// missing or invalid, letter taps type their nearest key.
     func configureSoftKeyEdges(enabled: Bool) {
-        if enabled, softKeys != nil, tapPrior != nil { return }
-        softKeysGeneration += 1
-        softKeys = nil
-        tapPrior = nil
-        updateTouchModes()
-        guard enabled, let directory = SwipeEngine.bundledDirectory else { return }
-        let generation = softKeysGeneration
+        let step = softKeysLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
+        if step.dropModel {
+            softKeys = nil
+            tapPrior = nil
+            updateTouchModes()
+        }
+        guard let ticket = step.load else { return }
+        let directory = ticket.source
         Task { [weak self] in
             let loaded = await Task.detached(priority: .userInitiated) {
                 try? Self.loadSoftKeyEdges(from: directory)
             }.value
-            guard let self, generation == self.softKeysGeneration, let loaded else { return }
+            guard let self, self.softKeysLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
             self.softKeys = loaded.manifest
             self.tapPrior = TapPrior(model: loaded.model, surpriseWindow: loaded.manifest.rule.surpriseWindow)
             self.updateTouchModes()
@@ -253,20 +254,21 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// The keyboard appeared with autocorrect on or off (ARCHITECTURE.md, "Word autocorrect"): off drops the
     /// corrector; on loads the bundle's default model off the main thread, with its default preset, unless it is
-    /// already loaded. Until it has loaded, and for good if the bundle has no valid `autocorrect` section or a
-    /// file is missing or invalid, words commit as typed.
+    /// already loaded or loading (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no valid
+    /// `autocorrect` section or a file is missing or invalid, words commit as typed.
     func configureAutocorrect(enabled: Bool) {
-        if enabled, autocorrect != nil { return }
-        autocorrectGeneration += 1
-        autocorrect = nil
-        updateTouchModes()
-        guard enabled, let directory = SwipeEngine.bundledDirectory else { return }
-        let generation = autocorrectGeneration
+        let step = autocorrectLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
+        if step.dropModel {
+            autocorrect = nil
+            updateTouchModes()
+        }
+        guard let ticket = step.load else { return }
+        let directory = ticket.source
         Task { [weak self] in
             let loaded = await Task.detached(priority: .userInitiated) {
                 Self.loadAutocorrect(from: directory)
             }.value
-            guard let self, generation == self.autocorrectGeneration, let loaded else { return }
+            guard let self, self.autocorrectLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
             self.autocorrect = (loaded.params, loaded.corrector)
             self.updateTouchModes()
         }
