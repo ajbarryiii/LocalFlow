@@ -172,7 +172,7 @@ final class UpdateManager: ObservableObject {
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private let postTranscriptionReminderInterval: TimeInterval = 24 * 60 * 60 // 1 day
     private var periodicTimer: Timer?
-    private var activeDownloadTask: Task<Void, Never>?
+    private(set) var activeDownloadTask: Task<Void, Never>?
     /// Shows a failed download or install. The update runs after the menu
     /// closes, so the status alone is never seen. Replaceable for tests.
     var presentUpdateFailure: (String) -> Void = { message in
@@ -182,6 +182,10 @@ final class UpdateManager: ObservableObject {
     var currentAppURL = Bundle.main.bundleURL
     /// Decides whether `currentAppURL` can be replaced. Replaceable for tests.
     var installLocation = UpdateInstallLocation.live
+    /// Starts the update download. Replaceable for tests.
+    var downloadBytes: @MainActor (URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) = { request in
+        try await URLSession.shared.bytes(for: request)
+    }
 
     private init() {
         lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
@@ -761,7 +765,7 @@ final class UpdateManager: ObservableObject {
             var request = URLRequest(url: downloadURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
-            let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+            let (asyncBytes, response) = try await downloadBytes(request)
 
             let totalSize = (response as? HTTPURLResponse)
                 .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") }
@@ -853,33 +857,33 @@ final class UpdateManager: ObservableObject {
                 ])
             }
 
-            // Copy app to staging directory
-            let stagingDir = fm.temporaryDirectory.appendingPathComponent("freeflow-staged-\(UUID().uuidString)")
-            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
-            try fm.copyItem(at: appBundle, to: stagedApp)
-
-            // Verify the staged copy, since that is what gets installed.
-            do {
-                try await Task.detached {
-                    try UpdateSignatureVerifier.verifyMatchesRunningApp(stagedApp)
-                }.value
-            } catch {
-                try? fm.removeItem(at: stagingDir)
-                throw error
-            }
-
-            // Clean up DMG (detach happens in defer above, delete temp dir)
-            try? fm.removeItem(at: tempDir)
-
-            // MARK: Replace & relaunch
-            // Check again: the location may have changed during the download.
+            // Check again before staging: the location may have changed
+            // during the download.
             if let problem = installLocation.problem(forAppAt: currentAppURL) {
-                try? fm.removeItem(at: stagingDir)
+                try? fm.removeItem(at: tempDir)
                 failUpdate(UpdateInstallLocation.message(for: problem))
                 return
             }
+
+            // Stage in a private folder next to the installed app, so the
+            // swap is a rename on one volume rather than a copy that can
+            // fail halfway after this app has quit.
+            let stagingDir = UpdateReplacement.stagingDirectoryURL(nextTo: currentAppURL)
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: false,
+                                   attributes: [.posixPermissions: 0o700])
+            let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             do {
+                try fm.copyItem(at: appBundle, to: stagedApp)
+
+                // Verify the staged copy, since that is what gets installed.
+                try await Task.detached {
+                    try UpdateSignatureVerifier.verifyMatchesRunningApp(stagedApp)
+                }.value
+
+                // Clean up DMG (detach happens in defer above, delete temp dir)
+                try? fm.removeItem(at: tempDir)
+
+                // MARK: Replace & relaunch
                 try replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
             } catch {
                 try? fm.removeItem(at: stagingDir)

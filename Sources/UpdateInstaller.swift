@@ -57,6 +57,10 @@ struct UpdateInstallLocation: Sendable {
 /// once the running app has quit, and relaunches whichever app ends up
 /// installed.
 ///
+/// The staged app and the backup live in the installed app's folder, so
+/// every move is a rename on one volume that happens completely or not at
+/// all; the script refuses any other layout.
+///
 /// Exit status 0 means the new app is installed; relaunching it and cleaning
 /// up are best effort and never undo the install. Any other status means the
 /// new app is not installed: the current app is left in place (or put back)
@@ -88,12 +92,24 @@ struct UpdateReplacement {
         self.openCommand = openCommand
     }
 
-    /// A new sibling path for the current app while the new one moves in. It
-    /// is unique per update so a leftover from an interrupted update is never
-    /// reused, and it has no `.app` extension so it is not offered as an app.
+    /// A new hidden folder next to the installed app that holds the verified
+    /// update until it is renamed into place.
+    static func stagingDirectoryURL(nextTo currentApp: URL) -> URL {
+        currentApp.deletingLastPathComponent()
+            .appendingPathComponent(".\(baseName(of: currentApp))-update-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    /// A new hidden path next to the installed app for the current app while
+    /// the new one moves in. It is unique per update so a leftover from an
+    /// interrupted update is never reused, and it keeps the `.app` extension
+    /// so the old app can still be launched from it if it cannot be put back.
     static func backupURL(for currentApp: URL) -> URL {
         currentApp.deletingLastPathComponent()
-            .appendingPathComponent("\(currentApp.lastPathComponent).update-backup-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".\(baseName(of: currentApp))-update-backup-\(UUID().uuidString).app", isDirectory: true)
+    }
+
+    private static func baseName(of app: URL) -> String {
+        app.deletingPathExtension().lastPathComponent
     }
 
     /// Arguments for `shellURL`. Paths are passed as positional parameters,
@@ -116,23 +132,27 @@ struct UpdateReplacement {
     while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 
     occupied() { [ -e "$1" ] || [ -L "$1" ]; }
-    relaunch() { "$opener" "$app" >/dev/null 2>&1; }
-    keep_current_app() { rm -rf "$staging" 2>/dev/null; relaunch; exit 1; }
+    relaunch() { "$opener" "$1" >/dev/null 2>&1; }
+    keep_current_app() { rm -rf "$staging" 2>/dev/null; relaunch "$app"; exit 1; }
+
+    # 0. Only renames inside the app's folder: a move to another volume is a
+    #    copy, which can fail halfway or fail after a complete copy.
+    folder=$(dirname "$app")
+    if [ "$(dirname "$staged")" != "$staging" ] || [ "$(dirname "$staging")" != "$folder" ] \\
+        || [ "$(dirname "$backup")" != "$folder" ]; then
+        relaunch "$app"
+        exit 1
+    fi
 
     # 1. Move the current app aside.
     [ -d "$staged" ] && [ -d "$app" ] || keep_current_app
     occupied "$backup" && keep_current_app
     mv "$app" "$backup" || keep_current_app
 
-    # 2. Move the new app into place.
+    # 2. Move the new app into place. A failed rename leaves nothing behind.
     installed=0
-    if ! occupied "$app"; then
-        if mv "$staged" "$app"; then
-            installed=1
-        else
-            # A failed copy across volumes can leave a partial app behind.
-            rm -rf "$app" 2>/dev/null
-        fi
+    if ! occupied "$app" && mv "$staged" "$app"; then
+        installed=1
     fi
 
     if [ "$installed" -ne 1 ]; then
@@ -140,13 +160,15 @@ struct UpdateReplacement {
         if ! occupied "$app" && mv "$backup" "$app"; then
             keep_current_app
         fi
-        # The app path is taken; keep the backup rather than nest or lose it.
+        # It cannot go back without nesting it in whatever took its place,
+        # so run it from the backup rather than leave nothing running.
         rm -rf "$staging" 2>/dev/null
+        relaunch "$backup"
         exit 1
     fi
 
     # 3. The new app is installed. Nothing below may undo that.
-    relaunch
+    relaunch "$app"
     rm -rf "$backup" "$staging" 2>/dev/null
     exit 0
     """

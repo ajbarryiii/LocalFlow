@@ -4,7 +4,9 @@ import Foundation
 /// directories, with a fake `open` that records what it was asked to launch.
 enum UpdateInstallerTests {
     static func run() {
-        testBackupIsAFreshSiblingOfTheApp()
+        testBackupIsAFreshHiddenSiblingOfTheApp()
+        testStagingIsAFreshHiddenSiblingOfTheApp()
+        testStagingOutsideTheAppFolderIsRefused()
         testSwapInstallsAndOpensNewApp()
         testFailedOpenAfterSwapKeepsNewApp()
         testFailedCleanupAfterSwapKeepsNewApp()
@@ -21,14 +23,46 @@ enum UpdateInstallerTests {
 
     // MARK: - Replacement script
 
-    private static func testBackupIsAFreshSiblingOfTheApp() {
+    // Every move is a rename inside the app's folder, so it cannot turn into
+    // a cross-volume copy that half-succeeds.
+    private static func testBackupIsAFreshHiddenSiblingOfTheApp() {
         let app = URL(fileURLWithPath: "/Applications/LocalFlow.app")
         let first = UpdateReplacement.backupURL(for: app)
         let second = UpdateReplacement.backupURL(for: app)
         TestSupport.expectEqual(first.deletingLastPathComponent().path, "/Applications")
         TestSupport.expect(first != app, "The backup must not be the app itself")
         TestSupport.expect(first != second, "Each update needs its own backup path")
-        TestSupport.expect(first.pathExtension != "app", "The backup must not look like an app to Finder or Launch Services")
+        TestSupport.expect(first.lastPathComponent.hasPrefix("."), "The backup must be hidden in Finder")
+        // If it cannot be put back, the old app is relaunched from the backup.
+        TestSupport.expectEqual(first.pathExtension, "app")
+    }
+
+    private static func testStagingIsAFreshHiddenSiblingOfTheApp() {
+        let app = URL(fileURLWithPath: "/Applications/LocalFlow.app")
+        let first = UpdateReplacement.stagingDirectoryURL(nextTo: app)
+        let second = UpdateReplacement.stagingDirectoryURL(nextTo: app)
+        TestSupport.expectEqual(first.deletingLastPathComponent().path, "/Applications")
+        TestSupport.expect(first != app && first != UpdateReplacement.backupURL(for: app), "Staging must have its own path")
+        TestSupport.expect(first != second, "Each update needs its own staging folder")
+        TestSupport.expect(first.lastPathComponent.hasPrefix("."), "Staging must be hidden in Finder")
+        TestSupport.expect(first.pathExtension != "app", "Staging must not look like an app")
+    }
+
+    // Regression: the update was staged in the temporary folder, so an app on
+    // another volume was replaced by a copy, and a failed source deletion
+    // after a complete copy was treated as a failed install.
+    private static func testStagingOutsideTheAppFolderIsRefused() {
+        let sandbox = Sandbox(stagingNextToApp: false)
+        defer { sandbox.remove() }
+
+        let status = sandbox.runReplacement(openExitStatus: 0)
+
+        TestSupport.expect(status != 0, "A move out of the app's folder must be refused")
+        TestSupport.expectEqual(sandbox.appMarker, "old")
+        TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
+        TestSupport.expectEqual(sandbox.applicationsEntries, ["LocalFlow.app"])
+        TestSupport.expect(sandbox.exists(sandbox.stagedApp), "A refused layout must not be moved or deleted")
+        TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
     private static func testSwapInstallsAndOpensNewApp() {
@@ -41,7 +75,7 @@ enum UpdateInstallerTests {
         TestSupport.expectEqual(sandbox.appMarker, "new")
         TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
         TestSupport.expect(!sandbox.exists(sandbox.backup), "The backup must be removed after a successful install")
-        TestSupport.expect(!sandbox.exists(sandbox.staging), "The staging folder must be removed after a successful install")
+        TestSupport.expectEqual(sandbox.leftovers, [])
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
@@ -56,7 +90,7 @@ enum UpdateInstallerTests {
         TestSupport.expectEqual(status, 0)
         TestSupport.expectEqual(sandbox.appMarker, "new")
         TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
-        TestSupport.expect(!sandbox.exists(sandbox.backup), "The backup must still be removed when opening fails")
+        TestSupport.expectEqual(sandbox.leftovers, [])
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
@@ -86,7 +120,8 @@ enum UpdateInstallerTests {
         TestSupport.expect(status != 0, "A failed install must report failure")
         TestSupport.expectEqual(sandbox.appMarker, "old")
         TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
-        TestSupport.expectEqual(sandbox.applicationsEntries, ["LocalFlow.app"])
+        // Only the staging folder, which the read-only folder keeps, is left.
+        TestSupport.expectEqual(sandbox.leftovers, [sandbox.staging.lastPathComponent])
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
@@ -101,7 +136,8 @@ enum UpdateInstallerTests {
         TestSupport.expect(status != 0, "A failed install must report failure")
         TestSupport.expectEqual(sandbox.appMarker, "old")
         TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
-        TestSupport.expectEqual(sandbox.applicationsEntries, ["LocalFlow.app"])
+        TestSupport.expect(!sandbox.exists(sandbox.backup), "The backup must be moved back into place")
+        TestSupport.expectEqual(sandbox.leftovers, [sandbox.staging.lastPathComponent])
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
@@ -118,6 +154,7 @@ enum UpdateInstallerTests {
         TestSupport.expectEqual(sandbox.appMarker, "old")
         TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
         TestSupport.expectEqual(sandbox.entries(of: sandbox.backup), ["marker"])
+        TestSupport.expectEqual(sandbox.leftovers, [sandbox.backup.lastPathComponent])
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
     }
 
@@ -201,13 +238,15 @@ private final class Sandbox {
     private let fakeOpenDirectory: URL
     private var lockedDirectories: [URL] = []
 
-    init() {
+    init(stagingNextToApp: Bool = true) {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("UpdateInstallerTests-\(UUID().uuidString)", isDirectory: true)
         applications = root.appendingPathComponent("Applications", isDirectory: true)
         app = applications.appendingPathComponent("LocalFlow.app", isDirectory: true)
         backup = UpdateReplacement.backupURL(for: app)
-        staging = root.appendingPathComponent("staging", isDirectory: true)
+        staging = stagingNextToApp
+            ? UpdateReplacement.stagingDirectoryURL(nextTo: app)
+            : root.appendingPathComponent("staging", isDirectory: true)
         stagedApp = staging.appendingPathComponent("LocalFlow.app", isDirectory: true)
         openLog = root.appendingPathComponent("open.log")
         fakeOpenDirectory = root.appendingPathComponent("bin", isDirectory: true)
@@ -222,6 +261,8 @@ private final class Sandbox {
 
     var appEntries: [String] { entries(of: app) }
     var applicationsEntries: [String] { entries(of: applications) }
+    /// Everything in the app's folder other than the app.
+    var leftovers: [String] { applicationsEntries.filter { $0 != app.lastPathComponent } }
 
     var opened: [String] {
         guard let log = try? String(contentsOf: openLog, encoding: .utf8) else { return [] }
