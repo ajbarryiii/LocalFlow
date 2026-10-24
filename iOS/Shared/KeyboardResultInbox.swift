@@ -85,8 +85,8 @@ struct KeyboardResultInbox: Equatable, Sendable {
                           status: StoreRead<HostStatus>, now: Date) {
         resultPending = false
         readAt = now
-        listed = Set(files.map(\.requestID))
-        results = files.compactMap(\.read.value)
+        listed = Set(files.map { $0.requestID })
+        results = files.compactMap { $0.read.value }
         let undecoded = files.filter { $0.read == .unreadable || $0.read == .incompatible }
         undecodedExpireAt = undecoded.isEmpty ? nil : now + DictationProtocol.resultTTL
         hasUnreadable = undecoded.contains { $0.read == .unreadable }
