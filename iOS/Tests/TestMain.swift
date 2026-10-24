@@ -8,6 +8,7 @@ struct LocalFlowIOSTests {
             ("LocalFlowConfiguration", LocalFlowConfigurationTests.tests),
             ("DictationProtocol", DictationProtocolTests.tests),
             ("SharedDictationStore", SharedDictationStoreTests.tests),
+            ("AtomicRecordFiles", AtomicRecordFilesTests.tests),
             ("HostReconciler", HostReconcilerTests.tests),
             ("HostRunRecovery", HostRunRecoveryTests.tests),
             ("HostWatchdog", HostWatchdogTests.tests),
