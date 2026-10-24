@@ -57,13 +57,13 @@ struct TryItView: View {
                 }
 
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "arrow.left.arrow.right").foregroundStyle(Theme.violet).padding(.top, 2)
+                    Image(systemName: "arrow.left.arrow.right").foregroundStyle(Theme.aurora).padding(.top, 2)
                     Text("**Destination test.** Start dictating in Field A, then tap Field B before the text arrives. It must not appear in B; the keyboard offers **Insert last dictation** instead.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 .padding(16)
-                .background(Theme.violet.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(Theme.aurora.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 if host.session != .active {
                     Label("No session is running. The keyboard will open LocalFlow to start one.", systemImage: "info.circle")
@@ -114,7 +114,7 @@ private struct HowToRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.onAccent)
                 .frame(width: 24, height: 24)
                 .background(Theme.gradient, in: Circle())
             Text(text).font(.subheadline)

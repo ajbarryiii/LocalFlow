@@ -18,6 +18,7 @@ struct DictionaryView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .themedListBackground()
         .navigationTitle("Dictionary")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -44,7 +45,7 @@ struct DictionaryView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .tint(Theme.violet)
+        .tint(Theme.aurora)
     }
 
     private var entriesSection: some View {
@@ -64,14 +65,15 @@ struct DictionaryView: View {
                 .font(.footnote)
         } footer: {
             if !dictionary.hasVocabulary {
-                Text(DictionaryEditor.unavailableMessage).foregroundStyle(.red)
+                Text(DictionaryEditor.unavailableMessage).foregroundStyle(Theme.coral)
             } else {
-                let up = Text(Image(systemName: "arrow.up")).fontWeight(.bold).foregroundStyle(.green)
-                let down = Text(Image(systemName: "arrow.down")).fontWeight(.bold).foregroundStyle(.red)
-                let mic = Text(Image(systemName: "mic.fill")).foregroundStyle(Theme.violet)
+                let up = Text(Image(systemName: "arrow.up")).fontWeight(.bold).foregroundStyle(Theme.aurora)
+                let down = Text(Image(systemName: "arrow.down")).fontWeight(.bold).foregroundStyle(Theme.coral)
+                let mic = Text(Image(systemName: "mic.fill")).foregroundStyle(Theme.aurora)
                 Text("\(up) if a word is still misheard, \(down) if it appears where it shouldn't. \(mic) Say a sentence with the word and LocalFlow picks the strength. Tap a word to edit it; swipe to delete.")
             }
         }
+        .listRowBackground(Theme.cardBackground)
     }
 
     private func row(_ entry: DictionaryEntry) -> some View {
@@ -96,9 +98,9 @@ struct DictionaryView: View {
             } label: {
                 Image(systemName: "mic.fill")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.violet)
+                    .foregroundStyle(Theme.aurora)
                     .frame(width: 32, height: 32)
-                    .background(Theme.violet.opacity(0.15), in: Circle())
+                    .background(Theme.aurora.opacity(0.15), in: Circle())
             }
             .buttonStyle(.borderless)
             .disabled(!dictionary.canEdit)
@@ -119,7 +121,7 @@ struct DictionaryView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("The saved dictionary couldn't be read", systemImage: "exclamationmark.triangle.fill")
                     .font(.headline)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.ember)
                 Text("Boosting is off until it is reset. The saved data is kept unchanged until you choose Reset.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -132,6 +134,7 @@ struct DictionaryView: View {
                     Text("This removes the saved words.")
                 }
         }
+        .listRowBackground(Theme.cardBackground)
     }
 
     private struct EditorTarget: Identifiable {
@@ -156,13 +159,13 @@ struct StrengthArrows: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            arrow("arrow.down", tint: .red, to: DictionaryLibrary.strength(below: strength), label: "Lower strength")
+            arrow("arrow.down", tint: Theme.coral, to: DictionaryLibrary.strength(below: strength), label: "Lower strength")
             Text(DictionaryValidation.label(strength))
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 44)
                 .accessibilityLabel("Strength \(DictionaryValidation.label(strength))")
-            arrow("arrow.up", tint: .green, to: DictionaryLibrary.strength(above: strength), label: "Raise strength")
+            arrow("arrow.up", tint: Theme.aurora, to: DictionaryLibrary.strength(above: strength), label: "Raise strength")
         }
     }
 
@@ -209,11 +212,12 @@ struct DictionaryEntryEditor: View {
                     Text("Word or phrase")
                 } footer: {
                     if let message = saveError ?? validationError {
-                        Text(message).foregroundStyle(.red)
+                        Text(message).foregroundStyle(Theme.coral)
                     } else {
                         Text("Type it exactly as it should appear, up to \(DictionaryValidation.maxWords) words.")
                     }
                 }
+                .listRowBackground(Theme.cardBackground)
 
                 Section {
                     HStack {
@@ -232,7 +236,9 @@ struct DictionaryEntryEditor: View {
                 } footer: {
                     Text("Say a sentence that uses the word. LocalFlow tries each strength and keeps the lowest one that gets it right. The recording stays in memory and is discarded right after.")
                 }
+                .listRowBackground(Theme.cardBackground)
             }
+            .themedListBackground()
             .navigationTitle(original == nil ? "Add Word" : "Edit Word")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -252,7 +258,7 @@ struct DictionaryEntryEditor: View {
                 StrengthProbeSheet(word: word.text, current: strength) { strength = $0 }
             }
         }
-        .tint(Theme.violet)
+        .tint(Theme.aurora)
         .onAppear {
             if let original {
                 text = original.text
@@ -291,6 +297,7 @@ struct StrengthProbeSheet: View {
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.screenBackground.ignoresSafeArea())
             .navigationTitle("Find Strength")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -299,7 +306,7 @@ struct StrengthProbeSheet: View {
                 }
             }
         }
-        .tint(Theme.violet)
+        .tint(Theme.aurora)
         .onAppear { model.start(host: host) }
         .onDisappear { model.close() }
         .onChange(of: scenePhase) {
@@ -329,13 +336,13 @@ struct StrengthProbeSheet: View {
             finished(result)
         case .failed(let message):
             Spacer()
-            outcomeHeader(symbol: "exclamationmark.triangle.fill", tint: .orange, title: "Couldn't check", subtitle: message)
+            outcomeHeader(symbol: "exclamationmark.triangle.fill", tint: Theme.ember, title: "Couldn't check", subtitle: message)
             Spacer()
             Button("Try again") { model.retry() }.buttonStyle(PrimaryButtonStyle())
             Button("Close") { dismiss() }.buttonStyle(SecondaryButtonStyle()).padding(.top, 10)
         case .microphoneDenied:
             Spacer()
-            outcomeHeader(symbol: "mic.slash.fill", tint: .orange, title: "Microphone access is off",
+            outcomeHeader(symbol: "mic.slash.fill", tint: Theme.ember, title: "Microphone access is off",
                           subtitle: "Allow LocalFlow to use the microphone in Settings to find a strength with your voice.")
             Spacer()
             Button("Open Settings") { AppIdentity.openSettings() }.buttonStyle(PrimaryButtonStyle())
@@ -386,14 +393,14 @@ struct StrengthProbeSheet: View {
     private func finished(_ result: StrengthProbe.Result) -> some View {
         switch result.outcome {
         case .recognized(let strength):
-            outcomeHeader(symbol: "checkmark", tint: .green, title: "Recognized at \(DictionaryValidation.label(strength))",
+            outcomeHeader(symbol: "checkmark", tint: Theme.aurora, title: "Recognized at \(DictionaryValidation.label(strength))",
                           subtitle: "The lowest strength that got it right")
             comparison(base: result.base, boosted: result.boosted, strength: strength)
             if strength != current {
                 HStack(spacing: 10) {
                     Text(DictionaryValidation.label(current)).foregroundStyle(.secondary)
                     Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                    Text(DictionaryValidation.label(strength)).fontWeight(.bold).foregroundStyle(.green)
+                    Text(DictionaryValidation.label(strength)).fontWeight(.bold).foregroundStyle(Theme.aurora)
                 }
                 .font(.title3.monospacedDigit())
                 .padding(.top, 16)
@@ -413,20 +420,20 @@ struct StrengthProbeSheet: View {
             }
             tryAnother
         case .alreadyRecognized:
-            outcomeHeader(symbol: "checkmark", tint: .green, title: "Already recognized",
+            outcomeHeader(symbol: "checkmark", tint: Theme.aurora, title: "Already recognized",
                           subtitle: "LocalFlow heard it without a boost, so \(DictionaryValidation.label(current)) is fine.")
             comparison(base: result.base, boosted: nil, strength: nil)
             Spacer()
             Button("Done") { dismiss() }.buttonStyle(PrimaryButtonStyle())
             tryAnother
         case .notRecognized where result.base.isEmpty:
-            outcomeHeader(symbol: "waveform.slash", tint: .orange, title: "Nothing was heard",
+            outcomeHeader(symbol: "waveform.slash", tint: Theme.ember, title: "Nothing was heard",
                           subtitle: "Try again and say the sentence aloud.")
             Spacer()
             Button("Try again") { model.retry() }.buttonStyle(PrimaryButtonStyle())
             Button("Close") { dismiss() }.buttonStyle(SecondaryButtonStyle()).padding(.top, 10)
         case .notRecognized:
-            outcomeHeader(symbol: "xmark", tint: .orange,
+            outcomeHeader(symbol: "xmark", tint: Theme.ember,
                           title: "Not recognized, even at \(DictionaryValidation.label(DictionaryValidation.maxStrength))",
                           subtitle: "Check the spelling, or try a sentence where the word is clearer.")
             comparison(base: result.base, boosted: nil, strength: nil)
@@ -477,7 +484,7 @@ struct StrengthProbeSheet: View {
         var attributed = AttributedString(text)
         var searchStart = attributed.startIndex
         while let range = attributed[searchStart...].range(of: model.word, options: .caseInsensitive) {
-            attributed[range].foregroundColor = .green
+            attributed[range].foregroundColor = Theme.aurora
             attributed[range].font = .body.bold()
             searchStart = range.upperBound
         }

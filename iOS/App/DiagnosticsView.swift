@@ -26,6 +26,7 @@ struct DiagnosticsView: View {
                 Button("Release model now") { host.releaseModel() }
                     .disabled(transcriber.modelState != .ready && transcriber.modelState != .failed || host.isDictationInProgress)
             }
+            .listRowBackground(Theme.cardBackground)
 
             Section("Last preparation") {
                 if let preparation = transcriber.lastPreparation {
@@ -38,6 +39,7 @@ struct DiagnosticsView: View {
                     Text("None in this run").foregroundStyle(.secondary)
                 }
             }
+            .listRowBackground(Theme.cardBackground)
 
             Section {
                 if transcriber.measurements.isEmpty {
@@ -51,8 +53,10 @@ struct DiagnosticsView: View {
             } footer: {
                 Text("Timings and memory only, never audio or text. Kept in memory and gone when LocalFlow quits.")
             }
+            .listRowBackground(Theme.cardBackground)
         }
         .listStyle(.insetGrouped)
+        .themedListBackground()
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -108,6 +112,7 @@ private struct CursorTuningSection: View {
         } footer: {
             Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple's keyboard in Try it's practice field: touch and hold the space bar with each and match the feel. Changes apply to the next gesture. The step scale makes each touch event count as a 60 Hz one would (2× at 120 Hz).")
         }
+        .listRowBackground(Theme.cardBackground)
         .onAppear {
             sensitivity = settings?.cursorSensitivity ?? 1
             acceleration = settings?.cursorAcceleration ?? 1
@@ -152,6 +157,7 @@ private struct NeverCorrectSection: View {
         } footer: {
             Text("Words you asked autocorrect never to correct, kept on this iPhone and not in backups. The keyboard picks up a clear the next time it appears.")
         }
+        .listRowBackground(Theme.cardBackground)
         .onAppear(perform: load)
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { load() }
@@ -178,7 +184,7 @@ private struct MeasurementRow: View {
                 Spacer()
                 Text(measurement.outcome.rawValue.capitalized)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(measurement.outcome == .transcribed ? .green : .orange)
+                    .foregroundStyle(measurement.outcome == .transcribed ? Theme.aurora : Theme.ember)
             }
             Text(String(format: "wait %.0f ms · transcribe %.0f ms", measurement.waitMilliseconds,
                         measurement.transcriptionMilliseconds))

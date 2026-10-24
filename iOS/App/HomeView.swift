@@ -23,6 +23,7 @@ struct HomeView: View {
                 Section {
                     ModelStatusRow(transcriber: transcriber)
                 }
+                .listRowBackground(Theme.cardBackground)
 
                 Section {
                     NavigationLink(value: HomeRoute.tryIt) {
@@ -33,6 +34,7 @@ struct HomeView: View {
                         RowLabel(title: "Keyboard setup", detail: "Enable the keyboard and Full Access", symbol: "keyboard")
                     }
                 }
+                .listRowBackground(Theme.cardBackground)
 
                 Section {
                     NavigationLink(value: HomeRoute.dictionary) {
@@ -67,7 +69,8 @@ struct HomeView: View {
                 } header: {
                     Text("Dictation")
                 }
-                .tint(Theme.violet)
+                .listRowBackground(Theme.cardBackground)
+                .tint(Theme.aurora)
 
                 Section {
                     // The keyboard reads both when it next appears.
@@ -85,7 +88,8 @@ struct HomeView: View {
                 } header: {
                     Text("Keyboard")
                 }
-                .tint(Theme.violet)
+                .listRowBackground(Theme.cardBackground)
+                .tint(Theme.aurora)
 
                 Section {
                     NavigationLink(value: HomeRoute.diagnostics) {
@@ -105,8 +109,10 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 8)
                 }
+                .listRowBackground(Theme.cardBackground)
             }
             .listStyle(.insetGrouped)
+            .themedListBackground()
             .navigationTitle("LocalFlow")
             .navigationDestination(for: HomeRoute.self) { route in
                 switch route {
@@ -118,7 +124,7 @@ struct HomeView: View {
                 }
             }
         }
-        .tint(Theme.violet)
+        .tint(Theme.aurora)
     }
 }
 
@@ -148,7 +154,7 @@ private struct SessionCard: View {
                 // The choice could not be honored; dictation goes on with the other input.
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.ember)
                     .accessibilityIdentifier("session.input")
             } else if host.session == .active, let input = host.currentInput {
                 Label("Input: \(input.label)", systemImage: input == .builtInMic ? "iphone" : "headphones")
@@ -170,7 +176,7 @@ private struct SessionCard: View {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "mic.fill")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.onAccent)
                         .frame(width: 22, height: 22)
                         .background(Theme.live, in: Circle())
                     Text("iOS shows the orange microphone indicator while a session is on. Between dictations, audio is dropped the moment it arrives; nothing is kept or saved.")
@@ -184,7 +190,7 @@ private struct SessionCard: View {
             if let error = host.sessionError, host.session == .inactive {
                 Label(error.message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.ember)
             }
 
             switch host.session {
@@ -207,7 +213,7 @@ private struct SessionCard: View {
                 } label: {
                     Label("End session", systemImage: "stop.fill")
                 }
-                .buttonStyle(SecondaryButtonStyle(tint: .red))
+                .buttonStyle(SecondaryButtonStyle(tint: Theme.coral))
                 .accessibilityIdentifier("session.end")
             }
         }
