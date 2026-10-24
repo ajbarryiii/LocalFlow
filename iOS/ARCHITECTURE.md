@@ -768,10 +768,8 @@ transcripts or other user data.
 - **`ParakeetTranscriber`** wraps `TranscriptionEngine` with the Parakeet
   runtime, `LocalParakeetService`, which loads only the 15 s encoder function
   (as on macOS) to bound memory. The model loads from the app
-  bundle (`LocalFlow.app/Parakeet/`). At launch it removes, off the main
-  thread, model copies that earlier test builds left in Application Support
-  and the App Group container. It keeps the last 10 dictation measurements in
-  memory for Diagnostics.
+  bundle (`LocalFlow.app/Parakeet/`). It keeps the last 10 dictation
+  measurements in memory for Diagnostics.
 - **App-only preferences** (`AppPreferences`, the app's own `UserDefaults`):
   onboarding completion, "Use iPhone microphone", and the last model
   preparation's duration (for a progress estimate). None holds user content.
