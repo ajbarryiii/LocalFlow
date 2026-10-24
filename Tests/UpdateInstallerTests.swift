@@ -7,6 +7,9 @@ enum UpdateInstallerTests {
         testBackupIsAFreshHiddenSiblingOfTheApp()
         testStagingIsAFreshHiddenSiblingOfTheApp()
         testStagingOutsideTheAppFolderIsRefused()
+        testLeftoversOfInterruptedUpdatesAreRemoved()
+        testOnlyUpdaterLeftoversAreRemoved()
+        testFailedLeftoverRemovalIsNotFatal()
         testSwapInstallsAndOpensNewApp()
         testFailedOpenAfterSwapKeepsNewApp()
         testFailedCleanupAfterSwapKeepsNewApp()
@@ -184,6 +187,90 @@ enum UpdateInstallerTests {
         TestSupport.expectEqual(status, 0)
         TestSupport.expectEqual(sandbox.appMarker, "new")
         TestSupport.expectEqual(sandbox.opened, [sandbox.app.path])
+    }
+
+    // MARK: - Leftovers of interrupted updates
+
+    // Regression: a crash or force quit while staging left a hidden app copy
+    // beside the installed app, and every retry added another.
+    private static func testLeftoversOfInterruptedUpdatesAreRemoved() {
+        let sandbox = Sandbox(stagingNextToApp: false)
+        defer { sandbox.remove() }
+        let partialCopy = UpdateReplacement.stagingDirectoryURL(nextTo: sandbox.app)
+        sandbox.write("partial", to: partialCopy.appendingPathComponent("LocalFlow.app/Contents/marker"))
+        let staleBackup = UpdateReplacement.backupURL(for: sandbox.app)
+        sandbox.write("older", to: staleBackup.appendingPathComponent("Contents/marker"))
+
+        UpdateReplacement.removeLeftovers(nextTo: sandbox.app)
+
+        TestSupport.expectEqual(sandbox.leftovers, [])
+        TestSupport.expectEqual(sandbox.appMarker, "old")
+        TestSupport.expectEqual(sandbox.appEntries, ["Contents"])
+    }
+
+    private static func testOnlyUpdaterLeftoversAreRemoved() {
+        let sandbox = Sandbox(stagingNextToApp: false)
+        defer { sandbox.remove() }
+        let id = UUID().uuidString
+        let outside = sandbox.root.appendingPathComponent("outside", isDirectory: true)
+        sandbox.write("keep", to: outside.appendingPathComponent("file"))
+
+        let kept = [
+            "Other.app",
+            "LocalFlow-update-\(id)",
+            ".LocalFlow-update-not-a-uuid",
+            ".LocalFlow-update-\(id.lowercased())",
+            ".LocalFlow-update-\(id).app",
+            ".LocalFlow-update-\(id)-copy",
+            ".LocalFlow-update-backup-\(id)",
+            ".LocalFlow-update-backup-\(id).app.zip",
+            ".LocalFlow Dev-update-\(id)",
+            ".LocalFlow Dev-update-backup-\(id).app",
+        ]
+        for name in kept {
+            sandbox.write("keep", to: sandbox.applications.appendingPathComponent(name).appendingPathComponent("file"))
+        }
+        // A matching name that is a plain file, or a link out of the folder.
+        let fileName = ".LocalFlow-update-\(UUID().uuidString)"
+        sandbox.write("keep", to: sandbox.applications.appendingPathComponent(fileName))
+        let linkName = ".LocalFlow-update-\(UUID().uuidString)"
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: sandbox.applications.appendingPathComponent(linkName),
+                withDestinationURL: outside
+            )
+        } catch {
+            fatalError("Failed to create test symlink: \(error)")
+        }
+
+        UpdateReplacement.removeLeftovers(nextTo: sandbox.app)
+
+        TestSupport.expectEqual(sandbox.leftovers, (kept + [fileName, linkName]).sorted())
+        for name in kept {
+            TestSupport.expect(
+                sandbox.exists(sandbox.applications.appendingPathComponent(name).appendingPathComponent("file")),
+                "Unrelated item must be left intact: \(name)"
+            )
+        }
+        TestSupport.expectEqual(sandbox.entries(of: outside), ["file"])
+        TestSupport.expectEqual(sandbox.appMarker, "old")
+    }
+
+    private static func testFailedLeftoverRemovalIsNotFatal() {
+        let sandbox = Sandbox(stagingNextToApp: false)
+        defer { sandbox.remove() }
+        let stuck = UpdateReplacement.stagingDirectoryURL(nextTo: sandbox.app)
+        let locked = stuck.appendingPathComponent("locked", isDirectory: true)
+        sandbox.write("stuck", to: locked.appendingPathComponent("file"))
+        sandbox.setPermissions(0o555, locked)
+        let staleBackup = UpdateReplacement.backupURL(for: sandbox.app)
+        sandbox.write("older", to: staleBackup.appendingPathComponent("Contents/marker"))
+
+        UpdateReplacement.removeLeftovers(nextTo: sandbox.app)
+
+        TestSupport.expect(!sandbox.exists(staleBackup), "Other leftovers must still be removed")
+        TestSupport.expectEqual(sandbox.leftovers, [stuck.lastPathComponent])
+        TestSupport.expectEqual(sandbox.appMarker, "old")
     }
 
     // MARK: - Install location

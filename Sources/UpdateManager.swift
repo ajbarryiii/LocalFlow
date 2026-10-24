@@ -867,7 +867,12 @@ final class UpdateManager: ObservableObject {
 
             // Stage in a private folder next to the installed app, so the
             // swap is a rename on one volume rather than a copy that can
-            // fail halfway after this app has quit.
+            // fail halfway after this app has quit. First clear out what an
+            // interrupted update left there.
+            let appURL = currentAppURL
+            await Task.detached {
+                UpdateReplacement.removeLeftovers(nextTo: appURL)
+            }.value
             let stagingDir = UpdateReplacement.stagingDirectoryURL(nextTo: currentAppURL)
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: false,
                                    attributes: [.posixPermissions: 0o700])
@@ -884,7 +889,7 @@ final class UpdateManager: ObservableObject {
                 try? fm.removeItem(at: tempDir)
 
                 // MARK: Replace & relaunch
-                try replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
+                try installStagedUpdate(stagedApp: stagedApp, stagingDir: stagingDir)
             } catch {
                 try? fm.removeItem(at: stagingDir)
                 throw error
@@ -934,6 +939,19 @@ final class UpdateManager: ObservableObject {
         throw NSError(domain: "UpdateManager", code: 3, userInfo: [
             NSLocalizedDescriptionKey: "No mount point found in hdiutil output"
         ])
+    }
+
+    /// Swaps in the verified staged app and quits, unless the app can no
+    /// longer be replaced: then it removes the staged app and says why,
+    /// without quitting. Copying and verifying take time, so this checks the
+    /// location again at the last moment.
+    func installStagedUpdate(stagedApp: URL, stagingDir: URL) throws {
+        if let problem = installLocation.problem(forAppAt: currentAppURL) {
+            try? FileManager.default.removeItem(at: stagingDir)
+            failUpdate(UpdateInstallLocation.message(for: problem))
+            return
+        }
+        try replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
     }
 
     /// Starts the script that swaps in the staged app once this process has

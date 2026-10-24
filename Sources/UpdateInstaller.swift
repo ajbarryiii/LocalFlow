@@ -96,7 +96,7 @@ struct UpdateReplacement {
     /// update until it is renamed into place.
     static func stagingDirectoryURL(nextTo currentApp: URL) -> URL {
         currentApp.deletingLastPathComponent()
-            .appendingPathComponent(".\(baseName(of: currentApp))-update-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(stagingPrefix(of: currentApp) + UUID().uuidString, isDirectory: true)
     }
 
     /// A new hidden path next to the installed app for the current app while
@@ -105,11 +105,48 @@ struct UpdateReplacement {
     /// so the old app can still be launched from it if it cannot be put back.
     static func backupURL(for currentApp: URL) -> URL {
         currentApp.deletingLastPathComponent()
-            .appendingPathComponent(".\(baseName(of: currentApp))-update-backup-\(UUID().uuidString).app", isDirectory: true)
+            .appendingPathComponent(backupPrefix(of: currentApp) + UUID().uuidString + backupSuffix, isDirectory: true)
     }
 
-    private static func baseName(of app: URL) -> String {
-        app.deletingPathExtension().lastPathComponent
+    /// Removes staging folders and backups that an interrupted update left
+    /// beside the app, for example after a crash while the update was being
+    /// copied. Only real folders with exactly the names this updater
+    /// generates are removed, links are never followed, and failures are
+    /// ignored.
+    static func removeLeftovers(nextTo currentApp: URL) {
+        let fileManager = FileManager.default
+        let folder = currentApp.deletingLastPathComponent()
+        guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names where name != currentApp.lastPathComponent && isLeftover(name, nextTo: currentApp) {
+            let item = folder.appendingPathComponent(name)
+            // attributesOfItem describes a link itself, not what it points to.
+            guard let type = (try? fileManager.attributesOfItem(atPath: item.path))?[.type] as? FileAttributeType,
+                  type == .typeDirectory else { continue }
+            try? fileManager.removeItem(at: item)
+        }
+    }
+
+    private static let backupSuffix = ".app"
+
+    private static func stagingPrefix(of app: URL) -> String {
+        ".\(app.deletingPathExtension().lastPathComponent)-update-"
+    }
+
+    private static func backupPrefix(of app: URL) -> String {
+        ".\(app.deletingPathExtension().lastPathComponent)-update-backup-"
+    }
+
+    private static func isLeftover(_ name: String, nextTo app: URL) -> Bool {
+        func isGeneratedID(_ text: Substring) -> Bool {
+            UUID(uuidString: String(text))?.uuidString == String(text)
+        }
+        let backupStart = backupPrefix(of: app)
+        if name.hasPrefix(backupStart) && name.hasSuffix(backupSuffix) {
+            let id = name.dropFirst(backupStart.count).dropLast(backupSuffix.count)
+            if isGeneratedID(id) { return true }
+        }
+        let stagingStart = stagingPrefix(of: app)
+        return name.hasPrefix(stagingStart) && isGeneratedID(name.dropFirst(stagingStart.count))
     }
 
     /// Arguments for `shellURL`. Paths are passed as positional parameters,
