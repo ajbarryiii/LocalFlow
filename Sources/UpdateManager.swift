@@ -173,6 +173,9 @@ final class UpdateManager: ObservableObject {
     private let postTranscriptionReminderInterval: TimeInterval = 24 * 60 * 60 // 1 day
     private var periodicTimer: Timer?
     private(set) var activeDownloadTask: Task<Void, Never>?
+    /// True from the start of an update attempt until it has fully finished,
+    /// including after it was cancelled.
+    private var updateAttemptInProgress = false
     /// Shows a failed download or install. The update runs after the menu
     /// closes, so the status alone is never seen. Replaceable for tests.
     var presentUpdateFailure: (String) -> Void = { message in
@@ -722,6 +725,11 @@ final class UpdateManager: ObservableObject {
     }
 
     func downloadAndInstall(release: GitHubRelease) {
+        // One attempt at a time, until it has fully finished (cancelling does
+        // not stop a running signature check). A second attempt would delete
+        // the first one's staging folder as a leftover.
+        guard !updateAttemptInProgress else { return }
+
         guard let dmgAsset = release.assets.first(where: { $0.name.hasSuffix(".dmg") }) else {
             if let url = URL(string: release.htmlUrl) {
                 NSWorkspace.shared.open(url)
@@ -738,9 +746,10 @@ final class UpdateManager: ObservableObject {
             return
         }
 
-        activeDownloadTask?.cancel()
+        updateAttemptInProgress = true
         activeDownloadTask = Task {
             await performUpdate(downloadURL: downloadURL, expectedSize: dmgAsset.size)
+            self.updateAttemptInProgress = false
         }
     }
 
@@ -864,6 +873,10 @@ final class UpdateManager: ObservableObject {
                 failUpdate(UpdateInstallLocation.message(for: problem))
                 return
             }
+            if Task.isCancelled {
+                try? fm.removeItem(at: tempDir)
+                return
+            }
 
             // Stage in a private folder next to the installed app, so the
             // swap is a rename on one volume rather than a copy that can
@@ -946,6 +959,12 @@ final class UpdateManager: ObservableObject {
     /// without quitting. Copying and verifying take time, so this checks the
     /// location again at the last moment.
     func installStagedUpdate(stagedApp: URL, stagingDir: URL) throws {
+        // A cancelled attempt may still have been verifying; it must not
+        // install or quit.
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: stagingDir)
+            return
+        }
         if let problem = installLocation.problem(forAppAt: currentAppURL) {
             try? FileManager.default.removeItem(at: stagingDir)
             failUpdate(UpdateInstallLocation.message(for: problem))
