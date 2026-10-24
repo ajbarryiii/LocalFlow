@@ -82,7 +82,7 @@ private struct RootView: View {
 private struct ConfigurationErrorView: View {
     var body: some View {
         VStack(spacing: 16) {
-            HeroSymbol(systemName: "exclamationmark.triangle.fill", tint: AnyShapeStyle(Color.orange), size: 80)
+            HeroSymbol(systemName: "exclamationmark.triangle.fill", tint: AnyShapeStyle(Theme.ember), size: 80)
             Text("This build is misconfigured").font(.title2.bold())
             Text("Its App Group or URL scheme is missing, so the app and the keyboard cannot talk to each other. Rebuild it with the Makefile.")
                 .multilineTextAlignment(.center)

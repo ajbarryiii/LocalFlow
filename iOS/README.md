@@ -343,6 +343,7 @@ Setup and session:
 - [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
 - [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
 - [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
+- [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Try it, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
 - [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.

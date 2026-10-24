@@ -1,13 +1,33 @@
 import SwiftUI
 
+/// The Wilderness Labs palette (wilderness-labs-site, `public/css/style.css`): forest night, aurora green,
+/// glacier cyan and ember. The app is always dark, as the site is (`UIUserInterfaceStyle`).
 enum Theme {
-    static let violet = Color(red: 0.45, green: 0.33, blue: 0.96)
-    static let blue = Color(red: 0.25, green: 0.47, blue: 0.98)
+    static let aurora = Color(red: 109 / 255, green: 255 / 255, blue: 168 / 255)
+    /// Loading and preparing states, as on the site.
+    static let glacier = Color(red: 103 / 255, green: 232 / 255, blue: 249 / 255)
+    /// Warnings and failures.
+    static let ember = Color(red: 245 / 255, green: 198 / 255, blue: 107 / 255)
+    /// Destructive actions and errors (the site's recording color).
+    static let coral = Color(red: 255 / 255, green: 125 / 255, blue: 94 / 255)
     /// Matches the system's microphone-in-use indicator.
     static let live = Color(red: 1.0, green: 0.58, blue: 0.0)
-    static let gradient = LinearGradient(colors: [violet, blue], startPoint: .topLeading, endPoint: .bottomTrailing)
-    static let cardBackground = Color(uiColor: .secondarySystemGroupedBackground)
-    static let screenBackground = Color(uiColor: .systemGroupedBackground)
+    /// Text and symbols drawn on the accent colors.
+    static let onAccent = Color(red: 4 / 255, green: 18 / 255, blue: 10 / 255)
+    /// Mostly aurora, with a hint of glacier at the leading edge.
+    static let gradient = LinearGradient(stops: [
+        .init(color: Color(red: 107 / 255, green: 246 / 255, blue: 200 / 255), location: 0),
+        .init(color: aurora, location: 0.55),
+    ], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let cardBackground = Color(red: 15 / 255, green: 26 / 255, blue: 28 / 255)
+    static let screenBackground = Color(red: 5 / 255, green: 8 / 255, blue: 10 / 255)
+}
+
+extension View {
+    /// The screen background behind a List or Form, whose sections set `Theme.cardBackground` rows.
+    func themedListBackground() -> some View {
+        scrollContentBackground(.hidden).background(Theme.screenBackground.ignoresSafeArea())
+    }
 }
 
 /// The app's name as installed ("LocalFlow Dev" for development builds), for setup instructions.
@@ -36,7 +56,7 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.onAccent)
             .frame(maxWidth: .infinity, minHeight: 52)
             .background(tint, in: Capsule())
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
@@ -46,7 +66,7 @@ struct PrimaryButtonStyle: ButtonStyle {
 }
 
 struct SecondaryButtonStyle: ButtonStyle {
-    var tint: Color = Theme.violet
+    var tint: Color = Theme.aurora
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -66,7 +86,7 @@ struct SymbolTile: View {
     var body: some View {
         Image(systemName: systemName)
             .font(.system(size: size * 0.5, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.onAccent)
             .frame(width: size, height: size)
             .background(tint, in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
     }
@@ -82,10 +102,10 @@ struct HeroSymbol: View {
         ZStack {
             Circle().fill(tint).opacity(0.18).frame(width: size * 1.45, height: size * 1.45).blur(radius: 18)
             Circle().fill(tint).frame(width: size, height: size)
-                .shadow(color: Theme.violet.opacity(0.35), radius: 16, y: 8)
+                .shadow(color: Theme.aurora.opacity(0.35), radius: 16, y: 8)
             Image(systemName: systemName)
                 .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.onAccent)
         }
         .accessibilityHidden(true)
     }
@@ -154,7 +174,7 @@ struct ModelStatusRow: View {
                 if showsPrepareButton, transcriber.modelState == .notPrepared || transcriber.modelState == .failed {
                     Button(transcriber.modelState == .failed ? "Retry" : "Prepare") { transcriber.prepare() }
                         .buttonStyle(.bordered)
-                        .tint(Theme.violet)
+                        .tint(Theme.aurora)
                         .accessibilityIdentifier("model.prepare")
                 }
             }
@@ -164,7 +184,7 @@ struct ModelStatusRow: View {
             if let hint = transcriber.lastFailureHint {
                 Label(hint.message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.ember)
             }
         }
     }
@@ -191,9 +211,9 @@ struct ModelStatusRow: View {
 
     private var tint: Color {
         switch transcriber.modelState {
-        case .ready: return .green
-        case .failed, .unavailable: return .orange
-        default: return Theme.violet
+        case .ready: return Theme.aurora
+        case .failed, .unavailable: return Theme.ember
+        default: return Theme.glacier
         }
     }
 }
@@ -208,9 +228,9 @@ struct PreparationProgress: View {
             VStack(alignment: .leading, spacing: 6) {
                 if let estimate {
                     ProgressView(value: min(elapsed / estimate, 0.95))
-                        .tint(Theme.violet)
+                        .tint(Theme.glacier)
                 } else {
-                    ProgressView().progressViewStyle(.linear).tint(Theme.violet)
+                    ProgressView().progressViewStyle(.linear).tint(Theme.glacier)
                 }
                 Text(caption(elapsed: elapsed))
                     .font(.caption)

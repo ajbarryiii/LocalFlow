@@ -61,7 +61,7 @@ struct OnboardingView: View {
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.horizontal, 12)
-        .tint(Theme.violet)
+        .tint(Theme.aurora)
     }
 
     @ViewBuilder
@@ -207,9 +207,9 @@ struct OnboardingView: View {
 
     private var permissionTint: Color {
         switch permission {
-        case .granted: return .green
-        case .denied: return .orange
-        case .undetermined: return Theme.violet
+        case .granted: return Theme.aurora
+        case .denied: return Theme.ember
+        case .undetermined: return Theme.glacier
         }
     }
 }
@@ -250,7 +250,7 @@ private struct PromiseRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: symbol).foregroundStyle(Theme.violet).frame(width: 22)
+            Image(systemName: symbol).foregroundStyle(Theme.aurora).frame(width: 22)
             Text(text).font(.subheadline).foregroundStyle(.primary.opacity(0.85))
         }
     }
@@ -275,7 +275,7 @@ struct KeyboardSetupSteps: View {
                 if isConnected() {
                     Label("Keyboard active with Full Access", systemImage: "checkmark.circle.fill")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Theme.aurora)
                 }
             }
         }
@@ -293,7 +293,7 @@ private struct SetupStep: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.onAccent)
                 .frame(width: 24, height: 24)
                 .background(Theme.gradient, in: Circle())
             Text(text).font(.subheadline)

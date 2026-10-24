@@ -34,14 +34,17 @@ struct ReportBugView: View {
             } footer: {
                 Text("The draft includes only the app version, iOS version, and device type shown below. No recordings, transcripts, or logs are attached.")
             }
+            .listRowBackground(Theme.cardBackground)
 
             Section("Email draft") {
                 Text(draft.body)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("support.emailDraft")
             }
+            .listRowBackground(Theme.cardBackground)
         }
         .listStyle(.insetGrouped)
+        .themedListBackground()
         .navigationTitle("Report a bug")
         .navigationBarTitleDisplayMode(.inline)
         .alert("Couldn’t open email", isPresented: $emailUnavailable) {

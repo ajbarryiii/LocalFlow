@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">LocalFlow Dev for iPhone</title>
+  <desc id="description">The Wilderness Labs ridge mark, an aurora green W-shaped ridge line over a glacier cyan dot, on a deep forest-night square with a faint aurora glow, with a small ember development badge.</desc>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A1114"/>
+      <stop offset="1" stop-color="#05080A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="430" r="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6DFFA8" stop-opacity="0.16"/>
+      <stop offset="0.6" stop-color="#6DFFA8" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#6DFFA8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="0.9"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#tile)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <!-- The site's 32-unit mark (public/favicon.svg), centered and scaled. -->
+  <g transform="translate(512 512) scale(25) translate(-16 -16.95)">
+    <path d="M5.4 6.1 L9.2 19 L17.2 8.2 L19.4 18.8 L24.8 11.6 L26.6 15.9" stroke="#6DFFA8" stroke-opacity="0.55" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#blur)"/>
+    <path d="M5.4 6.1 L9.2 19 L17.2 8.2 L19.4 18.8 L24.8 11.6 L26.6 15.9" stroke="#6DFFA8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <circle cx="16" cy="26" r="1.8" fill="#67E8F9"/>
+  </g>
+  <circle cx="790" cy="234" r="58" fill="#05080A"/>
+  <circle cx="790" cy="234" r="42" fill="#F5C66B"/>
+</svg>

@@ -1926,8 +1926,9 @@ app reads only the count. The models are fixed.
 - **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
   cryptography is SHA-256 for model verification. Both executables require
   `arm64` in `UIRequiredDeviceCapabilities`.
-- **Icon.** The build crops the production icon source's opaque square,
-  flattens it and scales it to one opaque 1024-pixel image.
+- **Icon.** The build flattens the production icon source, a full-bleed
+  square in `Resources/` ([Resources/ICON.md](Resources/ICON.md)), and scales
+  it to one opaque 1024-pixel image.
 - **Privacy manifests** (`Config/*-PrivacyInfo.xcprivacy`, one per target):
   no tracking, no tracking domains, no collected data. Required-reason APIs:
   UserDefaults (`CA92.1` for the app's own preferences, `1C8F.1` for the App

@@ -12,7 +12,7 @@ PLATFORM ?= device
 BUNDLE_ID ?= com.ajbarryiii.localflow.ios
 URL_SCHEME ?= localflow
 DISPLAY_NAME ?= LocalFlow
-ICON_SOURCE ?= ../Resources/AppIcon-Source.png
+ICON_SOURCE ?= Resources/AppIcon-Source.png
 BUILD_DIR ?= build/appstore
 ifneq ($(PLATFORM),device)
 $(error CHANNEL=appstore needs PLATFORM=device)
@@ -52,7 +52,7 @@ SWIFT_FLAGS ?=
 CODESIGN_KEYCHAIN ?=
 CODESIGN_KEYCHAIN_FLAG = $(if $(strip $(CODESIGN_KEYCHAIN)),--keychain "$(CODESIGN_KEYCHAIN)")
 SWIFT_OPTIMIZATION ?= $(if $(strip $(PARAKEET_BUNDLE_DIR)),-O,-Onone)
-ICON_SOURCE ?= ../Resources/AppIcon-Dev-Source.png
+ICON_SOURCE ?= Resources/AppIcon-Dev-Source.png
 PYTHON ?= python3
 
 # A value as one single-quoted shell word, spaces and quotes kept (subst does not
@@ -303,13 +303,12 @@ $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(APP_ENTITLEMENTS) $(KEYBOAR
 	@printf 'APPL????' > "$(APP_BUNDLE)/PkgInfo"
 	@cp Config/LocalFlow-PrivacyInfo.xcprivacy "$(APP_BUNDLE)/PrivacyInfo.xcprivacy"
 	@cp Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy "$(APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
-	@# The macOS icon source has a transparent margin and rounded corners; keep
-	@# the opaque square inside them so iOS can apply its own mask. The App Store
-	@# rejects an icon with an alpha channel, so it is flattened (through JPEG at
-	@# the best quality) before scaling to the single 1024-pixel size.
+	@# The icon source is a full-bleed square (Resources/ICON.md); iOS applies its
+	@# own mask. The App Store rejects an icon with an alpha channel, so it is
+	@# flattened (through JPEG at the best quality) before scaling to the single
+	@# 1024-pixel size.
 	@rm -rf "$(ICON_CATALOG)" "$(APP_BUNDLE)"/AppIcon*.png && mkdir -p "$(ICON_CATALOG)/AppIcon.appiconset"
-	@sips --cropToHeightWidth 788 788 --cropOffset 118 118 "$(ICON_SOURCE)" --out "$(OBJ_DIR)/AppIcon.png" >/dev/null
-	@sips -s format jpeg -s formatOptions best "$(OBJ_DIR)/AppIcon.png" --out "$(OBJ_DIR)/AppIcon-flat.jpg" >/dev/null
+	@sips -s format jpeg -s formatOptions best "$(ICON_SOURCE)" --out "$(OBJ_DIR)/AppIcon-flat.jpg" >/dev/null
 	@sips -s format png -z 1024 1024 "$(OBJ_DIR)/AppIcon-flat.jpg" --out "$(ICON_CATALOG)/AppIcon.appiconset/AppIcon-1024.png" >/dev/null
 	@[ "$$(sips -g hasAlpha "$(ICON_CATALOG)/AppIcon.appiconset/AppIcon-1024.png" | awk '/hasAlpha/ { print $$2 }')" = no ] || \
 		{ echo "The App Store icon still has an alpha channel." >&2; exit 1; }

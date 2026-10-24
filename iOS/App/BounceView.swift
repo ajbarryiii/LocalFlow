@@ -70,7 +70,7 @@ struct BounceView: View {
             }
         case .completed?:
             VStack(spacing: 18) {
-                HeroSymbol(systemName: "checkmark", tint: AnyShapeStyle(Color.green), size: 88)
+                HeroSymbol(systemName: "checkmark", tint: AnyShapeStyle(Theme.aurora), size: 88)
                 Text("Done").font(.largeTitle.bold()).fontDesign(.rounded)
                 subtitle("Swipe back to your app to insert the text.")
                 SwipeBackHint()
@@ -78,7 +78,7 @@ struct BounceView: View {
         case .failed?, .cancelled?:
             VStack(spacing: 18) {
                 HeroSymbol(systemName: phase == .cancelled && host.dictation?.error == nil ? "xmark" : "exclamationmark",
-                           tint: AnyShapeStyle(Color.orange), size: 88)
+                           tint: AnyShapeStyle(Theme.ember), size: 88)
                 Text(phase == .cancelled ? "Dictation cancelled" : "Dictation stopped")
                     .font(.title.bold()).fontDesign(.rounded)
                 if let error = host.dictation?.error {
@@ -134,7 +134,7 @@ struct BounceView: View {
     private var background: some View {
         ZStack {
             Theme.screenBackground
-            RadialGradient(colors: [(phase == .recording ? Theme.live : Theme.violet).opacity(0.16), .clear],
+            RadialGradient(colors: [(phase == .recording ? Theme.live : Theme.aurora).opacity(0.16), .clear],
                            center: .top, startRadius: 20, endRadius: 520)
         }
     }
@@ -155,22 +155,22 @@ struct SwipeBackHint: View {
                         Text("Your app")
                     }
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Theme.blue)
+                    .foregroundStyle(Theme.glacier)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Theme.blue.opacity(0.12), in: Capsule())
+                    .background(Theme.glacier.opacity(0.12), in: Capsule())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer()
                     ZStack {
                         Capsule().fill(Color.secondary.opacity(0.55)).frame(width: 70, height: 5)
                         Circle()
-                            .fill(Theme.violet.opacity(0.45))
+                            .fill(Theme.aurora.opacity(0.45))
                             .frame(width: 24, height: 24)
                             .offset(x: animate ? 48 : -48)
                             .opacity(animate ? 0.2 : 1)
                         Image(systemName: "arrow.right")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(Theme.violet)
+                            .foregroundStyle(Theme.aurora)
                             .offset(x: 52, y: -16)
                     }
                 }
