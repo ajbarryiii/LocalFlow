@@ -18,6 +18,10 @@ enum KeyboardResultInboxTests {
             ("oneResultPerPassFromMemory", testOneResultPerPassFromMemory),
             ("manualOfferSurvivesStatusPasses", testManualOfferSurvivesStatusPasses),
             ("discardedResultNoLongerSchedulesExpiry", testDiscardedResultNoLongerSchedulesExpiry),
+            ("externallyClaimedOfferMovesToOlder", testExternallyClaimedOfferMovesToOlder),
+            ("listingDistinguishesFailureFromEmpty", testListingDistinguishesFailureFromEmpty),
+            ("failedListingKeepsStateAndRetries", testFailedListingKeepsStateAndRetries),
+            ("failedPurgeRetriesSlowly", testFailedPurgeRetriesSlowly),
         ]
     }
 
@@ -211,7 +215,7 @@ enum KeyboardResultInboxTests {
             inbox.update(from: store, status: .absent, now: now)
             TestSupport.expectEqual(inbox.results.map(\.requestID), [Fixture.requestID])
             // An unreadable file may become readable, so it is retried on a slow cadence, not per pass.
-            let retry = KeyboardResultInbox.unreadableRetryInterval
+            let retry = KeyboardResultInbox.retryInterval
             TestSupport.expect(retry >= 1, "retry cadence too fast")
             TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + retry - 0.1), nil)
             TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + retry), .unreadableRetry)
@@ -219,14 +223,17 @@ enum KeyboardResultInboxTests {
             try! store.writeResult(fixed)
             TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: now + retry), .unreadableRetry)
             TestSupport.expectEqual(Set(inbox.results.map(\.requestID)), [Fixture.requestID, Fixture.otherRequestID])
-            // A future-schema file is not retried, but is still purged once it can have expired.
+            // A future-schema file is not retried, but is still purged once it can have expired,
+            // judged from the first read that saw it.
             let ttl = DictationProtocol.resultTTL
             TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + retry * 3), nil)
             inbox.discard([Fixture.requestID, Fixture.otherRequestID])
             _ = store.removeResult(requestID: Fixture.requestID)
             _ = store.removeResult(requestID: Fixture.otherRequestID)
-            TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + retry + ttl), nil)
-            TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + retry + ttl + 0.1), .expiry)
+            TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + ttl), nil)
+            TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: now + ttl + 0.5), .expiry)
+            TestSupport.expectEqual(store.resultRequestIDs(), [])
+            TestSupport.expectEqual(inbox.readReason(status: .absent, now: now + ttl + 30), nil)
         }
     }
 
@@ -345,6 +352,129 @@ enum KeyboardResultInboxTests {
             inbox.discard([thirdRequestID])
             TestSupport.expectEqual(inbox.results, [])
             TestSupport.expectEqual(inbox.readReason(status: .absent, now: Fixture.now + DictationProtocol.resultTTL + 1), nil)
+        }
+    }
+
+    /// Regression (review): another claimant removed the newest offered result. Tapping the chip finds
+    /// its file absent; dropping it lets the older result be offered instead of being hidden.
+    private static func testExternallyClaimedOfferMovesToOlder() {
+        withStore { store in
+            let older = Fixture.result(Fixture.requestID, text: "Synthetic older sentence", createdAt: Fixture.now + 1)
+            let newer = Fixture.result(Fixture.otherRequestID, text: "Synthetic newer sentence", createdAt: Fixture.now + 2)
+            try! store.writeResult(older)
+            try! store.writeResult(newer)
+            var inbox = KeyboardResultInbox()
+            inbox.update(from: store, status: recording, now: Fixture.now + 3)
+            let ledger = KeyboardResultLedger()
+            TestSupport.expectEqual(ledger.plan(for: inbox.results, documentID: Fixture.documentA,
+                                                now: Fixture.now + 3).manualInsert, newer)
+            var elsewhere = KeyboardResultLedger()
+            TestSupport.expect(elsewhere.claim(requestID: Fixture.otherRequestID, in: store), "external claim")
+            // The chip's own read of the offered file.
+            TestSupport.expectEqual(store.readResult(requestID: Fixture.otherRequestID), .absent)
+            inbox.discard([Fixture.otherRequestID])
+            TestSupport.expectEqual(inbox.update(from: store, status: recording, now: Fixture.now + 3.2), nil)
+            TestSupport.expectEqual(ledger.plan(for: inbox.results, documentID: Fixture.documentA,
+                                                now: Fixture.now + 3.2).manualInsert, older)
+        }
+    }
+
+    /// The store tells a failed listing from an empty one; a missing directory holds no results.
+    private static func testListingDistinguishesFailureFromEmpty() {
+        let parent = TestSupport.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("store", isDirectory: false)
+        let store = SharedDictationStore(directory: directory)
+        TestSupport.expectEqual(store.listResultRequestIDs(), [])
+        try! store.writeResult(Fixture.result())
+        TestSupport.expectEqual(store.listResultRequestIDs(), [Fixture.requestID])
+        try! FileManager.default.removeItem(at: directory)
+        try! Data().write(to: directory)   // a file where the directory should be: listing fails
+        TestSupport.expectEqual(store.listResultRequestIDs(), nil)
+        TestSupport.expectEqual(store.resultRequestIDs(), [])
+    }
+
+    /// Regression (review): a listing that fails acknowledges nothing, keeps what was read before, and
+    /// is retried after `retryInterval`, not on every pass.
+    private static func testFailedListingKeepsStateAndRetries() {
+        let parent = TestSupport.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("store", isDirectory: false)
+        let store = SharedDictationStore(directory: directory)
+        let retry = KeyboardResultInbox.retryInterval
+        // No directory yet: a successful, empty read.
+        var inbox = KeyboardResultInbox()
+        TestSupport.expectEqual(inbox.update(from: store, status: recording, now: Fixture.now), .firstRead)
+        TestSupport.expectEqual(inbox.update(from: store, status: recording, now: Fixture.now + 0.2), nil)
+        let cached = Fixture.result(createdAt: Fixture.now + 1)
+        try! store.writeResult(cached)
+        inbox.resultPosted()
+        inbox.update(from: store, status: recording, now: Fixture.now + 1)
+        TestSupport.expectEqual(inbox.results, [cached])
+
+        try! FileManager.default.removeItem(at: directory)
+        try! Data().write(to: directory)
+        let next = Fixture.result(Fixture.otherRequestID, createdAt: Fixture.now + 2)
+        let done = completed(Fixture.otherRequestID)
+        inbox.resultPosted()
+        TestSupport.expectEqual(inbox.update(from: store, status: done, now: Fixture.now + 2), .resultPosted)
+        TestSupport.expectEqual(inbox.results, [cached])
+        for tick in 1...4 {
+            TestSupport.expectEqual(inbox.update(from: store, status: done, now: Fixture.now + 2 + Double(tick) * 0.2), nil)
+        }
+        // Still failing: retried again a retry interval later.
+        TestSupport.expectEqual(inbox.update(from: store, status: done, now: Fixture.now + 2 + retry), .resultPosted)
+        TestSupport.expectEqual(inbox.readReason(status: done, now: Fixture.now + 2 + retry + 0.2), nil)
+
+        // Listable again: the read is retried and finds both results.
+        try! FileManager.default.removeItem(at: directory)
+        try! store.writeResult(cached)
+        try! store.writeResult(next)
+        TestSupport.expectEqual(inbox.update(from: store, status: done, now: Fixture.now + 2 + 2 * retry), .resultPosted)
+        TestSupport.expectEqual(Set(inbox.results.map(\.requestID)), [Fixture.requestID, Fixture.otherRequestID])
+        TestSupport.expectEqual(inbox.readReason(status: done, now: Fixture.now + 2 + 2 * retry + 0.2), nil)
+
+        // A first read that fails is retried the same way.
+        try! FileManager.default.removeItem(at: directory)
+        try! Data().write(to: directory)
+        var fresh = KeyboardResultInbox()
+        TestSupport.expectEqual(fresh.update(from: store, status: recording, now: Fixture.now), .firstRead)
+        TestSupport.expectEqual(fresh.readReason(status: recording, now: Fixture.now + retry - 0.1), nil)
+        TestSupport.expectEqual(fresh.readReason(status: recording, now: Fixture.now + retry), .firstRead)
+        // A read whose listing fails still drops expired results from memory.
+        let ttl = DictationProtocol.resultTTL
+        TestSupport.expectEqual(inbox.update(from: store, status: done, now: Fixture.now + 1 + ttl + 0.1), .expiry)
+        TestSupport.expectEqual(inbox.results.map(\.requestID), [Fixture.otherRequestID])
+    }
+
+    /// Regression (review): a result whose purge fails is never kept in memory once expired, and the
+    /// purge is retried on a slow cadence, not on every pass.
+    private static func testFailedPurgeRetriesSlowly() {
+        withStore { store in
+            let result = Fixture.result(createdAt: Fixture.now)
+            try! store.writeResult(result)
+            var inbox = KeyboardResultInbox()
+            inbox.update(from: store, status: .absent, now: Fixture.now)
+            let expired = Fixture.now + DictationProtocol.resultTTL + 0.1
+            let cleanupRetry = KeyboardResultInbox.cleanupRetryInterval
+            TestSupport.expect(cleanupRetry > KeyboardResultInbox.retryInterval, "cleanup retry too fast")
+            SharedDictationStoreTests.withReadOnlyDirectory(of: store) {
+                TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: expired), .expiry)
+                TestSupport.expectEqual(store.resultRequestIDs(), [Fixture.requestID])
+                TestSupport.expectEqual(inbox.results, [])
+                for tick in 1...20 {
+                    TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: expired + Double(tick) * 0.2), nil)
+                    TestSupport.expectEqual(inbox.results, [])
+                }
+                TestSupport.expectEqual(inbox.readReason(status: .absent, now: expired + cleanupRetry), nil)
+                TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: expired + cleanupRetry + 0.1), .expiry)
+                TestSupport.expectEqual(inbox.results, [])
+            }
+            // Writable again: the next retry purges it, and nothing more is due.
+            let retried = expired + 2 * cleanupRetry + 0.2
+            TestSupport.expectEqual(inbox.update(from: store, status: .absent, now: retried), .expiry)
+            TestSupport.expectEqual(store.resultRequestIDs(), [])
+            TestSupport.expectEqual(inbox.readReason(status: .absent, now: retried + 60), nil)
         }
     }
 }

@@ -176,11 +176,16 @@ final class KeyboardDictationClient: ObservableObject {
     /// The "Insert last dictation" chip: claims the offered result and inserts it into this field.
     func insertLastDictation() {
         notice = nil
-        if let store, let target, !target.isEditingBusy, let requestID = manualInsertID,
-           let result = store.readResult(requestID: requestID).value,
-           ledger.disposition(of: result, documentID: target.documentID, now: Date()) != .ignore {
-            var context = target.contextBeforeInput
-            insert(result, context: &context)
+        if let store, let target, !target.isEditingBusy, let requestID = manualInsertID {
+            let read = store.readResult(requestID: requestID)
+            if let result = read.value,
+               ledger.disposition(of: result, documentID: target.documentID, now: Date()) != .ignore {
+                var context = target.contextBeforeInput
+                insert(result, context: &context)
+            } else if read == .absent {
+                // Removed elsewhere: stop offering it, so the pass below offers the next result.
+                resultInbox.discard([requestID])
+            }
         }
         refresh()
     }

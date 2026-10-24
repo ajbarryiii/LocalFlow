@@ -4,7 +4,7 @@ import Foundation
 /// and decodes every `result-<UUID>.json` (after purging expired ones), so the keyboard reads only
 /// when a result may have arrived or a known file needs cleaning up. Every other pass, including the
 /// status passes that drive the level meter, decides from this copy. Held per keyboard instance,
-/// in memory, and only while visible.
+/// in memory, and only while visible; a result leaves it once it is no longer fresh.
 struct KeyboardResultInbox: Equatable, Sendable {
     /// Why a pass must read the result files.
     enum ReadReason: Equatable, Sendable {
@@ -28,23 +28,28 @@ struct KeyboardResultInbox: Equatable, Sendable {
         case clockMovedBack
     }
 
-    /// How often a file that could not be decoded is retried. Slower than the pass, which only
-    /// costs reads while such a file exists.
-    static let unreadableRetryInterval: TimeInterval = 1
+    /// How soon a read is retried after the directory could not be listed, and how often a file that
+    /// could not be decoded is retried. Slower than the pass; it only costs reads while that lasts.
+    static let retryInterval: TimeInterval = 1
+    /// How soon a file is purged again when it was still there after the read that should have
+    /// purged it (a failed removal).
+    static let cleanupRetryInterval: TimeInterval = 5
 
-    /// The decoded results of the last read, minus those discarded since. In file-name order; the
-    /// ledger sorts them.
+    /// The fresh decoded results of the last successful read, minus those discarded since. In
+    /// file-name order; the ledger sorts them.
     private(set) var results: [DictationResult] = []
     private var resultPending = false
+    /// The last successful read.
     private var readAt: Date?
+    /// The last read whose directory listing failed, since the last successful one.
+    private var listingFailedAt: Date?
     /// Every request ID the last read listed, decodable or not.
     private var listed: Set<UUID> = []
     /// The completed request and the host run the status reported at the last read.
     private var completionAtRead: UUID?
     private var hostRunAtRead: UUID?
-    /// Files the last read could not decode are purged by modification date, which is no later than
-    /// the read, so they are expired by `readAt + resultTTL`.
-    private var undecodedExpireAt: Date?
+    /// When each file the last read listed is due to be purged (or purged again).
+    private var cleanupAt: [UUID: Date] = [:]
     private var hasUnreadable = false
 
     /// Call when `.result` is delivered.
@@ -57,16 +62,22 @@ struct KeyboardResultInbox: Equatable, Sendable {
         self = KeyboardResultInbox()
     }
 
-    /// Drops results that need no further reading, such as requests the ledger consumed.
+    /// Drops requests whose files are gone: the ledger consumed them, or a read of the file found it
+    /// absent (another claimant removed it).
     mutating func discard(_ requestIDs: Set<UUID>) {
         results.removeAll { requestIDs.contains($0.requestID) }
+        for requestID in requestIDs { cleanupAt[requestID] = nil }
     }
 
     /// Whether this pass must read the result files, and why; nil to decide from memory.
     func readReason(status: StoreRead<HostStatus>, now: Date) -> ReadReason? {
+        let tolerance = DictationProtocol.clockSkewTolerance
+        if let failedAt = listingFailedAt, now >= failedAt - tolerance, now < failedAt + Self.retryInterval {
+            return nil
+        }
         guard let readAt else { return .firstRead }
         if resultPending { return .resultPosted }
-        if now < readAt - DictationProtocol.clockSkewTolerance { return .clockMovedBack }
+        if now < readAt - tolerance { return .clockMovedBack }
         if let status = status.value {
             if let dictation = status.dictation, dictation.phase == .completed,
                !listed.contains(dictation.requestID), dictation.requestID != completionAtRead {
@@ -74,22 +85,36 @@ struct KeyboardResultInbox: Equatable, Sendable {
             }
             if status.hostRunID != hostRunAtRead { return .hostRunChanged }
         }
-        let expiries = results.map { $0.createdAt + DictationProtocol.resultTTL } + [undecodedExpireAt].compactMap { $0 }
-        if let next = expiries.min(), now > next { return .expiry }
-        if hasUnreadable, now >= readAt + Self.unreadableRetryInterval { return .unreadableRetry }
+        if let next = cleanupAt.values.min(), now > next { return .expiry }
+        if hasUnreadable, now >= readAt + Self.retryInterval { return .unreadableRetry }
         return nil
     }
 
-    /// Records a read: `files` is what each listed file held, `status` the status of the same pass.
+    /// Records a successful read: `files` is what each listed file held, `status` the status of the
+    /// same pass. Purging ran just before, so a file that should have been purged failed to be.
     mutating func didRead(_ files: [(requestID: UUID, read: StoreRead<DictationResult>)],
                           status: StoreRead<HostStatus>, now: Date) {
         resultPending = false
         readAt = now
+        listingFailedAt = nil
         listed = Set(files.map { $0.requestID })
-        results = files.compactMap { $0.read.value }
-        let undecoded = files.filter { $0.read == .unreadable || $0.read == .incompatible }
-        undecodedExpireAt = undecoded.isEmpty ? nil : now + DictationProtocol.resultTTL
-        hasUnreadable = undecoded.contains { $0.read == .unreadable }
+        results = files.compactMap { $0.read.value }.filter { Self.isFresh($0, now: now) }
+        var next: [UUID: Date] = [:]
+        for (requestID, read) in files {
+            switch read {
+            case .absent:
+                continue
+            case .value(let result):
+                next[requestID] = Self.isFresh(result, now: now) ? result.createdAt + DictationProtocol.resultTTL
+                    : now + Self.cleanupRetryInterval
+            case .unreadable, .incompatible:
+                // Purged by modification date, which is no later than the first read that saw it.
+                let due = cleanupAt[requestID] ?? now + DictationProtocol.resultTTL
+                next[requestID] = due > now ? due : now + Self.cleanupRetryInterval
+            }
+        }
+        cleanupAt = next
+        hasUnreadable = files.contains { $0.read == .unreadable }
         // A status that cannot be read says nothing new; keep what the last one said.
         if let status = status.value {
             completionAtRead = status.dictation.flatMap { $0.phase == .completed ? $0.requestID : nil }
@@ -97,14 +122,29 @@ struct KeyboardResultInbox: Equatable, Sendable {
         }
     }
 
-    /// One pass: if a read is due, purges expired results, then lists and decodes every result file.
-    /// Returns why it read, or nil if it decided from memory.
+    /// Records a read whose directory listing failed. Nothing it was due for is acknowledged, and what
+    /// was read before stays; the read is retried after `retryInterval`.
+    mutating func listingFailed(now: Date) {
+        listingFailedAt = now
+    }
+
+    /// One pass: drops results that are no longer fresh, then, if a read is due, purges expired
+    /// results and lists and decodes every result file. Returns why it read, or nil if it decided
+    /// from memory.
     @discardableResult
     mutating func update(from store: SharedDictationStore, status: StoreRead<HostStatus>, now: Date) -> ReadReason? {
+        results.removeAll { !Self.isFresh($0, now: now) }
         guard let reason = readReason(status: status, now: now) else { return nil }
         store.purgeExpiredResults(now: now)
-        let files = store.resultRequestIDs().map { (requestID: $0, read: store.readResult(requestID: $0)) }
-        didRead(files, status: status, now: now)
+        guard let requestIDs = store.listResultRequestIDs() else {
+            listingFailed(now: now)
+            return reason
+        }
+        didRead(requestIDs.map { (requestID: $0, read: store.readResult(requestID: $0)) }, status: status, now: now)
         return reason
+    }
+
+    private static func isFresh(_ result: DictationResult, now: Date) -> Bool {
+        DictationProtocol.isFresh(result.createdAt, ttl: DictationProtocol.resultTTL, now: now)
     }
 }

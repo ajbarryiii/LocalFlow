@@ -405,16 +405,24 @@ invalidated requests and the consumed requests.
     missed `.result` only adds a poll's latency);
   - when the status names a host run other than the last read's (a new run
     deletes other runs' results at launch);
-  - once a result the last read decoded, and not yet consumed, is past
-    `resultTTL`, or `resultTTL` after a read that found a file it could not
-    decode, so the file is purged;
-  - every `unreadableRetryInterval` (1 s) while the last read found an
-    unreadable file;
+  - once a file the last read listed, and not yet consumed, can be purged: a
+    decoded result past `resultTTL`, or `resultTTL` after the first read that
+    found a file it could not decode. A file still there after the read that
+    should have purged it (a failed removal) is purged again after
+    `cleanupRetryInterval` (5 s);
+  - every `retryInterval` (1 s) while the last read found an unreadable file;
   - when the clock is more than `clockSkewTolerance` before the last read.
+
+  A read whose directory listing fails (other than a missing directory, which
+  holds no results) acknowledges nothing and keeps what was read before; it
+  is retried after `retryInterval`.
 
   A result that is not inserted on the pass that read it (a trackpad gesture,
   one result per pass, or one offered as "Insert last dictation") stays in
-  memory for later passes. Consumed requests are dropped from it, and hiding
+  memory for later passes. A result leaves memory once it is no longer fresh
+  within `resultTTL`, whether or not its file could be purged, and when its
+  file is gone: its request was consumed, or tapping "Insert last dictation"
+  found the file absent, so an older result can be offered instead. Hiding
   drops everything, so no transcript stays in memory while hidden.
 - **Cleanup.** Either process deletes results that are not fresh within
   `resultTTL` (judged by `createdAt`, or by the file's modification date when
