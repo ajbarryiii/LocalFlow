@@ -26,6 +26,9 @@ struct KeyboardResultInbox: Equatable, Sendable {
         case unreadableRetry
         /// The clock went back past the last read; purging and freshness are judged again.
         case clockMovedBack
+        /// The last read's directory listing failed, and nothing else is due: what triggered it may
+        /// no longer show (the status moved on), so it is retried until a listing succeeds.
+        case listingRetry
     }
 
     /// How soon a read is retried after the directory could not be listed, and how often a file that
@@ -75,6 +78,11 @@ struct KeyboardResultInbox: Equatable, Sendable {
         if let failedAt = listingFailedAt, now >= failedAt - tolerance, now < failedAt + Self.retryInterval {
             return nil
         }
+        return dueReason(status: status, now: now) ?? (listingFailedAt == nil ? nil : .listingRetry)
+    }
+
+    private func dueReason(status: StoreRead<HostStatus>, now: Date) -> ReadReason? {
+        let tolerance = DictationProtocol.clockSkewTolerance
         guard let readAt else { return .firstRead }
         if resultPending { return .resultPosted }
         if now < readAt - tolerance { return .clockMovedBack }

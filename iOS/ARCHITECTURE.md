@@ -413,9 +413,12 @@ invalidated requests and the consumed requests.
   - every `retryInterval` (1 s) while the last read found an unreadable file;
   - when the clock is more than `clockSkewTolerance` before the last read.
 
-  A read whose directory listing fails (other than a missing directory, which
-  holds no results) acknowledges nothing and keeps what was read before; it
-  is retried after `retryInterval`.
+  A read whose directory listing fails acknowledges nothing and keeps what was
+  read before. It is retried every `retryInterval` until a listing succeeds,
+  even if what triggered it no longer shows. Only a directory that does not
+  exist (`stat` fails with `ENOENT`) counts as a successful listing of no
+  results; any other failure, such as a parent that cannot be searched, is a
+  failed listing.
 
   A result that is not inserted on the pass that read it (a trackpad gesture,
   one result per pass, or one offered as "Insert last dictation") stays in

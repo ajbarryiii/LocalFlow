@@ -22,6 +22,7 @@ enum KeyboardResultInboxTests {
             ("listingDistinguishesFailureFromEmpty", testListingDistinguishesFailureFromEmpty),
             ("failedListingKeepsStateAndRetries", testFailedListingKeepsStateAndRetries),
             ("failedPurgeRetriesSlowly", testFailedPurgeRetriesSlowly),
+            ("failedListingRetriesAfterTheTriggerIsGone", testFailedListingRetriesAfterTheTriggerIsGone),
         ]
     }
 
@@ -392,6 +393,24 @@ enum KeyboardResultInboxTests {
         try! Data().write(to: directory)   // a file where the directory should be: listing fails
         TestSupport.expectEqual(store.listResultRequestIDs(), nil)
         TestSupport.expectEqual(store.resultRequestIDs(), [])
+        // Regression (review): a parent without search permission is a failure, not "no directory".
+        try! FileManager.default.removeItem(at: directory)
+        try! store.writeResult(Fixture.result())
+        try! FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: parent.path)
+        let blocked = store.listResultRequestIDs()
+        try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+        TestSupport.expectEqual(blocked, nil)
+        TestSupport.expectEqual(store.listResultRequestIDs(), [Fixture.requestID])
+        // Unknowable is not missing, even for a directory that may not exist under a blocked parent.
+        let unknown = SharedDictationStore(directory: parent.appendingPathComponent("absent", isDirectory: false))
+        try! FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: parent.path)
+        let unknownListing = unknown.listResultRequestIDs()
+        try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+        TestSupport.expectEqual(unknownListing, nil)
+        TestSupport.expectEqual(unknown.listResultRequestIDs(), [])
+        // A missing parent means no directory either.
+        let nested = parent.appendingPathComponent("missing/store", isDirectory: false)
+        TestSupport.expectEqual(SharedDictationStore(directory: nested).listResultRequestIDs(), [])
     }
 
     /// Regression (review): a listing that fails acknowledges nothing, keeps what was read before, and
@@ -476,5 +495,33 @@ enum KeyboardResultInboxTests {
             TestSupport.expectEqual(store.resultRequestIDs(), [])
             TestSupport.expectEqual(inbox.readReason(status: .absent, now: retried + 60), nil)
         }
+    }
+
+    /// Regression (review): a failed listing schedules its own retry. With `.result` missed, a reported
+    /// completion triggers the read; if the status moves on before the retry, the result is still found.
+    private static func testFailedListingRetriesAfterTheTriggerIsGone() {
+        let parent = TestSupport.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let directory = parent.appendingPathComponent("store", isDirectory: false)
+        let store = SharedDictationStore(directory: directory)
+        let retry = KeyboardResultInbox.retryInterval
+        var inbox = KeyboardResultInbox()
+        inbox.update(from: store, status: recording, now: Fixture.now)
+        try! Data().write(to: directory)
+        TestSupport.expectEqual(inbox.update(from: store, status: completed(Fixture.requestID), now: Fixture.now + 1),
+                                .completionReported)
+        // The next recording starts before the retry: no trigger shows any more.
+        let next = StoreRead<HostStatus>.value(Fixture.status(dictation: Fixture.dictation(.recording, Fixture.otherRequestID)))
+        TestSupport.expectEqual(inbox.update(from: store, status: next, now: Fixture.now + 1.2), nil)
+        // Still failing: retried every interval.
+        TestSupport.expectEqual(inbox.update(from: store, status: next, now: Fixture.now + 1 + retry), .listingRetry)
+        TestSupport.expectEqual(inbox.readReason(status: next, now: Fixture.now + 1 + retry + 0.2), nil)
+        try! FileManager.default.removeItem(at: directory)
+        let result = Fixture.result(createdAt: Fixture.now + 0.5)
+        try! store.writeResult(result)
+        TestSupport.expectEqual(inbox.update(from: store, status: next, now: Fixture.now + 1 + 2 * retry), .listingRetry)
+        TestSupport.expectEqual(inbox.results, [result])
+        // Listed: no further retries.
+        TestSupport.expectEqual(inbox.readReason(status: next, now: Fixture.now + 1 + 4 * retry), nil)
     }
 }

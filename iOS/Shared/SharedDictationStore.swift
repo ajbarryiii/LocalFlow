@@ -48,7 +48,11 @@ struct SharedDictationStore: Sendable {
             return Self.resultFiles(named: try FileManager.default.contentsOfDirectory(atPath: directory.path),
                                     in: directory).map(\.requestID)
         } catch {
-            return FileManager.default.fileExists(atPath: directory.path) ? nil : []
+            // Foundation reports "no such file" even when a parent cannot be searched, so only `stat`
+            // failing with ENOENT counts as a missing directory. Anything else (no permission, not a
+            // directory, an I/O error) is a failure, never an empty listing.
+            var info = stat()
+            return stat(directory.path, &info) != 0 && errno == ENOENT ? [] : nil
         }
     }
 
