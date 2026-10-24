@@ -38,7 +38,9 @@ scored.
 
 ## Artifacts
 
-- Code and design records: this repository (local only, no remote).
+- Code and design records: this tree. It is a squashed snapshot of the
+  local-only localflow-speaker repository, published as the LocalFlow branch
+  `archive/primary-speaker-experiments` under `experiments/primary-speaker/`.
 - Data, renders, checkpoints and reports: `/mnt/hd/localflow-speaker/`
   (`runs/W0` to `runs/W6`, quarantined partials alongside).
 - `CONTRACT.md` and `lfspk/api.py`: the scorer contract that all workstreams
