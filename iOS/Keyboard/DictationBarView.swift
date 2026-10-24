@@ -360,7 +360,13 @@ private struct StartCapsule: View {
             }
             .foregroundStyle(.white)
         case .transcribing, .waitingForModel:
-            ProgressView().tint(foreground).controlSize(.small)
+            HStack(spacing: 7) {
+                ProgressView().tint(foreground).controlSize(.small)
+                if let caption = KeyboardMessages.capsuleCaption(for: state.mode) {
+                    Text(caption).font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+                }
+            }
+            .foregroundStyle(foreground)
         default:
             HStack(spacing: 6) {
                 Image(systemName: "waveform").font(.system(size: 15, weight: .semibold))

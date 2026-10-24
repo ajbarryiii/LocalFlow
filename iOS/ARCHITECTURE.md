@@ -350,8 +350,10 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 9. `ready`: the host is alive and `captureReady`, with any other model
    state. A model that is `notPrepared` (released after a memory warning)
    starts preparing when the tap is admitted ([Admission](#admission)), so
-   the recording already shows it; `failed` and `unavailable` are reported
-   by the status line's hint and, on a tap, by the request's error.
+   the recording already shows it; until then the status line's hint reads
+   "Model loads when you dictate" (`KeyboardMessages.hint`, with a live
+   session). `failed` and `unavailable` are reported by the hint and, on a
+   tap, by the request's error.
 10. `hostUnavailable`: everything else. A mic tap bounces.
 
 `KeyboardPresenter.isModelPreparing(status:now:)` is true when the status is
@@ -912,8 +914,11 @@ every other point of the bar
 - **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
   dictation control. While starting or recording it is a red "Stop" capsule
   with live level bars and the elapsed time, with a small cancel button
-  (`lf.cancel`) beside it. While transcribing or waiting for the model it
-  shows a spinner. When dictation cannot run here (no Full Access,
+  (`lf.cancel`) beside it. While transcribing it shows a spinner; while
+  waiting for the model, a spinner labelled "Preparing"
+  (`KeyboardMessages.capsuleCaption`). The capsule is never replaced by the
+  candidate strip, the chips or a notice, so the wait is explained whatever
+  holds the middle. When dictation cannot run here (no Full Access,
   configuration, versions), it explains why.
 - **Left:** a menu button (`lf.menu`) that opens a panel over the key area
   with the session status, "Open LocalFlow", the field's layout and a Switch
@@ -2021,8 +2026,8 @@ app reads only the count. The models are fixed.
 
 - The host test binary is compiled for macOS from `Shared/`, `HostCore/`,
   `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
-  `Keyboard/AutocorrectLoader.swift`, `Sources/Dictionary/*.swift`,
-  `Sources/Parakeet/LocalParakeetCore.swift`,
+  `Keyboard/AutocorrectLoader.swift`, `Keyboard/KeyboardMessages.swift`,
+  `Sources/Dictionary/*.swift`, `Sources/Parakeet/LocalParakeetCore.swift`,
   `Sources/Parakeet/ParakeetSilenceCompactor.swift` and `Tests/`. Every pure
   rule in this contract has tests there. They use synthetic fixtures only.
 - `FakeTextHost` models the measured proxy: UTF-16 or grapheme offsets,
