@@ -178,6 +178,10 @@ final class UpdateManager: ObservableObject {
     var presentUpdateFailure: (String) -> Void = { message in
         UpdateManager.showAlert(title: "Update Failed", message: message)
     }
+    /// The installed app the update replaces. Replaceable for tests.
+    var currentAppURL = Bundle.main.bundleURL
+    /// Decides whether `currentAppURL` can be replaced. Replaceable for tests.
+    var installLocation = UpdateInstallLocation.live
 
     private init() {
         lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
@@ -723,6 +727,13 @@ final class UpdateManager: ObservableObject {
 
         guard let downloadURL = URL(string: dmgAsset.browserDownloadUrl) else { return }
 
+        // Installing quits the app, so find out first whether it can be
+        // replaced at all instead of quitting and never coming back.
+        if let problem = installLocation.problem(forAppAt: currentAppURL) {
+            failUpdate(UpdateInstallLocation.message(for: problem))
+            return
+        }
+
         activeDownloadTask?.cancel()
         activeDownloadTask = Task {
             await performUpdate(downloadURL: downloadURL, expectedSize: dmgAsset.size)
@@ -862,8 +873,18 @@ final class UpdateManager: ObservableObject {
             try? fm.removeItem(at: tempDir)
 
             // MARK: Replace & relaunch
-            updateStatus = .readyToRelaunch
-            replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
+            // Check again: the location may have changed during the download.
+            if let problem = installLocation.problem(forAppAt: currentAppURL) {
+                try? fm.removeItem(at: stagingDir)
+                failUpdate(UpdateInstallLocation.message(for: problem))
+                return
+            }
+            do {
+                try replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
+            } catch {
+                try? fm.removeItem(at: stagingDir)
+                throw error
+            }
 
         } catch {
             try? fm.removeItem(at: tempDir)
@@ -911,31 +932,25 @@ final class UpdateManager: ObservableObject {
         ])
     }
 
-    private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) {
-        let currentAppPath = Bundle.main.bundlePath
-        let pid = String(ProcessInfo.processInfo.processIdentifier)
-        let backupPath = currentAppPath + ".bak"
-
-        // Use an argument array instead of string interpolation into a shell
-        // script to avoid injection. Move old app to backup first so a failed
-        // mv doesn't leave the user with no app.
-        let script = """
-        while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
-        mv "$2" "$5" && mv "$3" "$2" && open "$2" && rm -rf "$4" "$5" \
-            || { mv "$5" "$2" 2>/dev/null; exit 1; }
-        """
+    /// Starts the script that swaps in the staged app once this process has
+    /// exited, then quits. Throws, without quitting, if the script cannot start.
+    private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) throws {
+        let replacement = UpdateReplacement(
+            waitingForProcessID: ProcessInfo.processInfo.processIdentifier,
+            currentApp: currentAppURL,
+            stagedApp: stagedApp,
+            stagingDirectory: stagingDir
+        )
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", script, "--",
-                             pid,                // $1
-                             currentAppPath,     // $2
-                             stagedApp.path,      // $3
-                             stagingDir.path,     // $4
-                             backupPath]          // $5
-        try? process.run()
+        process.executableURL = UpdateReplacement.shellURL
+        process.arguments = replacement.arguments
+        // mv and rm errors name the install paths; keep them out of any log.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
 
-        // Quit the current app
+        updateStatus = .readyToRelaunch
         NSApp.terminate(nil)
     }
 }

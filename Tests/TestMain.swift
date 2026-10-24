@@ -18,6 +18,7 @@ struct LocalFlowTests {
         DictationCleanupStepsTests.run()
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
+        UpdateInstallerTests.run()
         UpdateManagerTests.run()
         DictationStatsTests.run()
         DictionaryTests.run()
