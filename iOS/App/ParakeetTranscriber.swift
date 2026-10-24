@@ -84,8 +84,10 @@ final class ParakeetTranscriber: ObservableObject {
         }
     }
 
+    /// The user asked (Prepare, Retry, onboarding, "Find strength"): starts at once, even while a failed
+    /// preparation backs off. The session core prepares through `engine` and respects the backoff.
     func prepare() {
-        engine.prepare()
+        engine.retryPreparation()
         sync()
     }
 

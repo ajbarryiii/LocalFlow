@@ -138,7 +138,7 @@ enum KeyboardResultLedgerTests {
 
     private static func testDisplayingBindsForAutoFinish() {
         // The host auto-finished at the maximum duration, or another instance wrote the finish.
-        for shown in [KeyboardMode.recording(level: 0.3, startedAt: Fixture.now), .transcribing] {
+        for shown in [KeyboardMode.recording(level: 0.3, startedAt: Fixture.now), .transcribing, .waitingForModel] {
             var ledger = KeyboardResultLedger()
             ledger.noteDisplayed(shown, intent: .value(Fixture.intent(.record)), documentID: Fixture.documentA)
             TestSupport.expectEqual(ledger.bindings, [Fixture.requestID: Fixture.documentA])
@@ -148,7 +148,7 @@ enum KeyboardResultLedgerTests {
 
     private static func testOnlyRecordingOrTranscribingBinds() {
         let modes: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .starting,
-                                     .error(.tooLong), .ready, .hostUnavailable]
+                                     .error(.tooLong), .ready, .preparingModel, .hostUnavailable]
         for shown in modes {
             var ledger = KeyboardResultLedger()
             ledger.noteDisplayed(shown, intent: .value(Fixture.intent(.record)), documentID: Fixture.documentA)

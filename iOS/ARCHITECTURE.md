@@ -334,16 +334,31 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
    and the heartbeat is fresh within `livenessTimeout`.
 5. If the host is alive and `status.dictation` is the latest intent's request
    R: starting → `starting`; recording → `recording(level:startedAt:)`;
-   transcribing → `transcribing`. The intent, not the keyboard instance,
-   names the request, so a new keyboard instance adopts a request another
-   instance started (as after the bounce).
+   transcribing → `waitingForModel` while `status.model` is `preparing` or
+   `notPrepared` (the recording waits for the model), otherwise
+   `transcribing`. The intent, not the keyboard instance, names the request,
+   so a new keyboard instance adopts a request another instance started (as
+   after the bounce).
 6. `error(code)`: `status.dictation` is R and failed, or cancelled with an
    error, and its `updatedAt` is fresh within 5 s. A missing code reads as
    `.transcriptionFailed`.
 7. `starting`: the latest intent is a fresh `record(R)` and
    `status.dictation` is not R (launch during the bounce).
-8. `ready`: the host is alive and `captureReady`.
-9. `hostUnavailable`: everything else. A mic tap bounces.
+8. `preparingModel`: the host is alive, `captureReady`, and `status.model`
+   is `preparing`. A mic tap starts a dictation exactly as from `ready`: it
+   records while the model prepares, and the transcript waits for it.
+9. `ready`: the host is alive and `captureReady`, with any other model
+   state. A model that is `notPrepared` (released after a memory warning)
+   starts preparing when the tap is admitted ([Admission](#admission)), so
+   the recording already shows it; `failed` and `unavailable` are reported
+   by the status line's hint and, on a tap, by the request's error.
+10. `hostUnavailable`: everything else. A mic tap bounces.
+
+`KeyboardPresenter.isModelPreparing(status:now:)` is true when the status is
+a `.value` of the current schema, the host is alive (as in 4) and
+`status.model` is `preparing`. While recording, the keyboard then reads
+"Listening · preparing model". A dead host's last status never shows
+preparation.
 
 **Stale-writer guard.** Right before writing `finish` or `cancel`, the
 keyboard re-reads `intent.json` and writes only if it still names the request
@@ -360,11 +375,11 @@ invalidated requests and the consumed requests.
 - **Binding.**
   - Writing `finish(R)` binds R to the current field, even if a focus change
     had invalidated an earlier binding (`bindFinish`).
-  - An instance displaying R as recording or transcribing binds R to the
-    current field, unless R is already bound, invalidated or consumed
-    (`noteDisplayed`). So a host auto-finish, or another instance's finish,
-    still lands in the field where the user was dictating. There is no
-    binding at completion.
+  - An instance displaying R as recording, transcribing or waiting for the
+    model binds R to the current field, unless R is already bound,
+    invalidated or consumed (`noteDisplayed`). So a host auto-finish, or
+    another instance's finish, still lands in the field where the user was
+    dictating. There is no binding at completion.
   - A nil `documentIdentifier` never binds and never matches.
 - **Invalidation.** A different `documentIdentifier` (seen on
   `viewWillAppear`, `textDidChange` or any pass) invalidates every binding to
@@ -457,8 +472,9 @@ drives it ([Host app](#host-app-app)).
   the foreground and unlocked; otherwise the start waits (`pendingStart`)
   while a request is in progress, and with none in progress it ends as a
   failed start (`.audioSessionFailed`). The session is `starting` until
-  capture is running, then `active`. Model preparation starts with the
-  session, in parallel with audio startup.
+  capture is running, then `active`. `userStartSession` and every admission
+  start preparing the model, in parallel with audio startup
+  ([Admission](#admission), [Transcription](#transcription)).
 - **Microphone permission.** Granted: capture starts. Denied: the session
   ends with `.microphonePermissionDenied`. Undetermined: the system prompt is
   shown, and capture starts if it is granted while the app is still in front
@@ -549,9 +565,13 @@ prewarmed launch) skips reconciliation.
 Applying the reconciler's actions:
 
 - `start(R)`: the request in progress, if any, is cancelled with
-  `.superseded` and its outcome discarded. R is admitted as `starting`; with
-  no session, one starts. With no model bundle in the build, R fails at once
-  with `.modelUnavailable`.
+  `.superseded` and its outcome discarded. R is admitted as `starting`, and
+  the model starts preparing unless it is ready, already preparing, or a
+  failed preparation is backing off ([Transcription](#transcription)); with
+  no session, one starts. R fails at once, and no session starts for it,
+  with `.modelUnavailable` when the build has no model bundle, and with
+  `.modelFailed` while a failed preparation backs off
+  (`HostSessionPolicy.admissionFailure`). An active session goes on.
 - `finish(R)`: [Recording](#recording).
 - `cancel(R)`: R ends cancelled, or failed `.notRecording` when the intent's
   action was `finish`.
@@ -663,8 +683,17 @@ synthetic source in self-test builds, a fake in tests.
 - `TranscriptionEngine` owns preparation, readiness and transcription. At
   most one runtime is alive: it is released only while nothing prepares,
   transcribes, runs a "Find strength" check or drains a stream, and a new one
-  is created only after that. A failed preparation is retried by the next
-  `prepare()` or transcription.
+  is created only after that.
+- **Preparation backoff** (`ModelPreparationBackoff`, pure, tested). After
+  the n-th failed preparation in a row, the next automatic attempt (an
+  admission, the user's session start, or a transcription waiting for
+  readiness) is allowed only `delay(afterFailures: n)` after that failure:
+  5 s, doubling, at most 60 s. A backward clock jump allows it at once; a success resets it. Until
+  then the model stays `failed` and a transcription waiting for readiness
+  fails at once with `.modelFailed`, without preparing. The user's Prepare,
+  Retry and "Try again" in the app, and "Find strength" (which prepares as
+  its recording starts), start preparing at once
+  (`TranscriptionEngine.retryPreparation`).
 - **Transcription while recording.** When the model is ready as a request is
   admitted, the sample buffer feeds a streaming session exactly the samples it
   collects, so each complete chunk is encoded and decoded during the recording
@@ -684,7 +713,8 @@ synthetic source in self-test builds, a fake in tests.
   request with `.transcriptionFailed`.
 - **Memory.** On a memory warning the model runtime is released as soon as
   nothing uses it; a warning during preparation or transcription is
-  remembered until then.
+  remembered until then. Nothing prepares the model again while idle: the
+  next admission or session start does.
 
 ### URL route (HostCore/HostURLRoute.swift; pure, tested)
 
@@ -840,8 +870,8 @@ transcripts or other user data.
     `keyboardPresenceInterval`. Without Full Access it neither polls nor
     writes.
   - It holds the `KeyboardResultLedger` per instance, in memory.
-  - **Mic tap.** `ready`: write `record(R)` with a new ID, then post
-    `.intent`. `hostUnavailable`: write `record(R)` and open
+  - **Mic tap.** `ready` or `preparingModel`: write `record(R)` with a new
+    ID, then post `.intent`. `hostUnavailable`: write `record(R)` and open
     `<scheme>://dictate` with `HostAppLauncher`, without posting `.intent` (a
     background host without a session would reject it before the app reaches
     the foreground); if the launcher fails, show "Open LocalFlow". After an
@@ -849,7 +879,7 @@ transcripts or other user data.
     `starting` or `recording`: write `finish(R)` under the stale-writer guard,
     bind R to the current field, then post `.intent`.
   - **Cancel** writes `cancel(R)` under the same guard while starting,
-    recording or transcribing.
+    recording, transcribing or waiting for the model.
   - "Open LocalFlow" in the menu uses the same launcher without a request.
 - **`HostAppLauncher`** walks the responder chain to the `UIApplication` object
   and calls `open(_:options:completionHandler:)` through the Objective-C
@@ -882,9 +912,9 @@ every other point of the bar
 - **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
   dictation control. While starting or recording it is a red "Stop" capsule
   with live level bars and the elapsed time, with a small cancel button
-  (`lf.cancel`) beside it. While transcribing it shows a spinner. When
-  dictation cannot run here (no Full Access, configuration, versions), it
-  explains why.
+  (`lf.cancel`) beside it. While transcribing or waiting for the model it
+  shows a spinner. When dictation cannot run here (no Full Access,
+  configuration, versions), it explains why.
 - **Left:** a menu button (`lf.menu`) that opens a panel over the key area
   with the session status, "Open LocalFlow", the field's layout and a Switch
   ([Field profiles](#field-profiles)), the trackpad tip, the field's
@@ -892,7 +922,8 @@ every other point of the bar
   working. A tap outside the panel's card, or on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
-  status (model preparation, errors, notices). The candidate strip, after a
+  status (model preparation, errors, notices): "Preparing model…" in
+  `preparingModel` and `waitingForModel`. The candidate strip, after a
   swipe ([Swipe typing](#swipe-typing)) or a commit key
   ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
   The "Never correct" chip after an autocorrect revert replaces both while it

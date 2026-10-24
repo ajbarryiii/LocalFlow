@@ -5,6 +5,9 @@ import Foundation
 enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
+    static let preparingModel = "Preparing model…"
+    /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`).
+    static let listeningWhilePreparing = "Listening · preparing model"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
         + "your speech on this iPhone. Nothing leaves your phone."
@@ -27,6 +30,7 @@ enum KeyboardMessages {
         case .starting: return "Starting…"
         case .recording: return "Listening"
         case .transcribing: return "Transcribing…"
+        case .waitingForModel, .preparingModel: return preparingModel
         case .error(let code): return text(for: code)
         case .ready: return "Tap to dictate"
         case .hostUnavailable: return launcherFailed ? openLocalFlow : "Tap to start LocalFlow"
@@ -76,7 +80,7 @@ enum KeyboardMessages {
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
         else { return nil }
         switch status.model {
-        case .preparing: return "Preparing model…"
+        case .preparing: return preparingModel
         case .failed: return "Model failed to load"
         case .unavailable: return "Model missing"
         case .notPrepared, .ready: break

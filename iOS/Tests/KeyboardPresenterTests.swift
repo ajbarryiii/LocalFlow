@@ -20,6 +20,9 @@ enum KeyboardPresenterTests {
             ("hostCancellationWithErrorIsShown", testHostCancellationWithErrorIsShown),
             ("errorShownAfterSessionEnds", testErrorShownAfterSessionEnds),
             ("finalPhasesReturnToIdle", testFinalPhasesReturnToIdle),
+            ("preparingModelReplacesReady", testPreparingModelReplacesReady),
+            ("transcriptionWaitingForTheModelIsShown", testTranscriptionWaitingForTheModelIsShown),
+            ("modelPreparingOnlyFromALiveHost", testModelPreparingOnlyFromALiveHost),
             ("staleWriterGuard", testStaleWriterGuard),
         ]
     }
@@ -239,6 +242,86 @@ enum KeyboardPresenterTests {
         for read in [StoreRead<KeyboardIntent>.absent, .unreadable, current] {
             TestSupport.expect(KeyboardPresenter.mayWrite(.record, requestID: Fixture.otherRequestID, currentIntent: read),
                                "a new record is always allowed")
+        }
+    }
+
+    // MARK: Model readiness
+
+    private static func status(model: HostStatus.Model, _ session: HostStatus.Session = .active, captureReady: Bool = true,
+                               heartbeatAt: Date = Fixture.now, dictation: DictationStatus? = nil,
+                               level: Float = 0) -> HostStatus {
+        var status = Fixture.status(session, captureReady: captureReady, heartbeatAt: heartbeatAt, dictation: dictation,
+                                    level: level)
+        status.model = model
+        return status
+    }
+
+    /// Idle with a live host and capture, a model that is preparing shows `preparingModel`, not `ready`.
+    /// A model that is not prepared (released after a memory warning), failed or missing is still
+    /// `ready`: nothing is preparing, and a tap prepares it or reports why it cannot.
+    private static func testPreparingModelReplacesReady() {
+        TestSupport.expectEqual(mode(status(model: .preparing), nil), .preparingModel)
+        TestSupport.expectEqual(mode(status(model: .preparing), Fixture.intent(.finish)), .preparingModel)
+        let completed = status(model: .preparing, dictation: Fixture.dictation(.completed))
+        TestSupport.expectEqual(mode(completed, Fixture.intent(.finish)), .preparingModel)
+        for model in [HostStatus.Model.ready, .notPrepared, .failed, .unavailable] {
+            TestSupport.expectEqual(mode(status(model: model), nil), .ready)
+        }
+        // Capture readiness and liveness gate it exactly as they gate `ready`.
+        TestSupport.expectEqual(mode(status(model: .preparing, captureReady: false), nil), .hostUnavailable)
+        TestSupport.expectEqual(mode(status(model: .preparing, .starting), nil), .hostUnavailable)
+        let late = Fixture.now + DictationProtocol.livenessTimeout + 0.001
+        TestSupport.expectEqual(mode(status(model: .preparing), nil, now: late), .hostUnavailable)
+        // A pending record and a fresh error come first.
+        TestSupport.expectEqual(mode(status(model: .preparing), Fixture.intent(.record)), .starting)
+        let failed = status(model: .preparing, dictation: Fixture.dictation(.failed, error: .modelFailed))
+        TestSupport.expectEqual(mode(failed, Fixture.intent(.finish)), .error(.modelFailed))
+    }
+
+    /// A finished recording whose model is not ready yet waits for preparation: `waitingForModel` instead
+    /// of `transcribing`. Starting and recording show as before.
+    private static func testTranscriptionWaitingForTheModelIsShown() {
+        let transcribing = Fixture.dictation(.transcribing)
+        for model in [HostStatus.Model.preparing, .notPrepared] {
+            for intent in [Fixture.intent(.record), Fixture.intent(.finish), Fixture.intent(.cancel)] {
+                TestSupport.expectEqual(mode(status(model: model, dictation: transcribing), intent), .waitingForModel)
+            }
+            TestSupport.expectEqual(mode(status(model: model, dictation: Fixture.dictation(.starting)), Fixture.intent(.record)),
+                                    .starting)
+            TestSupport.expectEqual(mode(status(model: model, dictation: Fixture.dictation(.recording), level: 0.3),
+                                         Fixture.intent(.record)), .recording(level: 0.3, startedAt: startedAt))
+        }
+        for model in [HostStatus.Model.ready, .failed] {
+            TestSupport.expectEqual(mode(status(model: model, dictation: transcribing), Fixture.intent(.finish)), .transcribing)
+        }
+        // Like any progress, it needs a live host, and only for the request the intent names.
+        let late = Fixture.now + DictationProtocol.livenessTimeout + 1
+        TestSupport.expectEqual(mode(status(model: .preparing, dictation: transcribing), Fixture.intent(.finish), now: late),
+                                .hostUnavailable)
+        let other = status(model: .preparing, dictation: Fixture.dictation(.transcribing, Fixture.otherRequestID))
+        TestSupport.expectEqual(mode(other, Fixture.intent(.finish)), .preparingModel)
+    }
+
+    /// `isModelPreparing` (the recording line's "preparing model") reads only a live host's status.
+    private static func testModelPreparingOnlyFromALiveHost() {
+        let recording = Fixture.dictation(.recording)
+        TestSupport.expect(KeyboardPresenter.isModelPreparing(status: .value(status(model: .preparing, dictation: recording)),
+                                                              now: Fixture.now), "a live preparing host")
+        for model in [HostStatus.Model.ready, .notPrepared, .failed, .unavailable] {
+            TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: .value(status(model: model)), now: Fixture.now),
+                               "\(model) is not preparing")
+        }
+        let late = Fixture.now + DictationProtocol.livenessTimeout + 0.001
+        TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: .value(status(model: .preparing)), now: late),
+                           "a dead host's last status claimed preparation")
+        TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: .value(status(model: .preparing, .inactive)),
+                                                               now: Fixture.now), "no session, no preparation shown")
+        var otherSchema = status(model: .preparing)
+        otherSchema.schema = DictationProtocol.schema + 1
+        TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: .value(otherSchema), now: Fixture.now),
+                           "another schema's status was read")
+        for read in [StoreRead<HostStatus>.absent, .incompatible, .unreadable] {
+            TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: read, now: Fixture.now), "no status read")
         }
     }
 }

@@ -37,6 +37,8 @@ enum HostSessionCoreTests {
             ("heartbeatPurgesExpiredResults", isolated(testHeartbeatPurgesExpiredResults)),
             ("memoryWarningReleasesOnlyWhenIdle", isolated(testMemoryWarningReleasesOnlyWhenIdle)),
             ("memoryWarningDuringPreparationIsRemembered", isolated(testMemoryWarningDuringPreparationIsRemembered)),
+            ("admissionPreparesAReleasedModel", isolated(testAdmissionPreparesAReleasedModel)),
+            ("backingOffModelFailsAdmissionAtOnce", isolated(testBackingOffModelFailsAdmissionAtOnce)),
             ("endedRequestsReleaseTheirSamples", isolated(testEndedRequestsReleaseTheirSamples)),
             ("unusableSyntheticInputFailsClosed", isolated(testUnusableSyntheticInputFailsClosed)),
             ("inAppStopAndCancel", isolated(testInAppStopAndCancel)),
@@ -837,6 +839,81 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.transcriber.releaseCount, 1)
     }
 
+    /// A memory warning while idle releases the model, and nothing prepares it again while idle; the next
+    /// admission (here in the background, during the session) starts preparing it, so the status the
+    /// keyboard reads shows it preparing from the start of the recording, not from transcription.
+    @MainActor
+    private static func testAdmissionPreparesAReleasedModel() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.core.userStartSession()
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 1)   // the user's session start prepares
+        h.transcriber.modelState = .ready
+        h.core.memoryWarning()
+        TestSupport.expectEqual(h.transcriber.releaseCount, 1)
+        TestSupport.expectEqual(h.status?.model, .notPrepared)
+        h.clock.isForeground = false
+        for _ in 0..<50 {
+            h.clock.now += 0.1
+            h.core.tick()
+        }
+        h.core.reconcile(.poll)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 1)
+        TestSupport.expectEqual(h.status?.model, .notPrepared)
+        TestSupport.expectEqual(h.core.session, .active)
+
+        h.writeIntent(.record, R)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 2)
+        TestSupport.expectEqual(h.status?.dictation?.requestID, R)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .starting)
+        TestSupport.expectEqual(h.status?.model, .preparing)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+    }
+
+    /// While a failed preparation backs off, a request fails at admission with `.modelFailed` instead of
+    /// recording audio that cannot be transcribed; no session starts for it, and an active session goes on.
+    /// Once the backoff has passed, admission prepares again and the request records.
+    @MainActor
+    private static func testBackingOffModelFailsAdmissionAtOnce() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.transcriber.modelState = .failed
+        h.transcriber.backingOff = true
+        h.writeIntent(.record, R)
+        h.core.reconcile(.activation)
+        TestSupport.expectEqual(h.status?.dictation?.requestID, R)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .failed)
+        TestSupport.expectEqual(h.status?.dictation?.error, .modelFailed)
+        TestSupport.expectEqual(h.status?.model, .failed)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.capture.startCount, 0)
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 1)
+
+        h.transcriber.backingOff = false
+        h.clock.now += 1
+        h.writeIntent(.record, S)
+        h.core.reconcile(.activation)
+        TestSupport.expectEqual(h.status?.dictation?.requestID, S)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .starting)
+        TestSupport.expectEqual(h.status?.model, .preparing)
+        TestSupport.expectEqual(h.core.session, .active)
+
+        // Failing again: the next request fails at admission, and the session stays.
+        h.transcriber.modelState = .failed
+        h.transcriber.backingOff = true
+        h.clock.now += 1
+        h.writeIntent(.record, R2)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.status?.dictation?.requestID, R2)
+        TestSupport.expectEqual(h.status?.dictation?.error, .modelFailed)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.buffer.recordingRequestID, nil)
+    }
+
     /// Cancel, supersede, device lock and background expiry all end the transcription at once, so the
     /// recorded samples are freed instead of waiting for the model.
     @MainActor
@@ -1466,7 +1543,14 @@ private final class FakeTranscriber: HostTranscriber {
 
     var pendingCount: Int { pending.count }
 
-    func prepare() { prepareCount += 1 }
+    /// A failed preparation still backing off: `prepare()` leaves the model `failed`, as `TranscriptionEngine` does.
+    var backingOff = false
+
+    /// Like `TranscriptionEngine`: starts preparing a model that is not prepared, or failed and no longer backing off.
+    func prepare() {
+        prepareCount += 1
+        if modelState == .notPrepared || (modelState == .failed && !backingOff) { modelState = .preparing }
+    }
 
     func beginStream() -> SpeechStream? {
         guard streams, modelState == .ready else { return nil }
