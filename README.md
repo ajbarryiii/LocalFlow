@@ -12,10 +12,8 @@
 
 ---
 
-A native macOS menu-bar dictation app using the bundled **LocalFlow**
-English speech model, derived from NVIDIA Parakeet v2. This fork runs speech recognition on the Mac, with no
-API key, provider account, network transcription, LLM cleanup, translation,
-Edit Mode, or screenshot/app context capture.
+A native macOS menu-bar dictation app using the bundled [kea-t](https://huggingface.co/rajb3/kea-t)
+English speech model, derived from NVIDIA Parakeet v2. This fork runs speech recognition on the Mac, and contains code for linux and iOS versions (if the App store ever lets it in). Requires no API key, provider account, network transcription, LLM cleanup, translation, Edit Mode, or screenshot/app context capture.
 
 Requires an **Apple Silicon Mac running macOS 26 or later**. Other devices
 are not supported by this model bundle yet. The app and model are about
