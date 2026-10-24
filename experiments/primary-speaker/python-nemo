@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# ./python plus NeMo 3.0 (the stt-distillation deps on the data disk), for
+# Parakeet and TitaNet. Use ./python when NeMo is not needed.
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export LFSPK_EXTRA_PYTHONPATH=/mnt/hd/wilderness-labs-stt/stt-distillation/deps
+exec "$here/python" "$@"
