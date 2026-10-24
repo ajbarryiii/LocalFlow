@@ -1281,7 +1281,10 @@ widths (`FieldLayoutParameters`):
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
 - **Manual choice.** The menu shows the layout and a Switch. With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
-  64 entries); without it, it holds for the keyboard instance only.
+  64 entries); without it, it holds for the keyboard instance only. Only the
+  keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
+  once each time it appears and again after its own Switch, not at every
+  host callback.
 - Traits are read at every host callback, on appearance and at each
   gesture's start; a gesture's layout is fixed until it ends. A reading
   without a field identity (the proxy's placeholder at first appearance) is
