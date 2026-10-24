@@ -54,6 +54,8 @@ final class KeyboardDictationClient: ObservableObject {
     private let configuration = LocalFlowConfiguration.main
     private var store: SharedDictationStore?
     private var ledger = KeyboardResultLedger()
+    /// The result files as last read; most passes decide from it without touching the files.
+    private var resultInbox = KeyboardResultInbox()
     private var isVisible = false
     private var hapticsEnabled = false
     private var keyHapticsEnabled = false
@@ -97,7 +99,7 @@ final class KeyboardDictationClient: ObservableObject {
             hapticsEnabled = settings?.hapticsEnabled ?? false
             keyHapticsEnabled = settings?.keyHapticsEnabled ?? false
             observations = [notifier.observe(.status) { [weak self] in self?.refresh() },
-                            notifier.observe(.result) { [weak self] in self?.refresh() }]
+                            notifier.observe(.result) { [weak self] in self?.resultPosted() }]
             let poll = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] timer in
                 MainActor.assumeIsolated {
                     guard let self else { return timer.invalidate() }
@@ -133,6 +135,8 @@ final class KeyboardDictationClient: ObservableObject {
         // auto-inserted after hiding (it stays available as "Insert last dictation").
         ledger.forgetFieldBindings()
         manualInsertID = nil
+        // No transcript stays in memory while hidden; the next appearance reads the files again.
+        resultInbox.reset()
     }
 
     /// Call from `viewWillAppear` and `textDidChange`: a new field invalidates bindings to others.
@@ -278,7 +282,14 @@ final class KeyboardDictationClient: ObservableObject {
 
     // MARK: Passes
 
-    /// One pass: read the shared files, compute the mode, deliver results and publish.
+    /// `.result` arrived: the next pass reads the result files.
+    private func resultPosted() {
+        resultInbox.resultPosted()
+        refresh()
+    }
+
+    /// One pass: read the status and intent, compute the mode, deliver results and publish. The
+    /// result files are read only when `KeyboardResultInbox` says one may have arrived or expired.
     func refresh() {
         guard isVisible, let target else { return }
         let now = Date()
@@ -295,18 +306,19 @@ final class KeyboardDictationClient: ObservableObject {
         let mode = KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now)
         ledger.noteDisplayed(mode, intent: intent, documentID: documentID)
         ledger.prune(now: now, keeping: Set([intent.value?.requestID, shownIntent.value?.requestID].compactMap { $0 }))
-        if access == .fullAccess { deliverResults(documentID: documentID, now: now) }
+        if access == .fullAccess { deliverResults(status: status, documentID: documentID, now: now) }
         shownIntent = intent
         shownStatus = status
         sampleLevel(of: mode, status: status)
         publish(mode, intent: intent, status: status, now: now)
     }
 
-    private func deliverResults(documentID: UUID?, now: Date) {
+    private func deliverResults(status: StoreRead<HostStatus>, documentID: UUID?, now: Date) {
         guard let store else { return }
-        store.purgeExpiredResults(now: now)
-        let results = store.resultRequestIDs().compactMap { store.readResult(requestID: $0).value }
-        let plan = ledger.plan(for: results, documentID: documentID, now: now)
+        // Purges, lists and decodes the result files only when a read is due; otherwise the results
+        // read earlier stand in for them, so a deferred one is still delivered on a later pass.
+        resultInbox.update(from: store, status: status, now: now)
+        let plan = ledger.plan(for: resultInbox.results, documentID: documentID, now: now)
         // At most one result per pass, oldest first: what it inserts (a Return) can move the host to
         // another field, so each one is bound again right before it is claimed, on a later pass. A result
         // is claimed only to be inserted at once: while a trackpad gesture runs, it stays in the shared
@@ -316,6 +328,8 @@ final class KeyboardDictationClient: ObservableObject {
             var context = target.contextBeforeInput
             insert(next, context: &context)
         }
+        // A consumed request's file is gone, whoever removed it.
+        resultInbox.discard(ledger.consumed)
         // The ledger never offers a result that would insert nothing.
         manualInsertID = plan.manualInsert?.requestID
     }
