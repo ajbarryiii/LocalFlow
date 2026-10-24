@@ -46,9 +46,8 @@ scored.
 
 ## Open items at closure
 
-- Mac cleanup: W6's 1.95 GB public-corpus bundle may remain on the Mac, in
-  Tailscale's inbox or `~/Downloads` (`w6-macbundle.tar`), along with
-  `~/localflow-speaker-w6/` and `/tmp/w6bench`. The Mac was offline at
-  closure.
+- Mac cleanup: done 2026-10-24. W6's bundle (`~/localflow-speaker-w6/`,
+  1.8 GB) and `/tmp/w6bench` were deleted; the tar and the Tailscale inbox
+  were already empty.
 - Product questions never decided: a clean-speech safeguard, the anchored
   versus re-enroll UX, and encrypting the dictation history.
