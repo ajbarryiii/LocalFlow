@@ -20,9 +20,12 @@
 //! - GTK's own plugins are kept out too ([`ENV`]): an input method can read
 //!   the edit box's whole text (surrounding text), so wofi runs with GTK's
 //!   built-in one; the accessibility bridge and `GTK_MODULES` /
-//!   `GTK3_MODULES` are off; and `XDG_CONFIG_HOME=/dev/null` keeps GTK's
-//!   user settings (which can name modules) and wofi's own files out, so
-//!   the user's wofi stylesheet does not apply either.
+//!   `GTK3_MODULES` are off; `XDG_CONFIG_HOME=/dev/null` keeps GTK's user
+//!   settings (which can name modules) and wofi's own files out, so the
+//!   user's wofi stylesheet does not apply either; and an unreachable
+//!   session bus keeps out the modules and settings GTK otherwise reads
+//!   over D-Bus (`org.gtk.Settings` from the settings daemon, the settings
+//!   portal), and any input-method or accessibility service there.
 //! - Escape exits 1.
 
 use std::path::Path;
@@ -90,13 +93,17 @@ hide_search=true
 ";
 
 /// Environment changes for wofi: GTK's built-in input method, no
-/// accessibility bridge, no GTK modules, and no user configuration.
+/// accessibility bridge, no GTK modules, no user configuration, and no
+/// session bus.
 pub const ENV: &[(&str, Option<&str>)] = &[
     ("GTK_IM_MODULE", Some("gtk-im-context-simple")),
     ("NO_AT_BRIDGE", Some("1")),
     ("GTK_MODULES", None),
     ("GTK3_MODULES", None),
     ("XDG_CONFIG_HOME", Some("/dev/null")),
+    // GTK also reads modules (and other settings) from the session bus:
+    // org.gtk.Settings, and the settings portal.
+    ("DBUS_SESSION_BUS_ADDRESS", Some("unix:path=/dev/null")),
 ];
 
 const ARGS: [&str; 3] = ["--dmenu", "--conf=/dev/fd/3", "--cache-file=/dev/null"];
@@ -194,6 +201,7 @@ mod tests {
             "GTK_IM_MODULE=gtk-im-context-simple",
             "NO_AT_BRIDGE=1",
             "XDG_CONFIG_HOME=/dev/null",
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null",
         ] {
             assert!(env.lines().any(|l| l == line), "{line}");
         }

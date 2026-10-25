@@ -254,7 +254,8 @@ press Return are never kept. The picker receives the text through an
 inherited file descriptor or its stdin, never its command line or
 environment; it runs with your configuration for it replaced (rofi's
 plugins too; for wofi also GTK's input method, accessibility bridge,
-modules and settings, since an input method can read the whole box), with its history or cache disabled, and its error output is
+modules and settings, and its session bus, since an input method can read
+the whole box), with its history or cache disabled, and its error output is
 discarded; it is killed after two minutes. The privacy contract and each
 tool's verdict are in `crates/lf-daemon/src/picker.rs`. Nothing goes to the notification daemon.
 

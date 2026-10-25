@@ -56,8 +56,9 @@
 //!   when either exists. It runs with GTK's built-in input method
 //!   (`GTK_IM_MODULE=gtk-im-context-simple`), without the accessibility
 //!   bridge (`NO_AT_BRIDGE=1`) or `GTK_MODULES`/`GTK3_MODULES`, and with
-//!   `XDG_CONFIG_HOME=/dev/null`, so neither its own nor GTK's user
-//!   settings load (no user stylesheet either). Its configuration format
+//!   `XDG_CONFIG_HOME=/dev/null` and an unreachable session bus, so neither
+//!   its own nor GTK's user settings load, whether from files or over
+//!   D-Bus (no user stylesheet either). Its configuration format
 //!   drops leading spaces from a value, so text that starts with a space
 //!   cannot be edited in wofi. Escape exits 1.
 //! - **tofi** (0.9.1): choose only. It has no way to prefill its input.
