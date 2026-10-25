@@ -11,8 +11,11 @@ never written to disk. See `PLAN.md` for the design and measurements.
 
 `localflowd` records from PipeWire (`lf-pipewire`, the default source or
 `input_device`) and types through the Wayland virtual keyboard
-(`lf-wayland`). `--fake-io` swaps both for fakes that record silence and
-discard text.
+(`lf-wayland`) on wlroots compositors (Hyprland, sway, river), the
+RemoteDesktop portal (GNOME, KDE) or uinput (anything, X11 included); see
+[Text output and desktops](#text-output-and-desktops). `--fake-io` swaps
+the microphone and the output for fakes that record silence and discard
+text.
 
 ## Build
 
@@ -49,7 +52,9 @@ invalid values stop the daemon with an error. Defaults:
   "key_delay_ms": 1,
   "pause_media": true,
   "prompt_tag": "[dictated]",
-  "double_tap_ms": 400
+  "double_tap_ms": 400,
+  "output": "auto",
+  "keyboard_layout": null
 }
 ```
 
@@ -95,6 +100,13 @@ invalid values stop the daemon with an error. Defaults:
   - `prompt_tag`: at most 64 characters, no control characters or
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
+- `output`: how text is typed: `auto` (default), `wayland`, `portal` or
+  `uinput`. See [Text output and desktops](#text-output-and-desktops).
+- `keyboard_layout`: the XKB layout your desktop uses, for the `uinput`
+  output (and the portal if the desktop sends no keymap), e.g.
+  `{"layout": "us", "variant": "dvorak"}`. Fields: `rules`, `model`,
+  `layout`, `variant`, `options`; missing ones (or `null`) take
+  libxkbcommon's defaults (`XKB_DEFAULT_LAYOUT` and friends, else US).
 
 Check a configuration with `localflowd --check-config`.
 
@@ -293,6 +305,124 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
     #custom-localflow.suggestion { font-weight: bold; }
     ```
 
+## Text output and desktops
+
+`output` picks how text is typed. With `auto` (the default) the daemon
+uses the first of these that works at startup and logs which one it chose
+(`text output: ...`), never the text:
+
+1. **Wayland virtual keyboard** (`wayland`), when the compositor offers
+   `zwp_virtual_keyboard_manager_v1`: Hyprland, sway, river and other
+   wlroots compositors. It uploads its own keymap, so your layout does not
+   matter and any Unicode character can be typed. A Wayland compositor
+   that does not answer yet at startup also selects it (it may still be
+   starting); typing retries the connection.
+2. **RemoteDesktop portal** (`portal`), when xdg-desktop-portal offers
+   RemoteDesktop version 2 with keyboards: GNOME 45 and later, KDE Plasma 6.
+3. **uinput** (`uinput`), when `/dev/uinput` is writable: any compositor,
+   and X11.
+
+If none works, the daemon warns and keeps the virtual keyboard, which
+reports its error on each dictation. The clipboard is never used.
+
+The portal and uinput send key codes that the desktop interprets with its
+own keyboard layout. LocalFlow types each character with a key and at most
+Shift, AltGr and level 5 on that layout; dead keys and Compose are not used.
+Text containing a character the layout cannot produce (é on a US layout,
+say) is refused as a whole and nothing is typed (`typing refused: cannot
+type the character at position N`); it is never typed differently.
+
+### Hyprland
+
+Use `packaging/hyprland.conf`. Hyprland matches its binds against the
+modifiers held on every keyboard, so text typed while Super is held would
+trigger Hyprland binds (Super+Q closes the window, Super+M exits Hyprland).
+The `device` block in that file stops LocalFlow's virtual keyboard from
+triggering any Hyprland bind:
+
+```ini
+device {
+    name = hl-virtual-keyboard-localflowd
+    keybinds = false
+}
+```
+
+The name is `hl-virtual-keyboard-` plus the daemon's process name. Hyprland
+reads it when the virtual keyboard is created, so restart `localflowd` after
+adding it. Apps still see modifiers held on the physical keyboard (Hyprland
+always shares them; `input:virtualkeyboard:share_states` does not change
+that), so text typed while Ctrl is held reaches the focused app as Ctrl
+shortcuts: release modifiers before releasing the dictation key, and do not
+bind anything that types (such as `localflowctl again`) to a modifier
+combination.
+
+### sway, river and other wlroots compositors
+
+The virtual keyboard works as on Hyprland. Bind `localflowctl press` to the
+key's press and `localflowctl release` to its release (sway:
+`bindsym --release`). Modifiers held on the physical keyboard combine with
+the typed keys here too.
+
+### GNOME and KDE Plasma (portal)
+
+Needs xdg-desktop-portal with the desktop's backend
+(`xdg-desktop-portal-gnome` 45 or later, `xdg-desktop-portal-kde` from
+Plasma 6), which GNOME and Plasma sessions normally run.
+
+- At the first start the desktop asks whether to allow remote control of
+  the keyboard (LocalFlow asks for the keyboard only, never the pointer or
+  the screen). Allow it once; the grant is remembered with a restore token
+  in `$XDG_STATE_HOME/localflow/portal-restore-token` (usually
+  `~/.local/state/localflow`, directory 0700, file 0600). The token is a
+  credential for that grant: it is never logged; treat it like a password.
+  Delete the file, or revoke the grant in the desktop's settings, to be
+  asked again.
+- Until the grant arrives, dictations fail with `waiting for the desktop to
+  allow LocalFlow to type`; dictate again after allowing it. An unanswered
+  dialog is withdrawn after 5 minutes, and the next dictation asks again.
+- Characters go through the keymap the desktop sends, with its current
+  layout group and Caps Lock state.
+- GNOME and Plasma custom shortcuts run a command on key press only, so
+  hold-to-talk is not available there: bind `localflowctl toggle` to a key
+  (tap to start, tap again to stop and type).
+
+### X11 and everything else (uinput)
+
+The daemon creates a keyboard device, "LocalFlow virtual keyboard", through
+`/dev/uinput`, which your user must be able to write. With that permission
+any program you run can inject keystrokes, so grant it deliberately.
+
+- NixOS:
+
+  ```nix
+  hardware.uinput.enable = true;               # uinput module, udev rule, `uinput` group
+  users.users.<you>.extraGroups = [ "uinput" ];
+  ```
+
+  then log out and in again.
+- Other distributions: load the module at boot
+  (`echo uinput | sudo tee /etc/modules-load.d/uinput.conf`), add a udev
+  rule such as
+  `KERNEL=="uinput", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"`
+  in `/etc/udev/rules.d/60-uinput.rules`, create the group, add yourself to
+  it and log in again.
+
+The desktop applies its own layout to the device, which the daemon cannot
+read: set `keyboard_layout` to match it (for example
+`{"layout": "de"}` or `{"layout": "us", "variant": "dvorak"}`). Only the
+first layout of a list is used, so switch to it before dictating; Caps
+Lock on the physical keyboard changes what letters type. Under X11, use
+your window manager or `xbindkeys` to call `localflowctl`.
+
+### The systemd unit
+
+Every output keeps to Unix sockets and device nodes: the Wayland socket,
+the D-Bus session bus and the EIS socket the portal hands over, or
+`/dev/uinput`. `packaging/localflowd.service` needs no change
+(`RestrictAddressFamilies=AF_UNIX` holds). If you add `PrivateDevices=yes`
+or `DevicePolicy=closed`, the uinput output also needs
+`DeviceAllow=/dev/uinput w`.
+
 ## Tests
 
 ```bash
@@ -300,8 +430,14 @@ nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.t
 ```
 
 `lf-daemon/tests/private_dbus.rs` starts its own `dbus-daemon` (from the dev
-shell) with fake MPRIS players; it never uses your session bus. Set
-`LF_SKIP_DBUS_TESTS=1` to skip it where `dbus-daemon` is missing.
+shell) with fake MPRIS players; it never uses your session bus. Likewise
+`lf-portal/tests/mock_portal.rs` serves a mock RemoteDesktop portal on a
+private bus and a fake EIS server, so it never opens your desktop's portal
+or types anywhere. Set `LF_SKIP_DBUS_TESTS=1` to skip both where
+`dbus-daemon` is missing. `lf-keyboard` maps characters through a synthetic
+keymap and through the `us`, `de` and `dvorak` layouts of the XKB data
+libxkbcommon was built with, and checks uinput event encoding without
+opening `/dev/uinput`.
 
 The dictation rules are pinned by `testdata/dictation-vectors.json` and
 `testdata/number-vectors.json`, shared with the Swift app. Word boosting (BPE encoding, entry validation, the
@@ -401,3 +537,25 @@ First run the backend smoke tests in the "Desktop I/O" section of
     `daemon error: no-recent`. The journal shows only counts
     ("correction submitted (1 candidates)", "correction checked: …"), never
     the words.
+22. Text output selection: on Hyprland the journal says `text output:
+    Wayland virtual keyboard (auto: the compositor offers the virtual
+    keyboard protocol)` and typing behaves as before (items 3-7). No
+    portal dialog appears.
+23. GNOME 45+ and KDE Plasma 6 (`output` unset or `"portal"`): at the
+    first start the desktop asks once to allow keyboard control; allow it.
+    `ls -l ~/.local/state/localflow/portal-restore-token` shows
+    `-rw-------`, and the journal never shows its contents. Dictate into a
+    GTK or Qt app, a browser and an XWayland app: the text appears,
+    including Shift and AltGr characters of your layout. A character the
+    layout cannot type is refused (`typing refused: …`) and nothing is
+    typed. Restart the daemon: it does not ask again. Turn Caps Lock on and
+    dictate: the case is still right. Deny the dialog (delete the token
+    first): dictation fails with an error and the next one asks again.
+24. uinput (`"output": "uinput"`, after the setup in [Text output and
+    desktops](#text-output-and-desktops), with `keyboard_layout` set to the
+    desktop's layout): under X11 and under a Wayland compositor, dictation
+    types correctly, including Shift and AltGr characters;
+    `libinput list-devices` (or `xinput list`) shows "LocalFlow virtual
+    keyboard" while the daemon runs and not after it stops. Without
+    permission on `/dev/uinput` the journal warns at startup and dictation
+    fails cleanly.
