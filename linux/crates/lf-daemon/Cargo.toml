@@ -23,12 +23,12 @@ lf-wayland = { path = "../lf-wayland" }
 libc.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"
+# The tray icon (`localflowctl tray`); already built for lf-media.
+zbus = "5"
 
 [dev-dependencies]
 # FLAC decoding for the ignored real-model test (public LibriSpeech audio).
 claxon = "0.4"
-# Fake MPRIS players on a private bus for the media-pause test.
-zbus = "5"
 
 [[test]]
 name = "private_dbus"

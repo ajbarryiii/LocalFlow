@@ -85,6 +85,8 @@ fn ctl_command(rig: &Rig, bin: &Path, args: &[&str]) -> std::process::Command {
     cmd.args(args)
         .env("XDG_RUNTIME_DIR", runtime_dir(&rig.dir))
         .env("XDG_DATA_HOME", rig.dir.path().join("data"))
+        // Never the user's own configuration (it could pick a picker).
+        .env("XDG_CONFIG_HOME", rig.dir.path().join("config"))
         .env("PATH", path);
     cmd
 }
@@ -245,6 +247,58 @@ fn suggestions_are_reviewed_in_rofi_and_added() {
     assert_eq!(out.status.code(), Some(7), "{:?}", text(&out));
     assert_no_words(&out);
     assert!(send(&rig, "localflow/1 suggest-next").contains("word=Thing"));
+}
+
+/// tofi, configured: it answers with the row's text, and Escape is a
+/// success without output.
+#[test]
+fn suggestions_are_reviewed_in_the_configured_picker() {
+    let (rig, _) = start("link-review-tofi");
+    let t = TempDir::new("link-tofi");
+    let config = rig.dir.path().join("config/localflow");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.json"), r#"{"picker": "tofi"}"#).unwrap();
+    for w in ["Zorblax", "Quuxwell", "Glimmux"] {
+        assert!(send(&rig, &format!("localflow/1 suggest-add word={w}")).ends_with("queued"));
+    }
+    let bin = t.path().join("bin");
+    let rows = t.path().join("log");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&rows).unwrap();
+    // rofi is on PATH too, and fails if it is ever run.
+    std::fs::write(bin.join("rofi"), "#!/bin/sh\nexit 3\n").unwrap();
+    // Answers with row 1 (Add) of its stdin, then row 3 (Don't suggest),
+    // then Escape.
+    let tofi = format!(
+        "#!/bin/sh\nn=$(cat '{d}/count' 2>/dev/null || echo 0)\nn=$((n + 1))\necho $n > '{d}/count'\n\
+         printf '%s\\n' \"$@\" > '{l}/args-'$n\nenv > '{l}/env-'$n\ncat > '{l}/stdin-'$n\n\
+         case $n in 1) sed -n 1p '{l}/stdin-'$n ;; 2) sed -n 3p '{l}/stdin-'$n ;; *) exit 0 ;; esac\n",
+        d = t.path().display(),
+        l = rows.display()
+    );
+    std::fs::write(bin.join("tofi"), tofi).unwrap();
+    for p in ["rofi", "tofi"] {
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let out = ctl(&rig, &bin, &["dict", "review"]);
+    assert!(out.status.success(), "{:?}", text(&out));
+    assert_eq!(text(&out).0, "added 1, ignored 1, dismissed 0\n");
+    assert_no_words(&out);
+    assert_eq!(rofi_calls(t.path()), 3);
+    let read = |n: &str| std::fs::read_to_string(rows.join(n)).unwrap();
+    for n in 1..=3 {
+        assert!(read(&format!("args-{n}")).contains("--require-match=true"));
+        for w in WORDS {
+            assert!(!read(&format!("args-{n}")).contains(w));
+            assert!(!read(&format!("env-{n}")).contains(w));
+        }
+    }
+    assert!(read("stdin-1").starts_with("Add \u{201C}Zorblax\u{201D}"));
+    let dictionary = dictionary_text(&rig);
+    assert!(dictionary.contains("\"Zorblax\""), "{dictionary}");
+    assert!(dictionary.contains("\"quuxwell\""), "{dictionary}");
+    // Escape left the last one pending.
+    assert!(send(&rig, "localflow/1 suggest-next").contains("word=Glimmux"));
 }
 
 #[test]

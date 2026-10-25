@@ -3,18 +3,21 @@
 //! `localflowctl watch` instead stays connected and prints a status line on
 //! every change (and level lines while recording); `watch --waybar` prints
 //! Waybar JSON, shows "offline" while the daemon is unreachable, and keeps
-//! reconnecting, so the bar never needs a restart.
+//! reconnecting, so the bar never needs a restart. `localflowctl tray`
+//! shows the same states as a tray icon (see `lf_daemon::tray`), until
+//! killed.
 //!
 //! `localflowctl correct` teaches the custom dictionary from a correction of
-//! the last dictation, in rofi (see `lf_daemon::rofi`); it never changes the
-//! text already typed. `localflowctl dict …` manages the dictionary;
-//! `dict suggest` queues a word for review (agents use it) and `dict
-//! review` offers each pending suggestion in rofi. `localflowctl words …`
+//! the last dictation, in a picker (rofi or wofi; see `lf_daemon::picker`);
+//! it never changes the text already typed. `localflowctl dict …` manages
+//! the dictionary; `dict suggest` queues a word for review (agents use it)
+//! and `dict review` offers each pending suggestion in a picker (rofi,
+//! fuzzel, wofi or tofi). `localflowctl words …`
 //! loads and clears project words, `agents clear` drops the agent status
 //! report, and `agents t3` is the T3 Code bridge that keeps it up to date
 //! (see `linux/AGENT-LINK.md`). Text from the daemon is never
-//! printed, and reaches rofi only through a pipe or an inherited
-//! descriptor, never its command line.
+//! printed, and reaches a picker only through a pipe or an inherited
+//! descriptor, never its command line or environment.
 //!
 //! Exit codes:
 //! - 0: the daemon accepted the command (stdout: the reply fields, without
@@ -26,8 +29,10 @@
 //! - 4: timed out;
 //! - 5: protocol error (bad reply, or the socket belongs to another user);
 //! - 6: the dictionary file cannot be read (`dict list`, `dict ignored`);
-//! - 7: rofi failed (`correct`, `dict review`);
-//! - 8: the T3 token file is missing, unreadable or unsafe (`agents t3`).
+//! - 7: the picker failed, or no picker can be used (`correct`, `dict
+//!   review`);
+//! - 8: the T3 token file is missing, unreadable or unsafe (`agents t3`);
+//! - 9: the D-Bus session bus cannot be used, or was lost (`tray`).
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -37,18 +42,21 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use lf_daemon::config::Config;
+use lf_daemon::picker::{self, Answer, Choice, Op, Picker};
 use lf_daemon::protocol::{
     self, ClientReply, Command, MAX_LINE, MAX_TEXT_LINE, Request, Resolve, WORDS_TTL, decode_pct,
     monotonic_ns, parse_dec, parse_reply, printable_fields, reply_field, request_line,
     valid_set_name,
 };
-use lf_daemon::rofi::{self, Answer, Rofi};
 use lf_daemon::server::peer_uid;
-use lf_daemon::waybar::Indicator;
+use lf_daemon::tray::{Tray, TrayError};
+use lf_daemon::waybar::{Class, Indicator};
 use lf_daemon::{dictionary, paths, t3};
 
 const USAGE: &str = "usage: localflowctl [--timeout-ms N] <command>
        localflowctl [--timeout-ms N] watch [--waybar]
+       localflowctl [--timeout-ms N] tray
        localflowctl [--timeout-ms N] correct
        localflowctl [--timeout-ms N] dict add <word…> [--strength F]
        localflowctl [--timeout-ms N] dict remove|unignore <word…>
@@ -69,13 +77,17 @@ commands:
   status    print the daemon state
   watch     print the state on every change; --waybar prints JSON for a
             Waybar custom module and reconnects while the daemon is down
-  correct   edit the last dictation in rofi (within two minutes of typing
-            it) to teach the dictionary; the text already typed is not
+  tray      show the state as a tray icon (StatusNotifierItem) until
+            killed; reconnects while the daemon is down
+  correct   edit the last dictation in a picker (within two minutes of
+            typing it) to teach the dictionary; the text already typed is not
             changed. A word the audio confirms is offered for adding.
+            The picker is the configuration's \"picker\": rofi, fuzzel,
+            wofi or tofi (default auto: the first installed)
   dict      add (strength 0.25 to 8, default 1), remove, list the custom
             dictionary; ignored lists words never suggested, unignore
             allows one again; suggest queues a word for review, review
-            offers each queued word in rofi
+            offers each queued word in a picker
   words     set loads project words for dictation (one per argument, or
             one per line on stdin; none may contain a comma) for --ttl
             seconds (60 to 86400, default 8 hours); clear removes the set
@@ -113,10 +125,12 @@ enum Failure {
     Closed,
     /// The dictionary file could not be read.
     Dictionary(String),
-    /// rofi failed.
+    /// The picker failed, or none can be used.
     Helper(String),
     /// The T3 token file is missing, unreadable or unsafe (`agents t3`).
     Credentials(String),
+    /// The session bus cannot be used, or was lost (`tray`).
+    Tray(String),
 }
 
 impl Failure {
@@ -131,6 +145,7 @@ impl Failure {
             Failure::Dictionary(_) => 6,
             Failure::Helper(_) => 7,
             Failure::Credentials(_) => 8,
+            Failure::Tray(_) => 9,
         }
     }
 }
@@ -159,6 +174,7 @@ enum Action {
     /// A key command or `status`.
     Send(Command),
     Watch,
+    Tray,
     Correct,
     Dict(DictAction),
     Words(WordsAction),
@@ -184,6 +200,7 @@ fn main() -> ExitCode {
             Ok(None)
         }
         Action::Watch => watch(&args).map(|()| None),
+        Action::Tray => tray(&args).map(|()| None),
         Action::Send(command) => run(started, *command, &args).map(|f| Some(printable_fields(&f))),
         Action::Correct => correct(&args).map(|m| Some(m.into())),
         Action::Dict(DictAction::Review) => review(&args).map(Some),
@@ -213,6 +230,7 @@ fn main() -> ExitCode {
                 Failure::Dictionary(m) => eprintln!("localflowctl: dictionary: {m}"),
                 Failure::Helper(m) => eprintln!("localflowctl: {m}"),
                 Failure::Credentials(m) => eprintln!("localflowctl: {m}"),
+                Failure::Tray(m) => eprintln!("localflowctl: tray: {m}"),
                 Failure::Closed => {}
             }
             ExitCode::from(f.code())
@@ -298,6 +316,7 @@ fn parse_args() -> Result<Args, Failure> {
     };
     let action = match first.as_str() {
         "correct" if rest.is_empty() => Action::Correct,
+        "tray" if rest.is_empty() => Action::Tray,
         "dict" => {
             let (sub, rest) = rest
                 .split_first()
@@ -471,18 +490,39 @@ fn number(fields: &str, key: &str) -> Result<u64, Failure> {
         .map_err(|_| Failure::Protocol(format!("bad {key}")))
 }
 
-fn helper(e: rofi::Failure) -> Failure {
-    Failure::Helper(e.to_string())
+/// A picker failure, named: "rofi exited with status 2".
+fn helper(p: &Picker) -> impl Fn(picker::Failure) -> Failure + '_ {
+    |e| Failure::Helper(format!("{} {e}", p.kind.name()))
 }
 
-/// `correct`: edit the last dictation in rofi, submit it, and offer a
+/// The `picker` setting from the configuration file (`auto` when there is
+/// no file, or no home directory to find it in).
+fn picker_choice() -> Result<Choice, Failure> {
+    let (Ok(path), Ok(data)) = (paths::config_file(), paths::data_dir()) else {
+        return Ok(Choice::Auto);
+    };
+    Config::load(&path, &data)
+        .map(|c| c.picker)
+        .map_err(Failure::Helper)
+}
+
+/// The picker for `op`.
+fn select_picker(choice: Choice, op: Op) -> Result<Picker, Failure> {
+    picker::select(choice, op, picker::probe).map_err(|e| Failure::Helper(e.to_string()))
+}
+
+/// `correct`: edit the last dictation in a picker, submit it, and offer a
 /// confirmed word for the dictionary. Returns a message without text.
 fn correct(args: &Args) -> Result<&'static str, Failure> {
+    // Both pickers are found first, so a missing one fails before the
+    // daemon hands out any text.
+    let choice = picker_choice()?;
+    let editor = select_picker(choice, Op::Edit)?;
+    let chooser = select_picker(choice, Op::Choose)?;
     let begin = text_command(Command::CorrectBegin, Default::default(), args)?;
     let id = number(&begin, "id")?;
     let typed = text_field(&begin, "text")?;
-    let rofi = Rofi::system();
-    let edited = match rofi.edit(&typed).map_err(helper)? {
+    let edited = match editor.edit(&typed).map_err(helper(&editor))? {
         Answer::Chose(t) => t,
         Answer::Dismissed => return Ok("correction cancelled"),
     };
@@ -535,8 +575,8 @@ fn correct(args: &Args) -> Result<&'static str, Failure> {
     let word = text_field(&result, "word")?;
     let strength = parse_dec(field(&result, "strength")?)
         .ok_or_else(|| Failure::Protocol("bad strength".into()))?;
-    match rofi.suggest(&word).map_err(helper)? {
-        Answer::Chose(rofi::ADD) => {
+    match chooser.suggest(&word).map_err(helper(&chooser))? {
+        Answer::Chose(picker::ADD) => {
             text_command(
                 Command::DictAdd,
                 protocol::Args {
@@ -548,7 +588,7 @@ fn correct(args: &Args) -> Result<&'static str, Failure> {
             )?;
             Ok("added to the dictionary")
         }
-        Answer::Chose(rofi::DONT_SUGGEST) => {
+        Answer::Chose(picker::DONT_SUGGEST) => {
             text_command(
                 Command::DictIgnore,
                 protocol::Args {
@@ -619,11 +659,12 @@ fn dict(action: &DictAction, args: &Args) -> Result<Option<&'static str>, Failur
     }
 }
 
-/// `dict review`: offers each pending suggestion in rofi's suggestion
-/// dialog until none is left or rofi is closed (the word then stays
+/// `dict review`: offers each pending suggestion in a picker's suggestion
+/// dialog until none is left or the picker is closed (the word then stays
 /// pending). Returns the counts, without text.
 fn review(args: &Args) -> Result<String, Failure> {
-    let rofi = Rofi::system();
+    // Found at the first suggestion: with none pending, none is needed.
+    let mut chooser = None;
     let (mut added, mut ignored, mut dismissed) = (0u32, 0u32, 0u32);
     loop {
         let next = match text_command(Command::SuggestNext, Default::default(), args) {
@@ -633,9 +674,13 @@ fn review(args: &Args) -> Result<String, Failure> {
         };
         let id = number(&next, "id")?;
         let word = text_field(&next, "word")?;
-        let action = match rofi.suggest(&word).map_err(helper)? {
-            Answer::Chose(rofi::ADD) => Resolve::Add,
-            Answer::Chose(rofi::DONT_SUGGEST) => Resolve::Ignore,
+        let p = match &chooser {
+            Some(p) => p,
+            None => chooser.insert(select_picker(picker_choice()?, Op::Choose)?),
+        };
+        let action = match p.suggest(&word).map_err(helper(p))? {
+            Answer::Chose(picker::ADD) => Resolve::Add,
+            Answer::Chose(picker::DONT_SUGGEST) => Resolve::Ignore,
             Answer::Chose(_) => Resolve::Dismiss,
             Answer::Dismissed => break,
         };
@@ -785,24 +830,27 @@ fn stdin_words() -> Result<Vec<String>, Failure> {
 }
 
 /// A `watch` connection: the first line arrives within the deadline, later
-/// ones whenever the daemon sends them. Every wait also watches stdout, so
-/// the client exits as soon as its reader goes away, even while nothing
-/// changes.
+/// ones whenever the daemon sends them. Unless it was opened for the tray,
+/// every wait also watches stdout, so the client exits as soon as its
+/// reader goes away, even while nothing changes.
 struct Watch {
     stream: UnixStream,
     buf: Vec<u8>,
     /// Deadline for the first line only.
     deadline: Option<Instant>,
+    /// Stdout's reader going away ends the watch.
+    follow_stdout: bool,
 }
 
 impl Watch {
-    fn open(args: &Args) -> Result<Watch, Failure> {
+    fn open(args: &Args, follow_stdout: bool) -> Result<Watch, Failure> {
         let deadline = Instant::now() + args.timeout;
         let stream = open(&Request::new(Command::Watch), deadline)?;
         Ok(Watch {
             stream,
             buf: Vec::with_capacity(2 * MAX_LINE),
             deadline: Some(deadline),
+            follow_stdout,
         })
     }
 
@@ -818,7 +866,7 @@ impl Watch {
                 return Err(Failure::Protocol("line too long".into()));
             }
             let timeout = self.deadline.map(remaining).transpose()?;
-            if !wait_readable(&self.stream, timeout)? {
+            if !wait_readable(&self.stream, timeout, self.follow_stdout)? {
                 return Err(Failure::Timeout);
             }
             let n = match self.stream.read(&mut chunk) {
@@ -858,9 +906,13 @@ fn stdout_gone(revents: libc::c_short) -> bool {
 }
 
 /// Waits until `stream` is readable (true) or `timeout` passes (false;
-/// `None` waits indefinitely). Fails with [`Failure::Closed`] as soon as
-/// stdout's reader goes away.
-fn wait_readable(stream: &UnixStream, timeout: Option<Duration>) -> Result<bool, Failure> {
+/// `None` waits indefinitely). With `follow_stdout`, fails with
+/// [`Failure::Closed`] as soon as stdout's reader goes away.
+fn wait_readable(
+    stream: &UnixStream,
+    timeout: Option<Duration>,
+    follow_stdout: bool,
+) -> Result<bool, Failure> {
     use std::os::fd::AsRawFd;
     let deadline = timeout.map(|t| Instant::now() + t);
     loop {
@@ -887,8 +939,9 @@ fn wait_readable(stream: &UnixStream, timeout: Option<Duration>) -> Result<bool,
                 left.as_millis().clamp(1, i32::MAX as u128) as libc::c_int
             }
         };
-        // SAFETY: polls two valid pollfds.
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
+        let nfds = if follow_stdout { 2 } else { 1 };
+        // SAFETY: polls the first `nfds` of two valid pollfds.
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), nfds, ms) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == ErrorKind::Interrupted {
@@ -896,7 +949,7 @@ fn wait_readable(stream: &UnixStream, timeout: Option<Duration>) -> Result<bool,
             }
             return Err(Failure::Protocol(e.to_string()));
         }
-        if stdout_gone(fds[1].revents) {
+        if follow_stdout && stdout_gone(fds[1].revents) {
             return Err(Failure::Closed);
         }
         if fds[0].revents != 0 {
@@ -941,7 +994,7 @@ fn emit(out: &mut impl Write, line: &str) -> bool {
 /// `watch`: the reply fields of every line, until the daemon goes away
 /// (an error) or stdout is closed (`Ok`).
 fn watch(args: &Args) -> Result<(), Failure> {
-    let mut w = Watch::open(args)?;
+    let mut w = Watch::open(args, true)?;
     let mut out = std::io::stdout().lock();
     loop {
         let fields = match w.next() {
@@ -974,7 +1027,7 @@ fn watch_waybar(args: &Args) {
     loop {
         let began = Instant::now();
         let mut connected = false;
-        if let Ok(mut w) = Watch::open(args) {
+        if let Ok(mut w) = Watch::open(args, true) {
             loop {
                 match w.next() {
                     Ok(fields) => {
@@ -1003,6 +1056,40 @@ fn watch_waybar(args: &Args) {
         if !show(&mut out, indicator.offline()) || sleep_unless_stdout_gone(WAYBAR_RETRY) {
             return;
         }
+    }
+}
+
+/// `tray`: shows the daemon's state as a tray icon until killed. A lost
+/// connection to the daemon is retried at once, then every
+/// [`WAYBAR_RETRY`] while it is unreachable (the offline icon). Losing the
+/// session bus ends it with exit status 9.
+fn tray(args: &Args) -> Result<(), Failure> {
+    let tray = Tray::start(None, Class::Offline, || {
+        eprintln!("localflowctl: tray: {}", TrayError::Lost);
+        std::process::exit(9);
+    })
+    .map_err(|e| Failure::Tray(e.to_string()))?;
+    let show = |class| tray.show(class).map_err(|e| Failure::Tray(e.to_string()));
+    let mut retried = false;
+    loop {
+        let began = Instant::now();
+        let mut connected = false;
+        if let Ok(mut w) = Watch::open(args, false) {
+            while let Ok(fields) = w.next() {
+                connected = true;
+                if let Some(class) = Class::from_fields(&fields) {
+                    show(class)?;
+                }
+            }
+        }
+        // As in `watch_waybar`.
+        if connected && (!retried || began.elapsed() >= WAYBAR_RETRY) {
+            retried = true;
+            continue;
+        }
+        retried = false;
+        show(Class::Offline)?;
+        std::thread::sleep(WAYBAR_RETRY);
     }
 }
 

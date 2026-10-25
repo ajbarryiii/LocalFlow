@@ -144,12 +144,14 @@ localflowctl agents clear
 - **`dict suggest`** prints `queued for review`, `already in the dictionary`
   or `on the ignore list`.
 - **`dict review`:**
-  - Shows each pending suggestion in the existing rofi suggestion dialog.
+  - Shows each pending suggestion in the suggestion dialog of the
+    configured picker (rofi, fuzzel, wofi or tofi; see `picker` in the
+    README).
   - "Add" sends `action=add`, "Don't suggest" sends `action=ignore`, and
     "Not now" sends `action=dismiss`.
-  - Closing rofi stops the review and leaves the word pending.
+  - Closing the picker stops the review and leaves the word pending.
   - It prints how many words were added, ignored and dismissed.
-  - The word reaches rofi only through its stdin, as in `correct`.
+  - The word reaches the picker only through its stdin, as in `correct`.
 - **`words set`:**
   - It rejects a word containing `,` (usage error) rather than splitting it.
   - It prints `loaded <n>, skipped <n>`.

@@ -66,6 +66,30 @@ impl Class {
         Class::Offline,
     ];
 
+    /// The class of one watch line's fields (the part after `ok `), or
+    /// `None` for an unknown state. Busy states take precedence over a
+    /// missing microphone, which takes precedence over loading.
+    pub fn from_fields(fields: &str) -> Option<Class> {
+        let (mut state, mut model, mut mic) = (None, None, None);
+        for (k, v) in fields.split(' ').filter_map(|f| f.split_once('=')) {
+            match k {
+                "state" => state = Some(v),
+                "model" => model = Some(v),
+                "mic" => mic = Some(v),
+                _ => {}
+            }
+        }
+        Some(match state? {
+            "recording" => Class::Recording,
+            "transcribing" => Class::Transcribing,
+            "typing" => Class::Typing,
+            "idle" if mic == Some("absent") => Class::NoMic,
+            "idle" if model == Some("loading") => Class::Loading,
+            "idle" => Class::Idle,
+            _ => return None,
+        })
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Class::Idle => "idle",
@@ -232,15 +256,13 @@ impl Indicator {
     /// The object for one watch line's fields (the part after `ok `), or
     /// `None` for an unknown state.
     pub fn update(&mut self, fields: &str) -> Option<String> {
-        let (mut state, mut model, mut mic, mut level) = (None, None, None, None);
+        let class = Class::from_fields(fields)?;
+        let mut level = None;
         let mut prompt = false;
         let mut n = Counts::default();
         for (k, v) in fields.split(' ').filter_map(|f| f.split_once('=')) {
             let count = || v.parse::<u32>().unwrap_or(0);
             match k {
-                "state" => state = Some(v),
-                "model" => model = Some(v),
-                "mic" => mic = Some(v),
                 "level" => level = v.parse::<u8>().ok(),
                 "tag" => prompt = v == "prompt",
                 "suggestions" => n.suggestions = count(),
@@ -252,15 +274,6 @@ impl Indicator {
                 _ => {}
             }
         }
-        let class = match state? {
-            "recording" => Class::Recording,
-            "transcribing" => Class::Transcribing,
-            "typing" => Class::Typing,
-            "idle" if mic == Some("absent") => Class::NoMic,
-            "idle" if model == Some("loading") => Class::Loading,
-            "idle" => Class::Idle,
-            _ => return None,
-        };
         if class == Class::Recording {
             if !self.recording {
                 self.levels.clear();

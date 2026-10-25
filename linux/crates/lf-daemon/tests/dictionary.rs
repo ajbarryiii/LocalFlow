@@ -220,6 +220,8 @@ fn ctl(rig: &Rig, bin: &Path, args: &[&str]) -> Output {
         .args(args)
         .env("XDG_RUNTIME_DIR", runtime_dir(&rig.dir))
         .env("XDG_DATA_HOME", rig.dir.path().join("data"))
+        // Never the user's own configuration (it could pick a picker).
+        .env("XDG_CONFIG_HOME", rig.dir.path().join("config"))
         .env("PATH", path)
         .output()
         .unwrap()
@@ -313,6 +315,7 @@ fn localflowctl_correct_paths_that_change_nothing() {
     let missing = std::process::Command::new(env!("CARGO_BIN_EXE_localflowctl"))
         .arg("correct")
         .env("XDG_RUNTIME_DIR", runtime_dir(&rig.dir))
+        .env("XDG_CONFIG_HOME", rig.dir.path().join("config"))
         .env("PATH", none.path())
         .output()
         .unwrap();
@@ -335,6 +338,133 @@ fn localflowctl_correct_paths_that_change_nothing() {
     dictate(&rig);
     let out = ctl(&rig, &bin, &["correct"]);
     assert_eq!(text(&out).0, "no suggestion\n");
+}
+
+/// A fake picker `name` in `dir/bin`: records each call (arguments,
+/// environment, configuration from fd 3 when open, stdin) as
+/// `dir/log/<name>-{edit,suggest}-*`, then runs `edit` for the edit dialog
+/// (nothing on stdin) or `suggest` for the suggestion dialog (rows).
+fn fake_picker(dir: &Path, name: &str, edit: &str, suggest: &str) -> PathBuf {
+    let bin = dir.join("bin");
+    let log = dir.join("log");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&log).unwrap();
+    let l = log.display();
+    let script = format!(
+        "#!/bin/sh
+stdin=$(cat; echo .)
+if [ \"$stdin\" = . ]; then which=edit; else which=suggest; fi
+printf '%s' \"${{stdin%.}}\" > '{l}/{name}-'$which-stdin
+printf '%s\\n' \"$@\" > '{l}/{name}-'$which-args
+env > '{l}/{name}-'$which-env
+if [ -e /dev/fd/3 ]; then cat /dev/fd/3 > '{l}/{name}-'$which-config; fi
+if [ $which = edit ]; then
+{edit}
+else
+{suggest}
+fi
+"
+    );
+    let path = bin.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    bin
+}
+
+/// Writes the configuration `localflowctl` reads (see [`ctl`]).
+fn configure(rig: &Rig, json: &str) {
+    let dir = rig.dir.path().join("config/localflow");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), json).unwrap();
+}
+
+#[test]
+fn localflowctl_correct_uses_the_configured_picker() {
+    let (rig, _) = start("dict-ctl-picker");
+    let t = TempDir::new("fake-pickers");
+    // rofi comes first for auto, and fails if it is ever run.
+    fake_picker(t.path(), "rofi", "exit 3", "exit 3");
+    fake_picker(t.path(), "fuzzel", "exit 3", "echo 0");
+    let bin = fake_picker(t.path(), "wofi", &format!("echo '{EDITED}'"), "echo 0");
+    let log = t.path().join("log");
+    let read = |n: &str| std::fs::read_to_string(log.join(n)).unwrap_or_default();
+
+    configure(&rig, r#"{"picker": "wofi"}"#);
+    dictate(&rig);
+    let out = ctl(&rig, &bin, &["correct"]);
+    assert_eq!(
+        text(&out).0,
+        "added to the dictionary\n",
+        "{:?}",
+        text(&out)
+    );
+    assert_no_text(&out);
+    // The transcript reached wofi through fd 3 only, the word through stdin
+    // only.
+    assert_eq!(
+        read("wofi-edit-args").lines().collect::<Vec<_>>(),
+        ["--dmenu", "--conf=/dev/fd/3", "--cache-file=/dev/null"]
+    );
+    assert!(read("wofi-edit-config").contains(&format!("\nsearch={TYPED}\n")));
+    assert_eq!(read("wofi-edit-stdin"), "");
+    assert!(read("wofi-suggest-stdin").starts_with("Add \u{201C}Kubernetes\u{201D}"));
+    for f in [
+        "edit-args",
+        "edit-env",
+        "suggest-args",
+        "suggest-env",
+        "suggest-config",
+    ] {
+        let s = read(&format!("wofi-{f}"));
+        assert!(!s.contains("cooper") && !s.contains("ubernetes"), "{f}");
+    }
+    assert!(!log.join("rofi-edit-args").exists());
+
+    // fuzzel cannot edit: said so, before the daemon hands out any text.
+    configure(&rig, r#"{"picker": "fuzzel"}"#);
+    dictate(&rig);
+    let out = ctl(&rig, &bin, &["correct"]);
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(text(&out).0, "");
+    assert!(
+        text(&out).1.contains("fuzzel cannot edit text"),
+        "{:?}",
+        text(&out)
+    );
+    assert!(!log.join("fuzzel-edit-args").exists());
+
+    // A bad value is named, never quoted.
+    configure(&rig, r#"{"picker": "synthetic-picker"}"#);
+    let out = ctl(&rig, &bin, &["correct"]);
+    assert_eq!(out.status.code(), Some(7));
+    assert!(text(&out).1.contains("picker must be one of auto, rofi"));
+    assert!(!text(&out).1.contains("synthetic"));
+
+    // A configured picker that is not installed.
+    configure(&rig, r#"{"picker": "tofi"}"#);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_localflowctl"))
+        .args(["dict", "review"])
+        .env("XDG_RUNTIME_DIR", runtime_dir(&rig.dir))
+        .env("XDG_CONFIG_HOME", rig.dir.path().join("config"))
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    // Nothing is pending, so no picker is needed.
+    assert!(out.status.success(), "{:?}", text(&out));
+    send(&rig, "localflow/1 suggest-add word=Zorblax");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_localflowctl"))
+        .args(["dict", "review"])
+        .env("XDG_RUNTIME_DIR", runtime_dir(&rig.dir))
+        .env("XDG_CONFIG_HOME", rig.dir.path().join("config"))
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(7));
+    assert!(
+        text(&out).1.contains("tofi is not installed"),
+        "{:?}",
+        text(&out)
+    );
 }
 
 /// A fake daemon whose `correct-result` replies never come: `correct`
@@ -372,6 +502,7 @@ fn localflowctl_correct_polling_keeps_its_deadline() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_localflowctl"))
         .args(["--timeout-ms", "30000", "correct"])
         .env("XDG_RUNTIME_DIR", &run)
+        .env("XDG_CONFIG_HOME", t.path().join("config"))
         .env(
             "PATH",
             format!(
