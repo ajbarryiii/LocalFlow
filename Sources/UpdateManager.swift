@@ -172,11 +172,22 @@ final class UpdateManager: ObservableObject {
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private let postTranscriptionReminderInterval: TimeInterval = 24 * 60 * 60 // 1 day
     private var periodicTimer: Timer?
-    private var activeDownloadTask: Task<Void, Never>?
+    private(set) var activeDownloadTask: Task<Void, Never>?
+    /// True from the start of an update attempt until it has fully finished,
+    /// including after it was cancelled.
+    private var updateAttemptInProgress = false
     /// Shows a failed download or install. The update runs after the menu
     /// closes, so the status alone is never seen. Replaceable for tests.
     var presentUpdateFailure: (String) -> Void = { message in
         UpdateManager.showAlert(title: "Update Failed", message: message)
+    }
+    /// The installed app the update replaces. Replaceable for tests.
+    var currentAppURL = Bundle.main.bundleURL
+    /// Decides whether `currentAppURL` can be replaced. Replaceable for tests.
+    var installLocation = UpdateInstallLocation.live
+    /// Starts the update download. Replaceable for tests.
+    var downloadBytes: @MainActor (URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) = { request in
+        try await URLSession.shared.bytes(for: request)
     }
 
     private init() {
@@ -714,6 +725,11 @@ final class UpdateManager: ObservableObject {
     }
 
     func downloadAndInstall(release: GitHubRelease) {
+        // One attempt at a time, until it has fully finished (cancelling does
+        // not stop a running signature check). A second attempt would delete
+        // the first one's staging folder as a leftover.
+        guard !updateAttemptInProgress else { return }
+
         guard let dmgAsset = release.assets.first(where: { $0.name.hasSuffix(".dmg") }) else {
             if let url = URL(string: release.htmlUrl) {
                 NSWorkspace.shared.open(url)
@@ -723,9 +739,17 @@ final class UpdateManager: ObservableObject {
 
         guard let downloadURL = URL(string: dmgAsset.browserDownloadUrl) else { return }
 
-        activeDownloadTask?.cancel()
+        // Installing quits the app, so find out first whether it can be
+        // replaced at all instead of quitting and never coming back.
+        if let problem = installLocation.problem(forAppAt: currentAppURL) {
+            failUpdate(UpdateInstallLocation.message(for: problem))
+            return
+        }
+
+        updateAttemptInProgress = true
         activeDownloadTask = Task {
             await performUpdate(downloadURL: downloadURL, expectedSize: dmgAsset.size)
+            self.updateAttemptInProgress = false
         }
     }
 
@@ -750,7 +774,7 @@ final class UpdateManager: ObservableObject {
             var request = URLRequest(url: downloadURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
-            let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+            let (asyncBytes, response) = try await downloadBytes(request)
 
             let totalSize = (response as? HTTPURLResponse)
                 .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") }
@@ -842,28 +866,47 @@ final class UpdateManager: ObservableObject {
                 ])
             }
 
-            // Copy app to staging directory
-            let stagingDir = fm.temporaryDirectory.appendingPathComponent("freeflow-staged-\(UUID().uuidString)")
-            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
-            try fm.copyItem(at: appBundle, to: stagedApp)
+            // Check again before staging: the location may have changed
+            // during the download.
+            if let problem = installLocation.problem(forAppAt: currentAppURL) {
+                try? fm.removeItem(at: tempDir)
+                failUpdate(UpdateInstallLocation.message(for: problem))
+                return
+            }
+            if Task.isCancelled {
+                try? fm.removeItem(at: tempDir)
+                return
+            }
 
-            // Verify the staged copy, since that is what gets installed.
+            // Stage in a private folder next to the installed app, so the
+            // swap is a rename on one volume rather than a copy that can
+            // fail halfway after this app has quit. First clear out what an
+            // interrupted update left there.
+            let appURL = currentAppURL
+            await Task.detached {
+                UpdateReplacement.removeLeftovers(nextTo: appURL)
+            }.value
+            let stagingDir = UpdateReplacement.stagingDirectoryURL(nextTo: currentAppURL)
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: false,
+                                   attributes: [.posixPermissions: 0o700])
+            let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             do {
+                try fm.copyItem(at: appBundle, to: stagedApp)
+
+                // Verify the staged copy, since that is what gets installed.
                 try await Task.detached {
                     try UpdateSignatureVerifier.verifyMatchesRunningApp(stagedApp)
                 }.value
+
+                // Clean up DMG (detach happens in defer above, delete temp dir)
+                try? fm.removeItem(at: tempDir)
+
+                // MARK: Replace & relaunch
+                try installStagedUpdate(stagedApp: stagedApp, stagingDir: stagingDir)
             } catch {
                 try? fm.removeItem(at: stagingDir)
                 throw error
             }
-
-            // Clean up DMG (detach happens in defer above, delete temp dir)
-            try? fm.removeItem(at: tempDir)
-
-            // MARK: Replace & relaunch
-            updateStatus = .readyToRelaunch
-            replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
 
         } catch {
             try? fm.removeItem(at: tempDir)
@@ -911,31 +954,44 @@ final class UpdateManager: ObservableObject {
         ])
     }
 
-    private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) {
-        let currentAppPath = Bundle.main.bundlePath
-        let pid = String(ProcessInfo.processInfo.processIdentifier)
-        let backupPath = currentAppPath + ".bak"
+    /// Swaps in the verified staged app and quits, unless the app can no
+    /// longer be replaced: then it removes the staged app and says why,
+    /// without quitting. Copying and verifying take time, so this checks the
+    /// location again at the last moment.
+    func installStagedUpdate(stagedApp: URL, stagingDir: URL) throws {
+        // A cancelled attempt may still have been verifying; it must not
+        // install or quit.
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: stagingDir)
+            return
+        }
+        if let problem = installLocation.problem(forAppAt: currentAppURL) {
+            try? FileManager.default.removeItem(at: stagingDir)
+            failUpdate(UpdateInstallLocation.message(for: problem))
+            return
+        }
+        try replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
+    }
 
-        // Use an argument array instead of string interpolation into a shell
-        // script to avoid injection. Move old app to backup first so a failed
-        // mv doesn't leave the user with no app.
-        let script = """
-        while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
-        mv "$2" "$5" && mv "$3" "$2" && open "$2" && rm -rf "$4" "$5" \
-            || { mv "$5" "$2" 2>/dev/null; exit 1; }
-        """
+    /// Starts the script that swaps in the staged app once this process has
+    /// exited, then quits. Throws, without quitting, if the script cannot start.
+    private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) throws {
+        let replacement = UpdateReplacement(
+            waitingForProcessID: ProcessInfo.processInfo.processIdentifier,
+            currentApp: currentAppURL,
+            stagedApp: stagedApp,
+            stagingDirectory: stagingDir
+        )
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", script, "--",
-                             pid,                // $1
-                             currentAppPath,     // $2
-                             stagedApp.path,      // $3
-                             stagingDir.path,     // $4
-                             backupPath]          // $5
-        try? process.run()
+        process.executableURL = UpdateReplacement.shellURL
+        process.arguments = replacement.arguments
+        // mv and rm errors name the install paths; keep them out of any log.
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
 
-        // Quit the current app
+        updateStatus = .readyToRelaunch
         NSApp.terminate(nil)
     }
 }
