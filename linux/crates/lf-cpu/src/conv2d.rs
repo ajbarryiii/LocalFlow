@@ -3,9 +3,10 @@
 //! All convolutions are 3x3 with stride 2 and padding 1; positions outside the
 //! valid input (time beyond the current length, or frequency beyond the band)
 //! read as zero, which matches NeMo's per-stage time masking for one utterance.
-//! `C` is fixed at 256 (16 vectors held in registers per output position).
+//! `C` is fixed at 256 (16 vectors held in registers per output position;
+//! AVX2 takes the channels 64 at a time, in 8 vectors).
 
-use crate::{SendPtr, ThreadPool, split_range};
+use crate::{SendPtr, ThreadPool, Tier, split_range};
 
 pub const CHANNELS: usize = 256;
 
@@ -17,6 +18,22 @@ pub fn out_len(n: usize) -> usize {
 /// Output frames of the first convolution computed per chunk (with one frame of
 /// overlap), so a thread's intermediate tile stays near L2 size.
 const CHUNK_OUT: usize = 4;
+
+/// `conv0_point` of either tier.
+type Conv0 = unsafe fn(*const f32, usize, usize, usize, usize, *const f32, *const f32, *mut f32);
+/// `dw_point` of either tier.
+type DwPoint =
+    unsafe fn(*const f32, usize, usize, usize, usize, usize, *const f32, *const f32, *mut f32);
+
+/// The point kernels of the CPU's `tier`.
+fn kernels(tier: Tier) -> (Conv0, DwPoint) {
+    match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 => (x86::conv0_point, x86::dw_point),
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx2 { .. } => (avx2::conv0_point, avx2::dw_point),
+    }
+}
 
 /// Fused `conv0` (1 -> 256 channels, then ReLU) and `conv2` (depthwise).
 ///
@@ -34,7 +51,7 @@ pub fn conv0_dw(
     b2: &[f32],
     out: &mut [f32],
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 required");
+    let (conv0_point, dw_point) = kernels(pool.tier());
     let (t1, f1) = (out_len(t0), out_len(f0));
     let (t2, f2) = (out_len(t1), out_len(f1));
     assert!(feat.len() >= crate::size(t0, f0));
@@ -56,12 +73,13 @@ pub fn conv0_dw(
             let r1 = (2 * (b - 1) + 2).min(t1);
             for r in r0..r1 {
                 for f in 0..f1 {
-                    // SAFETY: AVX-512 F, `feat` (`t0 * f0`) and the `w0`/`b0`
-                    // lengths were checked on entry. `r1 - r0 <= 2 * CHUNK_OUT + 1`
-                    // and `f < f1`, so the 256 floats written stay inside this
-                    // thread's own `tile`.
+                    // SAFETY: the kernel is the pool's tier's, which this CPU
+                    // supports; `feat` (`t0 * f0`) and the `w0`/`b0` lengths were
+                    // checked on entry. `r1 - r0 <= 2 * CHUNK_OUT + 1` and `f < f1`,
+                    // so the 256 floats written stay inside this thread's own
+                    // `tile`.
                     unsafe {
-                        x86::conv0_point(
+                        conv0_point(
                             feat.as_ptr(),
                             t0,
                             f0,
@@ -76,13 +94,14 @@ pub fn conv0_dw(
             }
             for t in a..b {
                 for f in 0..f2 {
-                    // SAFETY: the kernel reads only tile rows `r0..r1` (all written
+                    // SAFETY: the kernel is the pool's tier's, which this CPU
+                    // supports. It reads only tile rows `r0..r1` (all written
                     // above) at columns below `f1`, inside `tile`; the `w2`/`b2`
                     // lengths were checked. `t < t2` and `f < f2` keep the 256
                     // floats written inside `out` (`t2 * f2 * 256`, checked), and
                     // output rows `a..b` belong to this thread's chunk only.
                     unsafe {
-                        x86::dw_point(
+                        dw_point(
                             tile.as_ptr(),
                             r0,
                             r1,
@@ -112,7 +131,7 @@ pub fn depthwise_s2(
     b: &[f32],
     out: &mut [f32],
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 required");
+    let (_, dw_point) = kernels(pool.tier());
     let (to, fo) = (out_len(t), out_len(f));
     assert!(input.len() >= crate::size(crate::size(t, f), CHANNELS));
     assert!(out.len() >= crate::size(crate::size(to, fo), CHANNELS));
@@ -122,13 +141,14 @@ pub fn depthwise_s2(
     pool.run(&|idx| {
         for r in split_range(to, threads, idx) {
             for c in 0..fo {
-                // SAFETY: AVX-512 F, `input` (`t * f * 256`) and the `w`/`b`
-                // lengths were checked on entry, and the kernel reads only rows
+                // SAFETY: the kernel is the pool's tier's, which this CPU
+                // supports; `input` (`t * f * 256`) and the `w`/`b` lengths were
+                // checked on entry, and the kernel reads only rows
                 // below `t` and columns below `f`. `r < to` and `c < fo` keep the
                 // write inside `out` (`to * fo * 256`, checked); output row `r`
                 // belongs to this thread only.
                 unsafe {
-                    x86::dw_point(
+                    dw_point(
                         input.as_ptr(),
                         0,
                         t,
@@ -145,6 +165,7 @@ pub fn depthwise_s2(
     });
 }
 
+/// The AVX-512 kernels.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 mod x86 {
@@ -254,6 +275,124 @@ mod x86 {
     }
 }
 
+/// The AVX2 kernels: the AVX-512 arithmetic per channel, 64 channels (8
+/// vectors) at a time.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+mod avx2 {
+    use super::CHANNELS;
+    use std::arch::x86_64::*;
+
+    /// Channels per pass.
+    const G: usize = 64;
+    const V: usize = G / 8;
+
+    /// As the AVX-512 `conv0_point`.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2 and FMA. `feat` must be readable for
+    /// `t0 * f0` floats, `w` for `9 * 256` and `b` for 256; `out` must be
+    /// valid for writes of 256 floats that no other thread accesses.
+    #[target_feature(enable = "avx2,fma")]
+    pub unsafe fn conv0_point(
+        feat: *const f32,
+        t0: usize,
+        f0: usize,
+        r: usize,
+        f: usize,
+        w: *const f32,
+        b: *const f32,
+        out: *mut f32,
+    ) {
+        // SAFETY: taps outside `0..t0` x `0..f0` are skipped (the wrapping `-1`
+        // is out of range too), so `feat` reads stay below `t0 * f0`; `w` reads
+        // stay below `9 * 256`, `b` reads below 256 and `out` writes below 256
+        // (`g + G <= 256`; caller contract).
+        unsafe {
+            for g in (0..CHANNELS).step_by(G) {
+                let mut acc: [__m256; V] =
+                    std::array::from_fn(|v| _mm256_loadu_ps(b.add(g + v * 8)));
+                for dt in 0..3 {
+                    let ti = (2 * r + dt).wrapping_sub(1);
+                    if ti >= t0 {
+                        continue;
+                    }
+                    for df in 0..3 {
+                        let fi = (2 * f + df).wrapping_sub(1);
+                        if fi >= f0 {
+                            continue;
+                        }
+                        let x = _mm256_set1_ps(*feat.add(ti * f0 + fi));
+                        let wt = w.add((dt * 3 + df) * CHANNELS + g);
+                        for v in 0..V {
+                            acc[v] = _mm256_fmadd_ps(_mm256_loadu_ps(wt.add(v * 8)), x, acc[v]);
+                        }
+                    }
+                }
+                let z = _mm256_setzero_ps();
+                for v in 0..V {
+                    _mm256_storeu_ps(out.add(g + v * 8), _mm256_max_ps(acc[v], z));
+                }
+            }
+        }
+    }
+
+    /// As the AVX-512 `dw_point`.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2 and FMA. `input` must be readable for
+    /// `(row1 - row0) * fi_len * 256` floats, `w` for `9 * 256` and `b` for
+    /// 256; `out` must be valid for writes of 256 floats that no other thread
+    /// accesses.
+    #[target_feature(enable = "avx2,fma")]
+    pub unsafe fn dw_point(
+        input: *const f32,
+        row0: usize,
+        row1: usize,
+        fi_len: usize,
+        t: usize,
+        f: usize,
+        w: *const f32,
+        b: *const f32,
+        out: *mut f32,
+    ) {
+        // SAFETY: taps outside rows `row0..row1` and columns `0..fi_len` are
+        // skipped (the wrapping `-1` is out of range too), so `input` reads stay
+        // below `(row1 - row0) * fi_len * 256`; `w`, `b` and `out` stay within
+        // the sizes in the caller contract (`g + G <= 256`).
+        unsafe {
+            for g in (0..CHANNELS).step_by(G) {
+                let mut acc: [__m256; V] =
+                    std::array::from_fn(|v| _mm256_loadu_ps(b.add(g + v * 8)));
+                for dt in 0..3 {
+                    let ti = (2 * t + dt).wrapping_sub(1);
+                    if ti < row0 || ti >= row1 {
+                        continue;
+                    }
+                    for df in 0..3 {
+                        let fi = (2 * f + df).wrapping_sub(1);
+                        if fi >= fi_len {
+                            continue;
+                        }
+                        let src = input.add(((ti - row0) * fi_len + fi) * CHANNELS + g);
+                        let wt = w.add((dt * 3 + df) * CHANNELS + g);
+                        for v in 0..V {
+                            acc[v] = _mm256_fmadd_ps(
+                                _mm256_loadu_ps(wt.add(v * 8)),
+                                _mm256_loadu_ps(src.add(v * 8)),
+                                acc[v],
+                            );
+                        }
+                    }
+                }
+                for v in 0..V {
+                    _mm256_storeu_ps(out.add(g + v * 8), acc[v]);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,41 +441,40 @@ mod tests {
 
     #[test]
     fn fused_conv0_dw_matches_reference() {
-        if !crate::cpu_supported() {
-            return;
-        }
-        let pool = ThreadPool::new(&[0, 1, 2]);
-        // Odd time and frequency sizes exercise the padding and chunk edges.
-        let (t0, f0) = (23, 13);
-        let feat = rand(t0 * f0, 1);
-        let (w0, b0, w2, b2) = (
-            rand(9 * 256, 2),
-            rand(256, 3),
-            rand(9 * 256, 4),
-            rand(256, 5),
-        );
-        let c0 = conv_ref(&feat, t0, f0, 1, 256, &|o, _, tap| w0[tap * 256 + o], &b0);
-        let c0: Vec<f32> = c0.iter().map(|&v| v.max(0.0) as f32).collect();
-        let (t1, f1) = (out_len(t0), out_len(f0));
-        let expected = conv_ref(
-            &c0,
-            t1,
-            f1,
-            256,
-            256,
-            &|o, i, tap| if o == i { w2[tap * 256 + o] } else { 0.0 },
-            &b2,
-        );
-        let mut out = vec![0.0; out_len(t1) * out_len(f1) * 256];
-        conv0_dw(&pool, &feat, t0, f0, &w0, &b0, &w2, &b2, &mut out);
-        for (i, (&a, &e)) in out.iter().zip(&expected).enumerate() {
-            assert!((a as f64 - e).abs() < 1e-3, "at {i}: {a} vs {e}");
-        }
-        // Standalone depthwise matches too.
-        let mut out2 = vec![0.0; out_len(t1) * out_len(f1) * 256];
-        depthwise_s2(&pool, &c0, t1, f1, &w2, &b2, &mut out2);
-        for (&a, &e) in out2.iter().zip(&expected) {
-            assert!((a as f64 - e).abs() < 1e-3);
+        for pool in crate::tier_pools(3) {
+            let tier = pool.tier();
+            // Odd time and frequency sizes exercise the padding and chunk edges.
+            let (t0, f0) = (23, 13);
+            let feat = rand(t0 * f0, 1);
+            let (w0, b0, w2, b2) = (
+                rand(9 * 256, 2),
+                rand(256, 3),
+                rand(9 * 256, 4),
+                rand(256, 5),
+            );
+            let c0 = conv_ref(&feat, t0, f0, 1, 256, &|o, _, tap| w0[tap * 256 + o], &b0);
+            let c0: Vec<f32> = c0.iter().map(|&v| v.max(0.0) as f32).collect();
+            let (t1, f1) = (out_len(t0), out_len(f0));
+            let expected = conv_ref(
+                &c0,
+                t1,
+                f1,
+                256,
+                256,
+                &|o, i, tap| if o == i { w2[tap * 256 + o] } else { 0.0 },
+                &b2,
+            );
+            let mut out = vec![0.0; out_len(t1) * out_len(f1) * 256];
+            conv0_dw(&pool, &feat, t0, f0, &w0, &b0, &w2, &b2, &mut out);
+            for (i, (&a, &e)) in out.iter().zip(&expected).enumerate() {
+                assert!((a as f64 - e).abs() < 1e-3, "{tier} at {i}: {a} vs {e}");
+            }
+            // Standalone depthwise matches too.
+            let mut out2 = vec![0.0; out_len(t1) * out_len(f1) * 256];
+            depthwise_s2(&pool, &c0, t1, f1, &w2, &b2, &mut out2);
+            for (&a, &e) in out2.iter().zip(&expected) {
+                assert!((a as f64 - e).abs() < 1e-3, "{tier}");
+            }
         }
     }
 }

@@ -119,6 +119,9 @@ fn run() -> Result<(), String> {
     let config = Config::load(&config_path, &data_dir)?;
     log::set_level(config.log_level);
     let cpus = config::resolve_cpus(config.cpus.as_deref())?;
+    // A forced kernel tier the CPU lacks stops the daemon here, not in the
+    // recognizer.
+    lf_asr::tier().map_err(|e| e.to_string())?;
     if args.check {
         println!("configuration ok");
         return Ok(());
@@ -126,6 +129,7 @@ fn run() -> Result<(), String> {
     let runtime_dir = paths::runtime_dir()?;
     // Only the vocabulary, for dictionary entries; the model loads later on
     // the recognition thread.
+    recognizer::check_export(&config.export_path)?;
     let tokenizer = lf_asr::model::load_tokenizer(&config.export_path)
         .map_err(|e| format!("model export {}: {e}", config.export_path.display()))?;
 

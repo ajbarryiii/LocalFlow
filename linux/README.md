@@ -2,9 +2,9 @@
 
 Local dictation for Wayland desktops (developed on Hyprland and NixOS): hold
 a key, speak, release, and the text is typed into the focused window.
-Speech recognition runs on the CPU with the ternary Parakeet model; nothing
-leaves the machine, and audio is never written to disk. See `PLAN.md` for
-the design and measurements.
+Speech recognition runs on the CPU with a ternary or binary Parakeet model;
+nothing leaves the machine, and audio is never written to disk. See `PLAN.md`
+for the design and measurements.
 
 - `localflowd`: the daemon. It records, transcribes, post-processes (voice
   macros, "press enter", spoken delimiters) and types.
@@ -26,7 +26,59 @@ nix develop ./linux --command cargo build --release --manifest-path linux/Cargo.
 # Binaries: linux/target/release/localflowd and localflowctl
 ```
 
-The CPU needs AVX-512 (F, BW, VNNI, VBMI).
+The CPU needs x86-64 with AVX2, FMA and F16C (Intel Haswell or AMD Zen 1 and
+later). At startup the daemon picks the fastest set of kernels the CPU
+supports and names it in its `model loaded` log line:
+
+| Tier | CPU features | For example |
+| --- | --- | --- |
+| `avx512` | AVX-512 F, BW, VNNI and VBMI | Intel Ice Lake, Sapphire Rapids; AMD Zen 4 and later |
+| `avx2+vnni` | AVX2 and AVX-VNNI | Intel Alder Lake and later client chips |
+| `avx2` | AVX2 | Intel Haswell to Comet Lake, Skylake-SP to Cascade Lake Xeons; AMD Zen 1-3 |
+
+`LOCALFLOW_CPU_TIER=avx512`, `avx2` or `avx2-novnni` forces a tier (`avx2`
+still uses AVX-VNNI when the CPU has it; `avx2-novnni` does not). Forcing
+one the CPU lacks stops the daemon with an error. Every tier computes the same
+results bit for bit, so transcripts do not depend on the CPU.
+
+On a Ryzen 9 9950X3D, which runs all three, 2-12 s clips took 1.4-1.7 times
+as long end to end at `avx2+vnni` and 1.8-2.2 times at `avx2` as at `avx512`
+(kea-t, i8x2: 27, 44 and 55 ms on average), and the encoder projections for
+30 s of audio 2.0 and 2.6 times. That machine runs 256-bit instructions at
+half its 512-bit rate, so these ratios say little about CPUs without AVX-512.
+
+## Model
+
+LocalFlow needs a model export: a directory with `export.safetensors`,
+`manifest.json` and `tokenizer/`. Two are published on Hugging Face, both
+derived from NVIDIA's
+[parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+and licensed CC-BY-4.0 (attribution in each export's `NOTICE`):
+
+- [kea-b](https://huggingface.co/rajb3/kea-b) (recommended): 1-bit weights,
+  105 MB.
+- [kea-t](https://huggingface.co/rajb3/kea-t): ternary weights, 181 MB,
+  slightly lower WER (1.33% vs 1.45% on 40 LibriSpeech test-clean clips),
+  and slower (see `export_path` below).
+
+The daemon checks every file against the SHA-256 hashes in `manifest.json`
+when it loads. With Nix, the flake packages both exports, pinned to a
+Hugging Face revision:
+
+```bash
+nix build ./linux#kea-b   # result/ is the export directory
+```
+
+In a Home Manager or NixOS configuration that has this flake as the input
+`localflow`, set `export_path = "${localflow.packages.x86_64-linux.kea-b}"`.
+Without Nix, download the repository into the default location:
+
+```bash
+git clone https://huggingface.co/rajb3/kea-b ~/.local/share/localflow/model
+```
+
+(`git lfs` must be installed; `hf download rajb3/kea-b --local-dir …` works
+too).
 
 ## Configure
 
@@ -39,7 +91,7 @@ invalid values stop the daemon with an error. Defaults:
   "version": 1,
   "export_path": "<XDG_DATA_HOME>/localflow/model",
   "precision": "i8x2",
-  "cpus": "first 16 available CPUs",
+  "cpus": "one per physical core, at most 16",
   "press_enter": true,
   "spoken_delimiters": true,
   "spoken_numbers": true,
@@ -58,12 +110,24 @@ invalid values stop the daemon with an error. Defaults:
 ```
 
 - `export_path`: the model export directory (`export.safetensors`,
-  `manifest.json`, `tokenizer/`).
+  `manifest.json`, `tokenizer/`), in either format: ternary
+  (`parakeet-ternary-v1`, e.g. [kea-t](https://huggingface.co/rajb3/kea-t))
+  or binary (`parakeet-binary-v1`, e.g.
+  [kea-b](https://huggingface.co/rajb3/kea-b)). The format is read from
+  `manifest.json`. Binary weights stay at 1 bit in memory (79 MB of encoder
+  weights instead of 155 MB). On a Ryzen 9 9950X3D with i8x2, kea-b
+  transcribed 2-12 s clips about 8% faster than kea-t end to end; its
+  encoder projections were 9-21% faster at 3 s and 3-6% faster at 30 s.
 - `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. i8x2 matched
   f32's WER over 32,560 dev/test utterances (six near-tie transcript
   changes) and is 25-28% faster than i8x3, which tracks f32 to rounding; see
   "Precision validation" in `PLAN.md`.
-- `cpus`: an array (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`).
+- `cpus`: the CPUs the recognizer's threads are pinned to, an array
+  (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`). By default, one
+  CPU per physical core the daemon may run on (SMT siblings are skipped),
+  whole L3 caches largest first, at most 16; on a 9950X3D that is CPUs 0-15,
+  the V-cache CCD first. There, on 2-12 s clips, 8 cores of one L3 cache took
+  23% longer and 16 threads left to the scheduler 47% longer.
 - `voice_macros`: `[{"command": "sign off", "payload": "Best regards,"}]`.
   Saying exactly the command (ignoring case and punctuation) types the payload.
 - `spoken_numbers`: write spoken numbers as digits ("twenty three percent"
@@ -404,6 +468,9 @@ working.
 ```bash
 nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.toml
 ```
+
+The kernel tests run at every tier the CPU supports, whatever
+`LOCALFLOW_CPU_TIER` says, and check that the tiers agree bit for bit.
 
 `lf-daemon/tests/private_dbus.rs` starts its own `dbus-daemon` (from the dev
 shell) with fake MPRIS players; it never uses your session bus. Set
