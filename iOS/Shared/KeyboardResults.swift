@@ -39,11 +39,12 @@ struct KeyboardResultLedger: Equatable, Sendable {
         invalidated.remove(requestID)
     }
 
-    /// Call with every computed mode. An instance displaying R as recording or transcribing binds R
-    /// to the current field, so a host auto-finish or another instance's finish still lands here.
+    /// Call with every computed mode. An instance displaying R as recording or transcribing (waiting for
+    /// the model included) binds R to the current field, so a host auto-finish or another instance's
+    /// finish still lands here.
     mutating func noteDisplayed(_ mode: KeyboardMode, intent: StoreRead<KeyboardIntent>, documentID: UUID?) {
         switch mode {
-        case .recording, .transcribing: break
+        case .recording, .transcribing, .waitingForModel: break
         default: return
         }
         guard let requestID = intent.value?.requestID, let documentID, bindings[requestID] == nil,

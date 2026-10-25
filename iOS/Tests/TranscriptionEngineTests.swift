@@ -7,7 +7,8 @@ enum TranscriptionEngineTests {
             ("transcriptionWaitsForReadiness", isolated(testTranscriptionWaitsForReadiness)),
             ("cancellationEndsTheWaitAndReleasesSamples", isolated(testCancellationEndsTheWaitAndReleasesSamples)),
             ("cancellationRacingReadinessNeverTranscribes", isolated(testCancellationRacingReadinessNeverTranscribes)),
-            ("failedPreparationIsRetriedByTheNextDictation", isolated(testFailedPreparationIsRetriedByTheNextDictation)),
+            ("failedPreparationBacksOff", isolated(testFailedPreparationBacksOff)),
+            ("retryPreparationIgnoresTheBackoff", isolated(testRetryPreparationIgnoresTheBackoff)),
             ("backgroundFailureFailsWithHint", isolated(testBackgroundFailureFailsWithHint)),
             ("releaseOnlyWhenIdleAndOneRuntimeAlive", isolated(testReleaseOnlyWhenIdleAndOneRuntimeAlive)),
             ("unavailableModel", isolated(testUnavailableModel)),
@@ -90,8 +91,10 @@ enum TranscriptionEngineTests {
         TestSupport.expectEqual(h.engine.modelState, .ready)
     }
 
+    /// A failed preparation is retried only after its backoff delay: until then `prepare()` changes
+    /// nothing, the model stays `failed`, and a transcription fails at once without preparing again.
     @MainActor
-    private static func testFailedPreparationIsRetriedByTheNextDictation() {
+    private static func testFailedPreparationBacksOff() {
         let h = EngineHarness()
         let first = h.transcribe(audio())
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 1 }, "not preparing")
@@ -100,13 +103,70 @@ enum TranscriptionEngineTests {
         TestSupport.expectEqual(first.error as? TranscriptionFailure, .modelFailed)
         TestSupport.expectEqual(h.engine.modelState, .failed)
         TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.live.current == 0 }, "failed runtime kept")
+
+        // Within the first delay: no new runtime, and the next dictation fails at once.
+        h.clock += ModelPreparationBackoff.delay(afterFailures: 1) - 1
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 1)
+        TestSupport.expectEqual(h.engine.modelState, .failed)
+        TestSupport.expect(!h.engine.isLoaded && !h.engine.isBusy, "a backing-off engine is loaded or busy")
+        let early = h.transcribe(audio())
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { early.error != nil }, "the dictation waited for a retry")
+        TestSupport.expectEqual(early.error as? TranscriptionFailure, .modelFailed)
+        TestSupport.expectEqual(h.made, 1)
+        TestSupport.expectEqual(h.engine.modelState, .failed)
+
+        // After the delay the next dictation prepares again; a second failure doubles the delay.
+        h.clock += 1
         let second = h.transcribe(audio())
-        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 2 }, "preparation not retried")
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 2 }, "preparation not retried after the delay")
         TestSupport.expectEqual(h.liveWhenMade, [0, 0])
+        TestSupport.expectEqual(h.engine.modelState, .preparing)
+        h.runtime(1)!.finishPreparing(succeeded: false)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { second.error != nil }, "no failure")
+        h.clock += ModelPreparationBackoff.delay(afterFailures: 1)
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 2)
+        h.clock += ModelPreparationBackoff.delay(afterFailures: 2) - ModelPreparationBackoff.delay(afterFailures: 1)
+        let third = h.transcribe(audio())
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.made == 3 }, "preparation not retried after the doubled delay")
+        h.runtime(2)!.finishPreparing()
+        _ = TestSupport.waitUntil(timeout: 2) { h.runtime(2)!.transcribeCalls == 1 }
+        h.runtime(2)!.finishTranscribing(.success("words"))
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { third.text == "words" }, "retry failed")
+
+        // A success resets the backoff: a later failure waits only the first delay again.
+        TestSupport.expect(h.engine.releaseIfIdle(), "idle engine not released")
+        h.engine.prepare()
+        h.runtime(3)!.finishPreparing(succeeded: false)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .failed }, "not failed")
+        h.clock += ModelPreparationBackoff.delay(afterFailures: 1)
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 5)
+    }
+
+    /// The user's Prepare or Retry in the app starts preparing at once, even while a failure backs off.
+    @MainActor
+    private static func testRetryPreparationIgnoresTheBackoff() {
+        let h = EngineHarness()
+        h.engine.prepare()
+        h.runtime(0)!.finishPreparing(succeeded: false)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .failed }, "not failed")
+        h.engine.prepare()
+        TestSupport.expectEqual(h.made, 1)
+        h.engine.retryPreparation()
+        TestSupport.expectEqual(h.made, 2)
+        TestSupport.expectEqual(h.engine.modelState, .preparing)
+        h.engine.retryPreparation()   // already preparing: no second runtime
+        TestSupport.expectEqual(h.made, 2)
         h.runtime(1)!.finishPreparing()
-        _ = TestSupport.waitUntil(timeout: 2) { h.runtime(1)!.transcribeCalls == 1 }
-        h.runtime(1)!.finishTranscribing(.success("words"))
-        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { second.text == "words" }, "retry failed")
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.engine.modelState == .ready }, "not ready")
+        h.engine.retryPreparation()   // ready: nothing to do
+        TestSupport.expectEqual(h.made, 2)
+        let missing = EngineHarness(isAvailable: false)
+        missing.engine.retryPreparation()
+        TestSupport.expectEqual(missing.made, 0)
+        TestSupport.expectEqual(missing.engine.modelState, .unavailable)
     }
 
     /// No fallback runtime ever: a background failure on iOS 27 or later fails the request with a
@@ -377,6 +437,8 @@ private final class EngineHarness {
     var made = 0
     var liveWhenMade: [Int] = []
     var background = false
+    /// The engine's clock, so backoff delays are deterministic.
+    var clock = Fixture.now
     var attempts: [TranscriptionEngine.AttemptReport] = []
     var preparations: [TranscriptionEngine.PreparationReport] = []
     var engine: TranscriptionEngine!
@@ -385,6 +447,7 @@ private final class EngineHarness {
         engine = TranscriptionEngine(
             isAvailable: isAvailable, osMajorVersion: osMajorVersion,
             isInBackground: { [unowned self] in self.background },
+            now: { [unowned self] in self.clock },
             makeRuntime: { [unowned self] in
                 self.made += 1
                 self.liveWhenMade.append(self.live.current)

@@ -14,7 +14,9 @@ enum KeyboardMode: Equatable, Sendable {
     case starting
     case recording(level: Float, startedAt: Date)
     case transcribing
+    case waitingForModel           // the recording ended and waits for the host to prepare the model
     case error(HostErrorCode)
+    case preparingModel            // as `ready`, but the model is preparing: a recording waits for it
     case ready
     case hostUnavailable           // a mic tap bounces, or shows instructions
 }
@@ -36,9 +38,7 @@ enum KeyboardPresenter {
 
         let status = status.value.flatMap { $0.schema == DictationProtocol.schema ? $0 : nil }
         let intent = intent.value.flatMap { $0.schema == DictationProtocol.schema ? $0 : nil }
-        let isHostAlive = status.map {
-            $0.session == .active && DictationProtocol.isFresh($0.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
-        } ?? false
+        let isHostAlive = status.map { isAlive($0, now: now) } ?? false
         // The intent, not the keyboard instance, names the request, so a keyboard created after the
         // bounce adopts the request its predecessor started.
         let dictation = intent.flatMap { intent in status?.dictation.flatMap { $0.requestID == intent.requestID ? $0 : nil } }
@@ -49,7 +49,12 @@ enum KeyboardPresenter {
             case .recording:
                 let level = status?.level ?? 0
                 return .recording(level: level.isFinite ? min(max(level, 0), 1) : 0, startedAt: dictation.startedAt)
-            case .transcribing: return .transcribing
+            case .transcribing:
+                // The model is not ready yet: the recording waits for its preparation.
+                switch status?.model {
+                case .preparing?, .notPrepared?: return .waitingForModel
+                default: return .transcribing
+                }
             case .completed, .failed, .cancelled: break
             }
         }
@@ -61,8 +66,22 @@ enum KeyboardPresenter {
            DictationProtocol.isFresh(intent.issuedAt, ttl: DictationProtocol.pendingRecordTTL, now: now) {
             return .starting
         }
-        if isHostAlive, status?.captureReady == true { return .ready }
+        if isHostAlive, let status, status.captureReady {
+            return status.model == .preparing ? .preparingModel : .ready
+        }
         return .hostUnavailable
+    }
+
+    /// A live host is preparing the model: the keyboard says so while recording too. Only a live host's
+    /// status counts, so a dead host's last status never claims preparation.
+    static func isModelPreparing(status: StoreRead<HostStatus>, now: Date) -> Bool {
+        guard let status = status.value, status.schema == DictationProtocol.schema else { return false }
+        return isAlive(status, now: now) && status.model == .preparing
+    }
+
+    /// An active session with a heartbeat fresh within `livenessTimeout`.
+    private static func isAlive(_ status: HostStatus, now: Date) -> Bool {
+        status.session == .active && DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
     }
 
     /// The stale-writer guard: re-read the intent right before writing `finish` or `cancel`, and
