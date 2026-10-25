@@ -155,9 +155,7 @@ pub fn check_export(export: &Path) -> Result<(), String> {
 pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> RecognizerFactory {
     Box::new(move || {
         check_export(&export)?;
-        if !lf_asr::cpu_supported() {
-            return Err("this CPU lacks AVX-512 F/BW/VNNI/VBMI".into());
-        }
+        lf_asr::tier().map_err(|e| e.to_string())?;
         let start = Instant::now();
         let exp = lf_asr::Export::open(&export)
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
@@ -173,9 +171,10 @@ pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> R
             .transcribe(&silence, None)
             .map_err(|e| format!("warm-up transcription failed: {e}"))?;
         crate::info!(
-            "model loaded in {:.1?} ({format}, {}, {} threads)",
+            "model loaded in {:.1?} ({format}, {}, {} kernels, {} threads)",
             start.elapsed(),
             precision.name(),
+            transcriber.tier(),
             cpus.len()
         );
         Ok(Box::new(AsrRecognizer::new(transcriber)) as Box<dyn Recognizer>)

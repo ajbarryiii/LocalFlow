@@ -55,8 +55,9 @@ pub struct Config {
     /// Directory holding `export.safetensors`, `manifest.json` and `tokenizer/`.
     pub export_path: PathBuf,
     pub precision: Precision,
-    /// CPUs for the recognizer's pinned thread pool. `None`: the first
-    /// `min(16, available)` CPUs the daemon may run on.
+    /// CPUs for the recognizer's pinned thread pool. `None`: one CPU per
+    /// physical core the daemon may run on (SMT siblings skipped), whole L3
+    /// domains largest first, at most 16 (`lf_asr::topology`).
     pub cpus: Option<Vec<usize>>,
     pub press_enter: bool,
     pub spoken_delimiters: bool,
@@ -385,18 +386,7 @@ fn parse_macros(v: &Value) -> Result<Vec<VoiceMacro>, String> {
         .collect()
 }
 
-/// The CPUs this process may run on, ascending.
-pub fn allowed_cpus() -> Vec<usize> {
-    // SAFETY: `set` is a plain bitmask written by the kernel; CPU_ISSET only
-    // reads it within CPU_SETSIZE.
-    unsafe {
-        let mut set: libc::cpu_set_t = std::mem::zeroed();
-        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
-            return Vec::new();
-        }
-        (0..MAX_CPU).filter(|&c| libc::CPU_ISSET(c, &set)).collect()
-    }
-}
+pub use lf_asr::topology::allowed_cpus;
 
 /// Resolves the configured CPU list against the CPUs available to the process.
 pub fn resolve_cpus(configured: Option<&[usize]>) -> Result<Vec<usize>, String> {
@@ -405,7 +395,7 @@ pub fn resolve_cpus(configured: Option<&[usize]>) -> Result<Vec<usize>, String> 
         return Err("cannot read the CPU affinity mask".into());
     }
     match configured {
-        None => Ok(allowed.into_iter().take(16).collect()),
+        None => Ok(lf_asr::topology::Topology::read(&allowed).default_cpus()),
         Some(cpus) => {
             if let Some(&bad) = cpus.iter().find(|c| !allowed.contains(c)) {
                 return Err(format!("cpus: CPU {bad} is not available to this process"));
@@ -613,6 +603,7 @@ mod tests {
     fn default_cpus_come_from_the_affinity_mask() {
         let cpus = resolve_cpus(None).unwrap();
         assert!(!cpus.is_empty() && cpus.len() <= 16);
+        assert!(cpus.iter().all(|c| allowed_cpus().contains(c)));
         assert!(resolve_cpus(Some(&[MAX_CPU - 1])).is_err() || allowed_cpus().len() == MAX_CPU);
     }
 }

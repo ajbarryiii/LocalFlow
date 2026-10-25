@@ -160,9 +160,9 @@ mod tests {
 
     #[test]
     fn waveform_copies_are_zeroed_after_each_call() {
-        if !lf_cpu::cpu_supported() {
+        let Some(&tier) = lf_cpu::Tier::available().first() else {
             return;
-        }
+        };
         let bins = N_FFT / 2 + 1;
         let mut rng = SplitMix64::new(1);
         let mut rand = |n: usize| -> Vec<f32> { (0..n).map(|_| rng.next_f32()).collect() };
@@ -175,7 +175,7 @@ mod tests {
             mel,
             window: vec![1.0; WIN_LENGTH],
         };
-        let pool = ThreadPool::new(&[0, 1]);
+        let pool = ThreadPool::new(&[0, 1]).with_tier(tier);
         let mut buf = FrontendBuffers::default();
         let samples: Vec<f32> = rand(16_000).iter().map(|v| v - 0.5).collect();
         let frames = features(&fe, &pool, &samples, &mut buf).unwrap();

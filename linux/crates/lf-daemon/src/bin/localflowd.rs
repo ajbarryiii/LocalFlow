@@ -115,6 +115,9 @@ fn run() -> Result<(), String> {
     let config = Config::load(&config_path, &data_dir)?;
     log::set_level(config.log_level);
     let cpus = config::resolve_cpus(config.cpus.as_deref())?;
+    // A forced kernel tier the CPU lacks stops the daemon here, not in the
+    // recognizer.
+    lf_asr::tier().map_err(|e| e.to_string())?;
     if args.check {
         println!("configuration ok");
         return Ok(());

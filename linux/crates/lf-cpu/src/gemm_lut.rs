@@ -42,7 +42,7 @@
 
 use crate::barrier::SpinBarrier;
 use crate::pack::{Encoding, NR, PackedTernary};
-use crate::{AlignedBuf, SendPtr, ThreadPool, split_range};
+use crate::{AlignedBuf, SendPtr, ThreadPool, Tier, split_range};
 
 /// Blocking parameters. All are validated by [`LutWorkspace::new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,8 +236,19 @@ impl LutWorkspace {
     }
 }
 
+/// Whether [`gemm`] runs at `tier` (only AVX-512 has a path).
+pub fn has_path(tier: Tier) -> bool {
+    match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 => true,
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx2 { .. } => false,
+    }
+}
+
 /// `y[t][o] = scale[o] * sum_i code(o, i) * x[t][i]` for `t` frames of `x`
-/// (`[t][w.cols()]`) into `y` (`[t][w.rows()]`).
+/// (`[t][w.cols()]`) into `y` (`[t][w.rows()]`). The kernel exists for the
+/// AVX-512 tier only; a pool at another tier panics.
 pub fn gemm(
     pool: &ThreadPool,
     ws: &mut LutWorkspace,
@@ -246,7 +257,28 @@ pub fn gemm(
     t: usize,
     y: &mut [f32],
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 F/BW/VBMI required");
+    match pool.tier() {
+        // SAFETY: a pool's tier is one this CPU supports.
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 => unsafe { gemm_avx512(pool, ws, w, x, t, y) },
+        #[cfg(target_arch = "x86_64")]
+        tier @ Tier::Avx2 { .. } => panic!("the lookup-table kernel has no {tier} path"),
+    }
+}
+
+/// [`gemm`] on the AVX-512 kernels.
+///
+/// # Safety
+/// The CPU must support AVX-512 F, BW and VBMI.
+#[cfg(target_arch = "x86_64")]
+unsafe fn gemm_avx512(
+    pool: &ThreadPool,
+    ws: &mut LutWorkspace,
+    w: &PackedTernary,
+    x: &[f32],
+    t: usize,
+    y: &mut [f32],
+) {
     assert_eq!(
         w.encoding(),
         Encoding::Ternary,
@@ -306,7 +338,7 @@ pub fn gemm(
             // fg`, and `ensure` gave table `gi` at least `plan.table_bytes()`, i.e.
             // `nbuf * half` floats; buffer `chunk % nbuf` starts inside it.
             let tab = unsafe { tables[gi].get().add((chunk % nbuf) * half) };
-            // SAFETY: AVX-512 F was asserted on entry. Frames `f0..f0 + nf` lie in
+            // SAFETY: AVX-512 F (caller contract). Frames `f0..f0 + nf` lie in
             // this group's part of `0..t`, and `x` holds `t * k` values (checked).
             // `tab` is 64-byte aligned (`half` is a multiple of 16 floats) with
             // `half` floats, enough for `nf <= fc` frames of all `gp` groups. Each
@@ -326,7 +358,7 @@ pub fn gemm(
                     let nb = bpp.min(blocks - b0);
                     let nv = nb * 4;
                     for pb in 0..nb {
-                        // SAFETY: AVX-512 F/BW/VBMI were asserted on entry, and
+                        // SAFETY: AVX-512 F/BW/VBMI (caller contract), and
                         // `b0 + pb < blocks`, so `w.block(b0 + pb)` has `quads * 64`
                         // bytes. With `stride = nv * 64` and `vbase =
                         // pb * 4 <= nv - 4`, the writes end by `ng * nv * 64 <=
@@ -347,7 +379,7 @@ pub fn gemm(
                     let mut fl = 0;
                     while fl < nf {
                         let rows = mf.min(nf - fl);
-                        // SAFETY: AVX-512 F was asserted on entry. The tile holds
+                        // SAFETY: AVX-512 F (caller contract). The tile holds
                         // groups `g0..g0 + ng` for `nv` vectors. `fl % mf == 0`, so
                         // frames `fl..fl + rows` form one `mf`-frame block of the
                         // tables, all written by this group before the barrier;
@@ -432,6 +464,7 @@ const DIGITS: [[f32; 16]; 3] = {
     out
 };
 
+/// The AVX-512 kernels.
 // Explicit index loops over const-sized accumulator arrays unroll into registers.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
@@ -796,14 +829,14 @@ mod tests {
     /// would not.
     #[test]
     fn non_finite_inputs_stay_in_their_frames() {
-        if !crate::cpu_supported() {
+        if crate::avx512_pool(&[0]).is_none() {
             return;
         }
         // 32 inputs: the last group (30, 31 and padding) is partial.
         let k = 32;
         let m = TernaryMatrix::random(64, k, 4);
         let w = PackedTernary::new(&m).unwrap();
-        let pool = ThreadPool::new(&[0, 1]);
+        let pool = crate::avx512_pool(&[0, 1]).unwrap();
         let mut ws = LutWorkspace::new(LutConfig {
             chunk_frames: 2,
             table_budget: 0,
@@ -838,7 +871,7 @@ mod tests {
 
     fn check(m: &TernaryMatrix, cfg: LutConfig, threads: usize, frames: &[usize], seed: u64) {
         let w = PackedTernary::new(m).unwrap();
-        let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+        let pool = crate::avx512_pool(&(0..threads).collect::<Vec<_>>()).unwrap();
         let mut ws = LutWorkspace::new(cfg).unwrap();
         let mut rng = SplitMix64::new(seed);
         for &t in frames {
@@ -860,7 +893,7 @@ mod tests {
 
     #[test]
     fn matches_reference_on_odd_shapes() {
-        if !crate::cpu_supported() {
+        if crate::avx512_pool(&[0]).is_none() {
             return;
         }
         // Columns: 4 (one partial group), 8, 12 (one exact expansion step),
@@ -881,7 +914,7 @@ mod tests {
 
     #[test]
     fn matches_reference_across_configs_and_threads() {
-        if !crate::cpu_supported() {
+        if crate::avx512_pool(&[0]).is_none() {
             return;
         }
         let m = TernaryMatrix::random(192, 196, 21);
@@ -914,10 +947,10 @@ mod tests {
 
     #[test]
     fn workspace_is_reused_across_shapes() {
-        if !crate::cpu_supported() {
+        if crate::avx512_pool(&[0]).is_none() {
             return;
         }
-        let pool = ThreadPool::new(&[0, 1]);
+        let pool = crate::avx512_pool(&[0, 1]).unwrap();
         let mut ws = LutWorkspace::new(LutConfig {
             chunk_frames: 5,
             frame_groups: 2,
@@ -939,23 +972,25 @@ mod tests {
 
     #[test]
     fn zero_frames_is_a_no_op() {
-        if !crate::cpu_supported() {
+        if crate::avx512_pool(&[0]).is_none() {
             return;
         }
         let m = TernaryMatrix::random(64, 12, 1);
         let w = PackedTernary::new(&m).unwrap();
-        let pool = ThreadPool::new(&[0]);
+        let pool = crate::avx512_pool(&[0]).unwrap();
         let mut ws = LutWorkspace::new(LutConfig::default()).unwrap();
         let mut y: Vec<f32> = Vec::new();
         gemm(&pool, &mut ws, &w, &[], 0, &mut y);
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "assertion failed: x.len()")]
     fn short_input_is_rejected() {
         let m = TernaryMatrix::random(64, 12, 1);
         let w = PackedTernary::new(&m).unwrap();
-        let pool = ThreadPool::new(&[0]);
+        let Some(pool) = crate::avx512_pool(&[0]) else {
+            panic!("assertion failed: x.len() (skipped: no AVX-512)");
+        };
         let mut ws = LutWorkspace::new(LutConfig::default()).unwrap();
         let mut y = vec![0.0; 2 * 64];
         gemm(&pool, &mut ws, &w, &[0.0; 12], 2, &mut y);

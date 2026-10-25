@@ -437,6 +437,35 @@ fn localflowd_writes_its_fatal_error_before_exiting() {
 }
 
 #[test]
+fn localflowd_rejects_a_bad_forced_cpu_tier() {
+    let dir = TempDir::new("cpu-tier");
+    let check = |tier: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_localflowd"))
+            .arg("--check-config")
+            .arg("--config")
+            .arg(dir.path().join("missing.json"))
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .env("LOCALFLOW_CPU_TIER", tier)
+            .env_remove("JOURNAL_STREAM")
+            .output()
+            .unwrap()
+    };
+    let out = check("sse4");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.starts_with("localflowd error: LOCALFLOW_CPU_TIER must be"),
+        "{err:?}"
+    );
+    // A tier this CPU has passes.
+    if lf_asr::Tier::available().iter().any(|t| t.name() == "avx2") {
+        let out = check("avx2-novnni");
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "configuration ok\n");
+    }
+}
+
+#[test]
 fn localflowd_says_where_to_get_a_missing_model() {
     let dir = TempDir::new("no-model");
     let export = dir.path().join("model");

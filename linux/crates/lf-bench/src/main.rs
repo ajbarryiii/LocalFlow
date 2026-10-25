@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use lf_cpu::gemm_lut::{LutConfig, LutWorkspace};
 use lf_cpu::gemm_ref::{compare, reference};
+use lf_cpu::topology::{Topology, allowed_cpus};
 use lf_cpu::{
     Encoding, PackedTernary, QuantizedActs, Scratch, ThreadPool, gemm_f32, gemm_i8, gemm_lut,
 };
@@ -62,6 +63,7 @@ struct Args {
     /// Weight format of the synthetic model when no export is given.
     synthetic: WeightFormat,
     /// CPUs to pin the pool to, in order; `threads` takes the first entries.
+    /// Default: one per physical core, largest L3 first ([`lf_cpu::topology`]).
     cpus: Vec<usize>,
     /// MiB written between timed passes to evict the caches; 0 keeps them warm.
     cold_mib: usize,
@@ -79,8 +81,7 @@ fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         exports: Vec::new(),
         synthetic: WeightFormat::Ternary,
-        // Physical cores only; 0-7 share the 96 MiB V-cache L3.
-        cpus: (0..16).collect(),
+        cpus: Topology::read(&allowed_cpus()).physical_cores(),
         cold_mib: 0,
         threads: vec![8],
         frames: vec![25, 63, 125, 188, 375],
@@ -395,7 +396,7 @@ fn macs_per_frame(model: &Model) -> f64 {
         * model.layers.len() as f64
 }
 
-fn accuracy(model: &Model, lut: LutConfig) {
+fn accuracy(model: &Model, lut: LutConfig, lut_ok: bool) {
     let pool = ThreadPool::new(&[0]);
     let scratch = Scratch::new(
         1,
@@ -426,7 +427,7 @@ fn accuracy(model: &Model, lut: LutConfig) {
             gemm_i8::gemm(&pool, &scratch, w, &qa, &mut y);
             row(format!("i8x{n}"), compare(&y, &reference));
         }
-        if w.encoding() == Encoding::Ternary {
+        if lut_ok && w.encoding() == Encoding::Ternary {
             gemm_lut::gemm(&pool, &mut lut, w, &x, frames, &mut y);
             row("lut".into(), compare(&y, &reference));
         }
@@ -516,14 +517,17 @@ fn memory(model: &Model, args: &Args, lut_retained: usize) {
     }
 }
 
-/// Register-only VNNI and FMA throughput with every thread busy.
-fn peak(thread_counts: &[usize]) {
+/// Register-only VNNI and FMA throughput of `tier`'s instructions with every
+/// thread busy.
+#[cfg(target_arch = "x86_64")]
+fn peak(tier: lf_cpu::Tier, cpus: &[usize], thread_counts: &[usize]) {
+    use lf_cpu::Tier;
     use lf_cpu::peak;
     use peak::LutAccumulate;
     use std::sync::atomic::{AtomicU64, Ordering};
     const ITERS: u64 = 20_000_000;
     type Probe = (&'static str, fn(u64) -> u64, fn(u64) -> u64);
-    let probes: [Probe; 9] = [
+    let avx512: [Probe; 9] = [
         ("VNNI u8xs8", |n| peak::vnni(n) as u64, peak::vnni_macs),
         ("FMA f32", |n| peak::fma(n) as u64, peak::fma_macs),
         (
@@ -562,15 +566,43 @@ fn peak(thread_counts: &[usize]) {
             peak::lut_macs,
         ),
     ];
+    let probes: Vec<Probe> = match tier {
+        Tier::Avx512 => avx512.to_vec(),
+        Tier::Avx2 { vnni } => {
+            let mut p: Vec<Probe> = vec![
+                (
+                    "FMA f32 ymm",
+                    |n| peak::fma_avx2(n) as u64,
+                    peak::fma_avx2_macs,
+                ),
+                (
+                    "maddubs+add u8xs8 ymm",
+                    |n| peak::maddubs(n) as u64,
+                    peak::avx2_int8_macs,
+                ),
+            ];
+            if vnni {
+                p.insert(
+                    0,
+                    (
+                        "AVX-VNNI u8xs8 ymm",
+                        |n| peak::vnni_avx2(n) as u64,
+                        peak::avx2_int8_macs,
+                    ),
+                );
+            }
+            p
+        }
+    };
     println!("GMAC/s (LUT rows count 48 multiply-accumulate equivalents per lookup)");
     print!("| threads |");
     probes.iter().for_each(|(name, _, _)| print!(" {name} |"));
     println!("\n| ---: |{}", " ---: |".repeat(probes.len()));
     for &threads in thread_counts {
-        let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+        let pool = ThreadPool::new(&cpus[..threads]);
         let sink = AtomicU64::new(0);
         print!("| {threads} |");
-        for (_, run, macs) in probes {
+        for &(_, run, macs) in &probes {
             // One warm-up pass lets clocks settle at their all-core level.
             let mut rate = 0.0;
             for timed in [false, true] {
@@ -598,12 +630,33 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !lf_cpu::cpu_supported() {
-        eprintln!("this CPU lacks AVX-512 F/BW/VNNI/VBMI");
+    let tier = match lf_cpu::tier() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let lut_ok = gemm_lut::has_path(tier);
+    if !lut_ok && args.variants.iter().any(|v| matches!(v, Variant::Lut)) {
+        eprintln!("the lut variant needs the avx512 tier (this run uses {tier})");
         return ExitCode::FAILURE;
     }
+    println!(
+        "{tier} kernels; pool CPUs in order: {:?} (L3 domains of the default order: {})",
+        args.cpus,
+        Topology::read(&allowed_cpus())
+            .domains()
+            .iter()
+            .map(|d| format!("{:?} {} MiB", d.cores, d.kib / 1024))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     if args.peak {
-        peak(&args.threads);
+        #[cfg(target_arch = "x86_64")]
+        peak(tier, &args.cpus, &args.threads);
+        #[cfg(not(target_arch = "x86_64"))]
+        eprintln!("--peak has x86-64 probes only");
         return ExitCode::SUCCESS;
     }
     let load_start = Instant::now();
@@ -722,7 +775,7 @@ fn main() -> ExitCode {
         memory(model, &args, lut_retained);
     }
     if args.accuracy {
-        accuracy(&models[0], args.lut);
+        accuracy(&models[0], args.lut, lut_ok);
     }
     ExitCode::SUCCESS
 }

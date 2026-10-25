@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{SendPtr, ThreadPool, split_range};
+use crate::{SendPtr, ThreadPool, Tier, split_range};
 
 pub const RATIO: f32 = 254.0;
 pub const MAX_COMPONENTS: usize = 3;
@@ -92,7 +92,8 @@ impl QuantizedActs {
         let q = SendPtr(self.q.as_mut_ptr());
         let s = SendPtr(self.scale.as_mut_ptr());
         let threads = pool.threads();
-        let vector = k.is_multiple_of(16) && crate::cpu_supported();
+        // Rows of a multiple of 16 use the tier's vectors (when there is one).
+        let tier = pool.try_tier().filter(|_| k.is_multiple_of(16));
         let bad = AtomicBool::new(false);
         pool.run(&|idx| {
             for t in split_range(rows, threads, idx) {
@@ -106,12 +107,16 @@ impl QuantizedActs {
                 // SAFETY: `t < rows <= self.scale.len()`, and frame `t` belongs to
                 // this thread only.
                 let scale = unsafe { &mut *s.get().add(t) };
-                let ok = if vector {
-                    // SAFETY: `vector` implies `cpu_supported()` (AVX-512 F and BW)
-                    // and `k % 16 == 0`; `row` has `k` values and `out` `n * k`.
-                    unsafe { avx512::quantize_row(row, n, out, scale) }
-                } else {
-                    quantize_row_scalar(row, n, out, scale)
+                let ok = match tier {
+                    // SAFETY: the pool's tier is one this CPU supports (AVX-512 F
+                    // and BW here), `tier` is `Some` only if `k % 16 == 0`, and
+                    // `row` has `k` values and `out` `n * k`.
+                    #[cfg(target_arch = "x86_64")]
+                    Some(Tier::Avx512) => unsafe { avx512::quantize_row(row, n, out, scale) },
+                    // SAFETY: as above, with AVX2 and FMA.
+                    #[cfg(target_arch = "x86_64")]
+                    Some(Tier::Avx2 { .. }) => unsafe { avx2::quantize_row(row, n, out, scale) },
+                    None => quantize_row_scalar(row, n, out, scale),
                 };
                 if !ok {
                     bad.store(true, Ordering::Relaxed);
@@ -224,6 +229,81 @@ mod avx512 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use super::{WEIGHTS, too_small};
+    use crate::math::simd256::hmax;
+    use std::arch::x86_64::*;
+
+    /// [`super::avx512::quantize_row`] on 8-lane vectors, bit for bit the same.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2 and FMA, `x.len()` must be a multiple of 16,
+    /// and `out` must hold at least `n * x.len()` bytes.
+    #[target_feature(enable = "avx2,fma")]
+    pub unsafe fn quantize_row(x: &[f32], n: usize, out: &mut [u8], scale: &mut f32) -> bool {
+        let k = x.len();
+        let p = x.as_ptr();
+        let abs = _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX));
+        let inf = _mm256_set1_ps(f32::INFINITY);
+        let mut mx = _mm256_setzero_ps();
+        let mut non_finite = _mm256_setzero_ps();
+        for i in (0..k).step_by(8) {
+            // SAFETY: `k % 16 == 0` (caller contract), so `i + 8 <= k`.
+            let a = _mm256_and_ps(unsafe { _mm256_loadu_ps(p.add(i)) }, abs);
+            // "Not less than infinity, or unordered": infinities and NaNs.
+            non_finite = _mm256_or_ps(non_finite, _mm256_cmp_ps::<_CMP_NLT_UQ>(a, inf));
+            mx = _mm256_max_ps(mx, a);
+        }
+        if _mm256_movemask_ps(non_finite) != 0 {
+            return false;
+        }
+        let m = hmax(mx);
+        if too_small(m, n) {
+            out[..n * k].fill(128);
+            *scale = 0.0;
+            return true;
+        }
+        let (inv, s) = (127.0 / m, m / 127.0);
+        let lo = _mm256_set1_epi32(-127);
+        let hi = _mm256_set1_epi32(127);
+        let offset = _mm256_set1_epi32(128);
+        // After the two packs below, dwords 0, 4, 1 and 5 hold the 16 bytes in order.
+        let order = _mm256_setr_epi32(0, 4, 1, 5, 0, 0, 0, 0);
+        let o = out.as_mut_ptr();
+        for i in (0..k).step_by(16) {
+            // SAFETY: `k % 16 == 0` (caller contract), so `i + 16 <= k`.
+            let mut r = [0, 8].map(|h| unsafe { _mm256_loadu_ps(p.add(i + h)) });
+            for (c, &wt) in WEIGHTS.iter().enumerate().take(n) {
+                let mult = _mm256_set1_ps(inv * wt);
+                let step = _mm256_set1_ps(s / wt);
+                let q = r.map(|v| {
+                    // Round half to even whatever the MXCSR mode, as the scalar path.
+                    let q = _mm256_cvttps_epi32(_mm256_round_ps::<
+                        { _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC },
+                    >(_mm256_mul_ps(v, mult)));
+                    _mm256_min_epi32(_mm256_max_epi32(q, lo), hi)
+                });
+                for h in 0..2 {
+                    r[h] = _mm256_fnmadd_ps(_mm256_cvtepi32_ps(q[h]), step, r[h]);
+                }
+                // 1..=255, so both saturating packs are exact.
+                let words = _mm256_packus_epi32(
+                    _mm256_add_epi32(q[0], offset),
+                    _mm256_add_epi32(q[1], offset),
+                );
+                let bytes = _mm256_packus_epi16(words, words);
+                let bytes = _mm256_permutevar8x32_epi32(bytes, order);
+                // SAFETY: `c < n` and `i + 16 <= k`, so the 16 bytes end by
+                // `n * k <= out.len()` (caller contract).
+                unsafe { _mm_storeu_si128(o.add(c * k + i).cast(), _mm256_castsi256_si128(bytes)) };
+            }
+        }
+        *scale = s;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,68 +316,83 @@ mod tests {
             .collect()
     }
 
+    /// One single-thread pool per tier this CPU supports, or one without
+    /// vector kernels (the scalar path) if it supports none.
+    fn pools() -> Vec<ThreadPool> {
+        let tiers = crate::Tier::available();
+        if tiers.is_empty() {
+            return vec![ThreadPool::new(&[0])];
+        }
+        tiers
+            .into_iter()
+            .map(|t| ThreadPool::new(&[0]).with_tier(t))
+            .collect()
+    }
+
     #[test]
     fn vector_matches_scalar_bit_for_bit() {
-        if !crate::cpu_supported() {
-            return;
-        }
-        for n in 1..=3 {
-            let x = frame(1024, n as u64);
-            let (mut a, mut b) = (vec![0u8; n * 1024], vec![0u8; n * 1024]);
-            let (mut sa, mut sb) = (0.0, 0.0);
-            quantize_row_scalar(&x, n, &mut a, &mut sa);
-            // SAFETY: `cpu_supported()` was checked above, 1024 is a multiple
-            // of 16, and `b` holds `n * 1024` bytes.
-            unsafe { avx512::quantize_row(&x, n, &mut b, &mut sb) };
-            assert_eq!(sa, sb);
-            assert_eq!(a, b, "components {n}");
+        for tier in crate::Tier::available() {
+            let pool = ThreadPool::new(&[0]).with_tier(tier);
+            for n in 1..=3 {
+                // Every frame takes the vector path (1024 % 16 == 0).
+                let x = frame(1024, n as u64);
+                let (mut a, mut sa) = (vec![0u8; n * 1024], 0.0);
+                quantize_row_scalar(&x, n, &mut a, &mut sa);
+                let mut qa = QuantizedActs::with_capacity(1, 1024, n);
+                qa.quantize(&pool, &x, 1).unwrap();
+                assert_eq!(qa.scale(), [sa], "{tier}");
+                assert_eq!(qa.q(), a, "{tier} components {n}");
+            }
         }
     }
 
     #[test]
     fn error_shrinks_with_components() {
-        let pool = ThreadPool::new(&[0]);
         let x = frame(256, 9);
         let m = x.iter().fold(0.0f32, |a, v| a.max(v.abs())) as f64;
-        let mut prev = f64::INFINITY;
-        for n in 1..=3 {
-            let mut qa = QuantizedActs::with_capacity(1, 256, n);
-            qa.quantize(&pool, &x, 1).unwrap();
-            let err = (0..256)
-                .map(|i| (qa.dequantized(0, i) - x[i] as f64).abs())
-                .fold(0.0, f64::max);
-            // Bound: half a step of the last component, plus f32 rounding slack.
-            let bound = m / 127.0 / 2.0 / (RATIO as f64).powi(n as i32 - 1) + m * 1e-6;
-            assert!(err <= bound, "n={n} err={err} bound={bound}");
-            assert!(err < prev);
-            prev = err;
+        for pool in pools() {
+            let mut prev = f64::INFINITY;
+            for n in 1..=3 {
+                let mut qa = QuantizedActs::with_capacity(1, 256, n);
+                qa.quantize(&pool, &x, 1).unwrap();
+                let err = (0..256)
+                    .map(|i| (qa.dequantized(0, i) - x[i] as f64).abs())
+                    .fold(0.0, f64::max);
+                // Bound: half a step of the last component, plus f32 rounding slack.
+                let bound = m / 127.0 / 2.0 / (RATIO as f64).powi(n as i32 - 1) + m * 1e-6;
+                assert!(err <= bound, "n={n} err={err} bound={bound}");
+                assert!(err < prev);
+                prev = err;
+            }
         }
     }
 
     #[test]
     fn zero_frame() {
-        let pool = ThreadPool::new(&[0]);
-        let mut qa = QuantizedActs::with_capacity(1, 32, 2);
-        qa.quantize(&pool, &[0.0; 32], 1).unwrap();
-        assert_eq!(qa.scale()[0], 0.0);
-        assert!(qa.q().iter().all(|&b| b == 128));
+        for pool in pools() {
+            let mut qa = QuantizedActs::with_capacity(1, 32, 2);
+            qa.quantize(&pool, &[0.0; 32], 1).unwrap();
+            assert_eq!(qa.scale()[0], 0.0);
+            assert!(qa.q().iter().all(|&b| b == 128));
+        }
     }
 
     #[test]
     fn tiny_frames_are_zero_and_non_finite_frames_fail() {
-        let pool = ThreadPool::new(&[0]);
-        let mut qa = QuantizedActs::with_capacity(0, 32, 3);
-        // Grows from zero capacity; a maximum of 1e-35 would overflow the third step.
-        qa.quantize(&pool, &[1e-35; 32], 1).unwrap();
-        assert_eq!(qa.scale()[0], 0.0);
-        assert!(qa.q().iter().all(|&b| b == 128));
-        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut x = [1.0f32; 32];
-            x[17] = bad;
-            assert_eq!(qa.quantize(&pool, &x, 1), Err(NonFiniteActivation));
-            assert_eq!(qa.rows(), 0);
-            let (mut out, mut s) = (vec![0u8; 96], 0.0);
-            assert!(!quantize_row_scalar(&x, 3, &mut out, &mut s));
+        for pool in pools() {
+            let mut qa = QuantizedActs::with_capacity(0, 32, 3);
+            // Grows from zero capacity; a maximum of 1e-35 would overflow the third step.
+            qa.quantize(&pool, &[1e-35; 32], 1).unwrap();
+            assert_eq!(qa.scale()[0], 0.0);
+            assert!(qa.q().iter().all(|&b| b == 128));
+            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut x = [1.0f32; 32];
+                x[17] = bad;
+                assert_eq!(qa.quantize(&pool, &x, 1), Err(NonFiniteActivation));
+                assert_eq!(qa.rows(), 0);
+                let (mut out, mut s) = (vec![0u8; 96], 0.0);
+                assert!(!quantize_row_scalar(&x, 3, &mut out, &mut s));
+            }
         }
     }
 }

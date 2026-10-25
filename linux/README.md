@@ -23,7 +23,26 @@ nix develop ./linux --command cargo build --release --manifest-path linux/Cargo.
 # Binaries: linux/target/release/localflowd and localflowctl
 ```
 
-The CPU needs AVX-512 (F, BW, VNNI, VBMI).
+The CPU needs x86-64 with AVX2, FMA and F16C (Intel Haswell or AMD Zen 1 and
+later). At startup the daemon picks the fastest set of kernels the CPU
+supports and names it in its `model loaded` log line:
+
+| Tier | CPU features | For example |
+| --- | --- | --- |
+| `avx512` | AVX-512 F, BW, VNNI and VBMI | Intel Ice Lake, Sapphire Rapids; AMD Zen 4 and later |
+| `avx2+vnni` | AVX2 and AVX-VNNI | Intel Alder Lake and later client chips |
+| `avx2` | AVX2 | Intel Haswell to Comet Lake, Skylake-SP to Cascade Lake Xeons; AMD Zen 1-3 |
+
+`LOCALFLOW_CPU_TIER=avx512`, `avx2` or `avx2-novnni` forces a tier (`avx2`
+still uses AVX-VNNI when the CPU has it; `avx2-novnni` does not). Forcing
+one the CPU lacks stops the daemon with an error. Every tier computes the same
+results bit for bit, so transcripts do not depend on the CPU.
+
+On a Ryzen 9 9950X3D, which runs all three, 2-12 s clips took 1.4-1.7 times
+as long end to end at `avx2+vnni` and 1.8-2.2 times at `avx2` as at `avx512`
+(kea-t, i8x2: 27, 44 and 55 ms on average), and the encoder projections for
+30 s of audio 2.0 and 2.6 times. That machine runs 256-bit instructions at
+half its 512-bit rate, so these ratios say little about CPUs without AVX-512.
 
 ## Model
 
@@ -69,7 +88,7 @@ invalid values stop the daemon with an error. Defaults:
   "version": 1,
   "export_path": "<XDG_DATA_HOME>/localflow/model",
   "precision": "i8x2",
-  "cpus": "first 16 available CPUs",
+  "cpus": "one per physical core, at most 16",
   "press_enter": true,
   "spoken_delimiters": true,
   "spoken_numbers": true,
@@ -99,7 +118,12 @@ invalid values stop the daemon with an error. Defaults:
   f32's WER over 32,560 dev/test utterances (six near-tie transcript
   changes) and is 25-28% faster than i8x3, which tracks f32 to rounding; see
   "Precision validation" in `PLAN.md`.
-- `cpus`: an array (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`).
+- `cpus`: the CPUs the recognizer's threads are pinned to, an array
+  (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`). By default, one
+  CPU per physical core the daemon may run on (SMT siblings are skipped),
+  whole L3 caches largest first, at most 16; on a 9950X3D that is CPUs 0-15,
+  the V-cache CCD first. There, on 2-12 s clips, 8 cores of one L3 cache took
+  23% longer and 16 threads left to the scheduler 47% longer.
 - `voice_macros`: `[{"command": "sign off", "payload": "Best regards,"}]`.
   Saying exactly the command (ignoring case and punctuation) types the payload.
 - `spoken_numbers`: write spoken numbers as digits ("twenty three percent"
@@ -338,6 +362,9 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
 ```bash
 nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.toml
 ```
+
+The kernel tests run at every tier the CPU supports, whatever
+`LOCALFLOW_CPU_TIER` says, and check that the tiers agree bit for bit.
 
 `lf-daemon/tests/private_dbus.rs` starts its own `dbus-daemon` (from the dev
 shell) with fake MPRIS players; it never uses your session bus. Set
