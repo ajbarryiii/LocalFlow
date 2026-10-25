@@ -250,7 +250,7 @@ pub struct Settings {
 pub const PIECE_BUDGET_MS: u64 = 100;
 
 /// Piece size so one piece takes at most [`PIECE_BUDGET_MS`] of key delay to
-/// type (`lf-wayland` sleeps once per character, after its press and
+/// type (every text output sleeps once per character, after its press and
 /// release), between 1 and [`TYPE_CHUNK_CHARS`] characters. Cancel waits for
 /// the piece in progress, so this bounds cancel latency at slow key delays.
 pub fn chunk_chars_for_key_delay(key_delay_ms: u64) -> usize {

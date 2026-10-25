@@ -18,6 +18,7 @@ pub mod history;
 pub mod link;
 pub mod media;
 pub mod paths;
+pub mod portal_token;
 pub mod protocol;
 pub mod recognizer;
 pub mod rofi;
