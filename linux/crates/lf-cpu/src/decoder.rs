@@ -1540,7 +1540,7 @@ mod tests {
 
     #[test]
     fn matches_f64_reference() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         // Small shapes with padding: 38 output rows, joint 48 (not a multiple of 64).
@@ -1651,7 +1651,7 @@ mod tests {
     /// second list is `(token, frame, repeats)`.
     #[test]
     fn frozen_synthetic_emissions() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         let first: &[(usize, usize)] = &[
@@ -1724,7 +1724,7 @@ mod tests {
 
     #[test]
     fn biased_ties_resolve_in_f64() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         // Tokens 0 and 64 (in different superblocks, so different threads with
@@ -1745,7 +1745,7 @@ mod tests {
 
     #[test]
     fn blank_keeps_the_bias_state() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         // Token 3 has raw logit -0.5, token 5 has 0, every other token -10 and
@@ -1775,7 +1775,7 @@ mod tests {
 
     #[test]
     fn forced_advance_holds_under_bias() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         // Duration 0 always wins and the bias makes token 7 beat blank on every
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn packed_matches_reference_with_bias() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         // 70 tokens put the token rows across two superblocks, so the bonuses
@@ -1839,7 +1839,7 @@ mod tests {
 
     #[test]
     fn schedule_controls_emissions() {
-        if !crate::cpu_supported() {
+        if crate::Tier::available().is_empty() {
             return;
         }
         let p = DecoderParams::random(33, 32, 40, 48, 3);

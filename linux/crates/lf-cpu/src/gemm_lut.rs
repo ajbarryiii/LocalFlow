@@ -984,11 +984,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "assertion failed: x.len()")]
     fn short_input_is_rejected() {
         let m = TernaryMatrix::random(64, 12, 1);
         let w = PackedTernary::new(&m).unwrap();
-        let pool = ThreadPool::new(&[0]);
+        let Some(pool) = crate::avx512_pool(&[0]) else {
+            panic!("assertion failed: x.len() (skipped: no AVX-512)");
+        };
         let mut ws = LutWorkspace::new(LutConfig::default()).unwrap();
         let mut y = vec![0.0; 2 * 64];
         gemm(&pool, &mut ws, &w, &[0.0; 12], 2, &mut y);

@@ -449,10 +449,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "packed positions do not cover")]
     fn packed_positions_out_of_range_panics() {
-        if !crate::cpu_supported() {
-            panic!("packed positions do not cover (skipped: no AVX-512)");
-        }
-        let pool = ThreadPool::new(&[0]);
+        let Some(&tier) = crate::Tier::available().first() else {
+            panic!("packed positions do not cover (skipped: no CPU kernels)");
+        };
+        let pool = ThreadPool::new(&[0]).with_tier(tier);
         let (h, dk, t) = (1, 16, 5);
         let mut packed = Vec::new();
         pack_positions(&pool, &rand(9 * dk, 1), 9, h, dk, &mut packed);

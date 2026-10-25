@@ -640,12 +640,18 @@ mod tests {
 
     #[test]
     fn overflowing_sizes_are_rejected_before_any_access() {
-        let pool = ThreadPool::new(&[0]);
         let g = [0.0f32; 16];
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            layer_norm(&pool, &[], 1usize << 63, 16, &g, &g, &mut []);
-        }));
-        assert!(r.is_err());
+        for pool in crate::tier_pools(1) {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                layer_norm(&pool, &[], 1usize << 63, 16, &g, &g, &mut []);
+            }));
+            let payload = r.unwrap_err();
+            let msg = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied());
+            assert_eq!(msg, Some("size overflow"), "{}", pool.tier());
+        }
     }
 
     #[test]
