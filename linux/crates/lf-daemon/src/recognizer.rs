@@ -146,6 +146,7 @@ pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> R
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
         let model = lf_asr::Model::load(&exp, lf_asr::DecoderStorage::F16)
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
+        let format = exp.format.name();
         drop(exp);
         let mut transcriber = lf_asr::Transcriber::new(model, &cpus, precision.to_asr());
         // The first call allocates and faults in the working buffers, which
@@ -155,7 +156,7 @@ pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> R
             .transcribe(&silence, None)
             .map_err(|e| format!("warm-up transcription failed: {e}"))?;
         crate::info!(
-            "model loaded in {:.1?} ({}, {} threads)",
+            "model loaded in {:.1?} ({format}, {}, {} threads)",
             start.elapsed(),
             precision.name(),
             cpus.len()

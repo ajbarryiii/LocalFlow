@@ -1,7 +1,10 @@
 //! Phase 0 microbenchmark: all ternary encoder GEMMs of Parakeet TDT 0.6B on
 //! the CPU, per activation variant, frame count and thread count.
 //!
-//! Weights come from a verified export (`--export DIR`) or are synthetic.
+//! Weights come from verified exports (`--export DIR`, ternary or binary) or
+//! are synthetic. With several exports, each repetition times one pass of
+//! every export in a rotating order, and the table adds each export's median
+//! paired time ratio to the first, so a busy machine affects all of them alike.
 //! Activations are always synthetic. Only the ternary projections are timed;
 //! attention scores, convolutions, norms, the frontend and the decoder are not.
 
@@ -11,9 +14,14 @@ use std::time::{Duration, Instant};
 
 use lf_cpu::gemm_lut::{LutConfig, LutWorkspace};
 use lf_cpu::gemm_ref::{compare, reference};
-use lf_cpu::{PackedTernary, QuantizedActs, Scratch, ThreadPool, gemm_f32, gemm_i8, gemm_lut};
+use lf_cpu::{
+    Encoding, PackedTernary, QuantizedActs, Scratch, ThreadPool, gemm_f32, gemm_i8, gemm_lut,
+};
 use lf_model::rng::SplitMix64;
-use lf_model::{ENCODER_LAYERS, Export, LAYER_TERNARY_MODULES, TernaryMatrix};
+use lf_model::{
+    BinaryMatrix, ENCODER_LAYERS, Export, LAYER_TERNARY_MODULES, QuantizedMatrix, TernaryMatrix,
+    WeightFormat,
+};
 
 const POS: usize = 5;
 /// Encoder frames per second of audio (10 ms hop, 8x subsampling).
@@ -49,7 +57,14 @@ impl Variant {
 }
 
 struct Args {
-    export: Option<PathBuf>,
+    /// Every export is timed, interleaved pass by pass (paired timing).
+    exports: Vec<PathBuf>,
+    /// Weight format of the synthetic model when no export is given.
+    synthetic: WeightFormat,
+    /// CPUs to pin the pool to, in order; `threads` takes the first entries.
+    cpus: Vec<usize>,
+    /// MiB written between timed passes to evict the caches; 0 keeps them warm.
+    cold_mib: usize,
     threads: Vec<usize>,
     frames: Vec<usize>,
     variants: Vec<Variant>,
@@ -62,7 +77,11 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
-        export: None,
+        exports: Vec::new(),
+        synthetic: WeightFormat::Ternary,
+        // Physical cores only; 0-7 share the 96 MiB V-cache L3.
+        cpus: (0..16).collect(),
+        cold_mib: 0,
         threads: vec![8],
         frames: vec![25, 63, 125, 188, 375],
         variants: vec![Variant::F32, Variant::I8(1), Variant::I8(2), Variant::I8(3)],
@@ -81,7 +100,16 @@ fn parse_args() -> Result<Args, String> {
                 .collect()
         };
         match flag.as_str() {
-            "--export" => a.export = Some(value()?.into()),
+            "--export" => a.exports.push(value()?.into()),
+            "--synthetic" => {
+                a.synthetic = match value()?.as_str() {
+                    "ternary" => WeightFormat::Ternary,
+                    "binary" => WeightFormat::Binary,
+                    _ => return Err("--synthetic takes ternary or binary".into()),
+                }
+            }
+            "--cpus" => a.cpus = list(value()?)?,
+            "--cold-mib" => a.cold_mib = value()?.parse().map_err(|_| "bad --cold-mib")?,
             "--threads" => a.threads = list(value()?)?,
             "--frames" => a.frames = list(value()?)?,
             "--variants" => {
@@ -116,12 +144,15 @@ fn parse_args() -> Result<Args, String> {
                 a.lut.table_budget = mib.checked_mul(1 << 20).ok_or("bad --lut-budget-mib")?;
             }
             "-h" | "--help" => {
-                return Err("usage: lf-gemm-bench [--export DIR] [--threads 1,4,8,16] \
+                return Err(
+                    "usage: lf-gemm-bench [--export DIR]... [--synthetic ternary|binary] \
+                     [--cpus 0,1,...] [--cold-mib N] [--threads 1,4,8,16] \
                      [--frames 25,63,125,188,375] [--variants f32,i8x1,i8x2,i8x3,lut] \
                      [--warmup N] [--reps N] [--accuracy] [--peak] \
                      [--lut-panel 4|8] [--lut-micro N] [--lut-chunk FRAMES] \
                      [--lut-budget-mib N] [--lut-kc GROUPS] [--lut-groups N|auto]"
-                    .into());
+                        .into(),
+                );
             }
             _ => return Err(format!("unknown argument {flag}")),
         }
@@ -130,6 +161,9 @@ fn parse_args() -> Result<Args, String> {
     if a.threads.iter().any(|&t| t == 0 || t > 16) {
         return Err("--threads values must be 1..=16".into());
     }
+    if a.threads.iter().any(|&t| t > a.cpus.len()) {
+        return Err("--threads values must not exceed the number of --cpus".into());
+    }
     if a.reps == 0 {
         return Err("--reps must be at least 1".into());
     }
@@ -137,16 +171,22 @@ fn parse_args() -> Result<Args, String> {
 }
 
 struct Model {
+    /// The weight format, as the table and memory report show it.
+    name: String,
     /// `[layer][module]`, module order as in `LAYER_TERNARY_MODULES`.
     layers: Vec<Vec<PackedTernary>>,
-    /// Layer 0 in export form, for accuracy checks.
+    /// Layer 0 as ternary codes (binary widened), for accuracy checks.
     layer0: Vec<TernaryMatrix>,
 }
 
-fn load_model(export: Option<&PathBuf>) -> Result<Model, String> {
+fn load_model(export: Option<&PathBuf>, synthetic: WeightFormat) -> Result<Model, String> {
     let export = match export {
         Some(dir) => Some(Export::open(dir).map_err(|e| format!("{}: {e}", dir.display()))?),
         None => None,
+    };
+    let name = match &export {
+        Some(e) => e.format.name().to_string(),
+        None => format!("synthetic {}", synthetic.name()),
     };
     let mut layers = Vec::with_capacity(ENCODER_LAYERS);
     let mut layer0 = Vec::new();
@@ -154,23 +194,37 @@ fn load_model(export: Option<&PathBuf>) -> Result<Model, String> {
         let mut mats = Vec::with_capacity(LAYER_TERNARY_MODULES.len());
         for (mi, module) in LAYER_TERNARY_MODULES.iter().enumerate() {
             let m = match &export {
-                Some(e) => {
-                    TernaryMatrix::from_export(&e.tensors, &format!("encoder.layers.{l}.{module}"))
-                        .map_err(|e| e.to_string())?
-                }
+                Some(e) => QuantizedMatrix::from_export(
+                    &e.tensors,
+                    e.format,
+                    &format!("encoder.layers.{l}.{module}"),
+                )
+                .map_err(|e| e.to_string())?,
                 None => {
                     let (rows, cols) = synthetic_shape(module);
-                    TernaryMatrix::random(rows, cols, (l * 100 + mi) as u64)
+                    let seed = (l * 100 + mi) as u64;
+                    match synthetic {
+                        WeightFormat::Ternary => {
+                            QuantizedMatrix::Ternary(TernaryMatrix::random(rows, cols, seed))
+                        }
+                        WeightFormat::Binary => {
+                            QuantizedMatrix::Binary(BinaryMatrix::random(rows, cols, seed))
+                        }
+                    }
                 }
             };
-            mats.push(PackedTernary::new(&m).map_err(|e| format!("{module}: {e}"))?);
+            mats.push(PackedTernary::pack(&m).map_err(|e| format!("{module}: {e}"))?);
             if l == 0 {
-                layer0.push(m);
+                layer0.push(m.to_ternary());
             }
         }
         layers.push(mats);
     }
-    Ok(Model { layers, layer0 })
+    Ok(Model {
+        name,
+        layers,
+        layer0,
+    })
 }
 
 fn synthetic_shape(module: &str) -> (usize, usize) {
@@ -266,19 +320,65 @@ fn run_pass(
     }
 }
 
-fn time_pass(reps: usize, warmup: usize, mut f: impl FnMut()) -> (Duration, Duration) {
-    for _ in 0..warmup {
-        f();
-    }
-    let mut times: Vec<Duration> = (0..reps)
-        .map(|_| {
+/// Times `reps` passes of each of `models` after `warmup` untimed rounds.
+/// Round `r` runs the models in order starting at `r % models`, and `evict`
+/// runs untimed before every pass. Returns each model's times in round order.
+fn time_paired(
+    models: usize,
+    reps: usize,
+    warmup: usize,
+    mut evict: impl FnMut(),
+    mut pass: impl FnMut(usize),
+) -> Vec<Vec<Duration>> {
+    let mut times = vec![Vec::with_capacity(reps); models];
+    for round in 0..warmup + reps {
+        for i in 0..models {
+            let m = (round + i) % models;
+            evict();
             let start = Instant::now();
-            f();
-            start.elapsed()
-        })
-        .collect();
-    times.sort();
-    (times[times.len() / 2], times[0])
+            pass(m);
+            let elapsed = start.elapsed();
+            if round >= warmup {
+                times[m].push(elapsed);
+            }
+        }
+    }
+    times
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+/// Per-thread buffers written between passes to push the weights out of
+/// every cache the pool's CPUs use (each CCD has its own L3).
+struct Evictor {
+    bufs: Vec<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl Evictor {
+    fn new(threads: usize, mib: usize) -> Self {
+        let per_thread = (mib << 20).div_ceil(threads.max(1));
+        Evictor {
+            bufs: (0..threads)
+                .map(|_| std::sync::Mutex::new(vec![0u8; if mib == 0 { 0 } else { per_thread }]))
+                .collect(),
+        }
+    }
+
+    fn run(&self, pool: &ThreadPool) {
+        if self.bufs.iter().all(|b| b.lock().unwrap().is_empty()) {
+            return;
+        }
+        pool.run(&|idx| {
+            let mut buf = self.bufs[idx].lock().unwrap();
+            for line in buf.chunks_mut(64) {
+                line[0] = line[0].wrapping_add(1);
+            }
+            std::hint::black_box(&*buf);
+        });
+    }
 }
 
 /// Multiply-accumulates per frame across the timed (non-`linear_pos`) projections.
@@ -323,8 +423,10 @@ fn accuracy(model: &Model, lut: LutConfig) {
             gemm_i8::gemm(&pool, &scratch, w, &qa, &mut y);
             row(format!("i8x{n}"), compare(&y, &reference));
         }
-        gemm_lut::gemm(&pool, &mut lut, w, &x, frames, &mut y);
-        row("lut".into(), compare(&y, &reference));
+        if w.encoding() == Encoding::Ternary {
+            gemm_lut::gemm(&pool, &mut lut, w, &x, frames, &mut y);
+            row("lut".into(), compare(&y, &reference));
+        }
     }
 }
 
@@ -336,13 +438,13 @@ fn memory(model: &Model, args: &Args, lut_retained: usize) {
     let (mut params, mut bytes) = (0usize, 0usize);
     for w in model.layers.iter().flatten() {
         params += w.rows() * w.cols();
-        // 2-bit codes, f32 scale and i32 row sum per output row.
-        bytes += w.rows() * w.cols() / 4 + w.rows() * 8;
+        // Packed codes, f32 scale and i32 row sum per output row.
+        bytes += w.code_bytes() + w.rows() * 8;
     }
     println!(
-        "\nMemory: {params} ternary weights in 264 projections; workspace excludes x and y, \
+        "\nMemory ({}): {params} weights in 264 projections; workspace excludes x and y, \
          maximized over threads {:?} and frames {:?}",
-        args.threads, args.frames
+        model.name, args.threads, args.frames
     );
     println!("| variant | weights MB | bytes / weight | workspace MB | workspace contents |");
     println!("| --- | ---: | ---: | ---: | --- |");
@@ -502,61 +604,106 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let load_start = Instant::now();
-    let model = match load_model(args.export.as_ref()) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let source = if args.export.is_some() {
-        "export (hash-verified)"
+    let sources: Vec<Option<&PathBuf>> = if args.exports.is_empty() {
+        vec![None]
     } else {
+        args.exports.iter().map(Some).collect()
+    };
+    let mut models = Vec::with_capacity(sources.len());
+    for source in sources {
+        match load_model(source, args.synthetic) {
+            Ok(m) => models.push(m),
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    let source = if args.exports.is_empty() {
         "synthetic"
+    } else {
+        "export (hash-verified)"
     };
     println!(
-        "weights: {source}, loaded and packed in {:.2?}",
-        load_start.elapsed()
+        "weights: {source}, {} model(s) loaded and packed in {:.2?}; cache eviction between \
+         passes: {} MiB",
+        models.len(),
+        load_start.elapsed(),
+        args.cold_mib
     );
 
     let max_frames = args.frames.iter().copied().max().unwrap_or(1);
     let mut buf = Buffers::new(max_frames);
     let scratch_bytes = gemm_i8::scratch_bytes(4096).max(gemm_f32::scratch_bytes());
-    let enc_macs = macs_per_frame(&model);
+    let enc_macs = macs_per_frame(&models[0]);
 
     println!("\nTernary encoder GEMMs (24 layers x 10 projections; linear_pos timed separately)");
     println!(
-        "| variant | threads | frames | audio s | median ms | min ms | GMAC/s | linear_pos ms |"
+        "| model | variant | threads | frames | audio s | median ms | min ms | GMAC/s | \
+         vs first | linear_pos ms |"
     );
-    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     let mut lut_retained = 0;
     for &threads in &args.threads {
-        // Physical cores only; 0-7 share the 96 MiB V-cache L3.
-        let cpus: Vec<usize> = (0..threads).collect();
-        let pool = ThreadPool::new(&cpus);
+        let pool = ThreadPool::new(&args.cpus[..threads]);
         let scratch = Scratch::new(threads, scratch_bytes);
+        let evictor = Evictor::new(threads, args.cold_mib);
         let mut lut = LutWorkspace::new(args.lut).expect("validated config");
         for &variant in &args.variants {
+            // The lookup-table kernel reads 2-bit codes only.
+            let timed: Vec<usize> = (0..models.len())
+                .filter(|&m| {
+                    !matches!(variant, Variant::Lut)
+                        || models[m].layers[0][0].encoding() == Encoding::Ternary
+                })
+                .collect();
+            if timed.is_empty() {
+                continue;
+            }
             for &frames in &args.frames {
-                let (median, min) = time_pass(args.reps, args.warmup, || {
-                    run_pass(
-                        &pool, &scratch, &mut lut, &model, &mut buf, variant, frames, false,
+                let mut time = |pos_only: bool| {
+                    time_paired(
+                        timed.len(),
+                        args.reps,
+                        args.warmup,
+                        || evictor.run(&pool),
+                        |i| {
+                            run_pass(
+                                &pool,
+                                &scratch,
+                                &mut lut,
+                                &models[timed[i]],
+                                &mut buf,
+                                variant,
+                                frames,
+                                pos_only,
+                            )
+                        },
                     )
-                });
-                let (pos, _) = time_pass(args.reps, args.warmup, || {
-                    run_pass(
-                        &pool, &scratch, &mut lut, &model, &mut buf, variant, frames, true,
-                    )
-                });
-                let gmacs = enc_macs * frames as f64 / median.as_secs_f64() / 1e9;
-                println!(
-                    "| {} | {threads} | {frames} | {:.1} | {:.2} | {:.2} | {gmacs:.0} | {:.2} |",
-                    variant.name(),
-                    frames as f64 / FRAMES_PER_SECOND,
-                    median.as_secs_f64() * 1e3,
-                    min.as_secs_f64() * 1e3,
-                    pos.as_secs_f64() * 1e3,
-                );
+                };
+                let main = time(false);
+                let pos = time(true);
+                let ms = |d: &Duration| d.as_secs_f64() * 1e3;
+                for (i, &m) in timed.iter().enumerate() {
+                    let med = median(main[i].iter().map(ms).collect());
+                    let min = main[i].iter().map(ms).fold(f64::INFINITY, f64::min);
+                    let ratio = median(
+                        main[i]
+                            .iter()
+                            .zip(&main[0])
+                            .map(|(a, b)| a.as_secs_f64() / b.as_secs_f64())
+                            .collect(),
+                    );
+                    let gmacs = enc_macs * frames as f64 / med / 1e6;
+                    println!(
+                        "| {} | {} | {threads} | {frames} | {:.1} | {med:.2} | {min:.2} | \
+                         {gmacs:.0} | {ratio:.3} | {:.2} |",
+                        models[m].name,
+                        variant.name(),
+                        frames as f64 / FRAMES_PER_SECOND,
+                        median(pos[i].iter().map(ms).collect()),
+                    );
+                }
             }
         }
         lut_retained = lut_retained.max(lut.bytes());
@@ -568,9 +715,11 @@ fn main() -> ExitCode {
             args.lut
         );
     }
-    memory(&model, &args, lut_retained);
+    for model in &models {
+        memory(model, &args, lut_retained);
+    }
     if args.accuracy {
-        accuracy(&model, args.lut);
+        accuracy(&models[0], args.lut);
     }
     ExitCode::SUCCESS
 }

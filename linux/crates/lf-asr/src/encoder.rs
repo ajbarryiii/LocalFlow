@@ -659,8 +659,8 @@ fn feed_forward(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lf_model::TernaryMatrix;
     use lf_model::rng::SplitMix64;
+    use lf_model::{BinaryMatrix, TernaryMatrix};
 
     const PRECISIONS: [Precision; 4] = [
         Precision::F32,
@@ -687,6 +687,11 @@ mod tests {
 
     /// A full-width layer with synthetic weights.
     fn layer(seed: u64) -> Layer {
+        layer_with(seed, ternary)
+    }
+
+    /// A full-width layer whose projections come from `w(rows, cols, seed)`.
+    fn layer_with(seed: u64, w: impl Fn(usize, usize, u64) -> PackedTernary) -> Layer {
         let s = seed * 100;
         Layer {
             norm_ff1: norm(s),
@@ -694,21 +699,15 @@ mod tests {
             norm_conv: norm(s + 4),
             norm_ff2: norm(s + 6),
             norm_out: norm(s + 8),
-            ff1: [
-                ternary(D_FF, D_MODEL, s + 10),
-                ternary(D_MODEL, D_FF, s + 11),
-            ],
-            ff2: [
-                ternary(D_FF, D_MODEL, s + 12),
-                ternary(D_MODEL, D_FF, s + 13),
-            ],
-            q: ternary(D_MODEL, D_MODEL, s + 14),
-            k: ternary(D_MODEL, D_MODEL, s + 15),
-            v: ternary(D_MODEL, D_MODEL, s + 16),
-            pos: ternary(D_MODEL, D_MODEL, s + 17),
-            out: ternary(D_MODEL, D_MODEL, s + 18),
-            pw1: ternary(2 * D_MODEL, D_MODEL, s + 19),
-            pw2: ternary(D_MODEL, D_MODEL, s + 20),
+            ff1: [w(D_FF, D_MODEL, s + 10), w(D_MODEL, D_FF, s + 11)],
+            ff2: [w(D_FF, D_MODEL, s + 12), w(D_MODEL, D_FF, s + 13)],
+            q: w(D_MODEL, D_MODEL, s + 14),
+            k: w(D_MODEL, D_MODEL, s + 15),
+            v: w(D_MODEL, D_MODEL, s + 16),
+            pos: w(D_MODEL, D_MODEL, s + 17),
+            out: w(D_MODEL, D_MODEL, s + 18),
+            pw1: w(2 * D_MODEL, D_MODEL, s + 19),
+            pw2: w(D_MODEL, D_MODEL, s + 20),
             bias_u: rand(D_MODEL, s + 21, 0.1),
             bias_v: rand(D_MODEL, s + 22, 0.1),
             dw_w: rand(CONV_KERNEL * D_MODEL, s + 23, 0.3),
@@ -844,5 +843,48 @@ mod tests {
         assert_eq!(cache.bytes(), 2 * HEADS * 5 * D_HEAD * NB * 4);
         cache.set_limit(149);
         assert_eq!((cache.frames(), cache.bytes()), (0, 0));
+    }
+
+    /// A binary export's layers, kept at 1 bit, give bit-identical outputs to
+    /// the same weights widened to 2-bit ternary codes, at every precision.
+    #[test]
+    fn binary_layers_match_widened_ternary_bit_for_bit() {
+        if !lf_cpu::cpu_supported() {
+            return;
+        }
+        let pool = ThreadPool::new(&[0, 1, 2]);
+        let binary = |r, c, s| PackedTernary::binary(&BinaryMatrix::random(r, c, s)).unwrap();
+        let widened = |r, c, s| PackedTernary::new(&BinaryMatrix::random(r, c, s).to_ternary());
+        let a = [layer_with(1, binary), layer_with(2, binary)];
+        let b = [
+            layer_with(1, |r, c, s| widened(r, c, s).unwrap()),
+            layer_with(2, |r, c, s| widened(r, c, s).unwrap()),
+        ];
+        for precision in PRECISIONS {
+            for t in [1, 7, 40] {
+                let mut timings = Timings::default();
+                let mut outs = Vec::new();
+                for layers in [&a, &b] {
+                    let mut proj = Projector::new(precision, pool.threads());
+                    let mut buf = EncoderBuffers {
+                        x: rand(t * D_MODEL, 2000 + t as u64, 1.0),
+                        ..EncoderBuffers::default()
+                    };
+                    let mut cache = PositionCache::new(0);
+                    run_layers(
+                        layers,
+                        &pool,
+                        &mut proj,
+                        t,
+                        &mut buf,
+                        &mut cache,
+                        &mut timings,
+                    )
+                    .unwrap();
+                    outs.push(bits(&buf.x[..t * D_MODEL]));
+                }
+                assert_eq!(outs[0], outs[1], "{precision:?} t={t}");
+            }
+        }
     }
 }

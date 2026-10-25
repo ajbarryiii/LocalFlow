@@ -5,7 +5,7 @@
 //! (`KC * 64` floats, 128 KiB) and runs every frame against it. Partial sums
 //! accumulate in `Y`; the row scale is applied with the last input block.
 
-use crate::pack::{NR, PackedTernary};
+use crate::pack::{Encoding, NR, PackedTernary};
 use crate::{Scratch, SendPtr, ThreadPool, split_range};
 
 pub const KC: usize = 512;
@@ -37,12 +37,20 @@ pub fn gemm(
             let mut kb = 0;
             while kb < k {
                 let kc = KC.min(k - kb);
-                // SAFETY: AVX-512 F was asserted on entry. `kb` and `kc` are
-                // multiples of 4 (`PackedTernary::new` makes `k % 4 == 0`, and
+                // SAFETY: AVX-512 F and BMI2 were asserted on entry. `kb` and `kc`
+                // are multiples of 4 (`PackedTernary` makes `k % 4 == 0`, and
                 // `KC % 4 == 0`), so quads `kb / 4..(kb + kc) / 4` lie within the
-                // block's `k / 4`; the `kc * 64` floats written fit this thread's
-                // 64-byte aligned tile of `scratch_bytes()`, checked by `lease`.
-                unsafe { x86::expand_block(w.block(b), kb / 4, kc / 4, tile) };
+                // block's `k / 4` quads of `w.encoding().quad_bytes()` bytes; the
+                // `kc * 64` floats written fit this thread's 64-byte aligned tile
+                // of `scratch_bytes()`, checked by `lease`.
+                unsafe {
+                    match w.encoding() {
+                        Encoding::Ternary => x86::expand_block(w.block(b), kb / 4, kc / 4, tile),
+                        Encoding::Binary => {
+                            x86::expand_block_binary(w.block(b), kb / 4, kc / 4, tile)
+                        }
+                    }
+                };
                 let last = kb + kc == k;
                 let mut t0 = 0;
                 while t0 < t {
@@ -139,6 +147,33 @@ mod x86 {
         }
     }
 
+    /// [`expand_block`] for binary masks (`pack.rs`): bits `4 * j + k4` of mask
+    /// `v` are the codes of outputs `v * 16 + j` at input `4 * q + k4`.
+    ///
+    /// # Safety
+    /// The CPU must support AVX-512 F and BMI2, `src` must hold at least
+    /// `(q0 + nq) * 32` bytes, and `dst` must be 64-byte aligned and valid for
+    /// writes of `4 * nq * 64` floats that no other thread accesses.
+    #[target_feature(enable = "avx512f,bmi2")]
+    pub unsafe fn expand_block_binary(src: &[u8], q0: usize, nq: usize, dst: *mut f32) {
+        const LANE0: u64 = 0x1111_1111_1111_1111;
+        let plus = _mm512_set1_ps(1.0);
+        let minus = _mm512_set1_ps(-1.0);
+        for ql in 0..nq {
+            let quad = &src[(q0 + ql) * 32..][..32];
+            for (v, mask) in quad.as_chunks::<8>().0.iter().enumerate() {
+                let mask = u64::from_le_bytes(*mask);
+                for k4 in 0..4 {
+                    let lanes = _pext_u64(mask, LANE0 << k4) as u16;
+                    let vals = _mm512_mask_blend_ps(lanes, minus, plus);
+                    // SAFETY: the offset is a multiple of 16 floats and ends by
+                    // `4 * nq * 64`, so the aligned store stays inside `dst`.
+                    unsafe { _mm512_store_ps(dst.add((4 * ql + k4) * 64 + v * 16), vals) };
+                }
+            }
+        }
+    }
+
     /// # Safety
     /// The CPU must support AVX-512 F. `tile` must be 64-byte aligned with
     /// `kc * 64` readable floats; `x` must be readable at `r * ldx + i` for
@@ -195,8 +230,36 @@ mod x86 {
 mod tests {
     use super::*;
     use crate::gemm_ref::{compare, reference};
-    use lf_model::TernaryMatrix;
     use lf_model::rng::SplitMix64;
+    use lf_model::{BinaryMatrix, TernaryMatrix};
+
+    /// Binary weights at 1 bit give exactly the output of the same weights
+    /// widened to 2-bit ternary codes, including across partial `KC` blocks.
+    #[test]
+    fn binary_matches_widened_ternary_bit_for_bit() {
+        if !crate::cpu_supported() {
+            return;
+        }
+        let mut rng = SplitMix64::new(15);
+        for (rows, cols) in [(128, 96), (64, 1100)] {
+            let m = BinaryMatrix::random(rows, cols, 16);
+            let binary = PackedTernary::binary(&m).unwrap();
+            let ternary = PackedTernary::new(&m.to_ternary()).unwrap();
+            for threads in [1, 2] {
+                let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+                let scratch = Scratch::new(threads, scratch_bytes());
+                for t in [1, 6, 11] {
+                    let x: Vec<f32> = (0..t * cols).map(|_| rng.next_gaussian()).collect();
+                    let mut yb = vec![0.0; t * rows];
+                    let mut yt = vec![1.0; t * rows];
+                    gemm(&pool, &scratch, &binary, &x, t, &mut yb);
+                    gemm(&pool, &scratch, &ternary, &x, t, &mut yt);
+                    let bits = |y: &[f32]| y.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&yb), bits(&yt), "{rows}x{cols} t={t}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn matches_reference() {
