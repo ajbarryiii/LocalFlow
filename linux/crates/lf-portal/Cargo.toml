@@ -1,0 +1,18 @@
+[package]
+name = "lf-portal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-io-api.workspace = true
+lf-keyboard = { path = "../lf-keyboard" }
+libc.workspace = true
+# Pure-Rust libei client (the EIS protocol). Its dependencies (rustix,
+# enumflags2, log) are already in the workspace.
+reis = "0.7"
+# Pure-Rust D-Bus, with its own runtime crates, as in lf-media.
+zbus = "5"
+async-io = "2"
+futures-lite = "2"

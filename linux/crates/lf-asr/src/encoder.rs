@@ -659,8 +659,8 @@ fn feed_forward(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lf_model::TernaryMatrix;
     use lf_model::rng::SplitMix64;
+    use lf_model::{BinaryMatrix, TernaryMatrix};
 
     const PRECISIONS: [Precision; 4] = [
         Precision::F32,
@@ -687,6 +687,11 @@ mod tests {
 
     /// A full-width layer with synthetic weights.
     fn layer(seed: u64) -> Layer {
+        layer_with(seed, ternary)
+    }
+
+    /// A full-width layer whose projections come from `w(rows, cols, seed)`.
+    fn layer_with(seed: u64, w: impl Fn(usize, usize, u64) -> PackedTernary) -> Layer {
         let s = seed * 100;
         Layer {
             norm_ff1: norm(s),
@@ -694,26 +699,28 @@ mod tests {
             norm_conv: norm(s + 4),
             norm_ff2: norm(s + 6),
             norm_out: norm(s + 8),
-            ff1: [
-                ternary(D_FF, D_MODEL, s + 10),
-                ternary(D_MODEL, D_FF, s + 11),
-            ],
-            ff2: [
-                ternary(D_FF, D_MODEL, s + 12),
-                ternary(D_MODEL, D_FF, s + 13),
-            ],
-            q: ternary(D_MODEL, D_MODEL, s + 14),
-            k: ternary(D_MODEL, D_MODEL, s + 15),
-            v: ternary(D_MODEL, D_MODEL, s + 16),
-            pos: ternary(D_MODEL, D_MODEL, s + 17),
-            out: ternary(D_MODEL, D_MODEL, s + 18),
-            pw1: ternary(2 * D_MODEL, D_MODEL, s + 19),
-            pw2: ternary(D_MODEL, D_MODEL, s + 20),
+            ff1: [w(D_FF, D_MODEL, s + 10), w(D_MODEL, D_FF, s + 11)],
+            ff2: [w(D_FF, D_MODEL, s + 12), w(D_MODEL, D_FF, s + 13)],
+            q: w(D_MODEL, D_MODEL, s + 14),
+            k: w(D_MODEL, D_MODEL, s + 15),
+            v: w(D_MODEL, D_MODEL, s + 16),
+            pos: w(D_MODEL, D_MODEL, s + 17),
+            out: w(D_MODEL, D_MODEL, s + 18),
+            pw1: w(2 * D_MODEL, D_MODEL, s + 19),
+            pw2: w(D_MODEL, D_MODEL, s + 20),
             bias_u: rand(D_MODEL, s + 21, 0.1),
             bias_v: rand(D_MODEL, s + 22, 0.1),
             dw_w: rand(CONV_KERNEL * D_MODEL, s + 23, 0.3),
             dw_b: rand(D_MODEL, s + 24, 0.1),
         }
+    }
+
+    /// One pool on `cpus` per tier this CPU supports.
+    fn tier_pools(cpus: &[usize]) -> Vec<ThreadPool> {
+        lf_cpu::Tier::available()
+            .into_iter()
+            .map(|t| ThreadPool::new(cpus).with_tier(t))
+            .collect()
     }
 
     fn bits(x: &[f32]) -> Vec<u32> {
@@ -740,34 +747,37 @@ mod tests {
     /// thread count.
     #[test]
     fn position_rows_do_not_depend_on_the_batch() {
-        if !lf_cpu::cpu_supported() {
-            return;
-        }
-        let (pool3, pool1) = (ThreadPool::new(&[0, 1, 2]), ThreadPool::new(&[3]));
         let w = ternary(D_MODEL, D_MODEL, 7);
         let t_max = 150;
-        let big_emb = embedding(&pool3, t_max);
-        for precision in PRECISIONS {
-            let mut proj3 = Projector::new(precision, 3);
-            let mut proj1 = Projector::new(precision, 1);
-            let rows = 2 * t_max - 1;
-            let mut big = vec![0.0; rows * D_MODEL];
-            proj3
-                .run(&pool3, &w, &big_emb, rows, &mut big, Slot::Pos, false)
-                .unwrap();
-            for t in [1, 2, 5, 7, 64, 65, 97, 149, 150] {
-                let emb = embedding(&pool1, t);
-                let centre = (t_max - t) * D_MODEL..(t_max + t - 1) * D_MODEL;
-                assert_eq!(
-                    bits(&emb),
-                    bits(&big_emb[centre.clone()]),
-                    "embedding t={t}"
-                );
-                let mut small = vec![0.0; emb.len()];
-                proj1
-                    .run(&pool1, &w, &emb, 2 * t - 1, &mut small, Slot::Pos, false)
+        for (pool3, pool1) in tier_pools(&[0, 1, 2]).into_iter().zip(tier_pools(&[3])) {
+            let tier = pool3.tier();
+            let big_emb = embedding(&pool3, t_max);
+            for precision in PRECISIONS {
+                let mut proj3 = Projector::new(precision, 3);
+                let mut proj1 = Projector::new(precision, 1);
+                let rows = 2 * t_max - 1;
+                let mut big = vec![0.0; rows * D_MODEL];
+                proj3
+                    .run(&pool3, &w, &big_emb, rows, &mut big, Slot::Pos, false)
                     .unwrap();
-                assert_eq!(bits(&small), bits(&big[centre]), "{precision:?} t={t}");
+                for t in [1, 2, 5, 7, 64, 65, 97, 149, 150] {
+                    let emb = embedding(&pool1, t);
+                    let centre = (t_max - t) * D_MODEL..(t_max + t - 1) * D_MODEL;
+                    assert_eq!(
+                        bits(&emb),
+                        bits(&big_emb[centre.clone()]),
+                        "embedding t={t}"
+                    );
+                    let mut small = vec![0.0; emb.len()];
+                    proj1
+                        .run(&pool1, &w, &emb, 2 * t - 1, &mut small, Slot::Pos, false)
+                        .unwrap();
+                    assert_eq!(
+                        bits(&small),
+                        bits(&big[centre]),
+                        "{tier} {precision:?} t={t}"
+                    );
+                }
             }
         }
     }
@@ -777,72 +787,153 @@ mod tests {
     /// limit, a precision change and a lowered limit.
     #[test]
     fn cached_layers_match_uncached_bit_for_bit() {
-        if !lf_cpu::cpu_supported() {
-            return;
-        }
-        let pool = ThreadPool::new(&[0, 1, 2, 3]);
         let layers = [layer(1), layer(2)];
-        let limit = 150;
-        // One cache across all precisions: a precision change must rebuild it.
-        let mut cache = PositionCache::new(limit);
-        let mut off = PositionCache::new(0);
-        // (t, frames covered afterwards)
-        let steps = [
-            (70, 128),
-            (1, 128),
-            (65, 128),
-            (64, 128),
-            (130, 150),
-            (131, 150),
-            (20, 150),
-            (151, 150),
-            (150, 150),
-            (63, 150),
-        ];
-        for precision in PRECISIONS {
-            let mut proj_a = Projector::new(precision, pool.threads());
-            let mut proj_b = Projector::new(precision, pool.threads());
-            let (mut buf_a, mut buf_b) = (EncoderBuffers::default(), EncoderBuffers::default());
-            let mut timings = Timings::default();
-            for (i, &(t, covered)) in steps.iter().enumerate() {
-                let x = rand(t * D_MODEL, 1000 + i as u64, 1.0);
-                buf_a.x = x.clone();
-                buf_b.x = x;
-                run_layers(
-                    &layers,
-                    &pool,
-                    &mut proj_a,
-                    t,
-                    &mut buf_a,
-                    &mut off,
-                    &mut timings,
-                )
-                .unwrap();
-                run_layers(
-                    &layers,
-                    &pool,
-                    &mut proj_b,
-                    t,
-                    &mut buf_b,
-                    &mut cache,
-                    &mut timings,
-                )
-                .unwrap();
-                assert_eq!(cache.frames(), covered, "{precision:?} t={t}");
-                let n = t * D_MODEL;
-                assert!(buf_a.x[..n].iter().all(|v| v.is_finite()));
-                assert_eq!(
-                    bits(&buf_a.x[..n]),
-                    bits(&buf_b.x[..n]),
-                    "{precision:?} t={t}"
-                );
+        for pool in tier_pools(&[0, 1, 2, 3]) {
+            let tier = pool.tier();
+            let limit = 150;
+            // One cache across all precisions: a precision change must rebuild it.
+            let mut cache = PositionCache::new(limit);
+            let mut off = PositionCache::new(0);
+            // (t, frames covered afterwards)
+            let steps = [
+                (70, 128),
+                (1, 128),
+                (65, 128),
+                (64, 128),
+                (130, 150),
+                (131, 150),
+                (20, 150),
+                (151, 150),
+                (150, 150),
+                (63, 150),
+            ];
+            for precision in PRECISIONS {
+                let mut proj_a = Projector::new(precision, pool.threads());
+                let mut proj_b = Projector::new(precision, pool.threads());
+                let (mut buf_a, mut buf_b) = (EncoderBuffers::default(), EncoderBuffers::default());
+                let mut timings = Timings::default();
+                for (i, &(t, covered)) in steps.iter().enumerate() {
+                    let x = rand(t * D_MODEL, 1000 + i as u64, 1.0);
+                    buf_a.x = x.clone();
+                    buf_b.x = x;
+                    run_layers(
+                        &layers,
+                        &pool,
+                        &mut proj_a,
+                        t,
+                        &mut buf_a,
+                        &mut off,
+                        &mut timings,
+                    )
+                    .unwrap();
+                    run_layers(
+                        &layers,
+                        &pool,
+                        &mut proj_b,
+                        t,
+                        &mut buf_b,
+                        &mut cache,
+                        &mut timings,
+                    )
+                    .unwrap();
+                    assert_eq!(cache.frames(), covered, "{tier} {precision:?} t={t}");
+                    let n = t * D_MODEL;
+                    assert!(buf_a.x[..n].iter().all(|v| v.is_finite()));
+                    assert_eq!(
+                        bits(&buf_a.x[..n]),
+                        bits(&buf_b.x[..n]),
+                        "{tier} {precision:?} t={t}"
+                    );
+                }
+                assert_eq!(off.frames(), 0);
+                assert_eq!(off.bytes(), 0);
             }
-            assert_eq!(off.frames(), 0);
-            assert_eq!(off.bytes(), 0);
+            // 2 layers x 8 heads x ceil(299 / 64) panels x 128 x 64 floats.
+            assert_eq!(cache.bytes(), 2 * HEADS * 5 * D_HEAD * NB * 4);
+            cache.set_limit(149);
+            assert_eq!((cache.frames(), cache.bytes()), (0, 0));
         }
-        // 2 layers x 8 heads x ceil(299 / 64) panels x 128 x 64 floats.
-        assert_eq!(cache.bytes(), 2 * HEADS * 5 * D_HEAD * NB * 4);
-        cache.set_limit(149);
-        assert_eq!((cache.frames(), cache.bytes()), (0, 0));
+    }
+
+    /// Every tier computes the same layers bit for bit, at every precision,
+    /// so a transcript does not depend on the CPU.
+    #[test]
+    fn tiers_match_bit_for_bit() {
+        let layers = [layer(1), layer(2)];
+        let pools = tier_pools(&[0, 1, 2]);
+        for precision in PRECISIONS {
+            // Attention rows and softmax lengths that end inside 16-lane blocks.
+            for t in [1, 7, 40, 70] {
+                let outs: Vec<Vec<u32>> = pools
+                    .iter()
+                    .map(|pool| {
+                        let mut proj = Projector::new(precision, pool.threads());
+                        let mut buf = EncoderBuffers {
+                            x: rand(t * D_MODEL, 3000 + t as u64, 1.0),
+                            ..EncoderBuffers::default()
+                        };
+                        let mut cache = PositionCache::new(0);
+                        let mut timings = Timings::default();
+                        run_layers(
+                            &layers,
+                            pool,
+                            &mut proj,
+                            t,
+                            &mut buf,
+                            &mut cache,
+                            &mut timings,
+                        )
+                        .unwrap();
+                        bits(&buf.x[..t * D_MODEL])
+                    })
+                    .collect();
+                for (pool, out) in pools.iter().zip(&outs) {
+                    let (a, b) = (pool.tier(), pools[0].tier());
+                    assert!(out == &outs[0], "{a} vs {b}, {precision:?} t={t}");
+                }
+            }
+        }
+    }
+
+    /// A binary export's layers, kept at 1 bit, give bit-identical outputs to
+    /// the same weights widened to 2-bit ternary codes, at every precision.
+    #[test]
+    fn binary_layers_match_widened_ternary_bit_for_bit() {
+        let binary = |r, c, s| PackedTernary::binary(&BinaryMatrix::random(r, c, s)).unwrap();
+        let widened = |r, c, s| PackedTernary::new(&BinaryMatrix::random(r, c, s).to_ternary());
+        let a = [layer_with(1, binary), layer_with(2, binary)];
+        let b = [
+            layer_with(1, |r, c, s| widened(r, c, s).unwrap()),
+            layer_with(2, |r, c, s| widened(r, c, s).unwrap()),
+        ];
+        for pool in tier_pools(&[0, 1, 2]) {
+            let tier = pool.tier();
+            for precision in PRECISIONS {
+                for t in [1, 7, 40] {
+                    let mut timings = Timings::default();
+                    let mut outs = Vec::new();
+                    for layers in [&a, &b] {
+                        let mut proj = Projector::new(precision, pool.threads());
+                        let mut buf = EncoderBuffers {
+                            x: rand(t * D_MODEL, 2000 + t as u64, 1.0),
+                            ..EncoderBuffers::default()
+                        };
+                        let mut cache = PositionCache::new(0);
+                        run_layers(
+                            layers,
+                            &pool,
+                            &mut proj,
+                            t,
+                            &mut buf,
+                            &mut cache,
+                            &mut timings,
+                        )
+                        .unwrap();
+                        outs.push(bits(&buf.x[..t * D_MODEL]));
+                    }
+                    assert_eq!(outs[0], outs[1], "{tier} {precision:?} t={t}");
+                }
+            }
+        }
     }
 }

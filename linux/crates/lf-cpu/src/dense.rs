@@ -3,12 +3,13 @@
 //! `A` is row-major with stride `lda`. `B` is packed once into `[panel][k][64]`
 //! (zero padded), so the micro-kernel streams one 64-wide row of `B` per `k`
 //! and broadcasts up to six values of `A`, keeping 24 accumulators in
-//! registers. Used for the floating-point parts of the model: subsampling
-//! convolutions, the subsampling output projection and attention.
+//! registers (AVX2: 16 columns at a time, 12 accumulators). Used for the
+//! floating-point parts of the model: subsampling convolutions, the
+//! subsampling output projection and attention.
 
 use std::ops::Range;
 
-use crate::{SendPtr, ThreadPool, split_range};
+use crate::{SendPtr, ThreadPool, Tier, split_range};
 
 /// Columns per panel.
 pub const NB: usize = 64;
@@ -93,7 +94,7 @@ pub fn gemm(
     ldc: usize,
     bias: Option<&[f32]>,
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 required");
+    let tier = pool.tier();
     check_shapes(a, m, lda, b, c, ldc, bias);
     let np = b.panels();
     let units = crate::size(np, m.div_ceil(UNIT_ROWS));
@@ -104,20 +105,22 @@ pub fn gemm(
             // Panel-major: consecutive units reuse the same panel.
             let (p, chunk) = (u / m.div_ceil(UNIT_ROWS), u % m.div_ceil(UNIT_ROWS));
             let rows = chunk * UNIT_ROWS..(chunk * UNIT_ROWS + UNIT_ROWS).min(m);
-            // SAFETY: AVX-512 F was asserted on entry. `units > 0` implies `m > 0`,
-            // so `check_shapes` covered all `m` rows of `a` and `c` (and `bias`);
-            // `p < np` keeps column `p * 64` below `n <= ldc`, inside row 0 of `c`.
-            // Each unit `(p, chunk)` runs on one thread and writes only rows
-            // `rows` of panel `p`'s columns, which `ldc >= n` keeps disjoint from
-            // every other unit's.
-            unsafe { block(a, lda, b, p, rows, cp.get().add(p * NB), ldc, bias) };
+            // SAFETY: a pool's tier is one this CPU supports. `units > 0` implies
+            // `m > 0`, so `check_shapes` covered all `m` rows of `a` and `c` (and
+            // `bias`); `p < np` keeps column `p * 64` below `n <= ldc`, inside row
+            // 0 of `c`. Each unit `(p, chunk)` runs on one thread and writes only
+            // rows `rows` of panel `p`'s columns, which `ldc >= n` keeps disjoint
+            // from every other unit's.
+            unsafe { block(tier, a, lda, b, p, rows, cp.get().add(p * NB), ldc, bias) };
         }
     });
 }
 
-/// Single-threaded `C[m][cols of panels] = A * B[.., panels]`, with column 0 of
-/// `c` being the first column of `panels.start`. No bias.
+/// Single-threaded `C[m][cols of panels] = A * B[.., panels]` at `tier`, with
+/// column 0 of `c` being the first column of `panels.start`. No bias.
+#[allow(clippy::too_many_arguments)]
 pub fn gemm_serial(
+    tier: Tier,
     a: &[f32],
     m: usize,
     lda: usize,
@@ -126,7 +129,7 @@ pub fn gemm_serial(
     c: &mut [f32],
     ldc: usize,
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 required");
+    assert!(tier.supported(), "this CPU lacks the {tier} kernels");
     assert!(panels.end <= b.panels());
     if m == 0 || panels.is_empty() {
         return;
@@ -142,11 +145,11 @@ pub fn gemm_serial(
         // SAFETY: `(p - panels.start) * 64 < width`, inside row 0 of `c` (the
         // `c.len()` assert above, with `m > 0`).
         let cp = unsafe { c0.add((p - panels.start) * NB) };
-        // SAFETY: AVX-512 F was asserted, and `p < b.panels()`. The asserts above
-        // cover rows `0..m` of `a` (stride `lda`, `b.k` values) and of this
+        // SAFETY: `tier` was asserted supported, and `p < b.panels()`. The asserts
+        // above cover rows `0..m` of `a` (stride `lda`, `b.k` values) and of this
         // panel's columns of `c` (stride `ldc`, ending by `width`). This call is
         // single-threaded and holds `c` mutably.
-        unsafe { block(a, lda, b, p, 0..m, cp, ldc, None) };
+        unsafe { block(tier, a, lda, b, p, 0..m, cp, ldc, None) };
     }
 }
 
@@ -179,12 +182,13 @@ fn check_shapes(
 /// Rows `rows` of `C` for panel `p`; row `r` of the panel's columns starts at `c + r * ldc`.
 ///
 /// # Safety
-/// The CPU must support AVX-512 F, and `p < b.panels()`. For every `r` in
+/// The CPU must support `tier`, and `p < b.panels()`. For every `r` in
 /// `rows`, `a` must hold `r * lda + b.k` values, and `c` must be valid for
 /// reads and writes of `min(64, b.n - p * 64)` floats at `r * ldc`, with no
 /// other thread accessing them. `bias`, if given, must hold `b.n` values.
 #[allow(clippy::too_many_arguments)]
 unsafe fn block(
+    tier: Tier,
     a: &[f32],
     lda: usize,
     b: &Panels,
@@ -194,6 +198,12 @@ unsafe fn block(
     ldc: usize,
     bias: Option<&[f32]>,
 ) {
+    let kernel_for: fn(usize) -> Kernel = match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 => x86::kernel_for,
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx2 { .. } => avx2::kernel_for,
+    };
     let k = b.k;
     let width = NB.min(b.n - p * NB);
     let panel = b.panel(p);
@@ -204,13 +214,14 @@ unsafe fn block(
         let mut r = rows.start;
         while r < rows.end {
             let mr = MR.min(rows.end - r);
-            // SAFETY: AVX-512 F (caller contract). Panel `p` stores `k * 64`
-            // zero-padded floats, so `panel + kb * 64` has `kc * 64` readable.
-            // Rows `r..r + mr` lie in `rows`, so the caller contract covers their
-            // `a` inputs `kb..kb + kc` and their `width` columns of `c`; `bias`
-            // (sliced from `p * 64`) has `width` values.
+            // SAFETY: the CPU supports `tier`, whose kernel this is (caller
+            // contract). Panel `p` stores `k * 64` zero-padded floats, so
+            // `panel + kb * 64` has `kc * 64` readable. Rows `r..r + mr` lie in
+            // `rows`, so the caller contract covers their `a` inputs `kb..kb +
+            // kc` and their `width` columns of `c`; `bias` (sliced from `p * 64`)
+            // has `width` values.
             unsafe {
-                x86::kernel_for(mr)(
+                kernel_for(mr)(
                     panel.add(kb * NB),
                     kc,
                     a.as_ptr().add(r * lda + kb),
@@ -228,6 +239,20 @@ unsafe fn block(
     }
 }
 
+/// Kernel signature shared by both tiers.
+type Kernel = unsafe fn(
+    *const f32,
+    usize,
+    *const f32,
+    usize,
+    *mut f32,
+    usize,
+    usize,
+    bool,
+    Option<*const f32>,
+);
+
+/// The AVX-512 kernels.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 mod x86 {
@@ -322,6 +347,94 @@ mod x86 {
     }
 }
 
+/// The AVX2 kernels: the AVX-512 arithmetic, 16 columns at a time.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+mod avx2 {
+    use super::Kernel;
+    use std::arch::x86_64::*;
+
+    pub fn kernel_for(rows: usize) -> Kernel {
+        match rows {
+            1 => kernel::<1>,
+            2 => kernel::<2>,
+            3 => kernel::<3>,
+            4 => kernel::<4>,
+            5 => kernel::<5>,
+            6 => kernel::<6>,
+            _ => unreachable!(),
+        }
+    }
+
+    /// As the AVX-512 kernel: `R` rows of `A` times `kc` rows of one panel,
+    /// computed and stored 16 columns at a time.
+    ///
+    /// # Safety
+    /// The CPU must support AVX2 and FMA. `panel` must have `kc * 64` readable
+    /// floats; `a` must be readable at `r * lda + i` for `r < R`, `i < kc`; `c`
+    /// must be valid for reads and writes of `width` (at most 64) floats at
+    /// each `r * ldc` for `r < R`, with no other thread accessing them; `bias`,
+    /// if given, must have `width` readable floats.
+    #[target_feature(enable = "avx2,fma")]
+    unsafe fn kernel<const R: usize>(
+        panel: *const f32,
+        kc: usize,
+        a: *const f32,
+        lda: usize,
+        c: *mut f32,
+        ldc: usize,
+        width: usize,
+        accumulate: bool,
+        bias: Option<*const f32>,
+    ) {
+        let lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+        for col in (0..width).step_by(16) {
+            let mut acc = [[_mm256_setzero_ps(); 2]; R];
+            for i in 0..kc {
+                // SAFETY: `i < kc` and `col < 64`, so the 16 floats from `col`
+                // lie in panel row `i`.
+                let wp = unsafe { panel.add(i * 64 + col) };
+                // SAFETY: 8 of those 16 floats (`v * 8 < 16`).
+                let w: [__m256; 2] =
+                    std::array::from_fn(|v| unsafe { _mm256_loadu_ps(wp.add(v * 8)) });
+                for r in 0..R {
+                    // SAFETY: `r < R` and `i < kc` (caller contract).
+                    let x = _mm256_set1_ps(unsafe { *a.add(r * lda + i) });
+                    for v in 0..2 {
+                        acc[r][v] = _mm256_fmadd_ps(w[v], x, acc[r][v]);
+                    }
+                }
+            }
+            for v in 0..2 {
+                let lanes = width.saturating_sub(col + v * 8).min(8);
+                if lanes == 0 {
+                    break;
+                }
+                let mask = _mm256_cmpgt_epi32(_mm256_set1_epi32(lanes as i32), lane);
+                let b = match bias {
+                    // SAFETY: `col + v * 8 < width`, and the mask limits the load
+                    // to lanes below `width`, all readable (caller contract);
+                    // masked-off lanes are not accessed.
+                    Some(bp) => unsafe { _mm256_maskload_ps(bp.add(col + v * 8), mask) },
+                    None => _mm256_setzero_ps(),
+                };
+                for r in 0..R {
+                    // SAFETY: `r < R` and `col + v * 8 < width` (caller contract).
+                    let p = unsafe { c.add(r * ldc + col + v * 8) };
+                    let mut out = _mm256_add_ps(acc[r][v], b);
+                    if accumulate {
+                        // SAFETY: masked to row `r`'s columns below `width`.
+                        out = _mm256_add_ps(out, unsafe { _mm256_maskload_ps(p, mask) });
+                    }
+                    // SAFETY: masked to row `r`'s columns below `width`, which only
+                    // this thread accesses (caller contract).
+                    unsafe { _mm256_maskstore_ps(p, mask, out) };
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,43 +464,46 @@ mod tests {
 
     #[test]
     fn packed_rows_and_cols_match_reference() {
-        if !crate::cpu_supported() {
-            return;
-        }
-        let pool = ThreadPool::new(&[0, 1, 2]);
-        // Odd sizes: partial panels, K spanning blocks, M spanning units.
-        for (m, k, n) in [(1, 3, 5), (13, 600, 70), (200, 1030, 129)] {
-            let lda = k + 3;
-            let a = rand(m * lda, 1);
-            let src = rand(n * k, 2);
-            let bias = rand(n, 3);
-            let mut rows = Panels::default();
-            rows.pack_rows(&src, n, k, k);
-            let mut c = vec![0.0; m * n];
-            gemm(&pool, &a, m, lda, &rows, &mut c, n, Some(&bias));
-            let r = reference(&a, m, lda, &|t, j| src[j * k + t], k, n);
-            for i in 0..m * n {
-                assert!(
-                    (c[i] as f64 - r[i] - bias[i % n] as f64).abs() < 1e-3,
-                    "rows {m}x{k}x{n} at {i}"
-                );
-            }
-            let mut cols = Panels::default();
-            cols.pack_cols(&src, k, n, n);
-            let mut c = vec![0.0; m * n];
-            gemm(&pool, &a, m, lda, &cols, &mut c, n, None);
-            let r = reference(&a, m, lda, &|t, j| src[t * n + j], k, n);
-            for i in 0..m * n {
-                assert!((c[i] as f64 - r[i]).abs() < 1e-3, "cols {m}x{k}x{n} at {i}");
-            }
-            // Serial over a sub-range of panels, written from column 0 of `c`.
-            if rows.panels() > 1 {
-                let mut c = vec![0.0; m * 200];
-                gemm_serial(&a, m, lda, &rows, 1..rows.panels(), &mut c, 200);
+        for pool in crate::tier_pools(3) {
+            let tier = pool.tier();
+            // Odd sizes: partial panels, K spanning blocks, M spanning units.
+            for (m, k, n) in [(1, 3, 5), (13, 600, 70), (200, 1030, 129)] {
+                let lda = k + 3;
+                let a = rand(m * lda, 1);
+                let src = rand(n * k, 2);
+                let bias = rand(n, 3);
+                let mut rows = Panels::default();
+                rows.pack_rows(&src, n, k, k);
+                let mut c = vec![0.0; m * n];
+                gemm(&pool, &a, m, lda, &rows, &mut c, n, Some(&bias));
                 let r = reference(&a, m, lda, &|t, j| src[j * k + t], k, n);
-                for i in 0..m {
-                    for j in 64..n {
-                        assert!((c[i * 200 + j - 64] as f64 - r[i * n + j]).abs() < 1e-3);
+                for i in 0..m * n {
+                    assert!(
+                        (c[i] as f64 - r[i] - bias[i % n] as f64).abs() < 1e-3,
+                        "{tier} rows {m}x{k}x{n} at {i}"
+                    );
+                }
+                let mut cols = Panels::default();
+                cols.pack_cols(&src, k, n, n);
+                let mut c = vec![0.0; m * n];
+                gemm(&pool, &a, m, lda, &cols, &mut c, n, None);
+                let r = reference(&a, m, lda, &|t, j| src[t * n + j], k, n);
+                for i in 0..m * n {
+                    let e = (c[i] as f64 - r[i]).abs();
+                    assert!(e < 1e-3, "{tier} cols {m}x{k}x{n} at {i}");
+                }
+                // Serial over a sub-range of panels, written from column 0 of
+                // `c`; columns past the last panel's width stay untouched.
+                if rows.panels() > 1 {
+                    let mut c = vec![7.0; m * 200];
+                    gemm_serial(tier, &a, m, lda, &rows, 1..rows.panels(), &mut c, 200);
+                    let r = reference(&a, m, lda, &|t, j| src[j * k + t], k, n);
+                    for i in 0..m {
+                        for j in 64..n {
+                            let e = (c[i * 200 + j - 64] as f64 - r[i * n + j]).abs();
+                            assert!(e < 1e-3, "{tier}");
+                        }
+                        assert!(c[i * 200 + n - 64..(i + 1) * 200].iter().all(|&v| v == 7.0));
                     }
                 }
             }

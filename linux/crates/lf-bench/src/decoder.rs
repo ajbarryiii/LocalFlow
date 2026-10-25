@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use lf_cpu::ThreadPool;
 use lf_cpu::decoder::{DecoderParams, PackedDecoder, Storage, reference, synthetic_schedule};
+use lf_cpu::topology::{Topology, allowed_cpus};
 use lf_model::Export;
 use lf_model::rng::SplitMix64;
 
@@ -96,7 +97,7 @@ fn encoder_frames(frames: usize, dim: usize, seed: u64) -> Vec<f32> {
 }
 
 /// Returns whether every configuration matched the reference.
-fn check(p: &DecoderParams) -> bool {
+fn check(p: &DecoderParams, cores: &[usize]) -> bool {
     let mut all_match = true;
     println!("\nReal-argmax decode vs f64 reference (synthetic encoder output)");
     let frames = 125;
@@ -112,7 +113,7 @@ fn check(p: &DecoderParams) -> bool {
     for storage in [Storage::F32, Storage::F16] {
         let d = PackedDecoder::new(p, storage);
         for threads in [1, 8] {
-            let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+            let pool = ThreadPool::new(&cores[..threads]);
             let proj = d.project_encoder(&pool, &enc, frames);
             let got = d.decode(&pool, &proj, frames, None, None);
             all_match &= got == expected;
@@ -137,10 +138,21 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !lf_cpu::cpu_supported() {
-        eprintln!("this CPU lacks AVX-512 F/BW/VNNI/VBMI");
+    let tier = match lf_cpu::tier() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // One thread per physical core, largest L3 first.
+    let cores = Topology::read(&allowed_cpus()).physical_cores();
+    let checked: &[usize] = if args.check { &[1, 8] } else { &[] };
+    if args.threads.iter().chain(checked).any(|&t| t > cores.len()) {
+        eprintln!("only {} physical cores are available", cores.len());
         return ExitCode::FAILURE;
     }
+    println!("{tier} kernels, pools on CPUs {cores:?} in that order");
     let load = Instant::now();
     let params = match &args.export {
         Some(dir) => match Export::open(dir)
@@ -189,7 +201,7 @@ fn main() -> ExitCode {
             d.bytes_per_token_step() as f64 / 1e6
         );
         for &threads in &args.threads {
-            let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
+            let pool = ThreadPool::new(&cores[..threads]);
             for &secs in &args.seconds {
                 let frames = (secs * FRAMES_PER_SECOND).round() as usize;
                 let tokens = (secs * args.tokens_per_second).round() as usize;
@@ -220,7 +232,7 @@ fn main() -> ExitCode {
         }
     }
 
-    if args.check && !check(&params) {
+    if args.check && !check(&params, &cores) {
         eprintln!("decoder output differs from the f64 reference");
         return ExitCode::FAILURE;
     }

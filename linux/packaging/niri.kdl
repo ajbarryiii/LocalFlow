@@ -1,0 +1,40 @@
+// LocalFlow dictation binds for niri (checked against niri 26.04). Not
+// installed automatically; copy the binds into the `binds {}` section of
+// ~/.config/niri/config.kdl (niri reloads it by itself).
+//
+// niri 26.04 runs binds only when a key is pressed; it has no binds on key
+// release, so hold to talk cannot work. The dictation key toggles instead:
+// tap it to start recording, tap it again to stop and type. Hold to Prompt
+// (double-tap and hold) needs hold to talk, so it is not available either.
+// niri's development branch adds `press {}` and `release {}` blocks; once a
+// release has them, hold to talk will look like this:
+//
+//     XF86Tools {
+//         press { spawn "localflowctl" "press"; }
+//         release { spawn "localflowctl" "release"; }
+//     }
+//
+// Pick a key nothing else uses: F13-F24, a spare macro or thumb key, Pause,
+// ... niri takes an XKB keysym name. To find it, run `wev`, press the key and
+// read the "sym:" of the key event. The examples use XF86Tools, the sym the
+// F13 key (key 191) produces with the default xkb rules.
+
+binds {
+    // Start or stop recording. repeat=false: holding the key toggles once.
+    XF86Tools repeat=false { spawn "localflowctl" "toggle"; }
+
+    // Teach the custom dictionary from a correction of the last dictation
+    // (within two minutes of typing it): a picker opens with its text; edit it
+    // and press Return. The text already typed in the other app is not
+    // changed. Needs rofi or wofi ("picker" in config.json; fuzzel and tofi
+    // cannot edit text).
+    Super+Shift+D { spawn "localflowctl" "correct"; }
+}
+
+// Modifiers and LocalFlow's typing: LocalFlow types through a virtual
+// keyboard. Whether niri runs binds for keys from a virtual keyboard, or adds
+// the modifiers you hold on your real keyboard to them, is not known (not
+// tested). niri has no documented per-device switch like Hyprland's
+// `keybinds = false`. So do not hold modifiers while the text is typed, and
+// keep the toggle on a key without modifiers: typing starts soon after the
+// second tap, possibly while a modifier of the bind is still held.

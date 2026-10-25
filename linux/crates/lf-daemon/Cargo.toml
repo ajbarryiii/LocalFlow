@@ -17,14 +17,22 @@ path = "src/bin/localflowctl.rs"
 lf-asr.workspace = true
 lf-dictation = { path = "../lf-dictation" }
 lf-io-api.workspace = true
+lf-keyboard = { path = "../lf-keyboard" }
 lf-media = { path = "../lf-media" }
 lf-pipewire = { path = "../lf-pipewire" }
+lf-portal = { path = "../lf-portal" }
 lf-wayland = { path = "../lf-wayland" }
 libc.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"
-# The tray icon (`localflowctl tray`); already built for lf-media.
+# Session-bus client for the GlobalShortcuts portal (`trigger: "portal"`)
+# and the tray icon (`localflowctl tray`); already used by lf-media.
+# async-io, futures-lite and async-channel are zbus's own runtime crates (no
+# new crates in the lock file).
 zbus = "5"
+async-channel = "2"
+async-io = "2"
+futures-lite = "2"
 
 [dev-dependencies]
 # FLAC decoding for the ignored real-model test (public LibriSpeech audio).

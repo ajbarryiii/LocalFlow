@@ -42,6 +42,15 @@ pub fn data_dir() -> Result<PathBuf, String> {
     Ok(base.join(APP_DIR))
 }
 
+/// `$XDG_STATE_HOME/localflow` (not created).
+pub fn state_dir() -> Result<PathBuf, String> {
+    let base = match env_dir(std::env::var_os("XDG_STATE_HOME")) {
+        Some(p) => p,
+        None => home()?.join(".local/state"),
+    };
+    Ok(base.join(APP_DIR))
+}
+
 /// `$XDG_RUNTIME_DIR`, which must be set, absolute, and a real directory
 /// owned by this user with no group or other access.
 pub fn runtime_dir() -> Result<PathBuf, String> {

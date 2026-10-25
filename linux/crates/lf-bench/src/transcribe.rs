@@ -80,6 +80,10 @@ struct Args {
     min_s: f64,
     max_s: f64,
     threads: usize,
+    /// Explicit CPUs to pin to (`--cpus`), overriding `--threads`.
+    cpus: Option<Vec<usize>>,
+    /// Leave the threads to the scheduler.
+    unpinned: bool,
     precision: Precision,
     warmup: usize,
     show: bool,
@@ -143,6 +147,8 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
         min_s: 30.0,
         max_s: 60.0,
         threads: 8,
+        cpus: None,
+        unpinned: false,
         precision: Precision::Int8(3),
         warmup: 1,
         show: false,
@@ -174,6 +180,12 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--min-seconds" => a.min_s = value()?.parse().map_err(|_| "bad --min-seconds")?,
             "--max-seconds" => a.max_s = value()?.parse().map_err(|_| "bad --max-seconds")?,
             "--threads" => a.threads = value()?.parse().map_err(|_| "bad --threads")?,
+            "--cpus" => {
+                let list = lf_cpu::topology::parse_list(&value()?).ok_or("bad --cpus list")?;
+                a.threads = list.len();
+                a.cpus = Some(list);
+            }
+            "--unpinned" => a.unpinned = true,
             "--precision" => a.precision = parse_precision(&value()?)?,
             "--warmup" => a.warmup = value()?.parse().map_err(|_| "bad --warmup")?,
             "--show" => a.show = true,
@@ -202,7 +214,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
                 return Err("usage: lf-transcribe --export DIR [--eval EVAL_JSON:MANIFEST_JSONL]... \
                      [--joined LIBRISPEECH_SPLIT_DIR [--joined-count N] [--joined-hyps EVAL_JSON]] \
                      [--min-seconds 30] [--max-seconds 60] [--ids FILE] [--offset N] [--limit N] \
-                     [--threads 8] [--precision f32|i8x1|i8x2|i8x3] [--warmup 1] [--show] [--quiet] \
+                     [--threads 8 | --cpus 0-7,16 | --unpinned] [--precision f32|i8x1|i8x2|i8x3] [--warmup 1] [--show] [--quiet] \
                      [--save-hyps PATH.jsonl] [--synthetic 10,30,60] [--analyze f32,i8x3,i8x2]"
                     .into());
             }
@@ -212,6 +224,9 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
     a.export = export.ok_or("--export is required")?;
     if a.threads == 0 || a.threads > 16 {
         return Err("--threads must be 1..=16".into());
+    }
+    if a.unpinned && a.cpus.is_some() {
+        return Err("--unpinned and --cpus exclude each other".into());
     }
     if a.min_s.is_nan() || a.max_s.is_nan() || a.min_s > a.max_s {
         return Err("--min-seconds must not exceed --max-seconds".into());
@@ -525,6 +540,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<bool, String> {
     let args = parse_args_from(std::env::args().skip(1))?;
+    lf_cpu::tier().map_err(|e| e.to_string())?;
     let load = Instant::now();
     let export =
         Export::open(&args.export).map_err(|e| format!("{}: {e}", args.export.display()))?;
@@ -575,9 +591,9 @@ fn run() -> Result<bool, String> {
         .sum::<f64>();
     eprintln!("{} utterances selected", items.len());
 
-    let cpus: Vec<usize> = (0..args.threads).collect();
+    let placement = Placement::of(&args)?;
     if let Some(params) = params {
-        return analyze(&args, &model, &params, &cpus, &items);
+        return analyze(&args, &model, &params, &placement, &items);
     }
 
     let mut hyp_out = match &args.save_hyps {
@@ -585,7 +601,7 @@ fn run() -> Result<bool, String> {
         None => None,
     };
     let precision = precision_name(args.precision);
-    let mut tr = Transcriber::new(model, &cpus, args.precision);
+    let mut tr = Transcriber::with_pool(model, placement.pool(), args.precision);
     for item in items.iter().take(args.warmup) {
         // Warm-up items are measured again below, where failures are counted.
         if let Ok(samples) = item.samples() {
@@ -595,9 +611,10 @@ fn run() -> Result<bool, String> {
     let after_warmup = memory_mib();
 
     println!(
-        "precision {precision}, {} threads (CPUs 0-{})",
-        args.threads,
-        args.threads - 1
+        "precision {precision}, {} kernels, {} threads ({})",
+        tr.tier(),
+        tr.threads(),
+        placement.describe()
     );
     if !args.quiet {
         println!(
@@ -1014,6 +1031,45 @@ fn window_min(steps: &[Step], w: &std::ops::Range<usize>, f: impl Fn(&Step) -> f
     steps[w.clone()].iter().map(f).fold(f64::INFINITY, f64::min)
 }
 
+/// Where the pool's threads run.
+enum Placement {
+    Pinned(Vec<usize>),
+    Unpinned(usize),
+}
+
+impl Placement {
+    /// `--cpus`, `--unpinned`, or by default the first `--threads` physical
+    /// cores in L3 order ([`lf_cpu::topology`]).
+    fn of(args: &Args) -> Result<Placement, String> {
+        if args.unpinned {
+            return Ok(Placement::Unpinned(args.threads));
+        }
+        if let Some(cpus) = &args.cpus {
+            return Ok(Placement::Pinned(cpus.clone()));
+        }
+        let topo = lf_cpu::topology::Topology::read(&lf_cpu::topology::allowed_cpus());
+        let cores = topo.physical_cores();
+        if cores.len() < args.threads {
+            return Err(format!("only {} physical cores are available", cores.len()));
+        }
+        Ok(Placement::Pinned(cores[..args.threads].to_vec()))
+    }
+
+    fn pool(&self) -> ThreadPool {
+        match self {
+            Placement::Pinned(cpus) => ThreadPool::new(cpus),
+            Placement::Unpinned(n) => ThreadPool::unpinned(*n),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Placement::Pinned(cpus) => format!("CPUs {cpus:?}"),
+            Placement::Unpinned(_) => "unpinned".into(),
+        }
+    }
+}
+
 /// Thresholds for the margin histogram of the baseline's token decisions.
 const MARGIN_BUCKETS: [f64; 8] = [0.001, 0.01, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0];
 
@@ -1021,10 +1077,10 @@ fn analyze(
     args: &Args,
     model: &Model,
     params: &DecoderParams,
-    cpus: &[usize],
+    placement: &Placement,
     items: &[Item],
 ) -> Result<bool, String> {
-    let pool = ThreadPool::new(cpus);
+    let pool = placement.pool();
     let mut projs: Vec<Projector> = args
         .analyze
         .iter()
@@ -1393,6 +1449,10 @@ mod tests {
         assert!(parse_args_from(argv("--export x --precision i8x4")).is_err());
         assert!(parse_args_from(argv("--export x --min-seconds 5 --max-seconds 1")).is_err());
         assert!(parse_args_from(argv("--export x --threads 0")).is_err());
+        let a = parse_args_from(argv("--export x --cpus 0-3,8")).unwrap();
+        assert_eq!((a.cpus, a.threads), (Some(vec![0, 1, 2, 3, 8]), 5));
+        assert!(parse_args_from(argv("--export x --cpus 0-3 --unpinned")).is_err());
+        assert!(parse_args_from(argv("--export x --cpus 3-1")).is_err());
     }
 
     #[test]

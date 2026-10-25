@@ -6,10 +6,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lf_daemon::config::{self, Config};
+use lf_daemon::config::{self, Config, Trigger};
 use lf_daemon::controller::Limits;
 use lf_daemon::daemon::{self, Parts};
-use lf_daemon::{backends, error, info, log, paths, recognizer, signals, warn, worker};
+use lf_daemon::{backends, error, info, log, paths, portal, recognizer, signals, warn, worker};
 use lf_daemon::{dictionary, history};
 
 const USAGE: &str = "usage: localflowd [--config PATH] [--check-config] [--fake-io]
@@ -54,6 +54,10 @@ fn parse_args() -> Result<Args, String> {
 /// stderr makes it give up rather than hang the exit.
 const LOG_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long exiting waits for the global shortcuts thread (it checks every
+/// 50 ms; a portal call in flight can take longer).
+const PORTAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn main() -> ExitCode {
     // Before any thread exists: the default hook writes to stderr
     // synchronously and would block a panicking thread on a stalled stderr.
@@ -73,7 +77,7 @@ fn main() -> ExitCode {
 /// Environment variables that make libraries print protocol traffic or
 /// buffer contents to stderr (and so to journald), which would include typed
 /// text. They are cleared before any library reads them.
-const CONTENT_DEBUG_VARS: [&str; 1] = ["WAYLAND_DEBUG"];
+const CONTENT_DEBUG_VARS: [&str; 2] = ["WAYLAND_DEBUG", "REIS_DEBUG"];
 
 fn run() -> Result<(), String> {
     let mut cleared = Vec::new();
@@ -115,6 +119,9 @@ fn run() -> Result<(), String> {
     let config = Config::load(&config_path, &data_dir)?;
     log::set_level(config.log_level);
     let cpus = config::resolve_cpus(config.cpus.as_deref())?;
+    // A forced kernel tier the CPU lacks stops the daemon here, not in the
+    // recognizer.
+    lf_asr::tier().map_err(|e| e.to_string())?;
     if args.check {
         println!("configuration ok");
         return Ok(());
@@ -122,6 +129,7 @@ fn run() -> Result<(), String> {
     let runtime_dir = paths::runtime_dir()?;
     // Only the vocabulary, for dictionary entries; the model loads later on
     // the recognition thread.
+    recognizer::check_export(&config.export_path)?;
     let tokenizer = lf_asr::model::load_tokenizer(&config.export_path)
         .map_err(|e| format!("model export {}: {e}", config.export_path.display()))?;
 
@@ -129,7 +137,7 @@ fn run() -> Result<(), String> {
         info!("fake I/O: recording silence and discarding text");
         backends::fake()
     } else {
-        backends::desktop(&config)
+        backends::desktop(&config)?
     };
     let parts = Parts {
         capture,
@@ -162,7 +170,22 @@ fn run() -> Result<(), String> {
     let handle = daemon::start_with(parts, &runtime_dir, |events| {
         *shutdown.lock().unwrap_or_else(|e| e.into_inner()) = Some(events);
     })?;
+    // Like media pausing, `--fake-io` leaves the desktop's shortcuts alone.
+    let portal = if config.trigger == Trigger::Portal && !args.fake_io {
+        match portal::spawn(portal::Setting::default(), handle.events()) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                warn!("global shortcuts: cannot start a thread: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let result = handle.join();
+    if let Some(p) = portal {
+        p.stop(PORTAL_SHUTDOWN_TIMEOUT);
+    }
     info!("stopped");
     result
 }

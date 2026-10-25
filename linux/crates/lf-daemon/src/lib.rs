@@ -1,10 +1,12 @@
 //! The LocalFlow dictation daemon (`localflowd`) and its control client
 //! (`localflowctl`).
 //!
-//! Hyprland binds call `localflowctl press` / `release` / `toggle` /
-//! `cancel`; the daemon records from the microphone, transcribes on a
-//! dedicated worker thread, post-processes with `lf-dictation`, and types
-//! the result through the virtual keyboard. Audio never leaves memory.
+//! Desktop key binds call `localflowctl press` / `release` / `toggle` /
+//! `cancel` (or, with `"trigger": "portal"`, the daemon binds global
+//! shortcuts itself; see `portal`); the daemon records from the
+//! microphone, transcribes on a dedicated worker thread, post-processes
+//! with `lf-dictation`, and types the result through the virtual keyboard.
+//! Audio never leaves memory.
 
 pub mod log;
 
@@ -19,6 +21,8 @@ pub mod link;
 pub mod media;
 pub mod paths;
 pub mod picker;
+pub mod portal;
+pub mod portal_token;
 pub mod protocol;
 pub mod recognizer;
 pub mod server;

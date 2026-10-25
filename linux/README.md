@@ -1,18 +1,24 @@
 # LocalFlow for Linux
 
-Local dictation for Hyprland on NixOS: hold a key, speak, release, and the
-text is typed into the focused window. Speech recognition runs on the CPU
-with the ternary Parakeet model; nothing leaves the machine, and audio is
-never written to disk. See `PLAN.md` for the design and measurements.
+Local dictation for Wayland desktops (developed on Hyprland and NixOS): hold
+a key, speak, release, and the text is typed into the focused window.
+Speech recognition runs on the CPU with a ternary or binary Parakeet model;
+nothing leaves the machine, and audio is never written to disk. See `PLAN.md`
+for the design and measurements.
 
 - `localflowd`: the daemon. It records, transcribes, post-processes (voice
   macros, "press enter", spoken delimiters) and types.
-- `localflowctl`: sends one command to the daemon. Hyprland binds call it.
+- `localflowctl`: sends one command to the daemon. Your desktop's key binds
+  call it, or the daemon binds keys itself through the desktop portal; see
+  "Dictation key" below.
 
 `localflowd` records from PipeWire (`lf-pipewire`, the default source or
 `input_device`) and types through the Wayland virtual keyboard
-(`lf-wayland`). `--fake-io` swaps both for fakes that record silence and
-discard text.
+(`lf-wayland`) on wlroots compositors (Hyprland, sway, river), the
+RemoteDesktop portal (GNOME, KDE) or uinput (anything, X11 included); see
+[Text output and desktops](#text-output-and-desktops). `--fake-io` swaps
+the microphone and the output for fakes that record silence and discard
+text.
 
 ## Build
 
@@ -23,7 +29,59 @@ nix develop ./linux --command cargo build --release --manifest-path linux/Cargo.
 # Binaries: linux/target/release/localflowd and localflowctl
 ```
 
-The CPU needs AVX-512 (F, BW, VNNI, VBMI).
+The CPU needs x86-64 with AVX2, FMA and F16C (Intel Haswell or AMD Zen 1 and
+later). At startup the daemon picks the fastest set of kernels the CPU
+supports and names it in its `model loaded` log line:
+
+| Tier | CPU features | For example |
+| --- | --- | --- |
+| `avx512` | AVX-512 F, BW, VNNI and VBMI | Intel Ice Lake, Sapphire Rapids; AMD Zen 4 and later |
+| `avx2+vnni` | AVX2 and AVX-VNNI | Intel Alder Lake and later client chips |
+| `avx2` | AVX2 | Intel Haswell to Comet Lake, Skylake-SP to Cascade Lake Xeons; AMD Zen 1-3 |
+
+`LOCALFLOW_CPU_TIER=avx512`, `avx2` or `avx2-novnni` forces a tier (`avx2`
+still uses AVX-VNNI when the CPU has it; `avx2-novnni` does not). Forcing
+one the CPU lacks stops the daemon with an error. Every tier computes the same
+results bit for bit, so transcripts do not depend on the CPU.
+
+On a Ryzen 9 9950X3D, which runs all three, 2-12 s clips took 1.4-1.7 times
+as long end to end at `avx2+vnni` and 1.8-2.2 times at `avx2` as at `avx512`
+(kea-t, i8x2: 27, 44 and 55 ms on average), and the encoder projections for
+30 s of audio 2.0 and 2.6 times. That machine runs 256-bit instructions at
+half its 512-bit rate, so these ratios say little about CPUs without AVX-512.
+
+## Model
+
+LocalFlow needs a model export: a directory with `export.safetensors`,
+`manifest.json` and `tokenizer/`. Two are published on Hugging Face, both
+derived from NVIDIA's
+[parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+and licensed CC-BY-4.0 (attribution in each export's `NOTICE`):
+
+- [kea-b](https://huggingface.co/rajb3/kea-b) (recommended): 1-bit weights,
+  105 MB.
+- [kea-t](https://huggingface.co/rajb3/kea-t): ternary weights, 181 MB,
+  slightly lower WER (1.33% vs 1.45% on 40 LibriSpeech test-clean clips),
+  and slower (see `export_path` below).
+
+The daemon checks every file against the SHA-256 hashes in `manifest.json`
+when it loads. With Nix, the flake packages both exports, pinned to a
+Hugging Face revision:
+
+```bash
+nix build ./linux#kea-b   # result/ is the export directory
+```
+
+In a Home Manager or NixOS configuration that has this flake as the input
+`localflow`, set `export_path = "${localflow.packages.x86_64-linux.kea-b}"`.
+Without Nix, download the repository into the default location:
+
+```bash
+git clone https://huggingface.co/rajb3/kea-b ~/.local/share/localflow/model
+```
+
+(`git lfs` must be installed; `hf download rajb3/kea-b --local-dir …` works
+too).
 
 ## Configure
 
@@ -36,7 +94,7 @@ invalid values stop the daemon with an error. Defaults:
   "version": 1,
   "export_path": "<XDG_DATA_HOME>/localflow/model",
   "precision": "i8x2",
-  "cpus": "first 16 available CPUs",
+  "cpus": "one per physical core, at most 16",
   "press_enter": true,
   "spoken_delimiters": true,
   "spoken_numbers": true,
@@ -50,17 +108,32 @@ invalid values stop the daemon with an error. Defaults:
   "pause_media": true,
   "prompt_tag": "[dictated]",
   "double_tap_ms": 400,
-  "picker": "auto"
+  "picker": "auto",
+  "output": "auto",
+  "keyboard_layout": null,
+  "trigger": "commands"
 }
 ```
 
 - `export_path`: the model export directory (`export.safetensors`,
-  `manifest.json`, `tokenizer/`).
+  `manifest.json`, `tokenizer/`), in either format: ternary
+  (`parakeet-ternary-v1`, e.g. [kea-t](https://huggingface.co/rajb3/kea-t))
+  or binary (`parakeet-binary-v1`, e.g.
+  [kea-b](https://huggingface.co/rajb3/kea-b)). The format is read from
+  `manifest.json`. Binary weights stay at 1 bit in memory (79 MB of encoder
+  weights instead of 155 MB). On a Ryzen 9 9950X3D with i8x2, kea-b
+  transcribed 2-12 s clips about 8% faster than kea-t end to end; its
+  encoder projections were 9-21% faster at 3 s and 3-6% faster at 30 s.
 - `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. i8x2 matched
   f32's WER over 32,560 dev/test utterances (six near-tie transcript
   changes) and is 25-28% faster than i8x3, which tracks f32 to rounding; see
   "Precision validation" in `PLAN.md`.
-- `cpus`: an array (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`).
+- `cpus`: the CPUs the recognizer's threads are pinned to, an array
+  (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`). By default, one
+  CPU per physical core the daemon may run on (SMT siblings are skipped),
+  whole L3 caches largest first, at most 16; on a 9950X3D that is CPUs 0-15,
+  the V-cache CCD first. There, on 2-12 s clips, 8 cores of one L3 cache took
+  23% longer and 16 threads left to the scheduler 47% longer.
 - `voice_macros`: `[{"command": "sign off", "payload": "Best regards,"}]`.
   Saying exactly the command (ignoring case and punctuation) types the payload.
 - `spoken_numbers`: write spoken numbers as digits ("twenty three percent"
@@ -93,6 +166,8 @@ invalid values stop the daemon with an error. Defaults:
   `min_recording_seconds` (so it records nothing); a first hold long enough
   to dictate is an ordinary dictation. Media players stay paused between
   the two taps.
+  It needs hold to talk, so desktops limited to toggle do not have it (see
+  "Dictation key").
   - `prompt_tag`: at most 64 characters, no control characters or
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
@@ -107,6 +182,17 @@ invalid values stop the daemon with an error. Defaults:
   them, and they could run a command on what it shows); it also runs
   without your wofi stylesheet and GTK settings. The daemon ignores this
   key; `localflowctl` reads it.
+- `output`: how text is typed: `auto` (default), `wayland`, `portal` or
+  `uinput`. See [Text output and desktops](#text-output-and-desktops).
+- `keyboard_layout`: the XKB layout your desktop uses, for the `uinput`
+  output (and the portal if the desktop sends no keymap), e.g.
+  `{"layout": "us", "variant": "dvorak"}`. Fields: `rules`, `model`,
+  `layout`, `variant`, `options`; missing ones (or `null`) take
+  libxkbcommon's defaults (`XKB_DEFAULT_LAYOUT` and friends, else US).
+- `trigger`: how the dictation key reaches the daemon. `"commands"`: key
+  binds run `localflowctl` (see "Dictation key"). `"portal"`: the daemon
+  also binds shortcuts through the desktop portal (GNOME, KDE Plasma);
+  `localflowctl` keeps working either way.
 
 Check a configuration with `localflowd --check-config`.
 
@@ -232,7 +318,7 @@ a failed write changes nothing (`error storage`). Edit it with
 localflowctl correct
 ```
 
-Bind it to a key (see `packaging/hyprland.conf`). Within two minutes of a
+Bind it to a key (see the snippets in `packaging/`). Within two minutes of a
 dictation being typed, it opens a picker (rofi or wofi; see `picker` above)
 with that dictation's text; edit it
 to what you meant and press Return (Escape does nothing). **It never
@@ -288,8 +374,8 @@ value up to 4096 bytes; every other request stays within 256 bytes.
 `correct-submit` answers at once; poll `correct-result` (localflowctl
 does, every 200 ms for up to 5 s).
 
-Hyprland binds and a systemd user unit are in `packaging/`. Neither is
-installed automatically.
+Key binds (see "Dictation key"), a desktop file and a systemd user unit are
+in `packaging/`. None is installed automatically.
 
 ### Coding agents
 
@@ -328,15 +414,240 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
     #custom-localflow.suggestion { font-weight: bold; }
     ```
 
+## Text output and desktops
+
+`output` picks how text is typed. With `auto` (the default) the daemon
+uses the first of these that works at startup and logs which one it chose
+(`text output: ...`), never the text:
+
+1. **Wayland virtual keyboard** (`wayland`), when the compositor offers
+   `zwp_virtual_keyboard_manager_v1`: Hyprland, sway, river and other
+   wlroots compositors. It uploads its own keymap, so your layout does not
+   matter and any Unicode character can be typed. A Wayland compositor
+   that does not answer yet at startup also selects it (it may still be
+   starting); typing retries the connection.
+2. **RemoteDesktop portal** (`portal`), when xdg-desktop-portal offers
+   RemoteDesktop version 2 with keyboards: GNOME 45 and later, KDE Plasma 6.
+3. **uinput** (`uinput`), when `/dev/uinput` is writable: any compositor,
+   and X11.
+
+If none works, the daemon warns and keeps the virtual keyboard, which
+reports its error on each dictation. The clipboard is never used.
+
+The portal and uinput send key codes that the desktop interprets with its
+own keyboard layout. LocalFlow types each character with a key and at most
+Shift, AltGr and level 5 on that layout; dead keys and Compose are not used.
+Text containing a character the layout cannot produce (é on a US layout,
+say) is refused as a whole and nothing is typed (`typing refused: cannot
+type the character at position N`); it is never typed differently.
+
+### Hyprland
+
+Use `packaging/hyprland.conf`. Hyprland matches its binds against the
+modifiers held on every keyboard, so text typed while Super is held would
+trigger Hyprland binds (Super+Q closes the window, Super+M exits Hyprland).
+The `device` block in that file stops LocalFlow's virtual keyboard from
+triggering any Hyprland bind:
+
+```ini
+device {
+    name = hl-virtual-keyboard-localflowd
+    keybinds = false
+}
+```
+
+The name is `hl-virtual-keyboard-` plus the daemon's process name. Hyprland
+reads it when the virtual keyboard is created, so restart `localflowd` after
+adding it. Apps still see modifiers held on the physical keyboard (Hyprland
+always shares them; `input:virtualkeyboard:share_states` does not change
+that), so text typed while Ctrl is held reaches the focused app as Ctrl
+shortcuts: release modifiers before releasing the dictation key, and do not
+bind anything that types (such as `localflowctl again`) to a modifier
+combination.
+
+### sway, river and other wlroots compositors
+
+The virtual keyboard works as on Hyprland. Bind `localflowctl press` to the
+key's press and `localflowctl release` to its release (see "Dictation key"
+and `packaging/sway.conf`, `packaging/river-init.sh`). Modifiers held on the
+physical keyboard combine with the typed keys here too.
+
+### GNOME and KDE Plasma (portal)
+
+Needs xdg-desktop-portal with the desktop's backend
+(`xdg-desktop-portal-gnome` 45 or later, `xdg-desktop-portal-kde` from
+Plasma 6), which GNOME and Plasma sessions normally run.
+
+- At the first start the desktop asks whether to allow remote control of
+  the keyboard (LocalFlow asks for the keyboard only, never the pointer or
+  the screen). Allow it once; the grant is remembered with a restore token
+  in `$XDG_STATE_HOME/localflow/portal-restore-token` (usually
+  `~/.local/state/localflow`, directory 0700, file 0600). The token is a
+  credential for that grant: it is never logged; treat it like a password.
+  Delete the file, or revoke the grant in the desktop's settings, to be
+  asked again.
+- Until the grant arrives, dictations fail with `waiting for the desktop to
+  allow LocalFlow to type`; dictate again after allowing it. An unanswered
+  dialog is withdrawn after 5 minutes, and the next dictation asks again.
+- Characters go through the keymap the desktop sends, with its current
+  layout group and Caps Lock state. If that changes while a dictation is
+  being typed (you switch layouts or press Caps Lock), the rest of it is
+  not typed and the journal says so.
+- GNOME and Plasma custom shortcuts run a command on key press only. For
+  hold to talk, set `"trigger": "portal"` (see "Dictation key"); otherwise
+  bind `localflowctl toggle` to a key (tap to start, tap again to stop and
+  type).
+
+### X11 and everything else (uinput)
+
+The daemon creates a keyboard device, "LocalFlow virtual keyboard", through
+`/dev/uinput`, which your user must be able to write. With that permission
+any program you run can inject keystrokes, so grant it deliberately.
+
+- NixOS:
+
+  ```nix
+  hardware.uinput.enable = true;               # uinput module, udev rule, `uinput` group
+  users.users.<you>.extraGroups = [ "uinput" ];
+  ```
+
+  then log out and in again.
+- Other distributions: load the module at boot
+  (`echo uinput | sudo tee /etc/modules-load.d/uinput.conf`), add a udev
+  rule such as
+  `KERNEL=="uinput", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"`
+  in `/etc/udev/rules.d/60-uinput.rules`, create the group, add yourself to
+  it and log in again.
+
+The desktop applies its own layout to the device, which the daemon cannot
+read: set `keyboard_layout` to match it (for example
+`{"layout": "de"}` or `{"layout": "us", "variant": "dvorak"}`). Only the
+first layout of a list is used, so switch to it before dictating; Caps
+Lock on the physical keyboard changes what letters type. Under X11, use
+your window manager or `xbindkeys` to call `localflowctl`.
+
+### The systemd unit
+
+Every output keeps to Unix sockets and device nodes: the Wayland socket,
+the D-Bus session bus and the EIS socket the portal hands over, or
+`/dev/uinput`. `packaging/localflowd.service` needs no change
+(`RestrictAddressFamilies=AF_UNIX` holds). If you add `PrivateDevices=yes`
+or `DevicePolicy=closed`, the uinput output also needs
+`DeviceAllow=/dev/uinput w`.
+
+## Dictation key
+
+Pick a key nothing else uses: F13-F24, a spare macro or thumb key, Pause,
+and so on. To find its name and code, run `wev` (`xev` prints the same
+codes), press the key, and read the key event:
+
+```text
+[14:     wl_keyboard] key: serial: 7; time: 449; key: 191; state: 1 (pressed)
+                      sym: XF86Tools    (269025153), utf8: ''
+```
+
+`key:` is the code (Hyprland's `code:191`, sway's `bindcode 191`); `sym:` is
+the XKB name (river, niri, sway's `bindsym`). The packaged snippets use the
+F13 key as their example: with the default xkb rules it is code 191 and
+produces the XF86Tools sym rather than F13. Replace it with your key.
+
+The daemon understands three key gestures:
+
+- **Hold to talk** (`localflowctl press` on key down, `release` on key up):
+  recording runs while the key is held; letting go types the text.
+- **Hold to Prompt**: double-tap and hold (see "Configure"). It is built on
+  hold to talk, so it needs a desktop that reports the key coming up.
+- **Toggle** (`localflowctl toggle`): tap to start, tap again to stop and
+  type. For desktops whose binds only run on key press.
+
+| Desktop | How to bind | Hold to talk |
+| --- | --- | --- |
+| Hyprland | `packaging/hyprland.conf` (`exec` binds; recommended) | yes |
+| sway | `packaging/sway.conf` | yes |
+| river-classic (0.3) | `packaging/river-init.sh` | yes |
+| river 0.4 and later | your window manager's binds (see `packaging/river-init.sh`) | if it runs commands on release |
+| niri | `packaging/niri.kdl` (toggle) | no: niri 26.04 binds run on press only |
+| GNOME, KDE Plasma | `"trigger": "portal"` (below); text goes through the RemoteDesktop portal | yes, if the desktop reports releases |
+| anything else | a key bind that runs `localflowctl toggle` | no |
+
+Each snippet notes how that desktop's binds treat held modifiers and
+LocalFlow's virtual keyboard. In short: do not hold other keys while the
+dictation key goes up, and never bind anything that types (such as
+`localflowctl again`) to a modifier combination.
+
+### Desktop portal (GNOME, KDE Plasma)
+
+With `"trigger": "portal"`, the daemon binds its own global shortcuts
+through xdg-desktop-portal's GlobalShortcuts interface, so desktops whose
+custom shortcuts only run a command on key press still get hold to talk.
+
+Mutter does not implement the Wayland virtual keyboard protocol and KWin
+does not offer it to ordinary clients, so on GNOME and KDE Plasma the text
+is typed through the RemoteDesktop portal instead (see "GNOME and KDE
+Plasma (portal)" under "Text output and desktops"). The portal trigger
+also works on compositors that have the protocol (Hyprland, below).
+
+1. Copy `packaging/com.ajbarryiii.localflow.desktop` to
+   `~/.local/share/applications/`. The daemon registers the app ID
+   `com.ajbarryiii.localflow` (xdg-desktop-portal 1.19 or later), and the
+   desktop names it from this file.
+2. Set `"trigger": "portal"` and restart `localflowd`. On first start the
+   desktop asks you to accept two shortcuts and choose their keys:
+   - "Hold to dictate" (`hold-to-talk`): hold to talk and Hold to Prompt;
+   - "Start or stop dictation" (`toggle`).
+   LocalFlow asks for no particular key. Change them later in the
+   desktop's shortcut settings (GNOME Settings > Keyboard > Keyboard
+   Shortcuts; KDE System Settings > Keyboard > Shortcuts).
+3. `localflowctl correct` needs rofi or wofi, which need layer-shell (KDE has it,
+   GNOME does not); bind it as an ordinary custom shortcut.
+
+Behaviour:
+
+- Key down and up arrive as `press` and `release` requests, stamped on
+  arrival, so hold, toggle, Hold to Prompt and `min_recording_seconds`
+  work exactly as with `localflowctl`. A key up is passed on only after
+  the same session's key down, so it never ends a hold started by a bind.
+- If the portal is missing, the daemon logs a warning, keeps serving
+  `localflowctl`, and tries again in the background (1 s, doubling to
+  60 s). If you cancel the dialog, or the portal refuses, it does not ask
+  again until the daemon restarts.
+- If the session ends while the key is held (the portal closes it, exits or
+  restarts, or the bus connection drops), the daemon treats that as the key
+  coming up: what you said so far is transcribed and typed, and the
+  microphone closes. It never keeps recording on a lost session. A toggle
+  recording keeps running until the next toggle. Then it binds a new
+  session, with backoff.
+- A desktop that never reports the key coming up leaves a hold running
+  until `max_recording_seconds`: use the toggle shortcut there.
+- Logs carry shortcut IDs, counts and D-Bus error names, never key names.
+  `--fake-io` leaves the portal alone, as it does the desktop.
+
+On Hyprland, xdg-desktop-portal-hyprland implements the interface too, and
+Hyprland binds the shortcuts with its `global` dispatcher (example in
+`packaging/hyprland.conf`; `hyprctl globalshortcuts` lists them). The plain
+`exec` binds remain the recommended way there. Use one or the other: with
+both on one key, every key event arrives twice and Hold to Prompt stops
+working.
+
 ## Tests
 
 ```bash
 nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.toml
 ```
 
+The kernel tests run at every tier the CPU supports, whatever
+`LOCALFLOW_CPU_TIER` says, and check that the tiers agree bit for bit.
+
 `lf-daemon/tests/private_dbus.rs` starts its own `dbus-daemon` (from the dev
-shell) with fake MPRIS players and a fake tray host; it never uses your session bus. Set
-`LF_SKIP_DBUS_TESTS=1` to skip it where `dbus-daemon` is missing.
+shell) with fake MPRIS players, a fake tray host and a fake GlobalShortcuts
+portal; it never uses your session bus. Likewise
+`lf-portal/tests/mock_portal.rs` serves a mock RemoteDesktop portal on a
+private bus and a fake EIS server, so it never opens your desktop's portal
+or types anywhere. Set `LF_SKIP_DBUS_TESTS=1` to skip both where
+`dbus-daemon` is missing. `lf-keyboard` maps characters through a synthetic
+keymap and through the `us`, `de` and `dvorak` layouts of the XKB data
+libxkbcommon was built with, and checks uinput event encoding without
+opening `/dev/uinput`.
 
 The dictation rules are pinned by `testdata/dictation-vectors.json` and
 `testdata/number-vectors.json`, shared with the Swift app. Word boosting (BPE encoding, entry validation, the
@@ -366,27 +677,29 @@ Run these by hand on the live session; the automated tests use fakes or
 private headless instances and never touch the microphone or the desktop.
 First run the backend smoke tests in the "Desktop I/O" section of
 `linux/PLAN.md` (`lf-mic-smoke`, `lf-type-smoke`).
+Items 1-21 use the Hyprland binds in `packaging/hyprland.conf`; "the key" is
+your dictation key.
 
 1. Start `localflowd` in a terminal; `localflowctl status` reports
    `model=loading`, then `model=ready` after a few seconds.
 2. A second `localflowd` refuses to start ("already running").
-3. Hold F13, say a sentence, release: the text appears in a terminal
+3. Hold the key, say a sentence, release: the text appears in a terminal
    (foot/kitty), a browser text field, an Electron app and an XWayland app.
 4. Say "… press enter" at the end: the text is typed and Return is pressed.
 5. Say a configured voice macro: its payload is typed.
 6. Say "quote hello end quote": `"hello"` is typed.
 7. Held Super (needs the `device` block in `packaging/hyprland.conf`): hold
-   F13, dictate a text containing a letter bound to a harmless Super
-   shortcut, press and hold Super, release F13 and keep Super held until the
-   text appears: the shortcut does not fire. (The app does see Super with
-   the typed keys; Hyprland cannot prevent that.)
+   the key, dictate a text containing a letter bound to a harmless Super
+   shortcut, press and hold Super, release the key and keep Super held until
+   the text appears: the shortcut does not fire. (The app does see Super
+   with the typed keys; Hyprland cannot prevent that.)
 8. `localflowctl cancel` from a terminal while a long recording runs:
    nothing is typed.
-9. Tap F13 briefly (under 0.3 s): nothing is typed (`note=too-short`).
-10. Hold F13, press Shift, release F13, then release Shift: the recording
-    stops (the release bind ignores modifiers). If it does not, the
+9. Tap the key briefly (under 0.3 s): nothing is typed (`note=too-short`).
+10. Hold the key, press Shift, release the key, then release Shift: the
+    recording stops (the release bind ignores modifiers). If it does not, the
     recording continues until `max_recording_seconds` or a cancel.
-11. Tap F13 as briefly as possible, many times: no recording is left
+11. Tap the key as briefly as possible, many times: no recording is left
     running (`localflowctl status` reports idle afterwards).
 12. `localflowctl again` from a terminal types the last dictation again.
 13. `journalctl --user -u localflowd` (or the terminal) shows no transcript
@@ -405,7 +718,7 @@ First run the backend smoke tests in the "Desktop I/O" section of
     from HFP to A2DP. `playerctl -l` (if installed) lists the players the
     daemon sees.
 17. Waybar indicator (`localflowctl watch --waybar` in a terminal, or the
-    custom module): idle shows the microphone; holding F13 shows a moving
+    custom module): idle shows the microphone; holding the key shows a moving
     level graph that follows your voice; release shows the hourglass, then
     idle. Disconnect the microphone (or turn the headset off): `nomic`
     within a second or two, and back to idle when reconnected. With
@@ -413,7 +726,7 @@ First run the backend smoke tests in the "Desktop I/O" section of
     start it again: idle within about 2 s, without restarting Waybar.
     `journalctl --user -u localflowd` shows `microphone: absent/present`
     but no device names.
-18. Hold to Prompt: in a terminal or chat box, tap F13 once quickly, then
+18. Hold to Prompt: in a terminal or chat box, tap the key once quickly, then
     press it again at once and hold while speaking: the text is typed as
     `[dictated] ...` (with "press enter" also pressing Return), the Waybar
     module shows the `prompt` class, and the journal says
@@ -438,7 +751,58 @@ First run the backend smoke tests in the "Desktop I/O" section of
     `daemon error: no-recent`. The journal shows only counts
     ("correction submitted (1 candidates)", "correction checked: …"), never
     the words.
-22. Other pickers (install each with `nix shell nixpkgs#<tool>` and set
+22. Text output selection: on Hyprland the journal says `text output:
+    Wayland virtual keyboard (auto: the compositor offers the virtual
+    keyboard protocol)` and typing behaves as before (items 3-7). No
+    portal dialog appears.
+23. GNOME 45+ and KDE Plasma 6 (`output` unset or `"portal"`): at the
+    first start the desktop asks once to allow keyboard control; allow it.
+    `ls -l ~/.local/state/localflow/portal-restore-token` shows
+    `-rw-------`, and the journal never shows its contents. Dictate into a
+    GTK or Qt app, a browser and an XWayland app: the text appears,
+    including Shift and AltGr characters of your layout. A character the
+    layout cannot type is refused (`typing refused: …`) and nothing is
+    typed. Restart the daemon: it does not ask again. Turn Caps Lock on and
+    dictate: the case is still right. Deny the dialog (delete the token
+    first): dictation fails with an error and the next one asks again.
+24. uinput (`"output": "uinput"`, after the setup in [Text output and
+    desktops](#text-output-and-desktops), with `keyboard_layout` set to the
+    desktop's layout): under X11 and under a Wayland compositor, dictation
+    types correctly, including Shift and AltGr characters;
+    `libinput list-devices` (or `xinput list`) shows "LocalFlow virtual
+    keyboard" while the daemon runs and not after it stops. Without
+    permission on `/dev/uinput` the journal warns at startup and dictation
+    fails cleanly.
+25. sway (`packaging/sway.conf`, with your key): items 3, 9 and 18 work;
+    holding the key and tapping another key loses the release (the
+    recording keeps running), and tapping the dictation key again stops it.
+    With Super held on the real keyboard while text is typed, no Super
+    bind fires and the app receives the text without Super.
+26. river-classic (`packaging/river-init.sh`): as item 25, except that
+    another key tapped during the hold does not matter and Shift held at
+    release loses the release.
+27. niri (`packaging/niri.kdl`): tap the key to start, tap again to stop:
+    the text is typed. Note whether text typed while Super is held runs a
+    Super bind, or reaches the app with Super.
+28. GNOME and KDE Plasma (`"trigger": "portal"`, desktop file installed): on
+    first start the desktop asks to accept "Hold to dictate" and "Start or
+    stop dictation", named LocalFlow; assign keys. The journal says
+    `global shortcuts bound: 2 of 2`. Holding the hold shortcut shows
+    `state=recording mode=hold` in `localflowctl watch`, and releasing it
+    ends the recording and types the text through the RemoteDesktop portal
+    (item 23); a double tap and hold shows `tag=prompt`; the toggle
+    shortcut toggles. Cancel the shortcut dialog instead: one warning, no
+    second dialog, and `localflowctl` still works.
+29. Portal session loss: hold the key and restart the portal
+    (`systemctl --user restart xdg-desktop-portal`): the recording stops
+    and what was said is typed; the journal shows "released the held
+    dictation key", then the shortcuts are bound again without a dialog
+    and work.
+30. Hyprland with `"trigger": "portal"` and the `global` binds from
+    `packaging/hyprland.conf` (instead of the `exec` binds):
+    `hyprctl globalshortcuts` lists `com.ajbarryiii.localflow:hold-to-talk`
+    and `:toggle`; items 3 and 18 work.
+31. Other pickers (install each with `nix shell nixpkgs#<tool>` and set
     `"picker"` in `config.json`):
     - `"wofi"`: repeat 20 in wofi. While it is open,
       `cat /proc/$(pgrep -x wofi)/cmdline | tr '\0' ' '` and
@@ -452,9 +816,9 @@ First run the backend smoke tests in the "Desktop I/O" section of
       `~/.local/state/tofi*` hold no entry with it.
     - `"auto"` with rofi removed from `PATH`: `correct` uses wofi if it is
       installed, else says no picker can edit text.
-23. Tray icon (`localflowctl tray` in a terminal, with Waybar's `tray`
+32. Tray icon (`localflowctl tray` in a terminal, with Waybar's `tray`
     module, KDE or GNOME's AppIndicator extension): the microphone icon
-    appears; holding F13 shows the record icon, then the sync icon while
+    appears; holding the key shows the record icon, then the sync icon while
     transcribing, then the microphone again. The tooltip says "LocalFlow"
     and the state. Stop the daemon: the offline icon; start it again: the
     microphone within about 2 s. Restart the tray host (e.g. Waybar): the

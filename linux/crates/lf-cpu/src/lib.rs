@@ -1,4 +1,6 @@
-//! CPU inference kernels (AVX-512) for the ternary Parakeet encoder.
+//! CPU inference kernels for the ternary and binary Parakeet encoders (binary
+//! weights are ternary codes without zeros), with an AVX-512 and an AVX2 path
+//! for each; see [`tier`].
 //!
 //! Every ternary GEMM computes `Y[t][o] = scale[o] * sum_i code(o, i) * X[t][i]`
 //! for `T` frames, `K` inputs and `O` outputs, with row-major `X` and `Y`.
@@ -8,6 +10,9 @@
 //! its contract under `# Safety`; clippy enforces both.
 
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
+// There are no kernels for other architectures yet: `Tier` has no variants
+// there, so everything after a pool hands out its tier is unreachable.
+#![cfg_attr(not(target_arch = "x86_64"), allow(unused, unreachable_code))]
 
 pub mod attention;
 pub mod barrier;
@@ -21,31 +26,48 @@ pub mod gemm_lut;
 pub mod gemm_ref;
 pub mod ops;
 pub mod pack;
+#[cfg(target_arch = "x86_64")]
 pub mod peak;
 pub mod pool;
 pub mod quant;
+pub mod tier;
+pub mod topology;
 
 mod aligned;
 mod math;
 
 pub use aligned::AlignedBuf;
-pub use pack::PackedTernary;
+pub use pack::{Encoding, PackedTernary};
 pub use pool::ThreadPool;
 pub use quant::QuantizedActs;
+pub use tier::{Tier, TierError, tier};
 
-/// Whether this CPU has the AVX-512 subsets the kernels use.
+/// Whether the kernels can run here: [`tier`] found a tier this CPU supports.
 pub fn cpu_supported() -> bool {
+    tier().is_ok()
+}
+
+/// One pool of `threads` threads (pinned to CPUs `0..threads`) per tier this
+/// CPU supports, so a test can check every kernel path the host can run.
+#[cfg(test)]
+pub(crate) fn tier_pools(threads: usize) -> Vec<ThreadPool> {
+    let cpus: Vec<usize> = (0..threads).collect();
+    Tier::available()
+        .into_iter()
+        .map(|t| ThreadPool::new(&cpus).with_tier(t))
+        .collect()
+}
+
+/// A pool at the AVX-512 tier, if this CPU supports it (for kernels that
+/// exist only there).
+#[cfg(test)]
+pub(crate) fn avx512_pool(cpus: &[usize]) -> Option<ThreadPool> {
     #[cfg(target_arch = "x86_64")]
-    {
-        std::arch::is_x86_feature_detected!("avx512f")
-            && std::arch::is_x86_feature_detected!("avx512bw")
-            && std::arch::is_x86_feature_detected!("avx512vnni")
-            && std::arch::is_x86_feature_detected!("avx512vbmi")
+    if Tier::Avx512.supported() {
+        return Some(ThreadPool::new(cpus).with_tier(Tier::Avx512));
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+    let _ = cpus;
+    None
 }
 
 /// `a * b` for size and bounds checks at kernel entry points; panics on

@@ -9,6 +9,8 @@
 # NixOS Hyprland module imports it when the session starts; otherwise run
 #   dbus-update-activation-environment --systemd WAYLAND_DISPLAY
 # from the Hyprland config.
+# The portal output (GNOME, KDE) also needs the D-Bus session bus, which the
+# user manager normally provides.
 
 [Unit]
 Description=LocalFlow dictation daemon
@@ -24,7 +26,10 @@ Restart=on-failure
 RestartSec=2
 
 # The daemon only talks over Unix sockets (its control socket, PipeWire,
-# Wayland) and never opens network connections.
+# Wayland, the D-Bus session bus, and the EIS socket the RemoteDesktop portal
+# hands over) and device nodes (/dev/uinput for `"output": "uinput"`), and
+# never opens network connections. If you add PrivateDevices=yes or
+# DevicePolicy=closed, the uinput output needs DeviceAllow=/dev/uinput w.
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes
 LockPersonality=yes
