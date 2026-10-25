@@ -6,10 +6,10 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lf_daemon::config::{self, Config};
+use lf_daemon::config::{self, Config, Trigger};
 use lf_daemon::controller::Limits;
 use lf_daemon::daemon::{self, Parts};
-use lf_daemon::{backends, error, info, log, paths, recognizer, signals, warn, worker};
+use lf_daemon::{backends, error, info, log, paths, portal, recognizer, signals, warn, worker};
 use lf_daemon::{dictionary, history};
 
 const USAGE: &str = "usage: localflowd [--config PATH] [--check-config] [--fake-io]
@@ -53,6 +53,10 @@ fn parse_args() -> Result<Args, String> {
 /// How long exiting waits for the logger to write what it holds. A stalled
 /// stderr makes it give up rather than hang the exit.
 const LOG_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long exiting waits for the global shortcuts thread (it checks every
+/// 50 ms; a portal call in flight can take longer).
+const PORTAL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn main() -> ExitCode {
     // Before any thread exists: the default hook writes to stderr
@@ -162,7 +166,22 @@ fn run() -> Result<(), String> {
     let handle = daemon::start_with(parts, &runtime_dir, |events| {
         *shutdown.lock().unwrap_or_else(|e| e.into_inner()) = Some(events);
     })?;
+    // Like media pausing, `--fake-io` leaves the desktop's shortcuts alone.
+    let portal = if config.trigger == Trigger::Portal && !args.fake_io {
+        match portal::spawn(portal::Setting::default(), handle.events()) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                warn!("global shortcuts: cannot start a thread: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let result = handle.join();
+    if let Some(p) = portal {
+        p.stop(PORTAL_SHUTDOWN_TIMEOUT);
+    }
     info!("stopped");
     result
 }

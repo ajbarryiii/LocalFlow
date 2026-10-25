@@ -1,10 +1,17 @@
-//! End-to-end media pausing against a private D-Bus session bus.
+//! End-to-end media pausing and global shortcuts against a private D-Bus
+//! session bus.
 //!
 //! The harness starts its own `dbus-daemon` with its own configuration and a
 //! socket in a fresh private directory: no service activation, no syslog,
 //! a cleared environment. Fake MPRIS players (served by `zbus` in this
 //! process) join that bus, and the daemon (fake microphone, recognizer and
 //! keyboard; the real MPRIS backend) pauses and resumes them.
+//!
+//! A fake xdg-desktop-portal (`org.freedesktop.portal.Desktop` with only
+//! GlobalShortcuts and the host registry, served the same way) checks the
+//! `"trigger": "portal"` thread: registration and binding, key signals as
+//! press, release and toggle, and session loss. The user's own portal is
+//! never reached, so no binding dialog can open.
 //!
 //! The test refuses to run unless `DBUS_SESSION_BUS_ADDRESS` names its
 //! private socket with the GUID that `dbus-daemon` printed, so it can never
@@ -490,6 +497,573 @@ fn no_bus_is_not_fatal(bus: &PrivateBus) {
     assert_eq!(a.state().pauses, 0);
 }
 
+// ------------------------------------------------------------ fake portal
+
+const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
+const DESKTOP_PATH: &str = "/org/freedesktop/portal/desktop";
+const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";
+const HOLD: &str = "hold-to-talk";
+const TOGGLE: &str = "toggle";
+/// Real audio-length samples (one second at 16 kHz), synthetic values.
+const SECOND: usize = 16_000;
+
+type Vardict = HashMap<String, OwnedValue>;
+
+#[derive(Debug, Default)]
+struct PortalState {
+    /// `Registry.Register` app IDs.
+    registered: Vec<String>,
+    created: usize,
+    /// Shortcut IDs and descriptions of each `BindShortcuts`.
+    binds: Vec<Vec<(String, String)>>,
+    /// The `BindShortcuts` response code: 0 bound, 1 cancelled.
+    bind_response: u32,
+    /// The client's unique name and its current session handle.
+    client: Option<String>,
+    session: Option<String>,
+}
+
+#[derive(Clone)]
+struct PortalCalls(Arc<Mutex<PortalState>>);
+
+impl PortalCalls {
+    fn state(&self) -> MutexGuard<'_, PortalState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// `/org/freedesktop/portal/desktop/request/SENDER/TOKEN`, as the portal
+/// builds it.
+fn handle_path(kind: &str, sender: &str, options: &Vardict, key: &str) -> String {
+    let token: String = options
+        .get(key)
+        .and_then(|v| String::try_from(v.try_clone().unwrap()).ok())
+        .expect("a token");
+    let sender = sender.trim_start_matches(':').replace('.', "_");
+    format!("{DESKTOP_PATH}/{kind}/{sender}/{token}")
+}
+
+fn value(v: impl Into<zbus::zvariant::Value<'static>>) -> OwnedValue {
+    v.into().try_into().unwrap()
+}
+
+struct ShortcutsIface(PortalCalls);
+
+#[zbus::interface(name = "org.freedesktop.portal.GlobalShortcuts")]
+impl ShortcutsIface {
+    /// Answers through `Request.Response` before the method returns, which
+    /// a client must handle (it subscribes first).
+    async fn create_session(
+        &self,
+        options: Vardict,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::zvariant::OwnedObjectPath {
+        let sender = header.sender().unwrap().to_string();
+        let request = handle_path("request", &sender, &options, "handle_token");
+        let session = handle_path("session", &sender, &options, "session_handle_token");
+        {
+            let mut s = self.0.state();
+            s.created += 1;
+            s.client = Some(sender.clone());
+            s.session = Some(session.clone());
+        }
+        // `session_handle` is a string (`s`), as the portal sends it.
+        let results: Vardict = [("session_handle".to_owned(), value(session))].into();
+        conn.emit_signal(
+            Some(sender.as_str()),
+            request.as_str(),
+            "org.freedesktop.portal.Request",
+            "Response",
+            &(0u32, results),
+        )
+        .await
+        .unwrap();
+        request.try_into().unwrap()
+    }
+
+    async fn bind_shortcuts(
+        &self,
+        session_handle: zbus::zvariant::ObjectPath<'_>,
+        shortcuts: Vec<(String, Vardict)>,
+        _parent_window: String,
+        options: Vardict,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::zvariant::OwnedObjectPath {
+        let sender = header.sender().unwrap().to_string();
+        let request = handle_path("request", &sender, &options, "handle_token");
+        let bound: Vec<(String, String)> = shortcuts
+            .iter()
+            .map(|(id, opts)| {
+                let description = opts
+                    .get("description")
+                    .and_then(|v| String::try_from(v.try_clone().unwrap()).ok())
+                    .unwrap_or_default();
+                (id.clone(), description)
+            })
+            .collect();
+        let code = {
+            let mut s = self.0.state();
+            assert_eq!(s.session.as_deref(), Some(session_handle.as_str()));
+            s.binds.push(bound.clone());
+            s.bind_response
+        };
+        let reply: Vec<(String, Vardict)> = bound
+            .into_iter()
+            .map(|(id, description)| {
+                let d: Vardict = [
+                    ("description".to_owned(), value(description)),
+                    ("trigger_description".to_owned(), value("Synthetic key")),
+                ]
+                .into();
+                (id, d)
+            })
+            .collect();
+        let results: Vardict = if code == 0 {
+            [("shortcuts".to_owned(), value(reply))].into()
+        } else {
+            Vardict::new()
+        };
+        conn.emit_signal(
+            Some(sender.as_str()),
+            request.as_str(),
+            "org.freedesktop.portal.Request",
+            "Response",
+            &(code, results),
+        )
+        .await
+        .unwrap();
+        request.try_into().unwrap()
+    }
+
+    /// Lower case, as the portal names it.
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
+struct RegistryIface(PortalCalls);
+
+#[zbus::interface(name = "org.freedesktop.host.portal.Registry")]
+impl RegistryIface {
+    fn register(&self, app_id: String, _options: Vardict) {
+        self.0.state().registered.push(app_id);
+    }
+}
+
+/// A fake xdg-desktop-portal with only GlobalShortcuts (and the host
+/// registry), owning `org.freedesktop.portal.Desktop` on the private bus.
+struct FakePortal {
+    calls: PortalCalls,
+    conn: Option<zbus::blocking::Connection>,
+}
+
+impl FakePortal {
+    fn start(bus: &PrivateBus, bind_response: u32) -> FakePortal {
+        let calls = PortalCalls(Arc::new(Mutex::new(PortalState {
+            bind_response,
+            ..PortalState::default()
+        })));
+        let builder = zbus::blocking::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .serve_at(DESKTOP_PATH, ShortcutsIface(calls.clone()))
+            .unwrap()
+            .serve_at(DESKTOP_PATH, RegistryIface(calls.clone()))
+            .unwrap()
+            .name(PORTAL_NAME)
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(builder.build());
+        });
+        let conn = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("fake portal could not join the private bus in 10 s")
+            .unwrap();
+        FakePortal {
+            calls,
+            conn: Some(conn),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, PortalState> {
+        self.calls.state()
+    }
+
+    fn binds(&self) -> usize {
+        self.state().binds.len()
+    }
+
+    /// Waits until the daemon has bound its shortcuts `n` times in all.
+    fn wait_bound(&self, n: usize) {
+        wait_until("the shortcuts to be bound", || self.binds() >= n);
+    }
+
+    fn conn(&self) -> &zbus::blocking::Connection {
+        self.conn.as_ref().expect("running")
+    }
+
+    /// Sends `Activated` or `Deactivated` for `id` to the client.
+    fn signal(&self, member: &str, id: &str) {
+        let (client, session) = {
+            let s = self.state();
+            (s.client.clone().unwrap(), s.session.clone().unwrap())
+        };
+        let session = zbus::zvariant::ObjectPath::try_from(session).unwrap();
+        self.conn()
+            .emit_signal(
+                Some(client.as_str()),
+                DESKTOP_PATH,
+                SHORTCUTS,
+                member,
+                &(session, id, 12_345u64, Vardict::new()),
+            )
+            .unwrap();
+    }
+
+    fn activate(&self, id: &str) {
+        self.signal("Activated", id);
+    }
+
+    fn deactivate(&self, id: &str) {
+        self.signal("Deactivated", id);
+    }
+
+    /// The portal closes the session (`Session.Closed`).
+    fn close_session(&self) {
+        let (client, session) = {
+            let s = self.state();
+            (s.client.clone().unwrap(), s.session.clone().unwrap())
+        };
+        self.conn()
+            .emit_signal(
+                Some(client.as_str()),
+                session.as_str(),
+                "org.freedesktop.portal.Session",
+                "Closed",
+                &(Vardict::new(),),
+            )
+            .unwrap();
+    }
+
+    /// The portal process exits.
+    fn quit(&mut self) {
+        if let Some(c) = self.conn.take() {
+            let _ = c.close();
+        }
+    }
+}
+
+/// The daemon with the portal trigger, on the private session bus.
+struct PortalRig {
+    rig: Rig,
+    capture: FakeCapture,
+    portal: Option<lf_daemon::portal::Portal>,
+}
+
+impl PortalRig {
+    fn start(bus: &PrivateBus, tag: &str) -> PortalRig {
+        assert_private(bus);
+        let capture = FakeCapture::with_samples(vec![0.1; SECOND]);
+        let rig = Rig::start_full(
+            tag,
+            capture.clone(),
+            factory(FakeRecognizer::returning("Synthetic.")),
+            settings(),
+            false,
+            None,
+            WINDOW,
+        );
+        let setting = lf_daemon::portal::Setting {
+            // The session bus from the environment: the private bus.
+            address: None,
+            call_timeout: Duration::from_secs(5),
+            retry: Duration::from_millis(50),
+            max_retry: Duration::from_millis(200),
+        };
+        let events = rig.handle.as_ref().unwrap().events();
+        let portal = lf_daemon::portal::spawn(setting, events).unwrap();
+        PortalRig {
+            rig,
+            capture,
+            portal: Some(portal),
+        }
+    }
+
+    fn typed(&self) -> String {
+        self.rig.output.text()
+    }
+
+    /// Stamped now, like `localflowctl`.
+    fn send(&self, cmd: &str) -> String {
+        let at = lf_daemon::protocol::monotonic_ns();
+        self.rig.cmd(&format!("{cmd} at={at}"))
+    }
+
+    fn status(&self) -> String {
+        self.rig.cmd("status")
+    }
+}
+
+impl Drop for PortalRig {
+    fn drop(&mut self) {
+        if let Some(p) = self.portal.take() {
+            assert!(p.stop(Duration::from_secs(5)), "the portal thread hung");
+        }
+    }
+}
+
+/// The double-tap window: the widest allowed, so scheduling rarely matters.
+const WINDOW: Duration = Duration::from_millis(1000);
+
+/// No change follows for this long (signals are asynchronous).
+fn settle() {
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+fn portal_maps_shortcuts_to_hold_toggle_and_prompt(bus: &PrivateBus) {
+    let portal = FakePortal::start(bus, 0);
+    let r = PortalRig::start(bus, "portal-basic");
+    portal.wait_bound(1);
+    {
+        let s = portal.state();
+        assert_eq!(s.registered, ["com.ajbarryiii.localflow"]);
+        assert_eq!(s.created, 1);
+        let ids: Vec<&str> = s.binds[0].iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, [HOLD, TOGGLE]);
+        assert!(s.binds[0].iter().all(|(_, d)| !d.is_empty()));
+    }
+
+    // Hold to talk: Activated is press, Deactivated is release.
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. ");
+
+    // Toggle: each activation is a full tap; Deactivated changes nothing.
+    portal.activate(TOGGLE);
+    r.rig.wait_for("state=recording mode=toggle");
+    portal.deactivate(TOGGLE);
+    settle();
+    assert!(r.status().contains("state=recording mode=toggle"));
+    portal.activate(TOGGLE);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. Synthetic. ");
+
+    // A too-short hold is discarded, as from the socket.
+    r.capture.state().samples = vec![0.1; SECOND / 10];
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    settle();
+    assert_eq!(r.typed(), "Synthetic. Synthetic. ");
+
+    // A Deactivated without its Activated does not stop a socket hold.
+    r.capture.state().samples = vec![0.1; SECOND];
+    std::thread::sleep(WINDOW);
+    assert_eq!(r.send("press"), "state=recording mode=hold model=ready");
+    portal.deactivate(HOLD);
+    settle();
+    assert!(r.status().contains("state=recording mode=hold"));
+    assert_eq!(r.send("release"), "state=transcribing model=ready");
+    r.rig.wait_for("state=idle");
+    r.rig.output.state().typed.clear();
+
+    // Hold to Prompt: a tap, then press again at once and hold. Timing uses
+    // real clocks (see `hold_to_prompt_by_double_tap_and_hold` in
+    // tests/daemon.rs), so an overrun window is detected and retried.
+    std::thread::sleep(WINDOW);
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        r.capture.state().samples = vec![0.1; SECOND / 10];
+        portal.activate(HOLD);
+        r.rig.wait_for("state=recording");
+        let t = Instant::now();
+        portal.deactivate(HOLD);
+        r.rig.wait_for("state=idle");
+        r.capture.state().samples = vec![0.1; SECOND];
+        portal.activate(HOLD);
+        let status = r.rig.wait_for("state=recording");
+        let took = t.elapsed();
+        if status.contains("tag=prompt") {
+            break;
+        }
+        assert!(
+            took > WINDOW,
+            "no prompt although the second press came {took:?} after the tap: {status}"
+        );
+        assert!(attempts < 20, "the window was overrun 20 times");
+        portal.deactivate(HOLD);
+        r.rig.wait_for("state=idle");
+        r.rig.output.state().typed.clear();
+        std::thread::sleep(WINDOW);
+    }
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "[dictated] Synthetic. ");
+}
+
+fn portal_session_loss_releases_and_binds_again(bus: &PrivateBus) {
+    let mut portal = FakePortal::start(bus, 0);
+    let r = PortalRig::start(bus, "portal-loss");
+    portal.wait_bound(1);
+
+    // The portal closes the session during a hold: treated as the release
+    // (the recording is transcribed, never left open), then a new session
+    // is bound.
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.close_session();
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. ");
+    portal.wait_bound(2);
+    assert_eq!(portal.state().created, 2);
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. Synthetic. ");
+
+    // The portal exits during a hold: released too.
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.quit();
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. Synthetic. Synthetic. ");
+
+    // It starts again: the daemon registers and binds afresh.
+    let portal = FakePortal::start(bus, 0);
+    portal.wait_bound(1);
+    assert_eq!(portal.state().registered, ["com.ajbarryiii.localflow"]);
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+
+    // A toggle recording is not the portal's hold: losing the session
+    // leaves it running.
+    portal.activate(TOGGLE);
+    r.rig.wait_for("state=recording mode=toggle");
+    portal.close_session();
+    portal.wait_bound(2);
+    assert!(r.status().contains("state=recording mode=toggle"));
+    assert_eq!(r.send("cancel"), "state=idle model=ready note=cancelled");
+}
+
+fn portal_missing_is_not_fatal(bus: &PrivateBus) {
+    let r = PortalRig::start(bus, "portal-missing");
+    // Socket commands work without a portal.
+    settle();
+    assert_eq!(r.send("press"), "state=recording mode=hold model=ready");
+    assert_eq!(r.send("release"), "state=transcribing model=ready");
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. ");
+    // A portal that starts later is used.
+    let portal = FakePortal::start(bus, 0);
+    portal.wait_bound(1);
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. Synthetic. ");
+}
+
+fn portal_ignores_signals_from_others(bus: &PrivateBus) {
+    let portal = FakePortal::start(bus, 0);
+    let r = PortalRig::start(bus, "portal-spoof");
+    portal.wait_bound(1);
+    let (client, session) = {
+        let s = portal.state();
+        (s.client.clone().unwrap(), s.session.clone().unwrap())
+    };
+    // Another client on the bus, not the portal.
+    let other = {
+        let address = bus.address.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(
+                zbus::blocking::connection::Builder::address(address.as_str())
+                    .unwrap()
+                    .build(),
+            );
+        });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap()
+    };
+    let path = zbus::zvariant::ObjectPath::try_from(session.as_str()).unwrap();
+    other
+        .emit_signal(
+            Some(client.as_str()),
+            DESKTOP_PATH,
+            SHORTCUTS,
+            "Activated",
+            &(path, HOLD, 1u64, Vardict::new()),
+        )
+        .unwrap();
+    other
+        .emit_signal(
+            Some(client.as_str()),
+            session.as_str(),
+            "org.freedesktop.portal.Session",
+            "Closed",
+            &(Vardict::new(),),
+        )
+        .unwrap();
+    settle();
+    assert!(r.status().starts_with("state=idle"), "{}", r.status());
+    assert_eq!(portal.binds(), 1);
+    // Signals for another session are ignored too.
+    let other_session =
+        zbus::zvariant::ObjectPath::try_from(format!("{DESKTOP_PATH}/session/x/other")).unwrap();
+    portal
+        .conn()
+        .emit_signal(
+            Some(client.as_str()),
+            DESKTOP_PATH,
+            SHORTCUTS,
+            "Activated",
+            &(other_session, HOLD, 1u64, Vardict::new()),
+        )
+        .unwrap();
+    settle();
+    assert!(r.status().starts_with("state=idle"), "{}", r.status());
+    // The real portal's signals still work.
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+}
+
+fn portal_cancelled_binding_is_not_asked_again(bus: &PrivateBus) {
+    let portal = FakePortal::start(bus, 1);
+    let r = PortalRig::start(bus, "portal-cancelled");
+    portal.wait_bound(1);
+    // Well past several retry intervals: no second dialog.
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(portal.binds(), 1);
+    assert_eq!(portal.state().created, 1);
+    assert_eq!(r.send("toggle"), "state=recording mode=toggle model=ready");
+    assert_eq!(r.send("toggle"), "state=transcribing model=ready");
+    r.rig.wait_for("state=idle");
+}
+
+fn portal_stops_with_the_daemon(bus: &PrivateBus) {
+    let portal = FakePortal::start(bus, 0);
+    let mut r = PortalRig::start(bus, "portal-stop");
+    portal.wait_bound(1);
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    let t = Instant::now();
+    r.rig.stop().unwrap();
+    assert!(r.portal.take().unwrap().stop(Duration::from_secs(5)));
+    assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+    assert_eq!(r.capture.state().cancels, 1);
+}
+
 fn main() {
     if std::env::var_os("LF_SKIP_DBUS_TESTS").is_some() {
         println!("private_dbus: skipped (LF_SKIP_DBUS_TESTS)");
@@ -505,7 +1079,7 @@ fn main() {
         std::env::remove_var("DBUS_SYSTEM_BUS_ADDRESS");
     }
     assert_private(&bus);
-    let tests: [(&str, Case); 6] = [
+    let tests: [(&str, Case); 12] = [
         (
             "pauses_playing_players_and_resumes_them",
             pauses_playing_players_and_resumes_them,
@@ -524,6 +1098,24 @@ fn main() {
             shutdown_while_recording_resumes,
         ),
         ("no_bus_is_not_fatal", no_bus_is_not_fatal),
+        (
+            "portal_maps_shortcuts_to_hold_toggle_and_prompt",
+            portal_maps_shortcuts_to_hold_toggle_and_prompt,
+        ),
+        (
+            "portal_session_loss_releases_and_binds_again",
+            portal_session_loss_releases_and_binds_again,
+        ),
+        ("portal_missing_is_not_fatal", portal_missing_is_not_fatal),
+        (
+            "portal_ignores_signals_from_others",
+            portal_ignores_signals_from_others,
+        ),
+        (
+            "portal_cancelled_binding_is_not_asked_again",
+            portal_cancelled_binding_is_not_asked_again,
+        ),
+        ("portal_stops_with_the_daemon", portal_stops_with_the_daemon),
     ];
     for (name, test) in tests {
         assert_private(&bus);
