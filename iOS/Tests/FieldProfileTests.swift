@@ -15,6 +15,8 @@ enum FieldProfileTests {
             ("messagesGeometryOnlyWhereMeasured", testMessagesGeometryOnlyWhereMeasured),
             ("placeholderReadingsAreIgnored", testPlaceholderReadingsAreIgnored),
             ("fingerprintChangesApplyAtTheNextGesture", testFingerprintChangesApplyAtTheNextGesture),
+            ("rememberedChoicesAreReadOnceUntilRefreshed", testRememberedChoicesAreReadOnceUntilRefreshed),
+            ("rememberedChoicesReadAsStored", testRememberedChoicesReadAsStored),
         ]
     }
 
@@ -313,5 +315,53 @@ extension FieldProfileTests {
         // Another field is a change too.
         TestSupport.expect(tracker.read(FieldFingerprint(traits: composeTraits, unit: nil), documentID: UUID()), "not read")
         TestSupport.expectEqual(tracker.gestureBegan(overrides: [:], geometry: portrait), .messages)
+    }
+
+    fileprivate static func testRememberedChoicesAreReadOnceUntilRefreshed() {
+        // The field is read at every cursor move and keystroke; the App Group is read once, then
+        // again only after `invalidate()` (the keyboard appearing, or writing a choice).
+        let key = "0123456789abcdef"
+        var stored: [String: String]? = [key: "messages"]
+        var loads = 0
+        func load() -> [String: String]? {
+            loads += 1
+            return stored
+        }
+        var cache = FieldLayoutOverrideCache()
+        TestSupport.expectEqual(cache.overrides(load: load), [key: .messages])
+        stored = [key: "fullWidth"]
+        for _ in 0..<5 { TestSupport.expectEqual(cache.overrides(load: load), [key: .messages]) }
+        TestSupport.expectEqual(loads, 1)
+        cache.invalidate()
+        TestSupport.expectEqual(cache.overrides(load: load), [key: .fullWidth])
+        TestSupport.expectEqual(cache.overrides(load: load), [key: .fullWidth])
+        TestSupport.expectEqual(loads, 2)
+        // An unreachable App Group (no Full Access) reads as no choices, and that reading is reused too.
+        stored = nil
+        cache.invalidate()
+        TestSupport.expectEqual(cache.overrides(load: load), [:])
+        TestSupport.expectEqual(cache.overrides(load: load), [:])
+        TestSupport.expectEqual(loads, 3)
+    }
+
+    fileprivate static func testRememberedChoicesReadAsStored() {
+        // A throwaway suite with an invented name, removed afterwards.
+        let suite = "LocalFlowIOSTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LocalFlowSettings(defaults: defaults)
+        var cache = FieldLayoutOverrideCache()
+        TestSupport.expectEqual(cache.overrides { settings.fieldLayoutOverrides }, [:])
+        // A choice the keyboard writes applies once the cache is refreshed.
+        let messagesKey = "0123456789abcdef", fullWidthKey = "fedcba9876543210"
+        settings.setFieldLayout("messages", forKey: messagesKey)
+        settings.setFieldLayout("fullWidth", forKey: fullWidthKey)
+        cache.invalidate()
+        TestSupport.expectEqual(cache.overrides { settings.fieldLayoutOverrides },
+                                [messagesKey: .messages, fullWidthKey: .fullWidth])
+        // Names that are not a layout are dropped.
+        cache.invalidate()
+        TestSupport.expectEqual(cache.overrides { [messagesKey: "messages", fullWidthKey: "sideways"] },
+                                [messagesKey: .messages])
     }
 }

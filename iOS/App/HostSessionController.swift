@@ -90,7 +90,6 @@ final class HostSessionController: ObservableObject {
     /// and observers.
     func launch() {
         guard let core, !core.isLaunched else { return }
-        Self.removePowerLogLeftovers()
         // Locked at launch: nothing may be admitted until an unlock.
         if !UIApplication.shared.isProtectedDataAvailable { core.deviceWillLock() }
         core.launch()
@@ -188,17 +187,6 @@ final class HostSessionController: ObservableObject {
                                                            spokenNumbersEnabled: spokenNumbersEnabled)
                 return (processed.output, processed.shouldPressEnter)
             })
-    }
-
-    /// The removed power log's files and its test-mode switch, left behind by earlier test builds: the log,
-    /// an export copy and the always-on choice. Idempotent; a failure is retried at the next launch.
-    private static func removePowerLogLeftovers() {
-        let files = FileManager.default
-        if let support = files.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            try? files.removeItem(at: support.appendingPathComponent("PowerLog", isDirectory: true))
-        }
-        try? files.removeItem(at: files.temporaryDirectory.appendingPathComponent("PowerLogExport", isDirectory: true))
-        UserDefaults.standard.removeObject(forKey: "powerTestAlwaysOnMicrophone")
     }
 
     private func inputChanged(_ input: InputPortKind?) {

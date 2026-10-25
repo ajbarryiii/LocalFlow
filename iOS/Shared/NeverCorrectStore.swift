@@ -162,53 +162,20 @@ struct NeverCorrectStore: Sendable {
         var words: [String]
     }
 
-    static let stagingPrefix = ".staging-"
+    static let stagingPrefix = AtomicRecordFiles.stagingPrefix
 
-    /// Class A (`.complete`) on devices: the file is read and written only while the iPhone is unlocked; while
-    /// locked a read gives no words and a write fails, leaving the file alone. macOS, where the host tests run,
-    /// refuses class A to unentitled processes, and the simulator does not enforce data protection.
-    private static var protection: Data.WritingOptions {
-        #if os(iOS) && !targetEnvironment(simulator)
-        return .completeFileProtection
-        #else
-        return .completeFileProtectionUntilFirstUserAuthentication
-        #endif
-    }
+    /// Staging files are `.staging-<UUID>`, with no suffix.
+    private var files: AtomicRecordFiles { AtomicRecordFiles(directory: directory, stagingSuffix: "") }
 
+    /// Replaces the file (`AtomicRecordFiles`). Class A (`.complete`) on devices: the file is read and written only
+    /// while the iPhone is unlocked; while locked a read gives no words and a write fails, leaving the file alone.
     private func write(_ words: NeverCorrectWords) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let data = try encoder.encode(StoredFile(schema: Self.schema, words: words.words))
-        try createDirectoryIfNeeded()
-        sweepStagingFiles()
-        let staging = directory.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)", isDirectory: false)
-        do {
-            try data.write(to: staging, options: [.withoutOverwriting, Self.protection])
-            guard rename(staging.path, fileURL.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        } catch {
-            try? FileManager.default.removeItem(at: staging)
-            throw error
-        }
-    }
-
-    /// Staging files a crashed write left behind. The keyboard is the only writer and writes on its main thread,
-    /// so any staging file older than a minute is abandoned.
-    private func sweepStagingFiles() {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-        for name in names where name.hasPrefix(Self.stagingPrefix) {
-            let url = directory.appendingPathComponent(name, isDirectory: false)
-            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-            if let modified, abs(modified.timeIntervalSinceNow) < 60 { continue }
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
-    private func createDirectoryIfNeeded() throws {
-        guard !FileManager.default.fileExists(atPath: directory.path) else { return }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var url = directory
-        try? url.setResourceValues(values)   // best effort, as for the dictation store
+        // Staging files a crashed write left behind. The keyboard is the only writer and writes on its main
+        // thread, so any staging file older than a minute is abandoned. (With no directory yet there are none.)
+        files.sweepStagingFiles { abs($0.timeIntervalSinceNow) < 60 }
+        try files.write(data, to: fileURL, protection: AtomicRecordFiles.completeProtection)
     }
 }

@@ -122,6 +122,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Settings changed in the app while the keyboard was hidden apply from here.
+        refreshSharedSettings()
         documentDidChange()
         input.reset()
         // Soft key edges and autocorrect (ARCHITECTURE.md, "Soft key edges" and "Word autocorrect") are read when
@@ -185,11 +187,26 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     /// written (no Full Access).
     private var layoutChoices: [String: FieldLayout] = [:]
 
-    /// Remembered choices, and the soft-key-edge and autocorrect switches, live in the App Group, which needs
-    /// Full Access.
+    /// Remembered choices, the soft-key-edge and autocorrect switches and the trackpad multipliers live in the
+    /// App Group, which needs Full Access. One handle is kept, renewed each time the keyboard appears; its
+    /// values are read from the suite at each use.
     private var fieldSettings: LocalFlowSettings? {
-        guard hasFullAccess, let configuration = LocalFlowConfiguration.main else { return nil }
-        return LocalFlowSettings(configuration: configuration)
+        guard hasFullAccess else { return nil }
+        if appGroupSettings == nil, let configuration = LocalFlowConfiguration.main {
+            appGroupSettings = LocalFlowSettings(configuration: configuration)
+        }
+        return appGroupSettings
+    }
+
+    private var appGroupSettings: LocalFlowSettings?
+
+    /// The remembered choices, read once per appearance: the field is read at every cursor move and keystroke.
+    private var storedLayouts = FieldLayoutOverrideCache()
+
+    /// The keyboard appears: the next uses read the App Group again.
+    private func refreshSharedSettings() {
+        appGroupSettings = nil
+        storedLayouts.invalidate()
     }
 
     /// The field's fingerprint as last read with a field identity, and the layout of the gesture
@@ -208,11 +225,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     }
 
     private var layoutOverrides: [String: FieldLayout] {
-        var overrides: [String: FieldLayout] = [:]
-        for (key, value) in fieldSettings?.fieldLayoutOverrides ?? [:] {
-            if let layout = FieldLayout(rawValue: value) { overrides[key] = layout }
-        }
-        return overrides.merging(layoutChoices) { _, chosenHere in chosenHere }
+        let stored = storedLayouts.overrides { fieldSettings?.fieldLayoutOverrides }
+        return stored.merging(layoutChoices) { _, chosenHere in chosenHere }
     }
 
     private func updateLayoutReadout() {
@@ -248,6 +262,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             layoutChoices[key] = chosen
             fieldSettings?.setFieldLayout(chosen.rawValue, forKey: key)
         }
+        // The suite now holds the choice (and may have dropped others past the limit).
+        storedLayouts.invalidate()
         updateLayoutReadout()
     }
 
@@ -269,16 +285,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     /// The App Group settings are readable only with Full Access; without it the defaults apply.
     private var cursorMultipliers: (sensitivity: Double, acceleration: Double) {
-        guard hasFullAccess, let configuration = LocalFlowConfiguration.main,
-              let settings = LocalFlowSettings(configuration: configuration) else { return (1, 1) }
+        guard let settings = fieldSettings else { return (1, 1) }
         return (settings.cursorSensitivity, settings.cursorAcceleration)
     }
 
     /// Diagnostics: the measured touch rate and step scale, numbers only, at most once per gesture.
     /// Written only with Full Access, when the App Group is reachable.
     private func recordTouchRate(_ rate: Double, scale: Double) {
-        guard hasFullAccess, let configuration = LocalFlowConfiguration.main,
-              let settings = LocalFlowSettings(configuration: configuration) else { return }
+        guard let settings = fieldSettings else { return }
         settings.recordCursorTouchRate(rate, eventStepScale: scale)
     }
 
