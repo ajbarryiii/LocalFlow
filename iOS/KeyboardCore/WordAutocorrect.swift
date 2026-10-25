@@ -50,13 +50,19 @@ enum WordAutocorrect {
         word.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
     }
 
+    /// The pronoun I and its contractions, as the corrector sees them: always written with a capital I.
+    static let pronounForms: Set<String> = ["i", "i'm", "i'll", "i've", "i'd"]
+
     /// The correction (lowercase) in the typed word's case: all capitals (two letters or more) stays all
-    /// capitals, a capital first letter stays a capital first letter, and anything else is the lexicon form.
+    /// capitals, a capital first letter (or the pronoun I, `pronounForms`) takes a capital first letter, and
+    /// anything else is the lexicon form.
     static func cased(_ correction: String, like typed: String) -> String {
         let lower = correction.lowercased()
         let letters = typed.filter(\.isLetter)
         if letters.count >= 2, letters.allSatisfy(\.isUppercase) { return lower.uppercased() }
-        guard let first = typed.first(where: \.isLetter), first.isUppercase, let head = lower.first else { return lower }
+        guard let head = lower.first else { return lower }
+        let capital = typed.first(where: \.isLetter)?.isUppercase == true
+        guard capital || pronounForms.contains(lower) else { return lower }
         return head.uppercased() + lower.dropFirst()
     }
 
@@ -112,6 +118,9 @@ enum WordAutocorrect {
         var correction: Correction?
         if !corrected.isEmpty, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
             correction = Correction(word: lowered, typed: typed, replacement: cased(corrected, like: word) + tail, record: record)
+        } else if pronounForms.contains(lowered), word.first == "i" {
+            // A kept pronoun (one letter is below the corrector's minimum length) takes its capital I, the rest as typed.
+            correction = Correction(word: lowered, typed: typed, replacement: "I" + word.dropFirst() + tail, record: record)
         }
         var choices = [typed]
         for choice in (correction.map { [$0.replacement] } ?? []) + suggested.map({ cased($0, like: word) + tail })
