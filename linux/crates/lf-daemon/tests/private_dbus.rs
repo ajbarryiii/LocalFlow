@@ -643,6 +643,38 @@ fn tray_publishes_states_and_follows_watchers(bus: &PrivateBus) {
         assert_eq!(host.string(&name, property), want, "{property}");
     }
     assert!(!bool::try_from(host.get(&name, "ItemIsMenu")).unwrap());
+    // GNOME's AppIndicator extension shows an item only with a menu: an
+    // empty dbusmenu.
+    let menu = zbus::zvariant::OwnedObjectPath::try_from(host.get(&name, "Menu")).unwrap();
+    assert_eq!(menu.as_str(), tray::MENU_PATH);
+    let reply = host
+        .0
+        .call_method(
+            Some(name.as_str()),
+            tray::MENU_PATH,
+            Some(tray::MENU_INTERFACE),
+            "GetLayout",
+            &(0i32, -1i32, Vec::<String>::new()),
+        )
+        .unwrap();
+    type Layout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
+    let (_revision, (id, props, children)): (u32, Layout) = reply.body().deserialize().unwrap();
+    assert_eq!((id, children.len()), (0, 0));
+    assert_eq!(
+        String::try_from(props["children-display"].try_clone().unwrap()).unwrap(),
+        "submenu"
+    );
+    let reply = host
+        .0
+        .call_method(
+            Some(name.as_str()),
+            tray::MENU_PATH,
+            Some(tray::MENU_INTERFACE),
+            "AboutToShow",
+            &0i32,
+        )
+        .unwrap();
+    assert!(!reply.body().deserialize::<bool>().unwrap());
     assert_eq!(
         host.tool_tip(&name),
         (
@@ -672,15 +704,18 @@ fn tray_publishes_states_and_follows_watchers(bus: &PrivateBus) {
     item.show(Class::Recording).unwrap();
     assert_eq!(drain(&rx, Duration::from_millis(300)), []);
     item.show(Class::Transcribing).unwrap();
-    item.show(Class::Typing).unwrap();
     assert_eq!(
         drain(&rx, Duration::from_millis(500)),
         [
             signal("NewIcon", ""),
             signal("NewToolTip", ""),
             signal("NewStatus", "Active"),
-            signal("NewToolTip", ""),
         ]
+    );
+    item.show(Class::Typing).unwrap();
+    assert_eq!(
+        drain(&rx, Duration::from_millis(500)),
+        [signal("NewToolTip", "")]
     );
     for (class, icon, text) in [
         (Class::Idle, "audio-input-microphone", "Idle"),
@@ -760,7 +795,7 @@ fn localflowctl_tray_follows_the_daemon(bus: &PrivateBus) {
 }
 
 /// Its own bus, stopped under it: the tray reports the loss.
-fn tray_reports_a_lost_bus(_shared: &PrivateBus) {
+fn tray_reports_a_lost_bus(shared: &PrivateBus) {
     let bus = PrivateBus::start();
     let (tx, rx) = std::sync::mpsc::channel();
     let addr = bus.address.clone();
@@ -784,6 +819,27 @@ fn tray_reports_a_lost_bus(_shared: &PrivateBus) {
         || {},
     );
     assert_eq!(missing.err(), Some(TrayError::Connect));
+    // A bus that accepts the connection and then says nothing: given up
+    // after the deadline.
+    let dir = shared.dir.join("silent");
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("bus");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+    let t = Instant::now();
+    let silent = Tray::start(
+        Some(&format!("unix:path={}", socket.display())),
+        Class::Idle,
+        || {},
+    );
+    assert_eq!(silent.err(), Some(TrayError::Connect));
+    assert!(
+        t.elapsed() >= tray::CALL_TIMEOUT && t.elapsed() < tray::CALL_TIMEOUT * 2,
+        "{:?}",
+        t.elapsed()
+    );
+    drop(held.join());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn main() {

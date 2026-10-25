@@ -34,6 +34,7 @@ pub(super) fn choose(rows: String) -> Invocation {
             "--prompt=LocalFlow: ",
         ],
         arg0: None,
+        env: &[],
         config: None,
         stdin: Some(rows),
         dismissal: Dismissal::Exit(&[1, 2]),

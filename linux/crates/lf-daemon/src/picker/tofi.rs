@@ -27,6 +27,7 @@ pub(super) fn choose(rows: String) -> Invocation {
             "--prompt-text=LocalFlow: ",
         ],
         arg0: Some("tofi"),
+        env: &[],
         config: None,
         stdin: Some(rows),
         dismissal: Dismissal::NoOutput,

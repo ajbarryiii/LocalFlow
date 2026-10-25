@@ -17,7 +17,12 @@
 //!   could set `pre_display_cmd`, a shell command run on every row with
 //!   the row's text, which a later file cannot unset; so wofi is not used
 //!   when one exists ([`system_config`]).
-//! - The user's stylesheet still applies (it cannot run anything).
+//! - GTK's own plugins are kept out too ([`ENV`]): an input method can read
+//!   the edit box's whole text (surrounding text), so wofi runs with GTK's
+//!   built-in one; the accessibility bridge and `GTK_MODULES` /
+//!   `GTK3_MODULES` are off; and `XDG_CONFIG_HOME=/dev/null` keeps GTK's
+//!   user settings (which can name modules) and wofi's own files out, so
+//!   the user's wofi stylesheet does not apply either.
 //! - Escape exits 1.
 
 use std::path::Path;
@@ -84,12 +89,23 @@ no_custom_entry=true
 hide_search=true
 ";
 
+/// Environment changes for wofi: GTK's built-in input method, no
+/// accessibility bridge, no GTK modules, and no user configuration.
+pub const ENV: &[(&str, Option<&str>)] = &[
+    ("GTK_IM_MODULE", Some("gtk-im-context-simple")),
+    ("NO_AT_BRIDGE", Some("1")),
+    ("GTK_MODULES", None),
+    ("GTK3_MODULES", None),
+    ("XDG_CONFIG_HOME", Some("/dev/null")),
+];
+
 const ARGS: [&str; 3] = ["--dmenu", "--conf=/dev/fd/3", "--cache-file=/dev/null"];
 
 pub(super) fn edit(prefill: &str) -> Result<Invocation, Failure> {
     Ok(Invocation {
         args: ARGS.to_vec(),
         arg0: None,
+        env: ENV,
         config: Some(edit_config(prefill).ok_or(Failure::Unsafe)?),
         stdin: None,
         dismissal: Dismissal::Exit(&[1]),
@@ -101,6 +117,7 @@ pub(super) fn choose(rows: String) -> Invocation {
     Invocation {
         args: ARGS.to_vec(),
         arg0: None,
+        env: ENV,
         config: Some(CHOOSE_CONFIG.into()),
         stdin: Some(rows),
         dismissal: Dismissal::Exit(&[1]),
@@ -157,6 +174,34 @@ mod tests {
             assert!(config.lines().any(|l| l == line), "{line}");
         }
         assert_eq!(read(&dir, "stdin"), "");
+    }
+
+    /// GTK's plugins (input methods, accessibility, modules) and user
+    /// settings stay out of both dialogs.
+    #[test]
+    fn gtk_plugins_and_user_settings_are_kept_out() {
+        let dir = TempDir::new("wofi-env");
+        let w = fake(&dir, Kind::Wofi, "echo 0");
+        for inv in [
+            w.edit_invocation("x").unwrap(),
+            w.choose_invocation("x\n".into()),
+        ] {
+            assert_eq!(inv.env, ENV);
+        }
+        w.suggest("Kubernetes").unwrap();
+        let env = read(&dir, "env");
+        for line in [
+            "GTK_IM_MODULE=gtk-im-context-simple",
+            "NO_AT_BRIDGE=1",
+            "XDG_CONFIG_HOME=/dev/null",
+        ] {
+            assert!(env.lines().any(|l| l == line), "{line}");
+        }
+        assert!(
+            !env.lines()
+                .any(|l| l.starts_with("GTK_MODULES=") || l.starts_with("GTK3_MODULES="))
+        );
+        assert!(ENV.contains(&("GTK_MODULES", None)) && ENV.contains(&("GTK3_MODULES", None)));
     }
 
     #[test]

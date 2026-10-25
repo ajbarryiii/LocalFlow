@@ -13,14 +13,16 @@
 //! (or one of its operations) that cannot is not supported:
 //!
 //! - Dictated text and dictionary words never appear in argv or the
-//!   environment. Argv is built from `&'static str` only, the environment is
-//!   inherited unchanged (LocalFlow adds nothing to it), and the text
-//!   reaches the picker through stdin (a pipe) or an inherited configuration
-//!   file descriptor (a memfd on fd 3).
+//!   environment. Argv and any environment changes are built from
+//!   `&'static str` only (the rest of the environment is inherited), and the
+//!   text reaches the picker through stdin (a pipe) or an inherited
+//!   configuration file descriptor (a memfd on fd 3).
 //! - The picker writes no history or cache of what it showed or what was
 //!   typed.
 //! - The user's configuration for the tool is replaced, so it cannot run a
-//!   command or load a plugin that sees the text.
+//!   command or load a plugin that sees the text. For a GTK tool (wofi) that
+//!   includes GTK's own plugins: input methods (which can read an input
+//!   box's whole text), the accessibility bridge and GTK modules.
 //! - stderr is read and dropped: only the exit status is reported.
 //! - A parent deadline kills and reaps the picker; anything but a
 //!   well-formed answer means "do nothing".
@@ -51,9 +53,13 @@
 //!   `/etc/wofi/config` and `/usr/etc/wofi/config` whatever it is given, and
 //!   such a file could set `pre_display_cmd`, a shell command run on every
 //!   row, which a later file cannot unset; so LocalFlow does not use wofi
-//!   when either exists. Its configuration format drops leading spaces
-//!   from a value, so text that starts with a space cannot be edited in
-//!   wofi. The user's stylesheet still applies. Escape exits 1.
+//!   when either exists. It runs with GTK's built-in input method
+//!   (`GTK_IM_MODULE=gtk-im-context-simple`), without the accessibility
+//!   bridge (`NO_AT_BRIDGE=1`) or `GTK_MODULES`/`GTK3_MODULES`, and with
+//!   `XDG_CONFIG_HOME=/dev/null`, so neither its own nor GTK's user
+//!   settings load (no user stylesheet either). Its configuration format
+//!   drops leading spaces from a value, so text that starts with a space
+//!   cannot be edited in wofi. Escape exits 1.
 //! - **tofi** (0.9.1): choose only. It has no way to prefill its input.
 //!   Rows come from stdin; `--config=/dev/null` replaces the user's
 //!   configuration (and its `include`s); in dmenu mode it keeps no history
@@ -337,6 +343,9 @@ pub struct Invocation {
     pub args: Vec<&'static str>,
     /// `argv[0]`, when it must not be the program's path.
     pub arg0: Option<&'static str>,
+    /// Environment changes, static too: set to a value, or removed
+    /// (`None`). Everything else is inherited.
+    pub env: &'static [(&'static str, Option<&'static str>)],
     /// Given to the picker as fd 3 (a memfd).
     pub config: Option<String>,
     /// Written to its stdin, a pipe; without it stdin is `/dev/null`.
@@ -458,6 +467,12 @@ impl Picker {
         if let Some(arg0) = inv.arg0 {
             cmd.arg0(arg0);
         }
+        for &(key, value) in inv.env {
+            match value {
+                Some(v) => cmd.env(key, v),
+                None => cmd.env_remove(key),
+            };
+        }
         cmd.args(&inv.args)
             .stdin(if inv.stdin.is_some() {
                 Stdio::piped()
@@ -483,7 +498,20 @@ impl Picker {
                 });
             }
         }
-        let mut child = cmd.spawn().map_err(|e| Failure::Spawn(e.kind()))?;
+        // A program written a moment ago can be briefly busy (ETXTBSY: a
+        // process forked meanwhile still holds it open for writing until it
+        // execs), so that is retried a few times.
+        let mut tries = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 5 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => return Err(Failure::Spawn(e.kind())),
+            }
+        };
         drop(memfd);
         let stdout = child.stdout.take().map(|s| drain(s, MAX_OUTPUT));
         // stderr is read so the picker cannot block on it, then dropped

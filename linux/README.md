@@ -104,8 +104,9 @@ invalid values stop the daemon with an error. Defaults:
   (`dict review`, and the second step of `correct`); with one of them
   configured, `correct` says so and does nothing. wofi is not used while
   `/etc/wofi/config` or `/usr/etc/wofi/config` exists (wofi always reads
-  them, and they could run a command on what it shows). The daemon ignores
-  this key; `localflowctl` reads it.
+  them, and they could run a command on what it shows); it also runs
+  without your wofi stylesheet and GTK settings. The daemon ignores this
+  key; `localflowctl` reads it.
 
 Check a configuration with `localflowd --check-config`.
 
@@ -252,7 +253,8 @@ dictation, a cancel or any dictionary change); macros and dictations that
 press Return are never kept. The picker receives the text through an
 inherited file descriptor or its stdin, never its command line or
 environment; it runs with your configuration for it replaced (rofi's
-plugins too), with its history or cache disabled, and its error output is
+plugins too; for wofi also GTK's input method, accessibility bridge,
+modules and settings, since an input method can read the whole box), with its history or cache disabled, and its error output is
 discarded; it is killed after two minutes. The privacy contract and each
 tool's verdict are in `crates/lf-daemon/src/picker.rs`. Nothing goes to the notification daemon.
 
