@@ -466,6 +466,37 @@ fn localflowd_rejects_a_bad_forced_cpu_tier() {
 }
 
 #[test]
+fn localflowd_says_where_to_get_a_missing_model() {
+    let dir = TempDir::new("no-model");
+    let export = dir.path().join("model");
+    let config = dir.path().join("config.json");
+    let json = format!(r#"{{"version": 1, "export_path": "{}"}}"#, export.display());
+    std::fs::write(&config, json).unwrap();
+    let rd = runtime_dir(&dir);
+    private_dir(&rd);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_localflowd"))
+        .arg("--config")
+        .arg(&config)
+        .arg("--fake-io")
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_RUNTIME_DIR", &rd)
+        .env_remove("JOURNAL_STREAM")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err,
+        format!(
+            "localflowd error: no model export at {}; {}\n",
+            export.display(),
+            lf_daemon::recognizer::MODEL_HINT
+        )
+    );
+}
+
+#[test]
 fn localflowctl_exit_codes() {
     let dir = TempDir::new("ctl");
     let rd = runtime_dir(&dir);
