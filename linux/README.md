@@ -25,6 +25,39 @@ nix develop ./linux --command cargo build --release --manifest-path linux/Cargo.
 
 The CPU needs AVX-512 (F, BW, VNNI, VBMI).
 
+## Model
+
+LocalFlow needs a model export: a directory with `export.safetensors`,
+`manifest.json` and `tokenizer/`. Two are published on Hugging Face, both
+derived from NVIDIA's
+[parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+and licensed CC-BY-4.0 (attribution in each export's `NOTICE`):
+
+- [kea-b](https://huggingface.co/rajb3/kea-b) (recommended): 1-bit weights,
+  105 MB.
+- [kea-t](https://huggingface.co/rajb3/kea-t): ternary weights, 181 MB,
+  slightly lower WER (1.33% vs 1.45% on 40 LibriSpeech test-clean clips),
+  and slower (see `export_path` below).
+
+The daemon checks every file against the SHA-256 hashes in `manifest.json`
+when it loads. With Nix, the flake packages both exports, pinned to a
+Hugging Face revision:
+
+```bash
+nix build ./linux#kea-b   # result/ is the export directory
+```
+
+In a Home Manager or NixOS configuration that has this flake as the input
+`localflow`, set `export_path = "${localflow.packages.x86_64-linux.kea-b}"`.
+Without Nix, download the repository into the default location:
+
+```bash
+git clone https://huggingface.co/rajb3/kea-b ~/.local/share/localflow/model
+```
+
+(`git lfs` must be installed; `hf download rajb3/kea-b --local-dir …` works
+too).
+
 ## Configure
 
 `$XDG_CONFIG_HOME/localflow/config.json` (usually
