@@ -1,7 +1,7 @@
 //! Speech recognition behind a trait, so the daemon can be tested without
 //! loading the model.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use lf_asr::dictionary::{self, DictionaryEntry};
@@ -45,7 +45,7 @@ pub type RecognizerFactory = Box<dyn FnOnce() -> Result<Box<dyn Recognizer>, Str
 /// A snapshot revision with its phrases and bias graph.
 type Prepared = (u64, Vec<(Vec<usize>, f32)>, BiasGraph);
 
-/// The native CPU recognizer for the ternary Parakeet export.
+/// The native CPU recognizer for a Parakeet export (ternary or binary).
 pub struct AsrRecognizer {
     transcriber: lf_asr::Transcriber,
     /// The phrases and graph of the last snapshot seen, by revision.
@@ -136,8 +136,25 @@ impl Recognizer for AsrRecognizer {
 /// Length of the silent warm-up transcription run after loading.
 pub const WARM_UP_SECONDS: usize = 30;
 
+/// Where to get a model when `export_path` holds none.
+pub const MODEL_HINT: &str = "download an export such as kea-b \
+     (https://huggingface.co/rajb3/kea-b) and point export_path at it";
+
+/// Fails with [`MODEL_HINT`] when `export` has no `manifest.json`. Other
+/// errors (permissions, I/O) are left to the loader, which reports them.
+pub fn check_export(export: &Path) -> Result<(), String> {
+    match export.join("manifest.json").try_exists() {
+        Ok(false) => Err(format!(
+            "no model export at {}; {MODEL_HINT}",
+            export.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> RecognizerFactory {
     Box::new(move || {
+        check_export(&export)?;
         if !lf_asr::cpu_supported() {
             return Err("this CPU lacks AVX-512 F/BW/VNNI/VBMI".into());
         }
@@ -163,4 +180,22 @@ pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> R
         );
         Ok(Box::new(AsrRecognizer::new(transcriber)) as Box<dyn Recognizer>)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_export_says_where_to_get_a_model() {
+        let dir = std::env::temp_dir().join(format!("lf-no-model-{}", std::process::id()));
+        let Err(e) = asr_factory(dir.clone(), vec![0], Precision::Int8(2))() else {
+            panic!("loaded a model from an empty path");
+        };
+        assert_eq!(
+            e,
+            format!("no model export at {}; {MODEL_HINT}", dir.display())
+        );
+        assert!(MODEL_HINT.contains("https://huggingface.co/rajb3/kea-b"));
+    }
 }
