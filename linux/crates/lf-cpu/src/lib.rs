@@ -1,4 +1,5 @@
-//! CPU inference kernels (AVX-512) for the ternary Parakeet encoder.
+//! CPU inference kernels (AVX-512) for the ternary and binary Parakeet
+//! encoders (binary weights are ternary codes without zeros).
 //!
 //! Every ternary GEMM computes `Y[t][o] = scale[o] * sum_i code(o, i) * X[t][i]`
 //! for `T` frames, `K` inputs and `O` outputs, with row-major `X` and `Y`.
@@ -29,15 +30,16 @@ mod aligned;
 mod math;
 
 pub use aligned::AlignedBuf;
-pub use pack::PackedTernary;
+pub use pack::{Encoding, PackedTernary};
 pub use pool::ThreadPool;
 pub use quant::QuantizedActs;
 
-/// Whether this CPU has the AVX-512 subsets the kernels use.
+/// Whether this CPU has the AVX-512 subsets (and BMI2) the kernels use.
 pub fn cpu_supported() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        std::arch::is_x86_feature_detected!("avx512f")
+        std::arch::is_x86_feature_detected!("bmi2")
+            && std::arch::is_x86_feature_detected!("avx512f")
             && std::arch::is_x86_feature_detected!("avx512bw")
             && std::arch::is_x86_feature_detected!("avx512vnni")
             && std::arch::is_x86_feature_detected!("avx512vbmi")

@@ -32,15 +32,16 @@
 //!   `vpermps` indices (4 bytes per weight group and output) that every frame
 //!   of the chunk reuses. The microkernel turns bit 31 into the ±1.0 sign
 //!   with one `vpternlogd`.
-//! - Weights stay in the shared [`PackedTernary`] layout (2 bits per weight);
-//!   tables and tiles are transient workspace.
+//! - Weights stay in the shared [`PackedTernary`] layout (2 bits per weight;
+//!   binary-encoded matrices are not supported); tables and tiles are
+//!   transient workspace.
 //!
 //! Status: exact and tested, but on the 9950X3D it is only about 1.1x faster
 //! than the i8x3 kernel on long inputs (from 10 s at 8 threads, from 30 s at
 //! 16), slower on short ones, and well behind i8x2; see `linux/PLAN.md`.
 
 use crate::barrier::SpinBarrier;
-use crate::pack::{NR, PackedTernary};
+use crate::pack::{Encoding, NR, PackedTernary};
 use crate::{AlignedBuf, SendPtr, ThreadPool, split_range};
 
 /// Blocking parameters. All are validated by [`LutWorkspace::new`].
@@ -246,6 +247,11 @@ pub fn gemm(
     y: &mut [f32],
 ) {
     assert!(crate::cpu_supported(), "AVX-512 F/BW/VBMI required");
+    assert_eq!(
+        w.encoding(),
+        Encoding::Ternary,
+        "gemm_lut reads 2-bit codes only"
+    );
     let (k, o) = (w.cols(), w.rows());
     assert!(x.len() >= crate::size(t, k) && y.len() >= crate::size(t, o));
     if t == 0 {

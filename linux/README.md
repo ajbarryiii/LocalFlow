@@ -2,8 +2,8 @@
 
 Local dictation for Hyprland on NixOS: hold a key, speak, release, and the
 text is typed into the focused window. Speech recognition runs on the CPU
-with the ternary Parakeet model; nothing leaves the machine, and audio is
-never written to disk. See `PLAN.md` for the design and measurements.
+with a ternary or binary Parakeet model; nothing leaves the machine, and audio
+is never written to disk. See `PLAN.md` for the design and measurements.
 
 - `localflowd`: the daemon. It records, transcribes, post-processes (voice
   macros, "press enter", spoken delimiters) and types.
@@ -54,7 +54,14 @@ invalid values stop the daemon with an error. Defaults:
 ```
 
 - `export_path`: the model export directory (`export.safetensors`,
-  `manifest.json`, `tokenizer/`).
+  `manifest.json`, `tokenizer/`), in either format: ternary
+  (`parakeet-ternary-v1`, e.g. [kea-t](https://huggingface.co/rajb3/kea-t))
+  or binary (`parakeet-binary-v1`, e.g.
+  [kea-b](https://huggingface.co/rajb3/kea-b)). The format is read from
+  `manifest.json`. Binary weights stay at 1 bit in memory (79 MB of encoder
+  weights instead of 155 MB). On a Ryzen 9 9950X3D with i8x2, kea-b
+  transcribed 2-12 s clips about 8% faster than kea-t end to end; its
+  encoder projections were 9-21% faster at 3 s and 3-6% faster at 30 s.
 - `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. i8x2 matched
   f32's WER over 32,560 dev/test utterances (six near-tie transcript
   changes) and is 25-28% faster than i8x3, which tracks f32 to rounding; see
