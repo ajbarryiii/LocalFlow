@@ -570,6 +570,32 @@ checklist.
   `object.serial`, never LocalFlow's own stream. Unreachable PipeWire is
   `unknown`, not absent, and is retried every 2 s. Changes reach the control
   loop as an event. Node names are compared only, never logged or sent.
+- **Triggers** (config `trigger`): `"commands"` (default) leaves the key to
+  the desktop's binds, which run `localflowctl`; snippets for Hyprland,
+  sway, river-classic and niri (toggle only: niri 26.04 has no release
+  binds) are in `packaging/`. `"portal"` adds `src/portal.rs`: a thread
+  that registers the host app ID `com.ajbarryiii.localflow`, creates a
+  GlobalShortcuts session and binds `hold-to-talk` and `toggle` without
+  preferred keys. `Activated`/`Deactivated` become `press`/`release` (and
+  `toggle`) requests stamped on arrival, sent into the control loop like
+  socket requests, so no controller rule is duplicated; the signal's
+  timestamp has an undefined base and is unused. Only the portal owner's
+  signals for the current session count, and a `Deactivated` passes only
+  after that session's `Activated`. A lost session (closed, portal exited
+  or restarted, connection gone) during a hold is a `release`: it ends
+  only a hold, keeps the speech, and is ignored while busy or toggling,
+  whereas `cancel` would also abandon a transcription or a toggle
+  recording. Re-binding uses exponential backoff (1 s to 60 s, reset
+  after a session that lasted 60 s); a cancelled or refused binding is not
+  retried, so no dialog reappears by itself. A missing portal is a
+  warning; `localflowctl` keeps working. `private_dbus.rs` serves a fake
+  portal (Registry and GlobalShortcuts, answering `Response` before the
+  method returns) on the private bus and checks registration and binding,
+  hold, toggle, too-short and Hold to Prompt through the signals, a stray
+  `Deactivated` during a socket hold, session close and portal exit during
+  a hold (released, then bound again), a portal that appears later,
+  signals from other connections or sessions ignored, a cancelled dialog
+  not asked again, and shutdown during a hold.
 - **Config:** `$XDG_CONFIG_HOME/localflow/config.json`, all keys optional,
   unknown keys and bad values rejected; errors name fields, never macro text.
 - **History:** last 20 `{time, raw, text}` entries in
@@ -670,7 +696,7 @@ Residual risks:
 
 ## Open items
 
-- Shortcut key: F13 on a remapped Kinesis thumb key (binds in `packaging/hyprland.conf` use keycode 191; confirm with `wev`).
+- Shortcut key: any free key (see "Dictation key" in `README.md`). The development setup uses F13 on a remapped Kinesis thumb key (keycode 191, the example in the `packaging/` snippets). GNOME and KDE use the GlobalShortcuts portal (`"trigger": "portal"`); not yet tested live on either, nor on sway, river or niri.
 - Default precision: i8x2, chosen by the user (2026-10-07) on the validation above (25–28% faster than i8x3, six near-tie transcript changes in 32,560 utterances, same WER). i8x3 remains available for bit-level FP32 fidelity.
 
 ## Risks
