@@ -903,7 +903,9 @@ fn a_layout_change_while_typing_stops_the_rest() {
     }
     let rig = Rig::start(|s| s.eis.lock_caps_after_keys = Some(1));
     let mut config = rig.config();
-    config.key_delay = Duration::from_millis(2);
+    // 20 characters take 400 ms, far longer than the fake needs to answer
+    // the first key; Caps Lock is read before the next key after that.
+    config.key_delay = Duration::from_millis(20);
     let mut typer = PortalTyper::new(config, Box::new(MemStore::default()));
     let text = "a".repeat(20);
     let err = typer.type_text(&text).unwrap_err();
@@ -913,7 +915,7 @@ fn a_layout_change_while_typing_stops_the_rest() {
         r.log().lock().unwrap().disconnects == 1
     });
     let typed = rig.keys().len();
-    assert!(typed < 40, "{typed} key events");
+    assert!(typed < 20, "{typed} key events");
     // The next call maps with Caps Lock on.
     typer.type_text("a").unwrap();
     assert_eq!(rig.keys()[typed..], with(&[SHIFT], KA));

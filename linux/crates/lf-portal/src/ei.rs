@@ -504,6 +504,10 @@ impl<'a> Guard<'a> {
 
 impl KeySink for Guard<'_> {
     fn key(&mut self, code: u32, pressed: bool) -> Result<(), IoError> {
+        // Whatever the desktop sent meanwhile (during the key delay, say)
+        // counts before the next key goes out. A change still in flight
+        // is caught at the next flush.
+        self.session.poll_events()?;
         self.current()?;
         self.session.key(code, pressed)
     }
