@@ -262,10 +262,91 @@ struct State {
     syncs_done: u64,
 }
 
+impl State {
+    /// Name and version of the global implementing `interface`.
+    fn find(&self, interface: &str) -> Option<(u32, u32)> {
+        self.globals
+            .iter()
+            .find(|(_, iface, _)| iface == interface)
+            .map(|&(id, _, version)| (id, version))
+    }
+}
+
 impl Session {
     /// Connects and creates the keyboard. With `call_deadline`, every wait
     /// here is also cut to the time left in the call.
     fn open(config: &TyperConfig, call_deadline: Option<Instant>) -> Result<Self, IoError> {
+        let Globals {
+            conn,
+            queue,
+            registry,
+            state,
+            syncs_sent,
+        } = Globals::fetch(config, call_deadline)?;
+        let qh = queue.handle();
+        let find = |name: &str| state.find(name);
+        let (manager_name, _) = find("zwp_virtual_keyboard_manager_v1").ok_or_else(|| {
+            IoError(
+                "the Wayland compositor does not support the virtual keyboard protocol \
+                 (zwp_virtual_keyboard_manager_v1)"
+                    .into(),
+            )
+        })?;
+        let (seat_name, seat_version) =
+            find("wl_seat").ok_or_else(|| IoError("the Wayland compositor has no seat".into()))?;
+        let manager: ZwpVirtualKeyboardManagerV1 = registry.bind(manager_name, 1, &qh, ());
+        let seat: wl_seat::WlSeat = registry.bind(seat_name, seat_version.min(1), &qh, ());
+        let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+
+        let mut session = Session {
+            conn,
+            queue,
+            state,
+            keyboard,
+            _manager: manager,
+            _seat: seat,
+            syncs_sent,
+            keymap: Keymap::base(),
+            timeout: config.timeout,
+            call_deadline,
+        };
+        // A keymap must be set before any key event; the base keymap has
+        // Return and Tab.
+        session.upload(&Keymap::base())?;
+        session.sync()?;
+        Ok(session)
+    }
+}
+
+/// Whether the compositor advertises the virtual keyboard protocol (and a
+/// seat), found with one round trip; no keyboard is created. Errors mean
+/// the compositor could not be reached. With `WAYLAND_SOCKET` (an inherited
+/// connection, usable once) nothing is probed and the answer is `true`.
+pub fn advertises_virtual_keyboard(config: &TyperConfig) -> Result<bool, IoError> {
+    if config.display == Display::Env && std::env::var_os("WAYLAND_SOCKET").is_some() {
+        return Ok(true);
+    }
+    let globals = Globals::fetch(config, None)?;
+    Ok(globals
+        .state
+        .find("zwp_virtual_keyboard_manager_v1")
+        .is_some()
+        && globals.state.find("wl_seat").is_some())
+}
+
+/// A fresh connection with the compositor's globals listed.
+struct Globals {
+    conn: Connection,
+    queue: EventQueue<State>,
+    registry: wl_registry::WlRegistry,
+    state: State,
+    syncs_sent: u64,
+}
+
+impl Globals {
+    /// Connects and lists the globals. With `call_deadline`, every wait
+    /// here is also cut to the time left in the call.
+    fn fetch(config: &TyperConfig, call_deadline: Option<Instant>) -> Result<Self, IoError> {
         let now = Instant::now();
         let deadline = now + wait_budget(config.timeout, call_deadline, now)?;
         let path = match &config.display {
@@ -303,46 +384,17 @@ impl Session {
             &mut syncs_sent,
             wait_budget(config.timeout, call_deadline, Instant::now())?,
         )?;
-
-        let find = |name: &str| {
-            state
-                .globals
-                .iter()
-                .find(|(_, iface, _)| iface == name)
-                .map(|&(id, _, version)| (id, version))
-        };
-        let (manager_name, _) = find("zwp_virtual_keyboard_manager_v1").ok_or_else(|| {
-            IoError(
-                "the Wayland compositor does not support the virtual keyboard protocol \
-                 (zwp_virtual_keyboard_manager_v1)"
-                    .into(),
-            )
-        })?;
-        let (seat_name, seat_version) =
-            find("wl_seat").ok_or_else(|| IoError("the Wayland compositor has no seat".into()))?;
-        let manager: ZwpVirtualKeyboardManagerV1 = registry.bind(manager_name, 1, &qh, ());
-        let seat: wl_seat::WlSeat = registry.bind(seat_name, seat_version.min(1), &qh, ());
-        let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
-
-        let mut session = Session {
+        Ok(Globals {
             conn,
             queue,
+            registry,
             state,
-            keyboard,
-            _manager: manager,
-            _seat: seat,
             syncs_sent,
-            keymap: Keymap::base(),
-            timeout: config.timeout,
-            call_deadline,
-        };
-        // A keymap must be set before any key event; the base keymap has
-        // Return and Tab.
-        session.upload(&Keymap::base())?;
-        session.sync()?;
-        Ok(session)
+        })
     }
+}
 
+impl Session {
     fn upload(&mut self, keymap: &Keymap) -> Result<(), IoError> {
         let text = keymap.to_xkb();
         let (fd, size) = memfd::sealed_keymap(&text)
@@ -771,5 +823,7 @@ mod tests {
         });
         assert!(typer.connect().is_err());
         assert!(typer.type_text("x").is_err());
+        // The probe tells "unreachable" (an error) from "not advertised".
+        assert!(advertises_virtual_keyboard(&typer.config).is_err());
     }
 }

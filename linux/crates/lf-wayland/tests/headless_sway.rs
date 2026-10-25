@@ -598,6 +598,13 @@ fn main() {
         std::thread::spawn(move || run_client(socket, shared, stop))
     };
 
+    // sway advertises the protocol: `output: "auto"` picks this backend.
+    guard(&sway);
+    assert_eq!(
+        lf_wayland::advertises_virtual_keyboard(&TyperConfig::default()),
+        Ok(true)
+    );
+
     // Typer through the environment, exactly as the daemon will connect.
     guard(&sway);
     let mut typer = WaylandTyper::new(TyperConfig::default());
