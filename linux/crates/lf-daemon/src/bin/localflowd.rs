@@ -122,6 +122,7 @@ fn run() -> Result<(), String> {
     let runtime_dir = paths::runtime_dir()?;
     // Only the vocabulary, for dictionary entries; the model loads later on
     // the recognition thread.
+    recognizer::check_export(&config.export_path)?;
     let tokenizer = lf_asr::model::load_tokenizer(&config.export_path)
         .map_err(|e| format!("model export {}: {e}", config.export_path.display()))?;
 

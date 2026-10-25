@@ -1,7 +1,7 @@
 //! Speech recognition behind a trait, so the daemon can be tested without
 //! loading the model.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use lf_asr::dictionary::{self, DictionaryEntry};
@@ -140,15 +140,21 @@ pub const WARM_UP_SECONDS: usize = 30;
 pub const MODEL_HINT: &str = "download an export such as kea-b \
      (https://huggingface.co/rajb3/kea-b) and point export_path at it";
 
+/// Fails with [`MODEL_HINT`] when `export` has no `manifest.json`. Other
+/// errors (permissions, I/O) are left to the loader, which reports them.
+pub fn check_export(export: &Path) -> Result<(), String> {
+    match export.join("manifest.json").try_exists() {
+        Ok(false) => Err(format!(
+            "no model export at {}; {MODEL_HINT}",
+            export.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> RecognizerFactory {
     Box::new(move || {
-        // Other errors (permissions, I/O) are reported by `Export::open`.
-        if let Ok(false) = export.join("manifest.json").try_exists() {
-            return Err(format!(
-                "no model export at {}; {MODEL_HINT}",
-                export.display()
-            ));
-        }
+        check_export(&export)?;
         if !lf_asr::cpu_supported() {
             return Err("this CPU lacks AVX-512 F/BW/VNNI/VBMI".into());
         }
