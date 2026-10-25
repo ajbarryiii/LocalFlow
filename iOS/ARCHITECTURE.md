@@ -149,7 +149,9 @@ hardcodes an identifier.
 - **Notifications and URLs are wake-up hints only.** They carry no data and no
   authority: any process can post a Darwin notification or open the URL. All
   authority comes from files that only the app and the keyboard can write.
-  Every reader also polls, so a dropped notification only adds latency.
+  Every reader also polls, so a dropped notification only adds latency. The
+  keyboard reads result files on `.result`, and also when the polled status
+  reports a completion it has not read for.
 - The design is level-triggered: the keyboard writes the state it wants, and
   the host reconciles toward it and publishes the actual state.
 - Each file has exactly one writer process.
@@ -403,11 +405,48 @@ invalidated requests and the consumed requests.
   dictation", unless it would insert nothing. Tapping it claims the result and
   inserts it into the current field.
 - **Ordering.** The host writes `result-R.json` before it publishes R as
-  `completed`. The keyboard checks for results on appearance and on every
-  pass, whether or not a session is live.
+  `completed`. The keyboard checks for results on appearance and whenever a
+  result may have arrived, whether or not a session is live.
+- **Reads** (`KeyboardResultInbox`, Shared/KeyboardResultInbox.swift; pure,
+  tested). Reading purges expired results, then lists and decodes every
+  result file. The keyboard reads only when a read is due, and otherwise
+  decides from the results it read last, so the status passes that drive the
+  level meter (about 10 Hz while recording) never touch the result files. A
+  read is due:
+  - on the first pass after appearing (no notification is observed while
+    hidden);
+  - after a `.result` notification (deliveries coalesce, so a read lists every
+    file);
+  - when the status reports a completed request the last read did not list,
+    once per request (by the ordering above, its result is on disk, so a
+    missed `.result` only adds a poll's latency);
+  - when the status names a host run other than the last read's (a new run
+    deletes other runs' results at launch);
+  - once a file the last read listed, and not yet consumed, can be purged: a
+    decoded result past `resultTTL`, or `resultTTL` after the first read that
+    found a file it could not decode. A file still there after the read that
+    should have purged it (a failed removal) is purged again after
+    `cleanupRetryInterval` (5 s);
+  - every `retryInterval` (1 s) while the last read found an unreadable file;
+  - when the clock is more than `clockSkewTolerance` before the last read.
+
+  A read whose directory listing fails acknowledges nothing and keeps what was
+  read before. It is retried every `retryInterval` until a listing succeeds,
+  even if what triggered it no longer shows. Only a directory that does not
+  exist (`stat` fails with `ENOENT`) counts as a successful listing of no
+  results; any other failure, such as a parent that cannot be searched, is a
+  failed listing.
+
+  A result that is not inserted on the pass that read it (a trackpad gesture,
+  one result per pass, or one offered as "Insert last dictation") stays in
+  memory for later passes. A result leaves memory once it is no longer fresh
+  within `resultTTL`, whether or not its file could be purged, and when its
+  file is gone: its request was consumed, or tapping "Insert last dictation"
+  found the file absent, so an older result can be offered instead. Hiding
+  drops everything, so no transcript stays in memory while hidden.
 - **Cleanup.** Either process deletes results that are not fresh within
   `resultTTL` (judged by `createdAt`, or by the file's modification date when
-  the record cannot be read): the keyboard on every pass with Full Access; the
+  the record cannot be read): the keyboard on every read with Full Access; the
   host at launch, on every heartbeat while live, and at session end.
 - **Bounded bookkeeping.** `prune` retires a binding or invalidation after
   `maxDictationDuration + 120 s + resultTTL + 2 × clockSkewTolerance`, and a
@@ -865,10 +904,12 @@ transcripts or other user data.
     goes to the keys ([Reach and touch regions](#reach-and-touch-regions)).
 - **`KeyboardDictationClient`** runs the keyboard's side of the protocol while
   visible:
-  - With Full Access it polls status and results every 0.2 s, observes
+  - With Full Access it polls the status and the intent every 0.2 s, observes
     `.status` and `.result`, and writes presence every
-    `keyboardPresenceInterval`. Without Full Access it neither polls nor
-    writes.
+    `keyboardPresenceInterval`. It reads the result files only when
+    `KeyboardResultInbox` says a read is due
+    ([Results](#results-sharedkeyboardresultsswift-textinsertionformatterswift-pure-tested)).
+    Without Full Access it neither polls nor writes.
   - It holds the `KeyboardResultLedger` per instance, in memory.
   - **Mic tap.** `ready` or `preparingModel`: write `record(R)` with a new
     ID, then post `.intent`. `hostUnavailable`: write `record(R)` and open

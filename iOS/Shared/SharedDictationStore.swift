@@ -41,6 +41,21 @@ struct SharedDictationStore: Sendable {
         resultFiles().map(\.requestID)
     }
 
+    /// Like `resultRequestIDs()`, but nil when the directory exists and could not be listed, so a
+    /// caller can tell a failed listing from no results. A missing directory holds no results.
+    func listResultRequestIDs() -> [UUID]? {
+        do {
+            return Self.resultFiles(named: try FileManager.default.contentsOfDirectory(atPath: directory.path),
+                                    in: directory).map(\.requestID)
+        } catch {
+            // Foundation reports "no such file" even when a parent cannot be searched, so only `stat`
+            // failing with ENOENT counts as a missing directory. Anything else (no permission, not a
+            // directory, an I/O error) is a failure, never an empty listing.
+            var info = stat()
+            return stat(directory.path, &info) != 0 && errno == ENOENT ? [] : nil
+        }
+    }
+
     // MARK: Writes
 
     func writeIntent(_ intent: KeyboardIntent) throws {
@@ -128,8 +143,11 @@ struct SharedDictationStore: Sendable {
     }
 
     private func resultFiles() -> [(requestID: UUID, url: URL)] {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-        return names.sorted().compactMap { name in
+        Self.resultFiles(named: (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [], in: directory)
+    }
+
+    private static func resultFiles(named names: [String], in directory: URL) -> [(requestID: UUID, url: URL)] {
+        names.sorted().compactMap { name in
             guard name.hasPrefix("result-"), name.hasSuffix(".json"),
                   let id = UUID(uuidString: String(name.dropFirst("result-".count).dropLast(".json".count)))
             else { return nil }

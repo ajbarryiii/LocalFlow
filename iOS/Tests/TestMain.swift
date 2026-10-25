@@ -14,6 +14,7 @@ struct LocalFlowIOSTests {
             ("HostWatchdog", HostWatchdogTests.tests),
             ("KeyboardPresenter", KeyboardPresenterTests.tests),
             ("KeyboardResultLedger", KeyboardResultLedgerTests.tests),
+            ("KeyboardResultInbox", KeyboardResultInboxTests.tests),
             ("KeyboardMessages", KeyboardMessagesTests.tests),
             ("TextInsertionFormatter", TextInsertionFormatterTests.tests),
             ("LocalFlowSettings", LocalFlowSettingsTests.tests),
