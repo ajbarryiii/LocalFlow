@@ -807,10 +807,8 @@ transcripts or other user data.
 - **`ParakeetTranscriber`** wraps `TranscriptionEngine` with the Parakeet
   runtime, `LocalParakeetService`, which loads only the 15 s encoder function
   (as on macOS) to bound memory. The model loads from the app
-  bundle (`LocalFlow.app/Parakeet/`). At launch it removes, off the main
-  thread, model copies that earlier test builds left in Application Support
-  and the App Group container. It keeps the last 10 dictation measurements in
-  memory for Diagnostics.
+  bundle (`LocalFlow.app/Parakeet/`). It keeps the last 10 dictation
+  measurements in memory for Diagnostics.
 - **App-only preferences** (`AppPreferences`, the app's own `UserDefaults`):
   onboarding completion, "Use iPhone microphone", and the last model
   preparation's duration (for a progress estimate). None holds user content.
@@ -1324,7 +1322,10 @@ widths (`FieldLayoutParameters`):
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
 - **Manual choice.** The menu shows the layout and a Switch. With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
-  64 entries); without it, it holds for the keyboard instance only.
+  64 entries); without it, it holds for the keyboard instance only. Only the
+  keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
+  once each time it appears and again after its own Switch, not at every
+  host callback.
 - Traits are read at every host callback, on appearance and at each
   gesture's start; a gesture's layout is fixed until it ends. A reading
   without a field identity (the proxy's placeholder at first appearance) is
@@ -1587,7 +1588,13 @@ there are no settings for them. A bundle without the section has no soft key
 edges, and an invalid section, or a model file that is missing or invalid,
 turns off soft key edges only, never the swipe bundle. The default model
 loads off the main thread when the keyboard appears with the switch on; until
-it has loaded, taps type the nearest key.
+it has loaded, taps type the nearest key. The load is bookkept by
+`ModelLoadSlot` (KeyboardCore): appearing again while it is in flight, as when
+switching to the emoji keyboard and back, starts no second load. Turning the
+switch off drops the model and discards a load that ends while it is off; a
+load still in flight when the switch comes back on is kept and installed. A load
+that failed or was discarded is tried again the next time the keyboard
+appears with the switch on.
 
 **Privacy.** The context, its normalized form, the cache and every prediction
 stay in the instance's memory. They are dropped when the keyboard hides or the
@@ -1901,7 +1908,9 @@ section's checks:
 
 An invalid section, or a named file that is missing or invalid, means no
 corrector. It never turns off the swipe bundle or soft key edges. The default
-model loads off the main thread when the keyboard appears with the switch on.
+model loads off the main thread when the keyboard appears with the switch on,
+at most once at a time, like the soft key edges model (`ModelLoadSlot`,
+[Soft key edges](#soft-key-edges)).
 A correction runs on the main thread at the commit key.
 
 **Privacy.** The context, the word, its points, the strip's words, the

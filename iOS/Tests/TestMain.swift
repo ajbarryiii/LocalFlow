@@ -8,6 +8,7 @@ struct LocalFlowIOSTests {
             ("LocalFlowConfiguration", LocalFlowConfigurationTests.tests),
             ("DictationProtocol", DictationProtocolTests.tests),
             ("SharedDictationStore", SharedDictationStoreTests.tests),
+            ("AtomicRecordFiles", AtomicRecordFilesTests.tests),
             ("HostReconciler", HostReconcilerTests.tests),
             ("HostRunRecovery", HostRunRecoveryTests.tests),
             ("HostWatchdog", HostWatchdogTests.tests),
@@ -51,6 +52,7 @@ struct LocalFlowIOSTests {
             ("AutocorrectEditor", AutocorrectEditorTests.tests),
             ("AutocorrectCore", AutocorrectCoreTests.tests),
             ("NeverCorrect", NeverCorrectTests.tests),
+            ("ModelLoadSlot", ModelLoadSlotTests.tests),
             ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
         ]

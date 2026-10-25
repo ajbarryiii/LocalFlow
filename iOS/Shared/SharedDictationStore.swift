@@ -129,13 +129,7 @@ struct SharedDictationStore: Sendable {
     /// The host passes 0 during run recovery, before it writes anything, to remove them at any age.
     /// Other callers keep a long age so they never pull an in-flight write from under the other process.
     func purgeStagingFiles(olderThan age: TimeInterval, now: Date) {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-        for name in names where name.hasPrefix(Self.stagingPrefix) && name.hasSuffix(Self.stagingSuffix) {
-            let url = directory.appendingPathComponent(name, isDirectory: false)
-            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-            if let modified, DictationProtocol.isFresh(modified, ttl: age, now: now) { continue }
-            try? FileManager.default.removeItem(at: url)
-        }
+        files.sweepStagingFiles { DictationProtocol.isFresh($0, ttl: age, now: now) }
     }
 
     // MARK: Files
@@ -161,15 +155,8 @@ struct SharedDictationStore: Sendable {
         }
     }
 
-    /// Class A (`.complete`) on devices. macOS, where the host tests run, refuses class A to
-    /// unentitled processes, and the simulator does not enforce data protection, so both use class C.
-    private static var completeProtection: Data.WritingOptions {
-        #if os(iOS) && !targetEnvironment(simulator)
-        return .completeFileProtection
-        #else
-        return .completeFileProtectionUntilFirstUserAuthentication
-        #endif
-    }
+    /// Class A (`.complete`) on devices; class C on macOS and the simulator (`AtomicRecordFiles`).
+    private static var completeProtection: Data.WritingOptions { AtomicRecordFiles.completeProtection }
 
     private struct SchemaProbe: Decodable {
         var schema: Int
@@ -193,50 +180,28 @@ struct SharedDictationStore: Sendable {
         return .value(record)
     }
 
-    static let stagingPrefix = ".staging-"
+    static let stagingPrefix = AtomicRecordFiles.stagingPrefix
     static let stagingSuffix = ".tmp"
 
-    private func makeStagingURL() -> URL {
-        directory.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)\(Self.stagingSuffix)", isDirectory: false)
-    }
+    private var files: AtomicRecordFiles { AtomicRecordFiles(directory: directory, stagingSuffix: Self.stagingSuffix) }
 
     /// Every result removal, claim or purge, goes through here. On APFS, concurrent unlinks of one
     /// name can all succeed, but only one rename of it can, so the file is first moved to a private
     /// staging name and deleted from there. A crash in between leaves a staging file for the sweeps.
     private func removeResultFile(at url: URL) -> ResultRemoval {
-        let claimed = makeStagingURL()
+        let claimed = files.makeStagingURL()
         guard rename(url.path, claimed.path) == 0 else { return errno == ENOENT ? .alreadyAbsent : .failed }
         _ = unlink(claimed.path)
         return .removed
     }
 
     /// Writes a uniquely named staging file next to the destination, then renames it over the
-    /// destination: a reader sees the old or the new record, never part of one. Foundation's
-    /// `.atomic` is avoided because its temporary file, abandoned by a crash, escapes every sweep.
+    /// destination: a reader sees the old or the new record, never part of one (`AtomicRecordFiles`).
     private func write<Record: Encodable>(_ record: Record, to url: URL, protection: Data.WritingOptions) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = .sortedKeys
         let data = try encoder.encode(record)
-        try createDirectoryIfNeeded()
-        let staging = makeStagingURL()
-        do {
-            try data.write(to: staging, options: [.withoutOverwriting, protection])
-            guard rename(staging.path, url.path) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: staging)
-            throw error
-        }
-    }
-
-    private func createDirectoryIfNeeded() throws {
-        guard !FileManager.default.fileExists(atPath: directory.path) else { return }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var url = directory
-        try? url.setResourceValues(values)   // best effort, per the contract
+        try files.write(data, to: url, protection: protection)
     }
 }
