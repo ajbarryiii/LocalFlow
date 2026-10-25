@@ -119,7 +119,7 @@ pub fn rel_pos_attention_with(
     ws: &mut AttentionWorkspace,
     out: &mut [f32],
 ) {
-    assert!(crate::cpu_supported(), "AVX-512 required");
+    let tier = pool.tier();
     assert!(t > 0 && dk > 0 && heads > 0);
     let d = crate::size(heads, dk);
     let n = crate::size(t, d);
@@ -223,21 +223,44 @@ pub fn rel_pos_attention_with(
             let m = i1 - i0;
             let qu = &ws.qu[(h * t + i0) * dk..];
             let qv = &ws.qv[(h * t + i0) * dk..];
-            gemm_serial(qu, m, dk, &ws.k[h], 0..ws.k[h].panels(), &mut scores, tpad);
+            gemm_serial(
+                tier,
+                qu,
+                m,
+                dk,
+                &ws.k[h],
+                0..ws.k[h].panels(),
+                &mut scores,
+                tpad,
+            );
             // Rows i0..i1 need position rows base + (t-i1 ..= 2t-2-i0).
             let p_lo = base + t - i1;
             let p_hi = base + 2 * t - 2 - i0;
             let (pp0, pp1) = (p_lo / NB, p_hi / NB + 1);
             let ldp = (pp1 - pp0) * NB;
             assert!(ldp <= tpad + 2 * NB);
-            gemm_serial(qv, m, dk, &p_heads[h], pp0..pp1, &mut pos, ldp);
+            gemm_serial(tier, qv, m, dk, &p_heads[h], pp0..pp1, &mut pos, ldp);
             for r in 0..m {
                 let i = i0 + r;
                 let off = base + t - 1 - i - pp0 * NB;
                 let row = &mut scores[r * tpad..r * tpad + t];
-                crate::ops::softmax_scaled_add(row, &pos[r * ldp + off..r * ldp + off + t], scale);
+                crate::ops::softmax_scaled_add(
+                    tier,
+                    row,
+                    &pos[r * ldp + off..r * ldp + off + t],
+                    scale,
+                );
             }
-            gemm_serial(&scores, m, tpad, &ws.v[h], 0..ws.v[h].panels(), &mut o, dk);
+            gemm_serial(
+                tier,
+                &scores,
+                m,
+                tpad,
+                &ws.v[h],
+                0..ws.v[h].panels(),
+                &mut o,
+                dk,
+            );
             for r in 0..m {
                 // SAFETY: `i0 + r < t` and `h < heads`, so the `dk` values at
                 // `(i0 + r) * d + h * dk` lie within `out` (`t * d`, checked). Rows
@@ -317,26 +340,25 @@ mod tests {
 
     #[test]
     fn matches_rel_shift_reference() {
-        if !crate::cpu_supported() {
-            return;
-        }
-        let pool = ThreadPool::new(&[0, 1, 2]);
-        let mut ws = AttentionWorkspace::default();
-        for (t, h, dk) in [(1, 1, 16), (7, 2, 32), (70, 3, 16), (131, 2, 32)] {
-            let d = h * dk;
-            let (q, k, v) = (rand(t * d, 1), rand(t * d, 2), rand(t * d, 3));
-            let p = rand((2 * t - 1) * d, 4);
-            let (bu, bv) = (rand(d, 5), rand(d, 6));
-            let mut out = vec![0.0; t * d];
-            rel_pos_attention(&pool, &q, &k, &v, &p, t, h, dk, &bu, &bv, &mut ws, &mut out);
-            let e = reference(&q, &k, &v, &p, t, h, dk, &bu, &bv);
-            for i in 0..t * d {
-                assert!(
-                    (out[i] as f64 - e[i]).abs() < 1e-4,
-                    "t={t} at {i}: {} vs {}",
-                    out[i],
-                    e[i]
-                );
+        for pool in crate::tier_pools(3) {
+            let tier = pool.tier();
+            let mut ws = AttentionWorkspace::default();
+            for (t, h, dk) in [(1, 1, 16), (7, 2, 32), (70, 3, 16), (131, 2, 32)] {
+                let d = h * dk;
+                let (q, k, v) = (rand(t * d, 1), rand(t * d, 2), rand(t * d, 3));
+                let p = rand((2 * t - 1) * d, 4);
+                let (bu, bv) = (rand(d, 5), rand(d, 6));
+                let mut out = vec![0.0; t * d];
+                rel_pos_attention(&pool, &q, &k, &v, &p, t, h, dk, &bu, &bv, &mut ws, &mut out);
+                let e = reference(&q, &k, &v, &p, t, h, dk, &bu, &bv);
+                for i in 0..t * d {
+                    assert!(
+                        (out[i] as f64 - e[i]).abs() < 1e-4,
+                        "{tier} t={t} at {i}: {} vs {}",
+                        out[i],
+                        e[i]
+                    );
+                }
             }
         }
     }
@@ -345,73 +367,72 @@ mod tests {
     /// per-call rows for every `t <= t_max`, at any panel alignment.
     #[test]
     fn packed_positions_match_rows_bit_for_bit() {
-        if !crate::cpu_supported() {
-            return;
-        }
-        let pool = ThreadPool::new(&[0, 1, 2]);
-        let (mut ws_rows, mut ws_packed) =
-            (AttentionWorkspace::default(), AttentionWorkspace::default());
-        // (t_max, t): assorted lengths, then every offset alignment mod 64
-        // for lengths around the 48-row query blocks.
-        let mut pairs: Vec<(usize, usize)> = Vec::new();
-        for t_max in [1, 64, 65, 200] {
-            for t in [1, 2, 5, 47, 48, 49, 63, 64, 65, 97, 131, 200] {
-                if t <= t_max {
-                    pairs.push((t_max, t));
+        for pool in crate::tier_pools(3) {
+            let tier = pool.tier();
+            let (mut ws_rows, mut ws_packed) =
+                (AttentionWorkspace::default(), AttentionWorkspace::default());
+            // (t_max, t): assorted lengths, then every offset alignment mod 64
+            // for lengths around the 48-row query blocks.
+            let mut pairs: Vec<(usize, usize)> = Vec::new();
+            for t_max in [1, 64, 65, 200] {
+                for t in [1, 2, 5, 47, 48, 49, 63, 64, 65, 97, 131, 200] {
+                    if t <= t_max {
+                        pairs.push((t_max, t));
+                    }
                 }
             }
-        }
-        for t in [1, 5, 48, 49, 97] {
-            pairs.extend((0..=64).map(|offset| (t + offset, t)));
-        }
-        for (h, dk) in [(2, 32), (1, 128)] {
-            let d = h * dk;
-            let (bu, bv) = (rand(d, 15), rand(d, 16));
-            let mut packed = Vec::new();
-            for &(t_max, t) in &pairs {
-                {
-                    // Row m of the big table stands for relative position t_max - 1 - m.
-                    let big = rand((2 * t_max - 1) * d, 17 + t_max as u64);
-                    pack_positions(&pool, &big, 2 * t_max - 1, h, dk, &mut packed);
-                    let (q, k, v) = (rand(t * d, 11), rand(t * d, 12), rand(t * d, 13));
-                    let offset = t_max - t;
-                    let rows = &big[offset * d..(offset + 2 * t - 1) * d];
-                    let mut a = vec![0.0; t * d];
-                    rel_pos_attention(
-                        &pool,
-                        &q,
-                        &k,
-                        &v,
-                        rows,
-                        t,
-                        h,
-                        dk,
-                        &bu,
-                        &bv,
-                        &mut ws_rows,
-                        &mut a,
-                    );
-                    let mut b = vec![f32::NAN; t * d];
-                    let pos = Positions::Packed {
-                        heads: &packed,
-                        offset,
-                    };
-                    rel_pos_attention_with(
-                        &pool,
-                        &q,
-                        &k,
-                        &v,
-                        pos,
-                        t,
-                        h,
-                        dk,
-                        &bu,
-                        &bv,
-                        &mut ws_packed,
-                        &mut b,
-                    );
-                    let same = a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits());
-                    assert!(same, "h={h} dk={dk} t_max={t_max} t={t}");
+            for t in [1, 5, 48, 49, 97] {
+                pairs.extend((0..=64).map(|offset| (t + offset, t)));
+            }
+            for (h, dk) in [(2, 32), (1, 128)] {
+                let d = h * dk;
+                let (bu, bv) = (rand(d, 15), rand(d, 16));
+                let mut packed = Vec::new();
+                for &(t_max, t) in &pairs {
+                    {
+                        // Row m of the big table stands for relative position t_max - 1 - m.
+                        let big = rand((2 * t_max - 1) * d, 17 + t_max as u64);
+                        pack_positions(&pool, &big, 2 * t_max - 1, h, dk, &mut packed);
+                        let (q, k, v) = (rand(t * d, 11), rand(t * d, 12), rand(t * d, 13));
+                        let offset = t_max - t;
+                        let rows = &big[offset * d..(offset + 2 * t - 1) * d];
+                        let mut a = vec![0.0; t * d];
+                        rel_pos_attention(
+                            &pool,
+                            &q,
+                            &k,
+                            &v,
+                            rows,
+                            t,
+                            h,
+                            dk,
+                            &bu,
+                            &bv,
+                            &mut ws_rows,
+                            &mut a,
+                        );
+                        let mut b = vec![f32::NAN; t * d];
+                        let pos = Positions::Packed {
+                            heads: &packed,
+                            offset,
+                        };
+                        rel_pos_attention_with(
+                            &pool,
+                            &q,
+                            &k,
+                            &v,
+                            pos,
+                            t,
+                            h,
+                            dk,
+                            &bu,
+                            &bv,
+                            &mut ws_packed,
+                            &mut b,
+                        );
+                        let same = a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits());
+                        assert!(same, "{tier} h={h} dk={dk} t_max={t_max} t={t}");
+                    }
                 }
             }
         }

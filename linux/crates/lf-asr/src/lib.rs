@@ -15,10 +15,9 @@ pub mod tokenizer;
 
 use std::time::Instant;
 
-use lf_cpu::ThreadPool;
 pub use lf_cpu::bias::BiasGraph;
-pub use lf_cpu::cpu_supported;
 pub use lf_cpu::decoder::Storage as DecoderStorage;
+pub use lf_cpu::{ThreadPool, Tier, TierError, cpu_supported, tier, topology};
 pub use lf_model::Export;
 use lf_model::{Error, Result};
 
@@ -50,12 +49,18 @@ pub struct Transcriber {
 
 impl Transcriber {
     /// Pins one worker per CPU in `cpus`; the calling thread becomes the first.
+    /// Panics if no kernel [`tier`] can run here.
     pub fn new(model: Model, cpus: &[usize], precision: Precision) -> Self {
-        assert!(
-            lf_cpu::cpu_supported(),
-            "this CPU lacks AVX-512 F/BW/VNNI/VBMI"
-        );
-        let pool = ThreadPool::new(cpus);
+        if let Err(e) = tier() {
+            panic!("{e}");
+        }
+        Transcriber::with_pool(model, ThreadPool::new(cpus), precision)
+    }
+
+    /// Runs on `pool`, with its placement and at its [`Tier`].
+    pub fn with_pool(model: Model, pool: ThreadPool, precision: Precision) -> Self {
+        // Fail here rather than in the first transcription.
+        pool.tier();
         let proj = encoder::Projector::new(precision, pool.threads());
         Transcriber {
             model,
@@ -77,6 +82,16 @@ impl Transcriber {
     /// cached length frees the cache. Results are bit-identical either way.
     pub fn set_position_cache_seconds(&mut self, seconds: usize) {
         self.positions.set_limit(position_cache_frames(seconds));
+    }
+
+    /// The kernel tier the transcriber runs at.
+    pub fn tier(&self) -> Tier {
+        self.pool.tier()
+    }
+
+    /// Threads in its pool.
+    pub fn threads(&self) -> usize {
+        self.pool.threads()
     }
 
     /// Bytes currently held by the position cache.
