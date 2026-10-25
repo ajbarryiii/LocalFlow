@@ -164,6 +164,9 @@ fn parse_args() -> Result<Args, String> {
     if a.threads.iter().any(|&t| t > a.cpus.len()) {
         return Err("--threads values must not exceed the number of --cpus".into());
     }
+    if a.cpus.iter().any(|&c| c >= libc::CPU_SETSIZE as usize) {
+        return Err(format!("--cpus values must be below {}", libc::CPU_SETSIZE));
+    }
     if a.reps == 0 {
         return Err("--reps must be at least 1".into());
     }

@@ -323,7 +323,8 @@ mod tests {
             let pool = ThreadPool::new(&(0..threads).collect::<Vec<_>>());
             let scratch = Scratch::new(threads, scratch_bytes(136));
             for n in 1..=3 {
-                for t in [1, 4, 7, 13] {
+                // 1..=7 frames reach every kernel specialization for each `n`.
+                for t in (1..=7).chain([13]) {
                     let x: Vec<f32> = (0..t * 136).map(|_| rng.next_gaussian()).collect();
                     let mut qa = QuantizedActs::with_capacity(t, 136, n);
                     qa.quantize(&pool, &x, t).unwrap();
