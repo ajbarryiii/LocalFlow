@@ -306,8 +306,8 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
 ## Dictation key
 
 Pick a key nothing else uses: F13-F24, a spare macro or thumb key, Pause,
-and so on. To find its name and code, run `wev` (`xev` prints the same codes), press
-the key, and read the key event:
+and so on. To find its name and code, run `wev` (`xev` prints the same
+codes), press the key, and read the key event:
 
 ```text
 [14:     wl_keyboard] key: serial: 7; time: 449; key: 191; state: 1 (pressed)
@@ -335,7 +335,7 @@ The daemon understands three key gestures:
 | river-classic (0.3) | `packaging/river-init.sh` | yes |
 | river 0.4 and later | your window manager's binds (see `packaging/river-init.sh`) | if it runs commands on release |
 | niri | `packaging/niri.kdl` (toggle) | no: niri 26.04 binds run on press only |
-| GNOME, KDE Plasma | `"trigger": "portal"` (below) | yes, if the desktop reports releases |
+| GNOME, KDE Plasma | `"trigger": "portal"` (below); typing does not work there yet | yes, if the desktop reports releases |
 | anything else | a key bind that runs `localflowctl toggle` | no |
 
 Each snippet notes how that desktop's binds treat held modifiers and
@@ -348,6 +348,14 @@ dictation key goes up, and never bind anything that types (such as
 With `"trigger": "portal"`, the daemon binds its own global shortcuts
 through xdg-desktop-portal's GlobalShortcuts interface, so desktops whose
 custom shortcuts only run a command on key press still get hold to talk.
+
+**Typing does not work on GNOME or KDE Plasma yet.** LocalFlow types
+through the Wayland virtual keyboard protocol
+(`zwp_virtual_keyboard_manager_v1`), which Mutter does not implement and
+KWin does not offer to ordinary clients. There, the shortcuts record and
+transcribe, but typing fails (`typing failed` in the journal). The portal
+trigger also works on compositors that do have the protocol (Hyprland,
+below).
 
 1. Copy `packaging/com.ajbarryiii.localflow.desktop` to
    `~/.local/share/applications/`. The daemon registers the app ID
@@ -440,9 +448,9 @@ your dictation key.
 6. Say "quote hello end quote": `"hello"` is typed.
 7. Held Super (needs the `device` block in `packaging/hyprland.conf`): hold
    the key, dictate a text containing a letter bound to a harmless Super
-   shortcut, press and hold Super, release the key and keep Super held until the
-   text appears: the shortcut does not fire. (The app does see Super with
-   the typed keys; Hyprland cannot prevent that.)
+   shortcut, press and hold Super, release the key and keep Super held until
+   the text appears: the shortcut does not fire. (The app does see Super
+   with the typed keys; Hyprland cannot prevent that.)
 8. `localflowctl cancel` from a terminal while a long recording runs:
    nothing is typed.
 9. Tap the key briefly (under 0.3 s): nothing is typed (`note=too-short`).
@@ -514,10 +522,13 @@ your dictation key.
     Super bind, or reaches the app with Super.
 25. GNOME and KDE Plasma (`"trigger": "portal"`, desktop file installed): on
     first start the desktop asks to accept "Hold to dictate" and "Start or
-    stop dictation", named LocalFlow; assign keys. Then items 3, 9, 11 and
-    18 with the hold shortcut, and tap-to-toggle with the toggle shortcut.
-    The journal says `global shortcuts bound: 2 of 2`. Cancel the dialog
-    instead: one warning, no second dialog, and `localflowctl` still works.
+    stop dictation", named LocalFlow; assign keys. The journal says
+    `global shortcuts bound: 2 of 2`. Holding the hold shortcut shows
+    `state=recording mode=hold` in `localflowctl watch`, and releasing it
+    ends the recording (typing itself fails there; see "Desktop portal");
+    a double tap and hold shows `tag=prompt`; the toggle shortcut toggles.
+    Cancel the dialog instead: one warning, no second dialog, and
+    `localflowctl` still works.
 26. Portal session loss: hold the key and restart the portal
     (`systemctl --user restart xdg-desktop-portal`): the recording stops
     and what was said is typed; the journal shows "released the held

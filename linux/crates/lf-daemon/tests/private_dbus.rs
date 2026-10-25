@@ -518,6 +518,10 @@ struct PortalState {
     binds: Vec<Vec<(String, String)>>,
     /// The `BindShortcuts` response code: 0 bound, 1 cancelled.
     bind_response: u32,
+    /// This many `CreateSession`s answer 2 (the backend failed).
+    create_failures: usize,
+    /// This many `BindShortcuts` close the session instead of answering.
+    bind_closes: usize,
     /// The client's unique name and its current session handle.
     client: Option<String>,
     session: Option<String>,
@@ -562,20 +566,27 @@ impl ShortcutsIface {
         let sender = header.sender().unwrap().to_string();
         let request = handle_path("request", &sender, &options, "handle_token");
         let session = handle_path("session", &sender, &options, "session_handle_token");
-        {
+        let fail = {
             let mut s = self.0.state();
             s.created += 1;
             s.client = Some(sender.clone());
             s.session = Some(session.clone());
-        }
+            let fail = s.create_failures > 0;
+            s.create_failures = s.create_failures.saturating_sub(1);
+            fail
+        };
         // `session_handle` is a string (`s`), as the portal sends it.
-        let results: Vardict = [("session_handle".to_owned(), value(session))].into();
+        let (code, results): (u32, Vardict) = if fail {
+            (2, Vardict::new())
+        } else {
+            (0, [("session_handle".to_owned(), value(session))].into())
+        };
         conn.emit_signal(
             Some(sender.as_str()),
             request.as_str(),
             "org.freedesktop.portal.Request",
             "Response",
-            &(0u32, results),
+            &(code, results),
         )
         .await
         .unwrap();
@@ -603,12 +614,27 @@ impl ShortcutsIface {
                 (id.clone(), description)
             })
             .collect();
-        let code = {
+        let (code, close) = {
             let mut s = self.0.state();
             assert_eq!(s.session.as_deref(), Some(session_handle.as_str()));
             s.binds.push(bound.clone());
-            s.bind_response
+            let close = s.bind_closes > 0;
+            s.bind_closes = s.bind_closes.saturating_sub(1);
+            (s.bind_response, close)
         };
+        if close {
+            // The session ends while the user would be answering the dialog.
+            conn.emit_signal(
+                Some(sender.as_str()),
+                session_handle.as_str(),
+                "org.freedesktop.portal.Session",
+                "Closed",
+                &(Vardict::new(),),
+            )
+            .await
+            .unwrap();
+            return request.try_into().unwrap();
+        }
         let reply: Vec<(String, Vardict)> = bound
             .into_iter()
             .map(|(id, description)| {
@@ -1051,6 +1077,25 @@ fn portal_cancelled_binding_is_not_asked_again(bus: &PrivateBus) {
     r.rig.wait_for("state=idle");
 }
 
+fn portal_retries_a_failed_session_and_a_session_closed_while_binding(bus: &PrivateBus) {
+    let portal = FakePortal::start(bus, 0);
+    {
+        let mut s = portal.state();
+        s.create_failures = 1;
+        s.bind_closes = 1;
+    }
+    let r = PortalRig::start(bus, "portal-retry");
+    // A failed CreateSession and a session closed during BindShortcuts are
+    // both tried again; the third session is bound.
+    portal.wait_bound(2);
+    wait_until("the third session", || portal.state().created == 3);
+    portal.activate(HOLD);
+    r.rig.wait_for("state=recording mode=hold");
+    portal.deactivate(HOLD);
+    r.rig.wait_for("state=idle");
+    assert_eq!(r.typed(), "Synthetic. ");
+}
+
 fn portal_stops_with_the_daemon(bus: &PrivateBus) {
     let portal = FakePortal::start(bus, 0);
     let mut r = PortalRig::start(bus, "portal-stop");
@@ -1079,7 +1124,7 @@ fn main() {
         std::env::remove_var("DBUS_SYSTEM_BUS_ADDRESS");
     }
     assert_private(&bus);
-    let tests: [(&str, Case); 12] = [
+    let tests: [(&str, Case); 13] = [
         (
             "pauses_playing_players_and_resumes_them",
             pauses_playing_players_and_resumes_them,
@@ -1114,6 +1159,10 @@ fn main() {
         (
             "portal_cancelled_binding_is_not_asked_again",
             portal_cancelled_binding_is_not_asked_again,
+        ),
+        (
+            "portal_retries_a_failed_session_and_a_session_closed_while_binding",
+            portal_retries_a_failed_session_and_a_session_closed_while_binding,
         ),
         ("portal_stops_with_the_daemon", portal_stops_with_the_daemon),
     ];

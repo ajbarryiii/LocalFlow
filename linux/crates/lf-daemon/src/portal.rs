@@ -25,8 +25,9 @@
 //!   or in toggle mode. `cancel` would also abandon a transcription or a
 //!   toggle recording the portal never started. A toggle recording keeps
 //!   running; it ends with the next toggle from either path.
-//! - After a loss, or while the portal (or its GlobalShortcuts interface)
-//!   is missing, the thread tries again with exponential backoff
+//! - After a loss (also of a session closed while binding), a failed
+//!   `CreateSession`, or while the portal (or its GlobalShortcuts
+//!   interface) is missing, the thread tries again with exponential backoff
 //!   ([`Setting::retry`] up to [`Setting::max_retry`]), on a fresh
 //!   connection. A binding the user cancelled, or that the portal refused,
 //!   is not asked for again until the daemon restarts, so a dialog never
@@ -368,6 +369,11 @@ fn portal_gone(msg: &Message, owner: &str) -> bool {
     }
 }
 
+/// Whether `msg` is the portal closing `session`.
+fn closes(msg: &Message, session: &str) -> bool {
+    member_is(msg, SESSION, "Closed") && path(msg).as_deref() == Some(session)
+}
+
 /// A Response's code and results, once it arrives on `paths`.
 enum Answer {
     Response(u32, HashMap<String, OwnedValue>),
@@ -375,8 +381,15 @@ enum Answer {
 }
 
 /// Waits for the `Request.Response` on one of `paths`, sent by `owner`.
-/// Not bounded: it may wait for the user to answer a dialog.
-async fn response(signals: &mut Signals, conn: &Connection, owner: &str, paths: &[&str]) -> Answer {
+/// Not bounded: it may wait for the user to answer a dialog. Ends early if
+/// the portal exits or closes `session` (once there is one).
+async fn response(
+    signals: &mut Signals,
+    conn: &Connection,
+    owner: &str,
+    session: Option<&str>,
+    paths: &[&str],
+) -> Answer {
     loop {
         let Some(msg) = next(signals, conn).await else {
             return Answer::End(End::Unavailable("the D-Bus connection closed".into()));
@@ -384,8 +397,15 @@ async fn response(signals: &mut Signals, conn: &Connection, owner: &str, paths: 
         if portal_gone(&msg, owner) {
             return Answer::End(End::Unavailable("the portal exited".into()));
         }
-        if sender(&msg).as_deref() != Some(owner)
-            || !member_is(&msg, REQUEST, "Response")
+        if sender(&msg).as_deref() != Some(owner) {
+            continue;
+        }
+        if session.is_some_and(|s| closes(&msg, s)) {
+            return Answer::End(End::Unavailable(
+                "the portal closed the session while binding".into(),
+            ));
+        }
+        if !member_is(&msg, REQUEST, "Response")
             || !path(&msg).is_some_and(|p| paths.contains(&p.as_str()))
         {
             continue;
@@ -565,14 +585,19 @@ async fn session(setting: &Setting, keys: &mut Keys<'_>) -> End {
         }
         Err(e) => return End::Unavailable(format!("CreateSession failed ({e})")),
     };
-    let session = match response(&mut signals, &conn, &owner, &[&predicted, &returned]).await {
+    let session = match response(&mut signals, &conn, &owner, None, &[&predicted, &returned]).await
+    {
         Answer::End(end) => return end,
         Answer::Response(0, results) => match results.get("session_handle").and_then(|v| string(v))
         {
             Some(s) => s,
             None => return End::Unavailable("the portal returned no session".into()),
         },
-        Answer::Response(_, _) => return End::Refused("the portal refused the session"),
+        // No dialog is involved, and the portal answers 2 when its backend
+        // fails, so this is tried again.
+        Answer::Response(code, _) => {
+            return End::Unavailable(format!("CreateSession failed (response {code})"));
+        }
     };
     let Ok(session_path) = ObjectPath::try_from(session.as_str()) else {
         return End::Unavailable("the portal returned an invalid session".into());
@@ -611,7 +636,15 @@ async fn session(setting: &Setting, keys: &mut Keys<'_>) -> End {
             .unwrap_or_default(),
         Err(e) => return End::Unavailable(format!("BindShortcuts failed ({e})")),
     };
-    match response(&mut signals, &conn, &owner, &[&predicted, &returned]).await {
+    match response(
+        &mut signals,
+        &conn,
+        &owner,
+        Some(&session),
+        &[&predicted, &returned],
+    )
+    .await
+    {
         Answer::End(end) => return end,
         Answer::Response(0, results) => {
             let ids = bound_ids(&results);
@@ -647,7 +680,7 @@ async fn session(setting: &Setting, keys: &mut Keys<'_>) -> End {
         if sender(&msg).as_deref() != Some(owner.as_str()) {
             continue;
         }
-        if member_is(&msg, SESSION, "Closed") && path(&msg).as_deref() == Some(session.as_str()) {
+        if closes(&msg, &session) {
             return lost("the portal closed the session");
         }
         let activated = member_is(&msg, SHORTCUTS, "Activated");

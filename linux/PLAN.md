@@ -696,7 +696,7 @@ Residual risks:
 
 ## Open items
 
-- Shortcut key: any free key (see "Dictation key" in `README.md`). The development setup uses F13 on a remapped Kinesis thumb key (keycode 191, the example in the `packaging/` snippets). GNOME and KDE use the GlobalShortcuts portal (`"trigger": "portal"`); not yet tested live on either, nor on sway, river or niri.
+- Shortcut key: any free key (see "Dictation key" in `README.md`). The development setup uses F13 on a remapped Kinesis thumb key (keycode 191, the example in the `packaging/` snippets). GNOME and KDE use the GlobalShortcuts portal (`"trigger": "portal"`); not yet tested live on either, nor on sway, river or niri. Typing on GNOME and KDE still needs an output path: Mutter has no `zwp_virtual_keyboard_v1`, and KWin offers it only to input methods (KDE bug 512996, closed as intentional; KWin points to input methods and libei).
 - Default precision: i8x2, chosen by the user (2026-10-07) on the validation above (25–28% faster than i8x3, six near-tie transcript changes in 32,560 utterances, same WER). i8x3 remains available for bit-level FP32 fidelity.
 
 ## Risks
