@@ -166,9 +166,11 @@ fn run(
     store: &Mutex<Box<dyn TokenStore>>,
 ) {
     let restore = lock_store(store).load();
+    let mut save = |token: &str| lock_store(store).save(token);
     let result = async_io::block_on(portal::negotiate(
         address.as_deref(),
         restore,
+        &mut save,
         timeouts,
         &n.stop,
     ));
@@ -176,9 +178,6 @@ fn run(
         Ok(negotiated) => negotiated,
         Err(e) => return n.set(Phase::Failed(e)),
     };
-    if let Some(token) = &negotiated.restore_token {
-        lock_store(store).save(token);
-    }
     n.set(Phase::Ready(Some(negotiated.eis)));
     // Hold the connection (and so the session) until told to stop. zbus
     // reads the connection on its own thread meanwhile.
@@ -306,6 +305,7 @@ impl Inner {
             deadline: Some(deadline),
         };
         let session = self.session(deadline)?;
+        let generation = session.generation();
         let strokes = match text {
             Some(text) => session.layout()?.strokes(text)?,
             None => vec![
@@ -319,7 +319,7 @@ impl Inner {
         if strokes.is_empty() {
             return Ok(());
         }
-        type_strokes(session, &strokes, pace)?;
+        type_strokes(&mut ei::Guard::new(session, generation), &strokes, pace)?;
         session.stop_emulating(deadline)
     }
 }

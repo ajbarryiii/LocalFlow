@@ -58,6 +58,9 @@ pub struct EiSession {
     /// Outstanding `ei_connection.sync` callback, and whether it is done.
     sync: Option<(ei::Callback, bool)>,
     fallback: Rmlvo,
+    /// Goes up whenever a layout may have changed (new keymap, group or
+    /// locked modifiers, a pause): strokes mapped before are stale.
+    generation: u64,
 }
 
 fn io(what: &str, e: std::io::Error) -> IoError {
@@ -156,6 +159,7 @@ impl EiSession {
             emulating: None,
             sync: None,
             fallback,
+            generation: 0,
         };
         session
             .pump(deadline, |s| s.usable().is_some())
@@ -177,6 +181,11 @@ impl EiSession {
         self.devices
             .iter()
             .position(|d| d.keyboard.is_some() && d.done && d.resumed)
+    }
+
+    /// See [`Guard`].
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The layout of the usable keyboard.
@@ -295,7 +304,13 @@ impl EiSession {
                     self.last_serial = serial;
                     if let Some(d) = self.device_mut(&device) {
                         d.resumed = false;
+                        // A paused device's modifiers count as released; a
+                        // resume announces only a non-zero state.
+                        d.locked = 0;
+                        d.group = 0;
+                        d.layout = None;
                     }
+                    self.generation += 1;
                     if self.emulating.as_ref() == Some(&device) {
                         self.emulating = None;
                     }
@@ -330,6 +345,7 @@ impl EiSession {
                             ei::keyboard::KeymapType::Xkb => Some(read_keymap(keymap, size)?),
                         };
                         d.layout = None;
+                        self.generation += 1;
                     }
                     ei::keyboard::Event::Modifiers {
                         serial,
@@ -342,6 +358,7 @@ impl EiSession {
                             d.locked = locked;
                             d.group = group;
                             d.layout = None;
+                            self.generation += 1;
                         }
                     }
                     ei::keyboard::Event::Destroyed { serial } => {
@@ -454,5 +471,50 @@ fn flush(ctx: &ei::Context, deadline: Instant) -> Result<(), IoError> {
                 ));
             }
         }
+    }
+}
+
+/// Key events for strokes mapped at layout generation `generation`: fails
+/// as soon as the desktop changes the layout (switches group, locks Caps
+/// Lock, sends a new keymap, pauses the keyboard), so the rest of the text
+/// is never typed with stale keys.
+pub struct Guard<'a> {
+    session: &'a mut EiSession,
+    generation: u64,
+}
+
+impl<'a> Guard<'a> {
+    pub fn new(session: &'a mut EiSession, generation: u64) -> Self {
+        Self {
+            session,
+            generation,
+        }
+    }
+
+    fn current(&self) -> Result<(), IoError> {
+        if self.session.generation == self.generation {
+            Ok(())
+        } else {
+            Err(IoError(
+                "the desktop's keyboard layout changed while typing".into(),
+            ))
+        }
+    }
+}
+
+impl KeySink for Guard<'_> {
+    fn key(&mut self, code: u32, pressed: bool) -> Result<(), IoError> {
+        self.current()?;
+        self.session.key(code, pressed)
+    }
+
+    fn flush(&mut self, deadline: Instant) -> Result<(), IoError> {
+        self.session.flush(deadline)?;
+        self.current()
+    }
+
+    fn sync(&mut self, deadline: Instant) -> Result<(), IoError> {
+        self.session.sync(deadline)?;
+        self.current()
     }
 }

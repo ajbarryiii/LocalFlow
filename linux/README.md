@@ -381,7 +381,9 @@ Plasma 6), which GNOME and Plasma sessions normally run.
   allow LocalFlow to type`; dictate again after allowing it. An unanswered
   dialog is withdrawn after 5 minutes, and the next dictation asks again.
 - Characters go through the keymap the desktop sends, with its current
-  layout group and Caps Lock state.
+  layout group and Caps Lock state. If that changes while a dictation is
+  being typed (you switch layouts or press Caps Lock), the rest of it is
+  not typed and the journal says so.
 - GNOME and Plasma custom shortcuts run a command on key press only, so
   hold-to-talk is not available there: bind `localflowctl toggle` to a key
   (tap to start, tap again to stop and type).

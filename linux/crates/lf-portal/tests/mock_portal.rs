@@ -235,11 +235,28 @@ struct EisLog {
     frames: usize,
     starts: usize,
     stops: usize,
+    pauses: usize,
+    /// Connections that have ended (all their events read).
+    disconnects: usize,
+    /// Caps Lock was locked by `lock_caps_after_keys`; it stays locked for
+    /// later connections, as on a real desktop.
+    caps_locked: bool,
 }
 
 #[derive(Clone, Copy, Default)]
 struct EisOptions {
     caps_locked: bool,
+    /// Lock Caps Lock once this many key events have arrived.
+    lock_caps_after_keys: Option<usize>,
+}
+
+/// Switches the test flips to act on the EIS connections.
+#[derive(Clone, Default)]
+struct EisControls {
+    /// Close the socket.
+    kill: Arc<AtomicBool>,
+    /// Pause and resume the keyboard (without re-sending modifiers).
+    pause: Arc<AtomicBool>,
 }
 
 fn keymap_fd(text: &str) -> (OwnedFd, u32) {
@@ -253,16 +270,27 @@ fn keymap_fd(text: &str) -> (OwnedFd, u32) {
     (file.into(), text.len() as u32 + 1)
 }
 
-/// Serves one EIS client until it disconnects or `kill` is set (which
-/// closes the socket).
-fn serve_eis(stream: UnixStream, log: Arc<Mutex<EisLog>>, opts: EisOptions, kill: Arc<AtomicBool>) {
+/// Serves one EIS client until it disconnects or `controls.kill` is set
+/// (which closes the socket).
+fn serve_eis(stream: UnixStream, log: Arc<Mutex<EisLog>>, opts: EisOptions, controls: EisControls) {
     let ctx = eis::Context::new(stream).unwrap();
     let mut handshaker = Some(EisHandshaker::new(&ctx, 1));
     let mut serial = 10u32;
+    let mut keyboard: Option<(eis::Device, eis::Keyboard)> = None;
     log.lock().unwrap().connections += 1;
     loop {
-        if kill.load(Ordering::SeqCst) {
+        if controls.kill.load(Ordering::SeqCst) {
             return;
+        }
+        if let Some((device, _)) = &keyboard
+            && controls.pause.swap(false, Ordering::SeqCst)
+        {
+            serial += 1;
+            device.paused(serial);
+            serial += 1;
+            device.resumed(serial);
+            let _ = ctx.flush();
+            log.lock().unwrap().pauses += 1;
         }
         let mut pfd = libc::pollfd {
             fd: ctx.as_fd().as_raw_fd(),
@@ -305,10 +333,11 @@ fn serve_eis(stream: UnixStream, log: Arc<Mutex<EisLog>>, opts: EisOptions, kill
                         device.done();
                         serial += 1;
                         device.resumed(serial);
-                        if opts.caps_locked {
+                        if opts.caps_locked || log.lock().unwrap().caps_locked {
                             serial += 1;
                             kb.modifiers(serial, 0, 1 << 1, 0, 0);
                         }
+                        keyboard = Some((device, kb));
                     }
                 }
                 eis::Request::Device(_, eis::device::Request::StartEmulating { .. }) => {
@@ -322,7 +351,20 @@ fn serve_eis(stream: UnixStream, log: Arc<Mutex<EisLog>>, opts: EisOptions, kill
                 }
                 eis::Request::Keyboard(_, eis::keyboard::Request::Key { key, state }) => {
                     let pressed = state == eis::keyboard::KeyState::Press;
-                    log.lock().unwrap().keys.push((key, pressed));
+                    let lock_now = {
+                        let mut log = log.lock().unwrap();
+                        log.keys.push((key, pressed));
+                        let due = !log.caps_locked
+                            && opts
+                                .lock_caps_after_keys
+                                .is_some_and(|n| log.keys.len() >= n);
+                        log.caps_locked |= due;
+                        due
+                    };
+                    if lock_now && let Some((_, kb)) = &keyboard {
+                        serial += 1;
+                        kb.modifiers(serial, 0, 1 << 1, 0, 0);
+                    }
                 }
                 eis::Request::Connection(_, eis::connection::Request::Sync { callback }) => {
                     callback.done(0);
@@ -349,8 +391,12 @@ struct MockState {
     closed: Vec<String>,
     eis: EisOptions,
     eis_log: Arc<Mutex<EisLog>>,
-    /// Setting this closes every EIS connection served so far.
-    eis_kill: Vec<Arc<AtomicBool>>,
+    /// Controls of every EIS connection served so far.
+    eis_controls: Vec<EisControls>,
+    /// `version` property, if not 2.
+    version: Option<u32>,
+    /// `ConnectToEIS` fails.
+    connect_eis_fails: bool,
 }
 
 #[derive(Clone)]
@@ -393,7 +439,7 @@ async fn respond(
 impl MockPortal {
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
-        2
+        self.state.lock().unwrap().version.unwrap_or(2)
     }
 
     #[zbus(property, name = "AvailableDeviceTypes")]
@@ -492,17 +538,23 @@ impl MockPortal {
         &self,
         _session: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
-    ) -> zbus::zvariant::OwnedFd {
+    ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
         let (client, server) = UnixStream::pair().unwrap();
-        let (log, opts, kill) = {
+        let (log, opts, controls) = {
             let mut s = self.state.lock().unwrap();
             s.calls.push("ConnectToEIS".into());
-            let kill = Arc::new(AtomicBool::new(false));
-            s.eis_kill.push(kill.clone());
-            (s.eis_log.clone(), s.eis, kill)
+            if s.connect_eis_fails {
+                return Err(zbus::fdo::Error::Failed("synthetic failure".into()));
+            }
+            let controls = EisControls::default();
+            s.eis_controls.push(controls.clone());
+            (s.eis_log.clone(), s.eis, controls)
         };
-        std::thread::spawn(move || serve_eis(server, log, opts, kill));
-        zbus::zvariant::OwnedFd::from(OwnedFd::from(client))
+        std::thread::spawn(move || {
+            serve_eis(server, log.clone(), opts, controls);
+            log.lock().unwrap().disconnects += 1;
+        });
+        Ok(zbus::zvariant::OwnedFd::from(OwnedFd::from(client)))
     }
 }
 
@@ -775,8 +827,8 @@ fn renegotiates_after_the_desktop_ends_the_input_session() {
     let rig = Rig::start(|_| {});
     let mut typer = PortalTyper::new(rig.config(), Box::new(MemStore::default()));
     typer.type_text("a").unwrap();
-    for kill in &rig.state.lock().unwrap().eis_kill {
-        kill.store(true, Ordering::SeqCst);
+    for c in &rig.state.lock().unwrap().eis_controls {
+        c.kill.store(true, Ordering::SeqCst);
     }
     std::thread::sleep(Duration::from_millis(150));
     typer.type_text("1").unwrap();
@@ -805,6 +857,83 @@ fn modifiers_locked_on_the_desktop_are_accounted_for() {
     let mut typer = PortalTyper::new(rig.config(), Box::new(MemStore::default()));
     typer.type_text("aA").unwrap();
     let mut expected = with(&[SHIFT], KA);
+    expected.extend(tap(KA));
+    assert_eq!(rig.keys(), expected);
+}
+
+#[test]
+fn an_old_or_missing_portal_fails_before_creating_a_session() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::start(|s| s.version = Some(1));
+    let mut typer = PortalTyper::new(rig.config(), Box::new(MemStore::default()));
+    let err = typer.type_text("a").unwrap_err();
+    assert!(err.0.contains("version 2"), "{err}");
+    assert_eq!(rig.calls("CreateSession"), 0);
+
+    let empty = PrivateBus::start();
+    let mut config = rig.config();
+    config.address = Some(empty.address.clone());
+    let mut typer = PortalTyper::new(config, Box::new(MemStore::default()));
+    let err = typer.type_text("a").unwrap_err();
+    assert!(err.0.contains("no RemoteDesktop portal"), "{err}");
+}
+
+#[test]
+fn the_grant_is_kept_even_if_connect_to_eis_fails() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::start(|s| s.connect_eis_fails = true);
+    let store = MemStore::default();
+    let mut typer = PortalTyper::new(rig.config(), Box::new(store.clone()));
+    assert!(typer.type_text("a").is_err());
+    assert_eq!(*store.saved.lock().unwrap(), vec!["synthetic-token-1"]);
+    rig.wait_until("Session.Close", |r| {
+        r.state.lock().unwrap().closed.len() == 1
+    });
+    assert!(rig.keys().is_empty());
+}
+
+#[test]
+fn a_layout_change_while_typing_stops_the_rest() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::start(|s| s.eis.lock_caps_after_keys = Some(1));
+    let mut config = rig.config();
+    config.key_delay = Duration::from_millis(2);
+    let mut typer = PortalTyper::new(config, Box::new(MemStore::default()));
+    let text = "a".repeat(20);
+    let err = typer.type_text(&text).unwrap_err();
+    assert!(err.0.contains("layout changed"), "{err}");
+    // The failed call dropped its connection; count what reached the desktop.
+    rig.wait_until("the old connection to end", |r| {
+        r.log().lock().unwrap().disconnects == 1
+    });
+    let typed = rig.keys().len();
+    assert!(typed < 40, "{typed} key events");
+    // The next call maps with Caps Lock on.
+    typer.type_text("a").unwrap();
+    assert_eq!(rig.keys()[typed..], with(&[SHIFT], KA));
+}
+
+#[test]
+fn a_pause_lifts_locked_modifiers() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::start(|s| s.eis.caps_locked = true);
+    let mut typer = PortalTyper::new(rig.config(), Box::new(MemStore::default()));
+    typer.type_text("a").unwrap();
+    let mut expected = with(&[SHIFT], KA);
+    assert_eq!(rig.keys(), expected);
+    for c in &rig.state.lock().unwrap().eis_controls {
+        c.pause.store(true, Ordering::SeqCst);
+    }
+    rig.wait_until("pause", |r| r.log().lock().unwrap().pauses == 1);
+    typer.type_text("a").unwrap();
     expected.extend(tap(KA));
     assert_eq!(rig.keys(), expected);
 }

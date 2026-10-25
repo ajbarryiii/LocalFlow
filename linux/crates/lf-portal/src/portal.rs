@@ -143,13 +143,11 @@ pub fn probe(address: Option<&str>, timeout: Duration) -> Result<bool, IoError> 
 }
 
 /// A negotiated session: the connection that owns it (closing the
-/// connection ends it), its handle, the EIS socket, and the restore token
-/// to store for next time.
+/// connection ends it), its handle, and the EIS socket.
 pub struct Negotiated {
     pub conn: Connection,
     pub session: OwnedObjectPath,
     pub eis: OwnedFd,
-    pub restore_token: Option<String>,
 }
 
 /// The sender part of request paths: the unique name without `:`, with
@@ -277,10 +275,13 @@ fn string_result(results: &HashMap<String, OwnedValue>, key: &str) -> Option<Str
 }
 
 /// Negotiates a keyboard session on `address` (or the session bus), using
-/// `restore_token` if given. `stop` abandons it at the next check.
+/// `restore_token` if given. A new restore token goes to `save_token` as soon
+/// as `Start` grants access (it replaces the one used, even if a later step
+/// fails). `stop` abandons the negotiation at the next check.
 pub async fn negotiate(
     address: Option<&str>,
     restore_token: Option<String>,
+    save_token: &mut dyn FnMut(&str),
     timeouts: Timeouts,
     stop: &AtomicBool,
 ) -> Result<Negotiated, IoError> {
@@ -294,6 +295,22 @@ pub async fn negotiate(
         .as_str()
         .to_owned();
     let setup = async {
+        // Asking the portal itself first starts it if it is installed but
+        // not running yet (D-Bus activation), and checks its version.
+        match property_u32(&conn, "version").await {
+            Ok(v) if v >= MIN_VERSION => {}
+            Ok(_) => {
+                return Err(IoError(
+                    "the desktop portal's RemoteDesktop is too old (version 2 needed)".into(),
+                ));
+            }
+            Err(zbus::Error::MethodError(..) | zbus::Error::InvalidReply) => {
+                return Err(IoError(
+                    "no RemoteDesktop portal on the D-Bus session bus".into(),
+                ));
+            }
+            Err(e) => return Err(dbus_error("the portal version check", &e)),
+        }
         let owner_reply = conn
             .call_method(Some(BUS), BUS_PATH, Some(BUS), "GetNameOwner", &DEST)
             .await
@@ -362,8 +379,11 @@ pub async fn negotiate(
         if devices & DEVICE_KEYBOARD == 0 {
             return Err(IoError("the desktop did not grant keyboard access".into()));
         }
-        let restore_token = string_result(&results, "restore_token")
-            .filter(|t| t.len() <= MAX_TOKEN_BYTES && !t.chars().any(char::is_control));
+        if let Some(token) = string_result(&results, "restore_token").filter(|t| {
+            !t.is_empty() && t.len() <= MAX_TOKEN_BYTES && !t.chars().any(char::is_control)
+        }) {
+            save_token(&token);
+        }
         let options = Options::new();
         let connect_eis = async {
             let reply = conn
@@ -389,16 +409,11 @@ pub async fn negotiate(
                     "the desktop portal did not answer ConnectToEIS in time".into(),
                 ))
             })?;
-        Ok((eis, restore_token))
+        Ok(eis)
     }
     .await;
     match result {
-        Ok((eis, restore_token)) => Ok(Negotiated {
-            conn,
-            session,
-            eis,
-            restore_token,
-        }),
+        Ok(eis) => Ok(Negotiated { conn, session, eis }),
         Err(e) => {
             // Ends a pending permission dialog too.
             close(&conn, &session, timeouts.call).await;
