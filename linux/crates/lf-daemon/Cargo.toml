@@ -23,12 +23,17 @@ lf-wayland = { path = "../lf-wayland" }
 libc.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"
+# Session-bus client for the GlobalShortcuts portal (`trigger: "portal"`);
+# already used by lf-media. async-io, futures-lite and async-channel are
+# zbus's own runtime crates (no new crates in the lock file).
+zbus = "5"
+async-channel = "2"
+async-io = "2"
+futures-lite = "2"
 
 [dev-dependencies]
 # FLAC decoding for the ignored real-model test (public LibriSpeech audio).
 claxon = "0.4"
-# Fake MPRIS players on a private bus for the media-pause test.
-zbus = "5"
 
 [[test]]
 name = "private_dbus"

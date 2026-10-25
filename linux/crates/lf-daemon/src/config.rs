@@ -81,6 +81,28 @@ pub struct Config {
     /// A press this soon after a too-short hold makes a prompt recording;
     /// 0 disables double-tap.
     pub double_tap_ms: u64,
+    /// How the dictation key reaches the daemon.
+    pub trigger: Trigger,
+}
+
+/// How the dictation key reaches the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    /// Desktop binds run `localflowctl press`, `release`, `toggle`.
+    Commands,
+    /// The daemon also binds shortcuts through the xdg-desktop-portal
+    /// GlobalShortcuts interface (GNOME, KDE); `localflowctl` still works.
+    Portal,
+}
+
+impl Trigger {
+    pub fn parse(s: &str) -> Option<Trigger> {
+        match s {
+            "commands" => Some(Trigger::Commands),
+            "portal" => Some(Trigger::Portal),
+            _ => None,
+        }
+    }
 }
 
 /// Longest accepted `prompt_tag`, in characters.
@@ -112,6 +134,7 @@ impl Config {
             pause_media: true,
             prompt_tag: "[dictated]".into(),
             double_tap_ms: 400,
+            trigger: Trigger::Commands,
         }
     }
 
@@ -239,6 +262,12 @@ impl Config {
                             )
                         })?;
                 }
+                "trigger" => {
+                    c.trigger = v
+                        .as_str()
+                        .and_then(Trigger::parse)
+                        .ok_or("trigger must be one of commands, portal")?;
+                }
                 other => return Err(unknown_key(other)),
             }
         }
@@ -269,7 +298,7 @@ fn unknown_key(_key: &str) -> String {
     "unknown key; allowed keys are version, export_path, precision, cpus, press_enter, \
      spoken_delimiters, spoken_numbers, voice_macros, history, min_recording_seconds, \
      max_recording_seconds, log_level, input_device, key_delay_ms, pause_media, \
-     prompt_tag, double_tap_ms"
+     prompt_tag, double_tap_ms, trigger"
         .into()
 }
 
@@ -549,6 +578,36 @@ mod tests {
         assert_eq!(c.prompt_tag, exact);
         let c = parse(r#"{"prompt_tag": "[voice note]"}"#).unwrap();
         assert_eq!(c.prompt_tag, "[voice note]");
+    }
+
+    #[test]
+    fn trigger() {
+        assert_eq!(parse("{}").unwrap().trigger, Trigger::Commands);
+        assert_eq!(
+            parse(r#"{"trigger": "commands"}"#).unwrap().trigger,
+            Trigger::Commands
+        );
+        assert_eq!(
+            parse(r#"{"trigger": "portal"}"#).unwrap().trigger,
+            Trigger::Portal
+        );
+        for bad in [
+            r#"{"trigger": "Portal"}"#,
+            r#"{"trigger": "synthetic-secret"}"#,
+            r#"{"trigger": ""}"#,
+            r#"{"trigger": null}"#,
+            r#"{"trigger": true}"#,
+            r#"{"trigger": ["portal"]}"#,
+        ] {
+            let e = parse(bad).unwrap_err();
+            // Names the field and the choices, never the value.
+            assert!(
+                e.contains("trigger") && e.contains("commands, portal"),
+                "{e}"
+            );
+            assert!(!e.contains("secret"), "{e}");
+        }
+        assert!(parse(r#"{"unknown": 1}"#).unwrap_err().contains("trigger"));
     }
 
     #[test]

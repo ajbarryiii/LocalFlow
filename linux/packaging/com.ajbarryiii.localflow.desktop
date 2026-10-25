@@ -1,0 +1,12 @@
+# Names LocalFlow for the desktop's global shortcuts dialog when the daemon
+# runs with "trigger": "portal" (its app ID is this file's name). Not
+# installed automatically:
+#   cp linux/packaging/com.ajbarryiii.localflow.desktop ~/.local/share/applications/
+# Hidden from app launchers; the daemon runs as a systemd user unit.
+[Desktop Entry]
+Type=Application
+Name=LocalFlow
+Comment=Local dictation
+Exec=localflowd
+Terminal=false
+NoDisplay=true
