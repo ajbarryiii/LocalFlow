@@ -24,9 +24,10 @@ binds {
     XF86Tools repeat=false { spawn "localflowctl" "toggle"; }
 
     // Teach the custom dictionary from a correction of the last dictation
-    // (within two minutes of typing it): rofi opens with its text; edit it
+    // (within two minutes of typing it): a picker opens with its text; edit it
     // and press Return. The text already typed in the other app is not
-    // changed. Needs rofi.
+    // changed. Needs rofi or wofi ("picker" in config.json; fuzzel and tofi
+    // cannot edit text).
     Super+Shift+D { spawn "localflowctl" "correct"; }
 }
 

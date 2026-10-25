@@ -21,8 +21,9 @@ riverctl map normal None XF86Tools spawn 'localflowctl press'
 riverctl map -release normal None XF86Tools spawn 'localflowctl release'
 
 # Teach the custom dictionary from a correction of the last dictation (within
-# two minutes of typing it): rofi opens with its text; edit it and press
-# Return. The text already typed in the other app is not changed. Needs rofi.
+# two minutes of typing it): a picker opens with its text; edit it and press
+# Return. The text already typed in the other app is not changed. Needs rofi
+# or wofi ("picker" in config.json; fuzzel and tofi cannot edit text).
 riverctl map normal Super+Shift D spawn 'localflowctl correct'
 
 # The release mapping only matches when the key comes up with exactly its

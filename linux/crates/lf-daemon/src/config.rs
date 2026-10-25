@@ -108,6 +108,9 @@ pub struct Config {
     /// A press this soon after a too-short hold makes a prompt recording;
     /// 0 disables double-tap.
     pub double_tap_ms: u64,
+    /// The menu `localflowctl correct` and `dict review` use (the daemon
+    /// ignores it).
+    pub picker: crate::picker::Choice,
     /// Which text output types.
     pub output: Output,
     /// The XKB layout the desktop applies to typed keys, for the uinput
@@ -167,6 +170,7 @@ impl Config {
             pause_media: true,
             prompt_tag: "[dictated]".into(),
             double_tap_ms: 400,
+            picker: crate::picker::Choice::Auto,
             output: Output::Auto,
             keyboard_layout: Rmlvo::default(),
             trigger: Trigger::Commands,
@@ -297,6 +301,14 @@ impl Config {
                             )
                         })?;
                 }
+                "picker" => {
+                    c.picker = v
+                        .as_str()
+                        .and_then(crate::picker::Choice::parse)
+                        .ok_or_else(|| {
+                            format!("picker must be one of {}", crate::picker::Choice::VALUES)
+                        })?;
+                }
                 "output" => {
                     c.output = v
                         .as_str()
@@ -340,7 +352,7 @@ fn unknown_key(_key: &str) -> String {
     "unknown key; allowed keys are version, export_path, precision, cpus, press_enter, \
      spoken_delimiters, spoken_numbers, voice_macros, history, min_recording_seconds, \
      max_recording_seconds, log_level, input_device, key_delay_ms, pause_media, \
-     prompt_tag, double_tap_ms, output, keyboard_layout, trigger"
+     prompt_tag, double_tap_ms, picker, output, keyboard_layout, trigger"
         .into()
 }
 
@@ -630,6 +642,10 @@ mod tests {
             r#"{"double_tap_ms": -1}"#,
             r#"{"double_tap_ms": 400.5}"#,
             r#"{"double_tap_ms": "400"}"#,
+            r#"{"picker": "dmenu"}"#,
+            r#"{"picker": "Rofi"}"#,
+            r#"{"picker": null}"#,
+            r#"{"picker": 1}"#,
         ] {
             assert!(parse(bad).is_err(), "accepted {bad}");
         }
@@ -660,6 +676,22 @@ mod tests {
         assert_eq!(c.prompt_tag, exact);
         let c = parse(r#"{"prompt_tag": "[voice note]"}"#).unwrap();
         assert_eq!(c.prompt_tag, "[voice note]");
+    }
+
+    #[test]
+    fn picker() {
+        use crate::picker::{Choice, Kind};
+        assert_eq!(parse("{}").unwrap().picker, Choice::Auto);
+        assert_eq!(parse(r#"{"picker": "auto"}"#).unwrap().picker, Choice::Auto);
+        for k in Kind::ALL {
+            let c = parse(&format!(r#"{{"picker": "{}"}}"#, k.name())).unwrap();
+            assert_eq!(c.picker, Choice::Only(k));
+        }
+        let e = parse(r#"{"picker": "synthetic-secret"}"#).unwrap_err();
+        assert!(
+            !e.contains("ecret") && e.starts_with("picker must be one of auto"),
+            "{e}"
+        );
     }
 
     #[test]

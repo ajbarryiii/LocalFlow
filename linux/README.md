@@ -108,6 +108,7 @@ invalid values stop the daemon with an error. Defaults:
   "pause_media": true,
   "prompt_tag": "[dictated]",
   "double_tap_ms": 400,
+  "picker": "auto",
   "output": "auto",
   "keyboard_layout": null,
   "trigger": "commands"
@@ -170,6 +171,17 @@ invalid values stop the daemon with an error. Defaults:
   - `prompt_tag`: at most 64 characters, no control characters or
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
+- `picker`: the menu `localflowctl correct` and `dict review` show text in:
+  `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"` or `"tofi"`. `auto` takes, for
+  each dialog, the first of rofi, fuzzel, wofi and tofi on `PATH` that can
+  show it. fuzzel and tofi cannot prefill an input box without putting the
+  text on their command line, so they only show the suggestion dialog
+  (`dict review`, and the second step of `correct`); with one of them
+  configured, `correct` says so and does nothing. wofi is not used while
+  `/etc/wofi/config` or `/usr/etc/wofi/config` exists (wofi always reads
+  them, and they could run a command on what it shows); it also runs
+  without your wofi stylesheet and GTK settings. The daemon ignores this
+  key; `localflowctl` reads it.
 - `output`: how text is typed: `auto` (default), `wayland`, `portal` or
   `uinput`. See [Text output and desktops](#text-output-and-desktops).
 - `keyboard_layout`: the XKB layout your desktop uses, for the `uinput`
@@ -206,13 +218,15 @@ localflowctl again     # type the last dictation again
 localflowctl status    # e.g. "state=idle model=ready"
 localflowctl watch     # a line on every change, e.g. "state=idle model=ready mic=present"
 localflowctl watch --waybar   # the same as Waybar JSON (see below)
+localflowctl tray              # the same as a tray icon (see below)
 ```
 
 Exit codes: 0 ok, 1 daemon error, 2 usage, 3 daemon not running (or, for
 `watch`, the connection was lost), 4 timeout, 5 protocol error, 6 the
-dictionary file cannot be read (`dict list`/`ignored`), 7 rofi failed
-(`correct`, `dict review`), 8 the T3 token file is missing or unsafe
-(`agents t3`). `watch` exits 0 when its reader goes away.
+dictionary file cannot be read (`dict list`/`ignored`), 7 the picker failed
+or none can be used (`correct`, `dict review`), 8 the T3 token file is
+missing or unsafe (`agents t3`), 9 the D-Bus session bus cannot be used or
+was lost (`tray`). `watch` exits 0 when its reader goes away.
 
 `watch` lines also carry microphone presence (`mic=present|absent|unknown`,
 from the PipeWire node list) and, about 15 times a second while recording,
@@ -253,6 +267,22 @@ them with `format-icons` keyed by `alt` if you like.
 #custom-localflow.prompt { color: #89b4fa; }
 ```
 
+### Tray icon
+
+`localflowctl tray` shows the same states as a tray icon
+(StatusNotifierItem) for desktops without Waybar: KDE, GNOME with the
+AppIndicator extension, or Waybar's own `tray` module. It runs until
+killed; start it with your session (e.g. `exec-once = localflowctl tray`
+in Hyprland). Icons are standard themed names, drawn by your icon theme:
+`audio-input-microphone` (idle or loading), `media-record` (recording,
+with the item's status `NeedsAttention`), `emblem-synchronizing`
+(transcribing or typing), `microphone-sensitivity-muted` (no microphone)
+and `network-offline` (daemon not running). The title is "LocalFlow" and
+the tooltip names the state; neither ever shows text or counts. It has
+no menu, and clicking it does nothing. Like `watch --waybar` it retries
+every 2 s while the daemon is down, and registers again when the tray host
+restarts. It uses `zbus` (already part of the build); no other crate.
+
 ### Custom dictionary
 
 Words and phrases in the dictionary are boosted while decoding, so names
@@ -289,12 +319,13 @@ localflowctl correct
 ```
 
 Bind it to a key (see the snippets in `packaging/`). Within two minutes of a
-dictation being typed, it opens rofi with that dictation's text; edit it
+dictation being typed, it opens a picker (rofi or wofi; see `picker` above)
+with that dictation's text; edit it
 to what you meant and press Return (Escape does nothing). **It never
 changes the text already typed into the other app**: fix that there as
 usual. If the edit replaces a few words with a word or phrase that, when
 the same recording is decoded again with that word boosted, comes out
-exactly where you corrected it, a second rofi asks whether to add it: "Add
+exactly where you corrected it, a second dialog asks whether to add it: "Add
 …", "Not now" or "Don't suggest …" (which puts it on the ignored list). A
 change of capitals only ("nixos" to "NixOS") is offered without
 re-decoding, unless only the first letter changed (a sentence start). This
@@ -305,10 +336,14 @@ three seconds and stops when you start a new dictation.
 Privacy: the dictation's text and its decoded audio features stay in the
 daemon's memory for those two minutes (dropped earlier by a new
 dictation, a cancel or any dictionary change); macros and dictations that
-press Return are never kept. rofi receives the text through an inherited
-file descriptor, never its command line; it runs with your rofi
-configuration and plugins replaced and with history disabled, and its
-error output is discarded. Nothing goes to the notification daemon.
+press Return are never kept. The picker receives the text through an
+inherited file descriptor or its stdin, never its command line or
+environment; it runs with your configuration for it replaced (rofi's
+plugins too; for wofi also GTK's input method, accessibility bridge,
+modules and settings, and its session bus, since an input method can read
+the whole box), with its history or cache disabled, and its error output is
+discarded; it is killed after two minutes. The privacy contract and each
+tool's verdict are in `crates/lf-daemon/src/picker.rs`. Nothing goes to the notification daemon.
 
 #### Protocol
 
@@ -352,7 +387,7 @@ can show T3 Code threads that need you. The full contract is in
 localflowctl words set myproject Hyprland PipeWire   # project words, boosted for 8 hours
 localflowctl words clear myproject
 localflowctl dict suggest Hyprland                   # an agent suggests a word…
-localflowctl dict review                             # …and you approve it in rofi
+localflowctl dict review                             # …and you approve it in a picker
 localflowctl agents t3                               # T3 Code bridge (runs until killed)
 ```
 
@@ -563,7 +598,7 @@ also works on compositors that have the protocol (Hyprland, below).
    LocalFlow asks for no particular key. Change them later in the
    desktop's shortcut settings (GNOME Settings > Keyboard > Keyboard
    Shortcuts; KDE System Settings > Keyboard > Shortcuts).
-3. `localflowctl correct` needs rofi, which needs layer-shell (KDE has it,
+3. `localflowctl correct` needs rofi or wofi, which need layer-shell (KDE has it,
    GNOME does not); bind it as an ordinary custom shortcut.
 
 Behaviour:
@@ -604,7 +639,8 @@ The kernel tests run at every tier the CPU supports, whatever
 `LOCALFLOW_CPU_TIER` says, and check that the tiers agree bit for bit.
 
 `lf-daemon/tests/private_dbus.rs` starts its own `dbus-daemon` (from the dev
-shell) with fake MPRIS players; it never uses your session bus. Likewise
+shell) with fake MPRIS players, a fake tray host and a fake GlobalShortcuts
+portal; it never uses your session bus. Likewise
 `lf-portal/tests/mock_portal.rs` serves a mock RemoteDesktop portal on a
 private bus and a fake EIS server, so it never opens your desktop's portal
 or types anywhere. Set `LF_SKIP_DBUS_TESTS=1` to skip both where
@@ -621,9 +657,11 @@ also shared with the Swift app. `lf-text` (the dictionary text rules and
 the BPE tokenizer, with no model code) runs its encoding, validation, key
 and phrase sections, `lf-asr` the bias graph and decision rule, and
 `lf-dictation` (which depends on `lf-text`, not on `lf-asr`) the casing
-and correction sections. The rofi tests use fake rofi scripts; one
-also checks that the installed rofi reads the generated configuration back
-(it is skipped when rofi is not on `PATH`). The real-model daemon test is ignored by default; it
+and correction sections. The picker tests use fake rofi, fuzzel, wofi and
+tofi scripts that record their arguments, environment, configuration and
+stdin; one also checks that the installed rofi reads the generated
+configuration back (it is skipped when rofi is not on `PATH`). The tray is
+tested on the same private bus, against a fake tray host. The real-model daemon test is ignored by default; it
 needs the model export and public LibriSpeech data:
 
 ```bash
@@ -702,9 +740,9 @@ your dictation key.
     "nixos": typed as `NixOS`. `ls -l ~/.local/share/localflow/dictionary.json`
     shows `-rw-------`.
 20. `localflowctl correct` (or its bind) right after a dictation that got a
-    word wrong: rofi opens with the dictation's text in the input box (not
-    your rofi theme). Fix the word and press Return: within a few seconds a
-    second rofi offers "Add “…” to your dictionary". Choose Add; `dict list`
+    word wrong (with rofi, the default picker): rofi opens with the
+    dictation's text in the input box (not your rofi theme). Fix the word
+    and press Return: within a few seconds a second rofi offers "Add “…” to your dictionary". Choose Add; `dict list`
     shows it. The text in the other app is unchanged. While rofi is open,
     `ps -o args -C rofi` shows no dictated text, and afterwards
     `~/.cache/rofi*` holds no entry history with it. Escape in either rofi
@@ -764,3 +802,26 @@ your dictation key.
     `packaging/hyprland.conf` (instead of the `exec` binds):
     `hyprctl globalshortcuts` lists `com.ajbarryiii.localflow:hold-to-talk`
     and `:toggle`; items 3 and 18 work.
+31. Other pickers (install each with `nix shell nixpkgs#<tool>` and set
+    `"picker"` in `config.json`):
+    - `"wofi"`: repeat 20 in wofi. While it is open,
+      `cat /proc/$(pgrep -x wofi)/cmdline | tr '\0' ' '` and
+      `tr '\0' '\n' < /proc/$(pgrep -x wofi)/environ` show no dictated
+      text; afterwards `~/.cache/wofi*` holds nothing new.
+    - `"fuzzel"` and `"tofi"`: `correct` says the picker cannot edit text and
+      opens nothing. Queue a word (`localflowctl dict suggest Zorblax`), then
+      `localflowctl dict review`: the dialog shows the three rows; Add, Not
+      now and Escape each do what they say; `pgrep -a fuzzel` (or `tofi`)
+      shows no word; afterwards `~/.cache/fuzzel` and
+      `~/.local/state/tofi*` hold no entry with it.
+    - `"auto"` with rofi removed from `PATH`: `correct` uses wofi if it is
+      installed, else says no picker can edit text.
+32. Tray icon (`localflowctl tray` in a terminal, with Waybar's `tray`
+    module, KDE or GNOME's AppIndicator extension): the microphone icon
+    appears; holding the key shows the record icon, then the sync icon while
+    transcribing, then the microphone again. The tooltip says "LocalFlow"
+    and the state. Stop the daemon: the offline icon; start it again: the
+    microphone within about 2 s. Restart the tray host (e.g. Waybar): the
+    icon comes back. `busctl --user introspect
+    org.kde.StatusNotifierItem-$(pgrep -f 'localflowctl tray')-1
+    /StatusNotifierItem` lists only state properties.

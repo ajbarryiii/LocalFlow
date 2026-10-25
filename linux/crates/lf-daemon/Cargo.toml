@@ -25,9 +25,10 @@ lf-wayland = { path = "../lf-wayland" }
 libc.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1"
-# Session-bus client for the GlobalShortcuts portal (`trigger: "portal"`);
-# already used by lf-media. async-io, futures-lite and async-channel are
-# zbus's own runtime crates (no new crates in the lock file).
+# Session-bus client for the GlobalShortcuts portal (`trigger: "portal"`)
+# and the tray icon (`localflowctl tray`); already used by lf-media.
+# async-io, futures-lite and async-channel are zbus's own runtime crates (no
+# new crates in the lock file).
 zbus = "5"
 async-channel = "2"
 async-io = "2"

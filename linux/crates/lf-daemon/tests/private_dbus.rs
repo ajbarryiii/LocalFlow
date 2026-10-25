@@ -37,6 +37,8 @@ use std::time::{Duration, Instant};
 use common::{Rig, factory, settings};
 use lf_daemon::backends;
 use lf_daemon::testing::{FakeCapture, FakeRecognizer};
+use lf_daemon::tray::{self, Tray, TrayError};
+use lf_daemon::waybar::Class;
 use lf_io_api::MediaPlayers;
 use lf_media::{Mpris, MprisConfig};
 use zbus::zvariant::OwnedValue;
@@ -495,6 +497,356 @@ fn no_bus_is_not_fatal(bus: &PrivateBus) {
     rig.wait_for("state=idle");
     assert_eq!(rig.output.text(), "Synthetic. ");
     assert_eq!(a.state().pauses, 0);
+}
+
+// ------------------------------------------------------------ tray
+
+/// A fake tray host's watcher: records every item registered.
+#[derive(Clone, Default)]
+struct FakeWatcher(Arc<Mutex<Vec<String>>>);
+
+#[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+impl FakeWatcher {
+    fn register_status_notifier_item(&self, service: String) {
+        self.0.lock().unwrap().push(service);
+    }
+}
+
+impl FakeWatcher {
+    /// Joins `bus` as `org.kde.StatusNotifierWatcher`.
+    fn start(bus: &PrivateBus) -> (FakeWatcher, zbus::blocking::Connection) {
+        let w = FakeWatcher::default();
+        let builder = zbus::blocking::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .serve_at(tray::WATCHER_PATH, w.clone())
+            .unwrap()
+            .name(tray::WATCHER)
+            .unwrap();
+        (
+            w,
+            bounded("the fake watcher", move || builder.build()).unwrap(),
+        )
+    }
+
+    fn registered(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+
+    fn wait_for(&self, name: &str, times: usize) {
+        wait_until("registration", || {
+            self.registered().iter().filter(|n| *n == name).count() >= times
+        });
+    }
+}
+
+/// Runs `f` on a thread for at most 10 s, so a stalled private bus fails
+/// the test instead of hanging it.
+fn bounded<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| panic!("{what} did not finish in 10 s"))
+}
+
+/// Reads the tray item's properties as a host does.
+struct Host(zbus::blocking::Connection);
+
+type ToolTip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
+
+impl Host {
+    fn new(bus: &PrivateBus) -> Host {
+        let addr = bus.address.clone();
+        Host(bounded("a host connection", move || {
+            zbus::blocking::connection::Builder::address(addr.as_str())
+                .unwrap()
+                .build()
+                .unwrap()
+        }))
+    }
+
+    fn get(&self, item: &str, property: &str) -> OwnedValue {
+        let reply = self
+            .0
+            .call_method(
+                Some(item),
+                tray::ITEM_PATH,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &(tray::ITEM_INTERFACE, property),
+            )
+            .unwrap();
+        reply.body().deserialize::<OwnedValue>().unwrap()
+    }
+
+    fn string(&self, item: &str, property: &str) -> String {
+        String::try_from(self.get(item, property)).unwrap()
+    }
+
+    fn tool_tip(&self, item: &str) -> ToolTip {
+        ToolTip::try_from(self.get(item, "ToolTip")).unwrap()
+    }
+
+    /// Every signal from the tray interface, as (member, body string).
+    fn signals(&self) -> std::sync::mpsc::Receiver<(String, String)> {
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface(tray::ITEM_INTERFACE)
+            .unwrap()
+            .build();
+        let it = zbus::blocking::MessageIterator::for_match_rule(rule, &self.0, None).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for msg in it {
+                let Ok(msg) = msg else { break };
+                let member = msg.header().member().map(|m| m.to_string());
+                let body = msg.body().deserialize::<String>().unwrap_or_default();
+                if tx.send((member.unwrap_or_default(), body)).is_err() {
+                    break;
+                }
+            }
+        });
+        rx
+    }
+}
+
+/// The signals that arrive within `wait`.
+fn drain(
+    rx: &std::sync::mpsc::Receiver<(String, String)>,
+    wait: Duration,
+) -> Vec<(String, String)> {
+    let mut got = Vec::new();
+    while let Ok(s) = rx.recv_timeout(wait) {
+        got.push(s);
+    }
+    got
+}
+
+fn signal(member: &str, body: &str) -> (String, String) {
+    (member.into(), body.into())
+}
+
+fn tray_publishes_states_and_follows_watchers(bus: &PrivateBus) {
+    let host = Host::new(bus);
+    // Published before any watcher exists: registered once one appears.
+    let item = bounded("tray start", || {
+        Tray::start(None, Class::Offline, || {}).map_err(|e| e.to_string())
+    })
+    .unwrap();
+    let name = item.name().to_owned();
+    assert_eq!(
+        name,
+        format!("org.kde.StatusNotifierItem-{}-1", std::process::id())
+    );
+    for (property, want) in [
+        ("Category", "ApplicationStatus"),
+        ("Id", "localflow"),
+        ("Title", "LocalFlow"),
+        ("Status", "Active"),
+        ("IconName", "network-offline"),
+        ("AttentionIconName", "media-record"),
+    ] {
+        assert_eq!(host.string(&name, property), want, "{property}");
+    }
+    assert!(!bool::try_from(host.get(&name, "ItemIsMenu")).unwrap());
+    // GNOME's AppIndicator extension shows an item only with a menu: an
+    // empty dbusmenu.
+    let menu = zbus::zvariant::OwnedObjectPath::try_from(host.get(&name, "Menu")).unwrap();
+    assert_eq!(menu.as_str(), tray::MENU_PATH);
+    let reply = host
+        .0
+        .call_method(
+            Some(name.as_str()),
+            tray::MENU_PATH,
+            Some(tray::MENU_INTERFACE),
+            "GetLayout",
+            &(0i32, -1i32, Vec::<String>::new()),
+        )
+        .unwrap();
+    type Layout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
+    let (_revision, (id, props, children)): (u32, Layout) = reply.body().deserialize().unwrap();
+    assert_eq!((id, children.len()), (0, 0));
+    assert_eq!(
+        String::try_from(props["children-display"].try_clone().unwrap()).unwrap(),
+        "submenu"
+    );
+    let reply = host
+        .0
+        .call_method(
+            Some(name.as_str()),
+            tray::MENU_PATH,
+            Some(tray::MENU_INTERFACE),
+            "AboutToShow",
+            &0i32,
+        )
+        .unwrap();
+    assert!(!reply.body().deserialize::<bool>().unwrap());
+    assert_eq!(
+        host.tool_tip(&name),
+        (
+            "network-offline".into(),
+            vec![],
+            "LocalFlow".into(),
+            "Not running".into()
+        )
+    );
+    let (watcher, conn) = FakeWatcher::start(bus);
+    watcher.wait_for(&name, 1);
+
+    // Changes are signalled: the icon and status only when they change.
+    let rx = host.signals();
+    item.show(Class::Recording).unwrap();
+    let got = drain(&rx, Duration::from_millis(500));
+    assert_eq!(
+        got,
+        [
+            signal("NewIcon", ""),
+            signal("NewToolTip", ""),
+            signal("NewStatus", "NeedsAttention")
+        ]
+    );
+    assert_eq!(host.string(&name, "IconName"), "media-record");
+    assert_eq!(host.string(&name, "Status"), "NeedsAttention");
+    item.show(Class::Recording).unwrap();
+    assert_eq!(drain(&rx, Duration::from_millis(300)), []);
+    item.show(Class::Transcribing).unwrap();
+    assert_eq!(
+        drain(&rx, Duration::from_millis(500)),
+        [
+            signal("NewIcon", ""),
+            signal("NewToolTip", ""),
+            signal("NewStatus", "Active"),
+        ]
+    );
+    item.show(Class::Typing).unwrap();
+    assert_eq!(
+        drain(&rx, Duration::from_millis(500)),
+        [signal("NewToolTip", "")]
+    );
+    for (class, icon, text) in [
+        (Class::Idle, "audio-input-microphone", "Idle"),
+        (
+            Class::Loading,
+            "audio-input-microphone",
+            "Loading the model",
+        ),
+        (
+            Class::NoMic,
+            "microphone-sensitivity-muted",
+            "No microphone",
+        ),
+        (Class::Typing, "emblem-synchronizing", "Typing"),
+    ] {
+        item.show(class).unwrap();
+        assert_eq!(host.string(&name, "IconName"), icon);
+        assert_eq!(
+            host.tool_tip(&name),
+            (icon.into(), vec![], "LocalFlow".into(), text.into())
+        );
+    }
+
+    // The tray host restarts: registered again with the new watcher.
+    drop(conn);
+    let (watcher2, _conn2) = FakeWatcher::start(bus);
+    watcher2.wait_for(&name, 1);
+    assert_eq!(watcher.registered(), std::slice::from_ref(&name));
+    assert!(item.connected());
+}
+
+fn localflowctl_tray_follows_the_daemon(bus: &PrivateBus) {
+    let host = Host::new(bus);
+    let (watcher, _conn) = FakeWatcher::start(bus);
+    let mut rig = Rig::start(
+        "dbus-tray",
+        FakeCapture::with_samples(vec![0.1; 16_000]),
+        factory(FakeRecognizer::returning("Synthetic.")),
+        settings(),
+        false,
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_localflowctl"))
+        .arg("tray")
+        .env("XDG_RUNTIME_DIR", common::runtime_dir(&rig.dir))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Nothing reads its output: unlike `watch`, the tray keeps running.
+    drop(child.stdout.take());
+    let name = format!("org.kde.StatusNotifierItem-{}-1", child.id());
+    watcher.wait_for(&name, 1);
+    let icon_becomes = |want: &str| wait_until(want, || host.string(&name, "IconName") == want);
+    icon_becomes("audio-input-microphone");
+    rig.cmd("toggle");
+    icon_becomes("media-record");
+    assert_eq!(host.string(&name, "Status"), "NeedsAttention");
+    rig.cmd("toggle");
+    rig.wait_for("state=idle");
+    icon_becomes("audio-input-microphone");
+    assert_eq!(rig.output.text(), "Synthetic. ");
+    rig.stop().unwrap();
+    icon_becomes("network-offline");
+    assert_eq!(host.tool_tip(&name).3, "Not running");
+    assert!(child.try_wait().unwrap().is_none(), "the tray exited");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let mut err = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
+    assert!(!err.contains("ynthetic"), "{err}");
+}
+
+/// Its own bus, stopped under it: the tray reports the loss.
+fn tray_reports_a_lost_bus(shared: &PrivateBus) {
+    let bus = PrivateBus::start();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let addr = bus.address.clone();
+    let item = bounded("tray start", move || {
+        Tray::start(Some(&addr), Class::Idle, move || {
+            let _ = tx.send(());
+        })
+        .map_err(|e| e.to_string())
+    })
+    .unwrap();
+    assert!(item.connected());
+    drop(bus);
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("the lost bus was not reported");
+    assert!(!item.connected());
+    assert_eq!(item.show(Class::Recording), Err(TrayError::Lost));
+    // An unreachable bus is refused at once.
+    let missing = Tray::start(
+        Some("unix:path=/nonexistent/lf-test-bus"),
+        Class::Idle,
+        || {},
+    );
+    assert_eq!(missing.err(), Some(TrayError::Connect));
+    // A bus that accepts the connection and then says nothing: given up
+    // after the deadline.
+    let dir = shared.dir.join("silent");
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("bus");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+    let t = Instant::now();
+    let silent = Tray::start(
+        Some(&format!("unix:path={}", socket.display())),
+        Class::Idle,
+        || {},
+    );
+    assert_eq!(silent.err(), Some(TrayError::Connect));
+    assert!(
+        t.elapsed() >= tray::CALL_TIMEOUT && t.elapsed() < tray::CALL_TIMEOUT * 2,
+        "{:?}",
+        t.elapsed()
+    );
+    drop(held.join());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ------------------------------------------------------------ fake portal
@@ -1124,7 +1476,7 @@ fn main() {
         std::env::remove_var("DBUS_SYSTEM_BUS_ADDRESS");
     }
     assert_private(&bus);
-    let tests: [(&str, Case); 13] = [
+    let tests: [(&str, Case); 16] = [
         (
             "pauses_playing_players_and_resumes_them",
             pauses_playing_players_and_resumes_them,
@@ -1143,6 +1495,15 @@ fn main() {
             shutdown_while_recording_resumes,
         ),
         ("no_bus_is_not_fatal", no_bus_is_not_fatal),
+        (
+            "tray_publishes_states_and_follows_watchers",
+            tray_publishes_states_and_follows_watchers,
+        ),
+        (
+            "localflowctl_tray_follows_the_daemon",
+            localflowctl_tray_follows_the_daemon,
+        ),
+        ("tray_reports_a_lost_bus", tray_reports_a_lost_bus),
         (
             "portal_maps_shortcuts_to_hold_toggle_and_prompt",
             portal_maps_shortcuts_to_hold_toggle_and_prompt,
