@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use lf_dictation::VoiceMacro;
+use lf_keyboard::Rmlvo;
 use serde_json::{Map, Value};
 
 use crate::log::Level;
@@ -50,6 +51,32 @@ impl Precision {
     }
 }
 
+/// How text is typed (`output`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    /// The Wayland virtual keyboard if the compositor offers it, else the
+    /// RemoteDesktop portal, else uinput.
+    Auto,
+    /// The Wayland virtual keyboard (`zwp_virtual_keyboard_v1`, wlroots).
+    Wayland,
+    /// xdg-desktop-portal RemoteDesktop and libei (GNOME, KDE).
+    Portal,
+    /// A kernel uinput keyboard (anywhere, X11 included).
+    Uinput,
+}
+
+impl Output {
+    pub fn parse(s: &str) -> Option<Output> {
+        Some(match s {
+            "auto" => Output::Auto,
+            "wayland" => Output::Wayland,
+            "portal" => Output::Portal,
+            "uinput" => Output::Uinput,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     /// Directory holding `export.safetensors`, `manifest.json` and `tokenizer/`.
@@ -81,6 +108,12 @@ pub struct Config {
     /// A press this soon after a too-short hold makes a prompt recording;
     /// 0 disables double-tap.
     pub double_tap_ms: u64,
+    /// Which text output types.
+    pub output: Output,
+    /// The XKB layout the desktop applies to typed keys, for the uinput
+    /// output (and the portal when the desktop sends no keymap). Empty
+    /// fields take libxkbcommon's defaults.
+    pub keyboard_layout: Rmlvo,
     /// How the dictation key reaches the daemon.
     pub trigger: Trigger,
 }
@@ -134,6 +167,8 @@ impl Config {
             pause_media: true,
             prompt_tag: "[dictated]".into(),
             double_tap_ms: 400,
+            output: Output::Auto,
+            keyboard_layout: Rmlvo::default(),
             trigger: Trigger::Commands,
         }
     }
@@ -262,6 +297,13 @@ impl Config {
                             )
                         })?;
                 }
+                "output" => {
+                    c.output = v
+                        .as_str()
+                        .and_then(Output::parse)
+                        .ok_or("output must be one of auto, wayland, portal, uinput")?;
+                }
+                "keyboard_layout" => c.keyboard_layout = parse_layout(v)?,
                 "trigger" => {
                     c.trigger = v
                         .as_str()
@@ -298,8 +340,48 @@ fn unknown_key(_key: &str) -> String {
     "unknown key; allowed keys are version, export_path, precision, cpus, press_enter, \
      spoken_delimiters, spoken_numbers, voice_macros, history, min_recording_seconds, \
      max_recording_seconds, log_level, input_device, key_delay_ms, pause_media, \
-     prompt_tag, double_tap_ms, trigger"
+     prompt_tag, double_tap_ms, output, keyboard_layout, trigger"
         .into()
+}
+
+/// Longest accepted `keyboard_layout` field.
+const MAX_LAYOUT_FIELD: usize = 256;
+
+/// `null`, or an object with any of `rules`, `model`, `layout`, `variant` and
+/// `options` as strings. Errors name the field, never the value.
+fn parse_layout(v: &Value) -> Result<Rmlvo, String> {
+    let mut names = Rmlvo::default();
+    let obj = match v {
+        Value::Null => return Ok(names),
+        Value::Object(obj) => obj,
+        _ => return Err("keyboard_layout must be null or an object".into()),
+    };
+    for (key, value) in obj {
+        let field = match key.as_str() {
+            "rules" => &mut names.rules,
+            "model" => &mut names.model,
+            "layout" => &mut names.layout,
+            "variant" => &mut names.variant,
+            "options" => names.options.get_or_insert_with(String::new),
+            _ => {
+                return Err(
+                    "keyboard_layout may only have rules, model, layout, variant and options"
+                        .into(),
+                );
+            }
+        };
+        *field = value
+            .as_str()
+            .filter(|s| s.len() <= MAX_LAYOUT_FIELD && !s.chars().any(char::is_control))
+            .ok_or_else(|| {
+                format!(
+                    "keyboard_layout.{key} must be a string of at most {MAX_LAYOUT_FIELD} bytes \
+                     without control characters"
+                )
+            })?
+            .to_owned();
+    }
+    Ok(names)
 }
 
 fn boolean(v: &Value, key: &str) -> Result<bool, String> {
@@ -578,6 +660,70 @@ mod tests {
         assert_eq!(c.prompt_tag, exact);
         let c = parse(r#"{"prompt_tag": "[voice note]"}"#).unwrap();
         assert_eq!(c.prompt_tag, "[voice note]");
+    }
+
+    #[test]
+    fn output_and_keyboard_layout() {
+        let d = parse("{}").unwrap();
+        assert_eq!(d.output, Output::Auto);
+        assert_eq!(d.keyboard_layout, Rmlvo::default());
+        for (name, output) in [
+            ("auto", Output::Auto),
+            ("wayland", Output::Wayland),
+            ("portal", Output::Portal),
+            ("uinput", Output::Uinput),
+        ] {
+            let c = parse(&format!(r#"{{"output": "{name}"}}"#)).unwrap();
+            assert_eq!(c.output, output);
+        }
+        let c = parse(
+            r#"{"keyboard_layout": {"rules": "evdev", "model": "pc105", "layout": "us,de",
+                "variant": "dvorak,", "options": "grp:alt_shift_toggle"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.keyboard_layout,
+            Rmlvo {
+                rules: "evdev".into(),
+                model: "pc105".into(),
+                layout: "us,de".into(),
+                variant: "dvorak,".into(),
+                options: Some("grp:alt_shift_toggle".into()),
+            }
+        );
+        let c = parse(r#"{"keyboard_layout": {"layout": "de"}}"#).unwrap();
+        assert_eq!(c.keyboard_layout.layout, "de");
+        assert_eq!(c.keyboard_layout.options, None);
+        let c = parse(r#"{"keyboard_layout": null}"#).unwrap();
+        assert_eq!(c.keyboard_layout, Rmlvo::default());
+        for bad in [
+            r#"{"output": "clipboard"}"#,
+            r#"{"output": "Auto"}"#,
+            r#"{"output": null}"#,
+            r#"{"output": 1}"#,
+            r#"{"keyboard_layout": "us"}"#,
+            r#"{"keyboard_layout": {"layout": 1}}"#,
+            r#"{"keyboard_layout": {"layout": "u\ns"}}"#,
+            r#"{"keyboard_layout": {"layout": "us\u0000"}}"#,
+            r#"{"keyboard_layout": {"keymap": "us"}}"#,
+        ] {
+            assert!(parse(bad).is_err(), "accepted {bad}");
+        }
+        let long = format!(
+            r#"{{"keyboard_layout": {{"layout": "{}"}}}}"#,
+            "a".repeat(257)
+        );
+        assert!(parse(&long).is_err());
+        // Errors name fields, never values or unknown keys.
+        let e = parse(r#"{"keyboard_layout": {"Synthetic secret": "x"}}"#).unwrap_err();
+        assert!(!e.contains("ecret"), "{e}");
+        let e = parse(r#"{"keyboard_layout": {"variant": "synthetic\nsecret"}}"#).unwrap_err();
+        assert!(
+            e.contains("keyboard_layout.variant") && !e.contains("ecret"),
+            "{e}"
+        );
+        let e = parse(r#"{"output": "synthetic secret"}"#).unwrap_err();
+        assert!(!e.contains("ecret"), "{e}");
     }
 
     #[test]

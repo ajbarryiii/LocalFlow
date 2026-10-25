@@ -77,7 +77,7 @@ fn main() -> ExitCode {
 /// Environment variables that make libraries print protocol traffic or
 /// buffer contents to stderr (and so to journald), which would include typed
 /// text. They are cleared before any library reads them.
-const CONTENT_DEBUG_VARS: [&str; 1] = ["WAYLAND_DEBUG"];
+const CONTENT_DEBUG_VARS: [&str; 2] = ["WAYLAND_DEBUG", "REIS_DEBUG"];
 
 fn run() -> Result<(), String> {
     let mut cleared = Vec::new();
@@ -137,7 +137,7 @@ fn run() -> Result<(), String> {
         info!("fake I/O: recording silence and discarding text");
         backends::fake()
     } else {
-        backends::desktop(&config)
+        backends::desktop(&config)?
     };
     let parts = Parts {
         capture,

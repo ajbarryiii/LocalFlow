@@ -1,0 +1,17 @@
+[package]
+name = "lf-keyboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+lf-io-api.workspace = true
+libc.workspace = true
+# Already in the workspace (lf-wayland's keymap tests); links the
+# libxkbcommon the package already builds against. The `wayland` feature
+# only adds a memmap2-based `new_from_fd`, which this crate does not use.
+xkbcommon = { version = "0.9", default-features = false }
+
+[dev-dependencies]
+xkbcommon = { version = "0.9", default-features = false }

@@ -11,7 +11,7 @@ Status: draft, 2026-10-07. Branch `feat/linux-port`.
 | Inference | Native, with no Python at runtime. CPU (AVX-512) first; CUDA later as an optional backend, with the CPU kept as fallback. |
 | Model | Ternary Parakeet TDT 0.6B v2, M1 export, packed offline into a LocalFlow model image |
 | Shortcuts | Hyprland `bind`/`bindr` run `localflowctl`. Key still to be chosen. |
-| Text insertion | Type directly through the Wayland virtual keyboard (`zwp_virtual_keyboard_v1`). The clipboard is not touched. |
+| Text insertion | Type directly through the Wayland virtual keyboard (`zwp_virtual_keyboard_v1`). Where the compositor lacks it, `output: "auto"` falls back to the RemoteDesktop portal with libei (GNOME, KDE), then uinput. The clipboard is not touched. |
 | Audio | Captured in memory only, never written to disk |
 | Toolchain | `linux/flake.nix` dev shell; moved into the NixOS config once things work |
 | Network | The daemon makes no network connections |
@@ -696,7 +696,7 @@ Residual risks:
 
 ## Open items
 
-- Shortcut key: any free key (see "Dictation key" in `README.md`). The development setup uses F13 on a remapped Kinesis thumb key (keycode 191, the example in the `packaging/` snippets). GNOME and KDE use the GlobalShortcuts portal (`"trigger": "portal"`); not yet tested live on either, nor on sway, river or niri. Typing on GNOME and KDE still needs an output path: Mutter has no `zwp_virtual_keyboard_v1`, and KWin offers it only to input methods (KDE bug 512996, closed as intentional; KWin points to input methods and libei).
+- Shortcut key: any free key (see "Dictation key" in `README.md`). The development setup uses F13 on a remapped Kinesis thumb key (keycode 191, the example in the `packaging/` snippets). GNOME and KDE use the GlobalShortcuts portal (`"trigger": "portal"`); not yet tested live on either, nor on sway, river or niri. Mutter has no `zwp_virtual_keyboard_v1`, and KWin offers it only to input methods (KDE bug 512996, closed as intentional; KWin points to input methods and libei), so typing there goes through the RemoteDesktop portal with libei (`output: "auto"` or `"portal"`).
 - Default precision: i8x2, chosen by the user (2026-10-07) on the validation above (25–28% faster than i8x3, six near-tie transcript changes in 32,560 utterances, same WER). i8x3 remains available for bit-level FP32 fidelity.
 
 ## Risks
@@ -735,6 +735,15 @@ session (see the manual tests below).
 - Default delay of 1 ms per key, configurable. A round trip runs every 32 keys. Every wait on the compositor is bounded (5 s), including a non-blocking socket connect that survives a full listen backlog.
 - The typer connects lazily, checks liveness with a round trip before each call, and reconnects after any error. A compositor without the protocol gives a clear error.
 - No text appears in logs or errors, and errors never echo compositor messages. `wayland-backend` uses its `log` feature, so it prints nothing to stderr. If the daemon installs a logger, it must filter out the `wayland_backend` target at every level: at error level it logs the compositor's protocol error messages, and at debug level every request, including keycodes.
+
+### Other text outputs (`lf-portal`, `lf-keyboard`)
+
+- `output` selects `wayland` (above), `portal` or `uinput`; `auto` (the default) probes in that order and logs the choice. A configured Wayland display that does not answer at startup still selects the virtual keyboard, so Hyprland never reaches the portal. The clipboard is never used.
+- Both other outputs send key codes that the desktop interprets with its own layout. `lf-keyboard` maps each character to a key on the same printable-key allowlist (plus Space, Tab, Return) and the fewest of Shift, AltGr and level 5, by simulating the presses in libxkbcommon. Dead keys and Compose are not used: text the layout cannot produce is refused whole, with the position only.
+- **Portal:** `org.freedesktop.portal.RemoteDesktop` v2 (`CreateSession`, keyboard-only `SelectDevices` with `persist_mode` 2 and the stored restore token, `Start`, `ConnectToEIS`) on a background thread, so a permission dialog never blocks a typing call. libei through `reis` (pure Rust; its dependencies were already in the workspace), sender context, keyboard capability only, the server's keymap with its current group and locked modifiers. The restore token is a credential: `$XDG_STATE_HOME/localflow/portal-restore-token`, 0600, never logged. `REIS_DEBUG` (which prints protocol messages) is cleared at startup.
+- **uinput:** plain ioctls on `/dev/uinput`, one keyboard device created at startup and given 500 ms to be picked up. The layout comes from `keyboard_layout` (RMLVO) or libxkbcommon's defaults; only its first group is used and the physical keyboard's locks are unknown.
+- Both share the virtual keyboard's limits: the 2 s call deadline (under the cancel lock), the key delay, no text in logs or errors.
+- Tests: `lf-keyboard/tests/layouts.rs` (synthetic self-contained keymap, plus `us`, `de`, `dvorak` and a second group; uinput event encoding without opening the device) and `lf-portal/tests/mock_portal.rs` (a mock portal on a private `dbus-daemon` and a fake EIS server: negotiation, restore token reuse, refused text, a pending dialog, a cancelled request, renegotiation, locked Caps Lock). GNOME, KDE and X11 are tested by hand only.
 
 ### Tests
 
