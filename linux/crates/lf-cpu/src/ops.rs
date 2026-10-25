@@ -423,17 +423,18 @@ mod x86 {
     }
 }
 
-/// The AVX2 kernels: the AVX-512 ones 8 lanes at a time (reductions sum 8
-/// partial sums instead of 16, so results differ in rounding only).
+/// The AVX2 kernels: the AVX-512 ones 8 lanes at a time, bit for bit. Each
+/// reduction keeps the 16 partial sums of the AVX-512 kernel, as two 8-lane
+/// halves, and adds them up in its order.
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use crate::math::simd256::{exp_ps, hmax, hsum, sigmoid_ps};
+    use crate::math::simd256::{exp_ps, hmax, hsum16, sigmoid_ps};
     use std::arch::x86_64::*;
 
     /// # Safety
-    /// The CPU must support AVX2 and FMA and `d` must be a multiple of 8. `x`,
-    /// `g` and `b` must be readable for `d` floats, and `out` valid for writes
-    /// of `d` floats that no other thread accesses.
+    /// The CPU must support AVX2 and FMA and `d` must be a multiple of 16.
+    /// `x`, `g` and `b` must be readable for `d` floats, and `out` valid for
+    /// writes of `d` floats that no other thread accesses.
     #[target_feature(enable = "avx2,fma")]
     pub unsafe fn layer_norm_row(
         x: *const f32,
@@ -445,18 +446,22 @@ mod avx2 {
         // SAFETY: every access covers floats `i..i + 8` with `i + 8 <= d`
         // (`d % 8 == 0`), inside the caller's `d`-float buffers.
         unsafe {
-            let mut s = _mm256_setzero_ps();
-            for i in (0..d).step_by(8) {
-                s = _mm256_add_ps(s, _mm256_loadu_ps(x.add(i)));
+            let mut s = [_mm256_setzero_ps(); 2];
+            for i in (0..d).step_by(16) {
+                for (h, s) in s.iter_mut().enumerate() {
+                    *s = _mm256_add_ps(*s, _mm256_loadu_ps(x.add(i + h * 8)));
+                }
             }
-            let mean = hsum(s) / d as f32;
+            let mean = hsum16(s[0], s[1]) / d as f32;
             let mv = _mm256_set1_ps(mean);
-            let mut v = _mm256_setzero_ps();
-            for i in (0..d).step_by(8) {
-                let c = _mm256_sub_ps(_mm256_loadu_ps(x.add(i)), mv);
-                v = _mm256_fmadd_ps(c, c, v);
+            let mut v = [_mm256_setzero_ps(); 2];
+            for i in (0..d).step_by(16) {
+                for (h, v) in v.iter_mut().enumerate() {
+                    let c = _mm256_sub_ps(_mm256_loadu_ps(x.add(i + h * 8)), mv);
+                    *v = _mm256_fmadd_ps(c, c, *v);
+                }
             }
-            let var = hsum(v) / d as f32;
+            let var = hsum16(v[0], v[1]) / d as f32;
             let inv = _mm256_set1_ps(1.0 / (var + 1e-5).sqrt());
             for i in (0..d).step_by(8) {
                 let c = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(x.add(i)), mv), inv);
@@ -602,15 +607,18 @@ mod avx2 {
                 mx = _mm256_blendv_ps(mx, _mm256_max_ps(mx, v), _mm256_castsi256_ps(k));
             }
             let m = _mm256_set1_ps(hmax(mx));
-            let mut sum = _mm256_setzero_ps();
+            // Lanes 0..8 and 8..16 of each 16 values keep separate sums, as
+            // the AVX-512 kernel's 16 lanes do.
+            let mut sum = [_mm256_setzero_ps(); 2];
             for i in (0..n).step_by(8) {
                 let k = mask(i);
                 let v = _mm256_maskload_ps(p.add(i), k);
                 let e = _mm256_and_ps(exp_ps(_mm256_sub_ps(v, m)), _mm256_castsi256_ps(k));
-                sum = _mm256_add_ps(sum, e);
+                let half = i / 8 % 2;
+                sum[half] = _mm256_add_ps(sum[half], e);
                 _mm256_maskstore_ps(p.add(i), k, e);
             }
-            let inv = _mm256_set1_ps(1.0 / hsum(sum));
+            let inv = _mm256_set1_ps(1.0 / hsum16(sum[0], sum[1]));
             for i in (0..n).step_by(8) {
                 let k = mask(i);
                 let v = _mm256_mul_ps(_mm256_maskload_ps(p.add(i), k), inv);

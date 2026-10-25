@@ -1077,8 +1077,8 @@ mod x86 {
     }
 }
 
-/// The AVX2 kernels: the same products 8 lanes at a time (F16 weights through
-/// F16C), with one accumulator chain per vector.
+/// The AVX2 kernels: the AVX-512 arithmetic 8 lanes at a time, bit for bit
+/// (F16 weights through F16C).
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 mod avx2 {
@@ -1116,8 +1116,10 @@ mod avx2 {
         }
     }
 
-    /// Sum over `k` of superblock weights `[k][64]` times `x[k]`: eight
-    /// independent FMA chains, one per vector.
+    /// Sum over `k` of superblock weights `[k][64]` times `x[k]`, in the AVX-512
+    /// order: per output, one FMA chain over even `k` and one over odd `k`,
+    /// added at the end. Half the outputs at a time keeps the eight chains in
+    /// registers.
     ///
     /// # Safety
     /// The CPU must support AVX2, FMA and F16C; `w` must be readable for
@@ -1125,18 +1127,31 @@ mod avx2 {
     #[inline]
     #[target_feature(enable = "avx2,fma,f16c")]
     unsafe fn dot64<E: Elem>(w: *const E, k: usize, x: *const f32) -> [__m256; V] {
-        let mut a = [_mm256_setzero_ps(); V];
-        for i in 0..k {
-            // SAFETY: `i < k` (caller contract).
-            let xb = _mm256_set1_ps(unsafe { *x.add(i) });
-            // SAFETY: `i < k`, so weight row `i` lies inside `w`.
-            let wp = unsafe { w.add(i * SB) };
-            for v in 0..V {
-                // SAFETY: 8 of weight row `i`'s 64 values.
-                a[v] = _mm256_fmadd_ps(unsafe { E::load8(wp.add(v * 8)) }, xb, a[v]);
+        let mut out = [_mm256_setzero_ps(); V];
+        for half in 0..2 {
+            let mut a = [[_mm256_setzero_ps(); V / 2]; 2];
+            let mut i = 0;
+            while i < k {
+                // The last, odd `k` goes to the even chain, as in AVX-512.
+                for u in 0..2.min(k - i) {
+                    // SAFETY: `i + u < k` (caller contract).
+                    let xb = _mm256_set1_ps(unsafe { *x.add(i + u) });
+                    // SAFETY: `i + u < k`, so this half of weight row `i + u`
+                    // lies inside `w`.
+                    let wp = unsafe { w.add((i + u) * SB + half * SB / 2) };
+                    for v in 0..V / 2 {
+                        // SAFETY: 8 of the half row's 32 values.
+                        let wv = unsafe { E::load8(wp.add(v * 8)) };
+                        a[u][v] = _mm256_fmadd_ps(wv, xb, a[u][v]);
+                    }
+                }
+                i += 2;
+            }
+            for v in 0..V / 2 {
+                out[half * V / 2 + v] = _mm256_add_ps(a[0][v], a[1][v]);
             }
         }
-        a
+        out
     }
 
     fn superblock<E>(w: &[E], sb: usize, k: usize) -> *const E {
@@ -1572,6 +1587,29 @@ mod tests {
             min_gap > 1e-4,
             "token logits too close to compare: {min_gap}"
         );
+    }
+
+    /// Every tier projects the same encoder frames bit for bit (one-row
+    /// and six-row kernels) and decodes the same emissions.
+    #[test]
+    fn tiers_match_bit_for_bit() {
+        let p = DecoderParams::random(71, 32, 40, 48, 21);
+        for storage in [Storage::F32, Storage::F16] {
+            let d = PackedDecoder::new(&p, storage);
+            for frames in [1, 13, 48] {
+                let enc = encoder_frames(frames, p.enc_dim, 22);
+                let runs: Vec<_> = tier_pools(2)
+                    .map(|pool| {
+                        let proj = d.project_encoder(&pool, &enc, frames);
+                        let bits: Vec<u32> = proj.iter().map(|v| v.to_bits()).collect();
+                        (bits, d.decode(&pool, &proj, frames, None, None))
+                    })
+                    .collect();
+                for r in &runs {
+                    assert!(r == &runs[0], "{storage:?} frames={frames}");
+                }
+            }
+        }
     }
 
     /// Packed emissions for every storage, a few thread counts and every

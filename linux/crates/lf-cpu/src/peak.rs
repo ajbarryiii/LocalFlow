@@ -19,12 +19,16 @@ const CHAINS: usize = 16;
 
 /// Multiply-accumulates of one [`vnni_avx2`] or [`maddubs`] call.
 pub fn avx2_int8_macs(iters: u64) -> u64 {
-    iters * CHAINS as u64 * 32
+    iters * AVX2_CHAINS as u64 * 32
 }
 
 pub fn fma_avx2_macs(iters: u64) -> u64 {
-    iters * CHAINS as u64 * 8
+    iters * AVX2_CHAINS as u64 * 8
 }
+
+/// Chains of the AVX2 probes: with the two operands they fill 14 of the 16
+/// ymm registers (16 chains would spill).
+const AVX2_CHAINS: usize = 12;
 
 fn require(tier: Tier) {
     assert!(tier.supported(), "this CPU lacks {}", tier.requirements());
@@ -37,7 +41,7 @@ pub fn vnni_avx2(iters: u64) -> i32 {
     unsafe { avx2::vnni(iters) }
 }
 
-/// 16 chains of `vpmaddubsw` + `vpaddw` (32 multiply-accumulates per pair),
+/// 12 chains of `vpmaddubsw` + `vpaddw` (32 multiply-accumulates per pair),
 /// the AVX2 tier's INT8 step without VNNI.
 pub fn maddubs(iters: u64) -> i32 {
     require(Tier::Avx2 { vnni: false });
@@ -326,7 +330,7 @@ mod x86 {
 
 /// The AVX2 probes.
 mod avx2 {
-    use super::CHAINS;
+    use super::AVX2_CHAINS as CHAINS;
     use std::arch::x86_64::*;
 
     /// # Safety

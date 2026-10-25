@@ -855,6 +855,46 @@ mod tests {
         }
     }
 
+    /// Every tier computes the same layers bit for bit, at every precision,
+    /// so a transcript does not depend on the CPU.
+    #[test]
+    fn tiers_match_bit_for_bit() {
+        let layers = [layer(1), layer(2)];
+        let pools = tier_pools(&[0, 1, 2]);
+        for precision in PRECISIONS {
+            // Attention rows and softmax lengths that end inside 16-lane blocks.
+            for t in [1, 7, 40, 70] {
+                let outs: Vec<Vec<u32>> = pools
+                    .iter()
+                    .map(|pool| {
+                        let mut proj = Projector::new(precision, pool.threads());
+                        let mut buf = EncoderBuffers {
+                            x: rand(t * D_MODEL, 3000 + t as u64, 1.0),
+                            ..EncoderBuffers::default()
+                        };
+                        let mut cache = PositionCache::new(0);
+                        let mut timings = Timings::default();
+                        run_layers(
+                            &layers,
+                            pool,
+                            &mut proj,
+                            t,
+                            &mut buf,
+                            &mut cache,
+                            &mut timings,
+                        )
+                        .unwrap();
+                        bits(&buf.x[..t * D_MODEL])
+                    })
+                    .collect();
+                for (pool, out) in pools.iter().zip(&outs) {
+                    let (a, b) = (pool.tier(), pools[0].tier());
+                    assert!(out == &outs[0], "{a} vs {b}, {precision:?} t={t}");
+                }
+            }
+        }
+    }
+
     /// A binary export's layers, kept at 1 bit, give bit-identical outputs to
     /// the same weights widened to 2-bit ternary codes, at every precision.
     #[test]

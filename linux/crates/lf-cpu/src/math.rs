@@ -141,10 +141,13 @@ pub(crate) mod simd256 {
         _mm256_blendv_ps(big, small, use_small)
     }
 
-    /// Sum of the 8 lanes.
+    /// Sum of the 16 lanes of `lo` (lanes 0..8) and `hi` (8..16), added in
+    /// the order `_mm512_reduce_add_ps` adds a 16-lane vector: halves, then
+    /// quarters, then pairs, so AVX2 reductions round as the AVX-512 ones do.
     #[inline]
     #[target_feature(enable = "avx2")]
-    pub fn hsum(v: __m256) -> f32 {
+    pub fn hsum16(lo: __m256, hi: __m256) -> f32 {
+        let v = _mm256_add_ps(lo, hi);
         let s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps::<1>(v));
         let s = _mm_add_ps(s, _mm_movehl_ps(s, s));
         _mm_cvtss_f32(_mm_add_ss(s, _mm_movehdup_ps(s)))

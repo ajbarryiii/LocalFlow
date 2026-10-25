@@ -6,6 +6,10 @@
 //! model-dependent parts. The re-exports below let callers load and run a
 //! model without depending on `lf-cpu` or `lf-model` themselves.
 
+// There are no CPU kernels for other architectures yet (see `lf_cpu::tier`),
+// so everything after a pool hands out its tier is unreachable there.
+#![cfg_attr(not(target_arch = "x86_64"), allow(unused, unreachable_code))]
+
 pub mod config;
 pub mod dictionary;
 pub mod encoder;
@@ -51,9 +55,7 @@ impl Transcriber {
     /// Pins one worker per CPU in `cpus`; the calling thread becomes the first.
     /// Panics if no kernel [`tier`] can run here.
     pub fn new(model: Model, cpus: &[usize], precision: Precision) -> Self {
-        if let Err(e) = tier() {
-            panic!("{e}");
-        }
+        tier().unwrap_or_else(|e| panic!("{e}"));
         Transcriber::with_pool(model, ThreadPool::new(cpus), precision)
     }
 

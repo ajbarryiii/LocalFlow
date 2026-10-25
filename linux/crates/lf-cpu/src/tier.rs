@@ -6,6 +6,11 @@
 //! dot products use AVX-VNNI (`vpdpbusd`, VEX-encoded: Alder Lake and later,
 //! Zen 5) when the CPU has it, otherwise `vpmaddubsw` + `vpmaddwd`.
 //!
+//! Every tier computes the same results bit for bit: the AVX2 kernels keep
+//! the AVX-512 kernels' order of floating-point operations (reductions keep
+//! their 16 partial sums), and integer dot products are exact. So a
+//! transcript does not depend on the CPU.
+//!
 //! [`tier`] picks the best tier the CPU supports on its first call, unless
 //! [`ENV`] forces one; the choice is then fixed for the process. A
 //! [`crate::ThreadPool`] carries the tier its kernels run at, so tests and
