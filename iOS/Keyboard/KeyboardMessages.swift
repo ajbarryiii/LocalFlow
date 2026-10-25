@@ -5,6 +5,14 @@ import Foundation
 enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
+    static let preparingModel = "Preparing model…"
+    /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`).
+    static let listeningWhilePreparing = "Listening · preparing model"
+    /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
+    /// presentation"), nothing prepares it now.
+    static let modelLoadsWhenDictating = "Model loads when you dictate"
+    /// The Start capsule's label while a finished recording waits for the model.
+    static let preparingCaption = "Preparing"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
         + "your speech on this iPhone. Nothing leaves your phone."
@@ -27,10 +35,17 @@ enum KeyboardMessages {
         case .starting: return "Starting…"
         case .recording: return "Listening"
         case .transcribing: return "Transcribing…"
+        case .waitingForModel, .preparingModel: return preparingModel
         case .error(let code): return text(for: code)
         case .ready: return "Tap to dictate"
         case .hostUnavailable: return launcherFailed ? openLocalFlow : "Tap to start LocalFlow"
         }
+    }
+
+    /// Text beside the Start capsule's spinner. The capsule is never replaced by the candidate strip, the
+    /// chips or a notice, so the wait for the model is explained whatever else holds the bar.
+    static func capsuleCaption(for mode: KeyboardMode) -> String? {
+        mode == .waitingForModel ? preparingCaption : nil
     }
 
     static func text(for code: HostErrorCode) -> String {
@@ -76,12 +91,13 @@ enum KeyboardMessages {
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
         else { return nil }
         switch status.model {
-        case .preparing: return "Preparing model…"
+        case .preparing: return preparingModel
         case .failed: return "Model failed to load"
         case .unavailable: return "Model missing"
         case .notPrepared, .ready: break
         }
         guard status.session == .active else { return nil }
+        if status.model == .notPrepared { return modelLoadsWhenDictating }
         guard let expiresAt = status.sessionExpiresAt else { return "Session on" }
         let minutes = max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
         return "Session · \(minutes) min left"

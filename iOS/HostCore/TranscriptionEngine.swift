@@ -19,7 +19,8 @@ final class RecordedAudio: Sendable {
 @MainActor
 protocol HostTranscriber: AnyObject {
     var modelState: HostStatus.Model { get }
-    /// Starts preparing unless the model is ready or already preparing.
+    /// Starts preparing unless the model is ready or already preparing, or a failed preparation is still
+    /// backing off (the model then stays `failed`; ARCHITECTURE.md, "Transcription").
     func prepare()
     /// A transcription fed while the next recording is recorded, or nil unless the model is ready: the
     /// recording is then transcribed after it ends. Give it back in `RecordedAudio`, or cancel it.
@@ -56,7 +57,8 @@ protocol SpeechStream: AnyObject, Sendable {
 
 /// Owns the speech model runtime: preparation, readiness and transcription, always on the Neural Engine
 /// (contract: "No compute-policy picker"). At most one runtime is alive: it is released only while
-/// nothing prepares or transcribes, and a new one is created only after that.
+/// nothing prepares or transcribes, and a new one is created only after that. After a failed preparation,
+/// automatic attempts wait out `ModelPreparationBackoff`; only `retryPreparation()` (the user) skips it.
 @MainActor
 final class TranscriptionEngine: HostTranscriber {
     struct PreparationReport: Sendable {
@@ -95,6 +97,7 @@ final class TranscriptionEngine: HostTranscriber {
     private let now: @MainActor () -> Date
     private let makeRuntime: @MainActor () -> SpeechRuntime
     private var loaded: LoadedRuntime?
+    private var backoff = ModelPreparationBackoff()
     private var activeTranscriptions = 0
     /// Streams begun whose model work has not drained: the runtime is neither released nor replaced.
     private var activeStreams = 0
@@ -113,7 +116,18 @@ final class TranscriptionEngine: HostTranscriber {
 
     func prepare() {
         guard isAvailable else { return setState(.unavailable) }
+        guard loaded == nil, backoff.allowsAttempt(now: now()) else { return }
+        startPreparing()
+    }
+
+    /// The user's Prepare or Retry in the app: as `prepare()`, but at once even while a failure backs off.
+    func retryPreparation() {
+        guard isAvailable else { return setState(.unavailable) }
         guard loaded == nil else { return }
+        startPreparing()
+    }
+
+    private func startPreparing() {
         let handle = LoadedRuntime(runtime: makeRuntime())
         loaded = handle
         let started = now()
@@ -230,9 +244,11 @@ final class TranscriptionEngine: HostTranscriber {
         guard loaded === handle else { return }
         preparationStartedAt = nil
         if succeeded {
+            backoff.recordSuccess()
             setState(.ready)
         } else {
-            loaded = nil   // the next prepare() or transcription retries
+            backoff.recordFailure(at: now())
+            loaded = nil   // retried by the next prepare() or transcription once the backoff allows
             setState(.failed)
         }
     }
@@ -240,7 +256,7 @@ final class TranscriptionEngine: HostTranscriber {
     /// The loaded runtime once it is ready, preparing it first if needed.
     private func readyRuntime() async throws -> SpeechRuntime {
         try Task.checkCancellation()
-        if loaded == nil { prepare() }   // never prepared, released, or failed before
+        if loaded == nil { prepare() }   // never prepared, released, or failed and no longer backing off
         guard let handle = loaded else { throw TranscriptionFailure.modelFailed }
         try await waitUntilReady(handle)
         // Readiness and a cancellation can resume together: never start work for a cancelled request.

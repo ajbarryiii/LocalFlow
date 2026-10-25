@@ -145,17 +145,17 @@ final class KeyboardDictationClient: ObservableObject {
     func micTapped() {
         notice = nil
         switch state.mode {
-        case .ready: startDictation(openingHost: false)
+        case .ready, .preparingModel: startDictation(openingHost: false)
         case .hostUnavailable: startDictation(openingHost: true)
         case .error:
             // The error is informational; start the way the host's current state allows.
             switch KeyboardPresenter.mode(access: access, status: shownStatus, intent: .absent, now: Date()) {
-            case .ready: startDictation(openingHost: false)
+            case .ready, .preparingModel: startDictation(openingHost: false)
             case .hostUnavailable: startDictation(openingHost: true)
             default: break
             }
         case .starting, .recording: send(.finish)
-        case .transcribing, .needsFullAccess, .configurationError, .incompatible: break
+        case .transcribing, .waitingForModel, .needsFullAccess, .configurationError, .incompatible: break
         }
         refresh()
     }
@@ -163,7 +163,7 @@ final class KeyboardDictationClient: ObservableObject {
     func cancelTapped() {
         notice = nil
         switch state.mode {
-        case .starting, .recording, .transcribing: send(.cancel)
+        case .starting, .recording, .transcribing, .waitingForModel: send(.cancel)
         default: break
         }
         refresh()
@@ -355,6 +355,9 @@ final class KeyboardDictationClient: ObservableObject {
         var title = KeyboardMessages.title(for: mode, launcherFailed: launcherFailed)
         if mode == .starting, let pending = unlaunchedRequestID, intent.value?.requestID == pending {
             title = KeyboardMessages.openLocalFlow
+        }
+        if case .recording = mode, KeyboardPresenter.isModelPreparing(status: status, now: now) {
+            title = KeyboardMessages.listeningWhilePreparing
         }
         // A notice is rendered on its own, so no mode (ready included) can hide it.
         if let current = notice, current.until <= now { notice = nil }

@@ -131,6 +131,17 @@ enum HostSessionPolicy {
         isForeground || isDictationInProgress
     }
 
+    /// Admission, after asking the model to prepare (ARCHITECTURE.md, "Admission"): a missing model, or a
+    /// model still `failed` because a failed preparation is backing off, fails the request at once rather
+    /// than recording audio that cannot be transcribed. Nil: the request records.
+    static func admissionFailure(model: HostStatus.Model) -> HostErrorCode? {
+        switch model {
+        case .unavailable: return .modelUnavailable
+        case .failed: return .modelFailed
+        case .notPrepared, .preparing, .ready: return nil
+        }
+    }
+
     /// The reconciler's `cancel(R)`. For a `finish` that reached a request still starting nothing was
     /// captured, which is reported as failed `.notRecording`; a keyboard `cancel` is a plain cancel.
     static func cancelOutcome(intentAction: KeyboardIntent.Action?) -> DictationOutcome {

@@ -211,6 +211,7 @@ final class HostSessionCore {
         guard isLaunched, session == .inactive, !isLocked else { return }
         let now = environment.now()
         guard noteForeground(now) else { return }
+        transcriber.prepare()   // in parallel with audio startup, as admission does
         startSession(now)
         flush(now)
     }
@@ -298,8 +299,8 @@ final class HostSessionCore {
     }
 
     /// The transcriber's model state changed. Acted on in the next turn, so a change made in the middle
-    /// of a transition (preparation starts inside `startSession`) never publishes a half-applied state
-    /// or re-enters the transcriber.
+    /// of a transition (preparation starts inside admission and `userStartSession`) never publishes a
+    /// half-applied state or re-enters the transcriber.
     func modelStateChanged() {
         needsPublish = true
         DispatchQueue.main.async { [weak self] in
@@ -371,10 +372,14 @@ final class HostSessionCore {
         capture.recordingBoundary()
         idleSince = nil
         needsPublish = true
-        if transcriber.modelState == .unavailable {
+        // Admission starts preparing a model that is not prepared (released after a memory warning, or never
+        // prepared), so it prepares while the user speaks, and the keyboard is told, instead of when the
+        // recording ends. A missing model, or a failed one still backing off, fails the request at once.
+        transcriber.prepare()
+        if let code = HostSessionPolicy.admissionFailure(model: transcriber.modelState) {
             buffer.cancel(requestID: requestID)
             capture.recordingBoundary()
-            slot.end(ticket, .failed, error: .modelUnavailable, now: now)
+            slot.end(ticket, .failed, error: code, now: now)
             dictationEnded(now)
         } else if session == .inactive {
             startSession(now)
@@ -618,7 +623,6 @@ final class HostSessionCore {
         sessionID = UUID()
         sessionError = nil
         needsPublish = true
-        transcriber.prepare()   // in parallel with audio startup; transcription waits for it
         continueSessionStart(sessionGeneration, now)
     }
 

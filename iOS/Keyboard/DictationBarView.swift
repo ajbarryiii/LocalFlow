@@ -332,7 +332,7 @@ private struct StartCapsule: View {
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
-        .allowsHitTesting(state.mode != .transcribing)
+        .allowsHitTesting(!state.mode.isWaitingForTranscript)
         .opacity(state.mode.allowsDictation ? 1 : 0.45)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isActiveCapture)
         .accessibilityLabel(accessibilityLabel)
@@ -359,8 +359,14 @@ private struct StartCapsule: View {
                 Text("Stop").font(.subheadline.weight(.semibold))
             }
             .foregroundStyle(.white)
-        case .transcribing:
-            ProgressView().tint(foreground).controlSize(.small)
+        case .transcribing, .waitingForModel:
+            HStack(spacing: 7) {
+                ProgressView().tint(foreground).controlSize(.small)
+                if let caption = KeyboardMessages.capsuleCaption(for: state.mode) {
+                    Text(caption).font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+                }
+            }
+            .foregroundStyle(foreground)
         default:
             HStack(spacing: 6) {
                 Image(systemName: "waveform").font(.system(size: 15, weight: .semibold))
@@ -381,6 +387,7 @@ private struct StartCapsule: View {
         switch state.mode {
         case .starting, .recording: return "Stop dictation"
         case .transcribing: return "Transcribing"
+        case .waitingForModel: return "Preparing model"
         default: return "Start dictation"
         }
     }
@@ -517,10 +524,13 @@ private struct PressableStyle: ButtonStyle {
 private extension KeyboardMode {
     var isInProgress: Bool {
         switch self {
-        case .starting, .recording, .transcribing: return true
+        case .starting, .recording, .transcribing, .waitingForModel: return true
         default: return false
         }
     }
+
+    /// The recording ended: the capsule is a spinner that takes no taps.
+    var isWaitingForTranscript: Bool { self == .transcribing || self == .waitingForModel }
 
     var isRecording: Bool {
         if case .recording = self { return true }

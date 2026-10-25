@@ -17,6 +17,7 @@ enum HostSessionPolicyTests {
             ("onlyALateIntentProvesAnUnlock", testOnlyALateIntentProvesAnUnlock),
             ("bounceClosesInTheBackgroundOnceIdle", testBounceClosesInTheBackgroundOnceIdle),
             ("statusCaptureReadyAndLevel", testStatusCaptureReadyAndLevel),
+            ("admissionFailsOnlyForAMissingOrBackingOffModel", testAdmissionFailsOnlyForAMissingOrBackingOffModel),
         ]
     }
 
@@ -183,5 +184,15 @@ enum HostSessionPolicyTests {
         TestSupport.expectEqual(status().level, 0)
         TestSupport.expectEqual(status(dictation: Fixture.dictation(.starting)).level, 0)
         TestSupport.expectEqual(status(dictation: Fixture.dictation(.recording)).level, 0.7)
+    }
+
+    /// Admission has already asked the model to prepare: a missing model, or one still `failed` because a
+    /// failed preparation is backing off, fails the request at once; any other state records.
+    private static func testAdmissionFailsOnlyForAMissingOrBackingOffModel() {
+        TestSupport.expectEqual(HostSessionPolicy.admissionFailure(model: .unavailable), .modelUnavailable)
+        TestSupport.expectEqual(HostSessionPolicy.admissionFailure(model: .failed), .modelFailed)
+        for model in [HostStatus.Model.notPrepared, .preparing, .ready] {
+            TestSupport.expectEqual(HostSessionPolicy.admissionFailure(model: model), nil)
+        }
     }
 }
