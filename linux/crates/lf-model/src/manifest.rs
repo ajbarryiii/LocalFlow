@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::{EXPORT_FORMAT, Result, SafeTensors, bail};
+use crate::{Result, SafeTensors, WeightFormat, bail};
 
 pub struct Manifest {
     pub format: String,
@@ -48,6 +48,14 @@ impl Manifest {
                 .unwrap_or(serde_json::Value::Null),
         })
     }
+
+    /// The weight packing named by `format`; other formats are refused.
+    pub fn weight_format(&self) -> Result<WeightFormat> {
+        match WeightFormat::parse(&self.format) {
+            Some(f) => Ok(f),
+            None => bail!("unsupported export format {}", self.format),
+        }
+    }
 }
 
 fn is_plain_relative(path: &str) -> bool {
@@ -81,6 +89,8 @@ fn hex(bytes: &[u8]) -> String {
 pub struct Export {
     pub dir: PathBuf,
     pub manifest: Manifest,
+    /// From the manifest, and the same in the tensor file's metadata.
+    pub format: WeightFormat,
     pub tensors: SafeTensors,
 }
 
@@ -91,9 +101,7 @@ impl Export {
     pub fn open(dir: &Path) -> Result<Self> {
         let dir = dir.canonicalize()?;
         let manifest = Manifest::parse(&std::fs::read(dir.join("manifest.json"))?)?;
-        if manifest.format != EXPORT_FORMAT {
-            bail!("unsupported export format {}", manifest.format);
-        }
+        let format = manifest.weight_format()?;
         let Some(tensor_hash) = manifest.files.get(TENSOR_FILE) else {
             bail!("manifest does not list {TENSOR_FILE}");
         };
@@ -106,12 +114,13 @@ impl Export {
                 bail!("{path}: SHA-256 mismatch");
             }
         }
-        if tensors.metadata.get("format").map(String::as_str) != Some(EXPORT_FORMAT) {
-            bail!("{TENSOR_FILE}: unexpected format metadata");
+        if tensors.metadata.get("format").map(String::as_str) != Some(format.name()) {
+            bail!("{TENSOR_FILE}: format metadata does not match the manifest");
         }
         Ok(Export {
             dir,
             manifest,
+            format,
             tensors,
         })
     }
@@ -121,9 +130,7 @@ impl Export {
     pub fn read_one(dir: &Path, path: &str) -> Result<(Manifest, Vec<u8>)> {
         let dir = dir.canonicalize()?;
         let manifest = Manifest::parse(&std::fs::read(dir.join("manifest.json"))?)?;
-        if manifest.format != EXPORT_FORMAT {
-            bail!("unsupported export format {}", manifest.format);
-        }
+        manifest.weight_format()?;
         let Some(hash) = manifest.files.get(path) else {
             bail!("manifest does not list {path}");
         };
@@ -173,6 +180,47 @@ mod tests {
         assert!(contained(&dir, "inside.txt").is_ok());
         assert!(contained(&dir, "link.txt").is_err());
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A one-tensor export in a fresh directory, with the manifest naming
+    /// `manifest_format` and the tensor file's metadata `file_format`.
+    fn tiny_export(tag: &str, manifest_format: &str, file_format: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lf-export-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = format!(
+            r#"{{"__metadata__":{{"format":"{file_format}"}},"m.scale":{{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}}}"#
+        );
+        let mut file = (header.len() as u64).to_le_bytes().to_vec();
+        file.extend_from_slice(header.as_bytes());
+        file.extend_from_slice(&1.0f32.to_le_bytes());
+        let manifest = format!(
+            r#"{{"format":"{manifest_format}","files":{{"{TENSOR_FILE}":"{}"}}}}"#,
+            sha256_hex(&file)
+        );
+        std::fs::write(dir.join(TENSOR_FILE), file).unwrap();
+        std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+        dir
+    }
+
+    #[test]
+    fn opens_both_formats_and_refuses_others() {
+        for f in [WeightFormat::Ternary, WeightFormat::Binary] {
+            let dir = tiny_export(f.name(), f.name(), f.name());
+            assert_eq!(Export::open(&dir).unwrap().format, f);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        let mixed = tiny_export("mixed", crate::BINARY_FORMAT, crate::TERNARY_FORMAT);
+        assert!(Export::open(&mixed).is_err());
+        std::fs::remove_dir_all(&mixed).unwrap();
+        let unknown = tiny_export(
+            "unknown",
+            "parakeet-quaternary-v1",
+            "parakeet-quaternary-v1",
+        );
+        assert!(Export::open(&unknown).is_err());
+        assert!(Export::read_one(&unknown, TENSOR_FILE).is_err());
+        std::fs::remove_dir_all(&unknown).unwrap();
     }
 
     #[test]

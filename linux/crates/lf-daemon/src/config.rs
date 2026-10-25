@@ -82,8 +82,9 @@ pub struct Config {
     /// Directory holding `export.safetensors`, `manifest.json` and `tokenizer/`.
     pub export_path: PathBuf,
     pub precision: Precision,
-    /// CPUs for the recognizer's pinned thread pool. `None`: the first
-    /// `min(16, available)` CPUs the daemon may run on.
+    /// CPUs for the recognizer's pinned thread pool. `None`: one CPU per
+    /// physical core the daemon may run on (SMT siblings skipped), whole L3
+    /// domains largest first, at most 16 (`lf_asr::topology`).
     pub cpus: Option<Vec<usize>>,
     pub press_enter: bool,
     pub spoken_delimiters: bool,
@@ -113,6 +114,28 @@ pub struct Config {
     /// output (and the portal when the desktop sends no keymap). Empty
     /// fields take libxkbcommon's defaults.
     pub keyboard_layout: Rmlvo,
+    /// How the dictation key reaches the daemon.
+    pub trigger: Trigger,
+}
+
+/// How the dictation key reaches the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    /// Desktop binds run `localflowctl press`, `release`, `toggle`.
+    Commands,
+    /// The daemon also binds shortcuts through the xdg-desktop-portal
+    /// GlobalShortcuts interface (GNOME, KDE); `localflowctl` still works.
+    Portal,
+}
+
+impl Trigger {
+    pub fn parse(s: &str) -> Option<Trigger> {
+        match s {
+            "commands" => Some(Trigger::Commands),
+            "portal" => Some(Trigger::Portal),
+            _ => None,
+        }
+    }
 }
 
 /// Longest accepted `prompt_tag`, in characters.
@@ -146,6 +169,7 @@ impl Config {
             double_tap_ms: 400,
             output: Output::Auto,
             keyboard_layout: Rmlvo::default(),
+            trigger: Trigger::Commands,
         }
     }
 
@@ -280,6 +304,12 @@ impl Config {
                         .ok_or("output must be one of auto, wayland, portal, uinput")?;
                 }
                 "keyboard_layout" => c.keyboard_layout = parse_layout(v)?,
+                "trigger" => {
+                    c.trigger = v
+                        .as_str()
+                        .and_then(Trigger::parse)
+                        .ok_or("trigger must be one of commands, portal")?;
+                }
                 other => return Err(unknown_key(other)),
             }
         }
@@ -310,7 +340,7 @@ fn unknown_key(_key: &str) -> String {
     "unknown key; allowed keys are version, export_path, precision, cpus, press_enter, \
      spoken_delimiters, spoken_numbers, voice_macros, history, min_recording_seconds, \
      max_recording_seconds, log_level, input_device, key_delay_ms, pause_media, \
-     prompt_tag, double_tap_ms, output, keyboard_layout"
+     prompt_tag, double_tap_ms, output, keyboard_layout, trigger"
         .into()
 }
 
@@ -467,18 +497,7 @@ fn parse_macros(v: &Value) -> Result<Vec<VoiceMacro>, String> {
         .collect()
 }
 
-/// The CPUs this process may run on, ascending.
-pub fn allowed_cpus() -> Vec<usize> {
-    // SAFETY: `set` is a plain bitmask written by the kernel; CPU_ISSET only
-    // reads it within CPU_SETSIZE.
-    unsafe {
-        let mut set: libc::cpu_set_t = std::mem::zeroed();
-        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
-            return Vec::new();
-        }
-        (0..MAX_CPU).filter(|&c| libc::CPU_ISSET(c, &set)).collect()
-    }
-}
+pub use lf_asr::topology::allowed_cpus;
 
 /// Resolves the configured CPU list against the CPUs available to the process.
 pub fn resolve_cpus(configured: Option<&[usize]>) -> Result<Vec<usize>, String> {
@@ -487,7 +506,7 @@ pub fn resolve_cpus(configured: Option<&[usize]>) -> Result<Vec<usize>, String> 
         return Err("cannot read the CPU affinity mask".into());
     }
     match configured {
-        None => Ok(allowed.into_iter().take(16).collect()),
+        None => Ok(lf_asr::topology::Topology::read(&allowed).default_cpus()),
         Some(cpus) => {
             if let Some(&bad) = cpus.iter().find(|c| !allowed.contains(c)) {
                 return Err(format!("cpus: CPU {bad} is not available to this process"));
@@ -708,6 +727,36 @@ mod tests {
     }
 
     #[test]
+    fn trigger() {
+        assert_eq!(parse("{}").unwrap().trigger, Trigger::Commands);
+        assert_eq!(
+            parse(r#"{"trigger": "commands"}"#).unwrap().trigger,
+            Trigger::Commands
+        );
+        assert_eq!(
+            parse(r#"{"trigger": "portal"}"#).unwrap().trigger,
+            Trigger::Portal
+        );
+        for bad in [
+            r#"{"trigger": "Portal"}"#,
+            r#"{"trigger": "synthetic-secret"}"#,
+            r#"{"trigger": ""}"#,
+            r#"{"trigger": null}"#,
+            r#"{"trigger": true}"#,
+            r#"{"trigger": ["portal"]}"#,
+        ] {
+            let e = parse(bad).unwrap_err();
+            // Names the field and the choices, never the value.
+            assert!(
+                e.contains("trigger") && e.contains("commands, portal"),
+                "{e}"
+            );
+            assert!(!e.contains("secret"), "{e}");
+        }
+        assert!(parse(r#"{"unknown": 1}"#).unwrap_err().contains("trigger"));
+    }
+
+    #[test]
     fn device_name_length_is_bounded() {
         let ok = format!(r#"{{"input_device": "{}"}}"#, "a".repeat(MAX_DEVICE_NAME));
         assert!(parse(&ok).is_ok());
@@ -759,6 +808,7 @@ mod tests {
     fn default_cpus_come_from_the_affinity_mask() {
         let cpus = resolve_cpus(None).unwrap();
         assert!(!cpus.is_empty() && cpus.len() <= 16);
+        assert!(cpus.iter().all(|c| allowed_cpus().contains(c)));
         assert!(resolve_cpus(Some(&[MAX_CPU - 1])).is_err() || allowed_cpus().len() == MAX_CPU);
     }
 }

@@ -576,7 +576,10 @@ dependencies = [
 name = "lf-daemon"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
+ "async-io",
  "claxon",
+ "futures-lite",
  "lf-asr",
  "lf-dictation",
  "lf-io-api",

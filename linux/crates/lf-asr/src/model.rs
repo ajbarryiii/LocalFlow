@@ -3,7 +3,7 @@
 use lf_cpu::PackedTernary;
 use lf_cpu::decoder::{DecoderParams, PackedDecoder, Storage};
 use lf_cpu::dense::Panels;
-use lf_model::{Error, Export, Result, SafeTensors, TernaryMatrix};
+use lf_model::{Error, Export, QuantizedMatrix, Result, SafeTensors, WeightFormat};
 
 use crate::config::*;
 use crate::tokenizer::Tokenizer;
@@ -79,15 +79,23 @@ fn tensor(st: &SafeTensors, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
     Ok(v)
 }
 
-fn ternary(st: &SafeTensors, name: &str, rows: usize, cols: usize) -> Result<PackedTernary> {
-    let m = TernaryMatrix::from_export(st, name)?;
-    if m.rows != rows || m.cols != cols {
+/// An encoder projection, kept at the export's code width (2 or 1 bits).
+fn projection(
+    st: &SafeTensors,
+    format: WeightFormat,
+    name: &str,
+    rows: usize,
+    cols: usize,
+) -> Result<PackedTernary> {
+    let m = QuantizedMatrix::from_export(st, format, name)?;
+    if m.rows() != rows || m.cols() != cols {
         return Err(Error(format!(
             "{name}: {}x{}, expected {rows}x{cols}",
-            m.rows, m.cols
+            m.rows(),
+            m.cols()
         )));
     }
-    PackedTernary::new(&m)
+    PackedTernary::pack(&m)
 }
 
 /// `[256][1][3][3]` (out, in, dt, df) to tap-major `[9][256]`.
@@ -131,7 +139,7 @@ impl Model {
         let frontend = load_frontend(st)?;
         let sub = load_subsampling(st)?;
         let layers = (0..LAYERS)
-            .map(|l| load_layer(st, l))
+            .map(|l| load_layer(st, export.format, l))
             .collect::<Result<Vec<_>>>()?;
         let params = DecoderParams::from_export(st, DURATIONS.to_vec())?;
         if params.vocab != VOCAB + 1 || params.enc_dim != D_MODEL {
@@ -209,7 +217,7 @@ fn load_subsampling(st: &SafeTensors) -> Result<Subsampling> {
     })
 }
 
-fn load_layer(st: &SafeTensors, l: usize) -> Result<Layer> {
+fn load_layer(st: &SafeTensors, format: WeightFormat, l: usize) -> Result<Layer> {
     let p = format!("encoder.layers.{l}");
     let norm = |name: &str| -> Result<Norm> {
         Ok(Norm {
@@ -217,7 +225,9 @@ fn load_layer(st: &SafeTensors, l: usize) -> Result<Layer> {
             beta: tensor(st, &format!("{p}.{name}.bias"), &[D_MODEL])?,
         })
     };
-    let t = |name: &str, rows: usize, cols: usize| ternary(st, &format!("{p}.{name}"), rows, cols);
+    let t = |name: &str, rows: usize, cols: usize| {
+        projection(st, format, &format!("{p}.{name}"), rows, cols)
+    };
     // Fold eval-mode batch norm into the depthwise convolution (no conv bias).
     let dw = tensor(
         st,

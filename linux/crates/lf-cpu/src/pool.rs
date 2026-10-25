@@ -1,4 +1,5 @@
-//! A small persistent thread pool with pinned workers.
+//! A small persistent thread pool, with workers pinned to CPUs or placed by
+//! the scheduler. A pool also fixes the [`Tier`] its kernels run at.
 //!
 //! `run` hands the same job to every thread, including the caller as index 0,
 //! and returns when all of them finish. Workers spin briefly between jobs and
@@ -17,6 +18,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle, Thread};
+
+use crate::{Tier, TierError};
 
 type Job = *const (dyn Fn(usize) + Sync);
 
@@ -41,31 +44,60 @@ pub struct ThreadPool {
     shared: Arc<Shared>,
     workers: Vec<(Thread, JoinHandle<()>)>,
     busy: AtomicBool,
+    /// The tier every kernel run on this pool uses; `Ok` only for a tier
+    /// this CPU supports.
+    tier: Result<Tier, TierError>,
 }
 
 const SPIN_ITERATIONS: u32 = 200_000;
 
 impl ThreadPool {
-    /// One thread per CPU in `cpus`; the caller becomes index 0 and is pinned to `cpus[0]`.
+    /// One thread per CPU in `cpus`; the caller becomes index 0 and is pinned
+    /// to `cpus[0]`. Kernels run at the process's [`crate::tier`].
     pub fn new(cpus: &[usize]) -> Self {
         assert!(!cpus.is_empty());
         pin_current_thread(cpus[0]);
+        Self::spawn(cpus.len(), |i| Some(cpus[i]))
+    }
+
+    /// `threads` threads (the caller is index 0) that the scheduler places
+    /// freely; nobody's affinity is changed.
+    pub fn unpinned(threads: usize) -> Self {
+        assert!(threads > 0);
+        Self::spawn(threads, |_| None)
+    }
+
+    /// The same pool with its kernels at `tier` instead of the process's.
+    /// Panics if this CPU does not support `tier`.
+    pub fn with_tier(mut self, tier: Tier) -> Self {
+        assert!(
+            tier.supported(),
+            "this CPU lacks {} for the {tier} kernels",
+            tier.requirements()
+        );
+        self.tier = Ok(tier);
+        self
+    }
+
+    /// Workers `1..threads`, worker `i` pinned to `cpu(i)` when it is `Some`.
+    fn spawn(threads: usize, cpu: impl Fn(usize) -> Option<usize>) -> Self {
         let shared = Arc::new(Shared {
             generation: AtomicU64::new(0),
             pending: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
             job: UnsafeCell::new(None),
         });
-        let workers = cpus[1..]
-            .iter()
-            .enumerate()
-            .map(|(i, &cpu)| {
+        let workers = (1..threads)
+            .map(|i| {
                 let shared = Arc::clone(&shared);
+                let pin = cpu(i);
                 let handle = thread::Builder::new()
-                    .name(format!("lf-cpu-{}", i + 1))
+                    .name(format!("lf-cpu-{i}"))
                     .spawn(move || {
-                        pin_current_thread(cpu);
-                        worker_loop(&shared, i + 1);
+                        if let Some(cpu) = pin {
+                            pin_current_thread(cpu);
+                        }
+                        worker_loop(&shared, i);
                     })
                     .expect("spawn worker");
                 (handle.thread().clone(), handle)
@@ -75,11 +107,26 @@ impl ThreadPool {
             shared,
             workers,
             busy: AtomicBool::new(false),
+            tier: crate::tier(),
         }
     }
 
     pub fn threads(&self) -> usize {
         self.workers.len() + 1
+    }
+
+    /// The tier this pool's kernels run at. Panics, before any kernel work,
+    /// if none could be chosen.
+    pub fn tier(&self) -> Tier {
+        match &self.tier {
+            Ok(t) => *t,
+            Err(e) => panic!("no CPU kernels: {e}"),
+        }
+    }
+
+    /// The tier, if one could be chosen.
+    pub(crate) fn try_tier(&self) -> Option<Tier> {
+        self.tier.as_ref().ok().copied()
     }
 
     pub fn run(&self, f: &(dyn Fn(usize) + Sync)) {
