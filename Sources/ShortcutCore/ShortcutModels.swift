@@ -52,7 +52,7 @@ enum RecordingTriggerMode: String, Codable {
     }
 }
 
-enum ShortcutRole {
+enum ShortcutRole: CaseIterable {
     case hold
     case toggle
     case copyAgain

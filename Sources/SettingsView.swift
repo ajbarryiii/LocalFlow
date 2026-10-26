@@ -67,9 +67,9 @@ struct DictationPaceView: View {
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var updateManager = UpdateManager.shared
-    @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
-    @AppStorage("use_compact_overlay") private var useCompactOverlay = true
-    @AppStorage("overlay_display_id") private var overlayDisplayID = 0
+    @AppStorage(SettingsKeys.showMenuBarIcon.name) private var showMenuBarIcon = SettingsKeys.showMenuBarIcon.defaultValue
+    @AppStorage(SettingsKeys.useCompactOverlay.name) private var useCompactOverlay = SettingsKeys.useCompactOverlay.defaultValue
+    @AppStorage(SettingsKeys.overlayDisplayID.name) private var overlayDisplayID = SettingsKeys.overlayDisplayID.defaultValue
     @State private var micGranted = false
     private let permissionRefresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -160,8 +160,8 @@ struct GeneralSettingsView: View {
     }
 
     private func refreshPermissions() {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        appState.hasAccessibility = AXIsProcessTrusted()
+        micGranted = PrivacyPermission.microphone.isGranted
+        appState.hasAccessibility = PrivacyPermission.accessibility.isGranted
     }
 
     private func permissionRow(_ permission: PrivacyPermission, granted: Bool, action: @escaping () -> Void) -> some View {
@@ -172,14 +172,7 @@ struct GeneralSettingsView: View {
                 if granted { Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 else { Button("Grant Access", action: action) }
             }
-            if !granted {
-                Text(permission.enableInstructions(appName: AppName.displayName)).font(.caption).foregroundStyle(.secondary)
-                if permission == .accessibility {
-                    Text(PrivacyPermission.accessibilityRepairInstructions).font(.caption).foregroundStyle(.secondary)
-                    Button("Show This App in Finder") { appState.revealAppForPermissionRepair() }
-                        .accessibilityLabel("Show This App in Finder")
-                }
-            }
+            if !granted { PermissionRepairHint(permission: permission) }
         }
     }
 }

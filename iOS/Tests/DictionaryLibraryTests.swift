@@ -93,7 +93,7 @@ enum DictionaryLibraryTests {
         withDefaults { defaults in
             let library = DictionaryLibrary(defaults: defaults, encoder: encoder)
             _ = library.save(text: "Zorblax", strength: 1, replacing: nil)
-            let stored = defaults.object(forKey: DictionaryLibrary.entriesKey) as? Data
+            let stored = defaults.object(forKey: DictionaryStorage.entriesKey) as? Data
             let revision = library.revision
             TestSupport.expectEqual(library.save(text: "   ", strength: 1, replacing: nil), DictionaryEntryError.empty.message)
             TestSupport.expectEqual(library.save(text: "Zor#blax", strength: 1, replacing: nil),
@@ -102,7 +102,7 @@ enum DictionaryLibraryTests {
                                     DictionaryEntryError.invalidStrength.message)
             TestSupport.expectEqual(library.revision, revision)
             TestSupport.expectEqual(library.entries, [DictionaryEntry(text: "Zorblax", strength: 1)])
-            TestSupport.expectEqual(defaults.object(forKey: DictionaryLibrary.entriesKey) as? Data, stored)
+            TestSupport.expectEqual(defaults.object(forKey: DictionaryStorage.entriesKey) as? Data, stored)
         }
     }
 
@@ -113,15 +113,16 @@ enum DictionaryLibraryTests {
             TestSupport.expect(!library.canEdit, "edits allowed without a vocabulary")
             TestSupport.expectEqual(library.save(text: "Zorblax", strength: 1, replacing: nil), DictionaryEditor.unavailableMessage)
             TestSupport.expectEqual(library.entries, [])
-            TestSupport.expectEqual(defaults.object(forKey: DictionaryLibrary.entriesKey) == nil, true)
+            TestSupport.expectEqual(defaults.object(forKey: DictionaryStorage.entriesKey) == nil, true)
         }
     }
 
     @MainActor
     private static func testUnreadableDataIsKeptUntilReset() {
-        for bad in [Data("not json".utf8) as Any, "a string, not data" as Any] {
+        let unreadable = [Data("not json".utf8) as Any, "a string, not data" as Any]
+        for (key, bad) in [DictionaryStorage.entriesKey, DictionaryStorage.ignoreKey].flatMap({ key in unreadable.map { (key, $0) } }) {
             withDefaults { defaults in
-                defaults.set(bad, forKey: DictionaryLibrary.entriesKey)
+                defaults.set(bad, forKey: key)
                 let library = DictionaryLibrary(defaults: defaults, encoder: encoder)
                 TestSupport.expect(library.loadFailed, "unreadable data loaded")
                 TestSupport.expectEqual(library.entries, [])
@@ -129,7 +130,7 @@ enum DictionaryLibraryTests {
                 TestSupport.expect(!library.canEdit, "edits allowed over unreadable data")
                 TestSupport.expect(library.save(text: "Zorblax", strength: 1, replacing: nil) != nil, "save over unreadable data")
                 TestSupport.expect(library.setStrength(2, for: DictionaryKey("Zorblax")) != nil, "strength over unreadable data")
-                TestSupport.expect((defaults.object(forKey: DictionaryLibrary.entriesKey) as AnyObject).isEqual(bad),
+                TestSupport.expect((defaults.object(forKey: key) as AnyObject).isEqual(bad),
                                    "unreadable data was overwritten")
 
                 var changes = 0
@@ -138,7 +139,7 @@ enum DictionaryLibraryTests {
                 library.reset()
                 TestSupport.expect(!library.loadFailed, "still failed after reset")
                 TestSupport.expect(library.canEdit, "no edits after reset")
-                TestSupport.expect(defaults.object(forKey: DictionaryLibrary.entriesKey) == nil, "reset kept the data")
+                TestSupport.expect(defaults.object(forKey: key) == nil, "reset kept the data")
                 TestSupport.expect(library.revision > revision, "reset did not raise revision")
                 TestSupport.expectEqual(changes, 1)
                 TestSupport.expectEqual(library.save(text: "Zorblax", strength: 1, replacing: nil), nil)
@@ -149,10 +150,12 @@ enum DictionaryLibraryTests {
     @MainActor
     private static func testMacFormatLoadsAndKeepsIgnoreList() {
         withDefaults { defaults in
+            TestSupport.expectEqual(DictionaryStorage.entriesKey, "custom_dictionary")
+            TestSupport.expectEqual(DictionaryStorage.ignoreKey, "custom_dictionary_ignore")
             // Written exactly as the macOS app writes it.
             defaults.set(Data(#"{"entries":[{"strength":1.41,"text":"Zorblax"}],"version":1}"#.utf8),
-                         forKey: DictionaryLibrary.entriesKey)
-            defaults.set(Data(#"{"ignore":["quint"],"version":1}"#.utf8), forKey: DictionaryLibrary.ignoreKey)
+                         forKey: DictionaryStorage.entriesKey)
+            defaults.set(Data(#"{"ignore":["quint"],"version":1}"#.utf8), forKey: DictionaryStorage.ignoreKey)
             let library = DictionaryLibrary(defaults: defaults, encoder: encoder)
             TestSupport.expect(!library.loadFailed, "macOS data did not load")
             TestSupport.expectEqual(library.entries, [DictionaryEntry(text: "Zorblax", strength: 1.41)])

@@ -15,12 +15,14 @@ SOURCES = $(shell find Sources -name '*.swift' -type f | LC_ALL=C sort)
 TEST_RUNNER = $(BUILD_DIR)/LocalFlowTests
 TEST_PRODUCTION_SOURCES = \
 	Sources/AppName.swift \
+	Sources/ClipboardTransaction.swift \
 	Sources/DictationStats.swift \
 	Sources/PrivacyPermission.swift \
 	Sources/LocalDictationCore.swift \
 	Sources/OverlayWaveformMetrics.swift \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
+	Sources/SettingsKeys.swift \
 	Sources/SetupFlowCore.swift \
 	Sources/SpokenNumberFormatter.swift \
 	Sources/Dictionary/BiasGraph.swift \
@@ -51,7 +53,8 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/ShortcutCore/DictationShortcutSessionController.swift \
 	Sources/ShortcutCore/DoubleTapPromptDetector.swift \
 	Sources/ShortcutCore/ShortcutMatcher.swift \
-	Sources/ShortcutCore/ShortcutModels.swift
+	Sources/ShortcutCore/ShortcutModels.swift \
+	Sources/ShortcutCore/ShortcutStore.swift
 TEST_SOURCES = $(shell find Tests -name '*.swift' -type f | LC_ALL=C sort)
 SHELL_SCRIPTS = $(shell find .github/scripts .agents/skills -name '*.sh' -type f | LC_ALL=C sort)
 YAML_FILES = $(shell find .github -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
