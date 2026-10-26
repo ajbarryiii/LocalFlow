@@ -537,6 +537,8 @@ impl Session {
         w.ahead.clear();
         for (start, samples) in ending {
             if w.cancel.is_cancelled() {
+                // Nothing ahead is used after a cancel.
+                w.ahead.clear();
                 return;
             }
             let chunk = Chunk {
