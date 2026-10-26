@@ -182,10 +182,14 @@ struct ShortcutStore {
         return ShortcutSettings(configuration: configuration, savedCustom: savedCustom)
     }
 
-    /// Writes `role`'s binding and its remembered custom binding.
+    /// Writes `role`'s binding after `ShortcutSettings.set`, and the
+    /// remembered custom binding when that binding is custom.
     func save(_ settings: ShortcutSettings, for role: ShortcutRole) {
-        writeOptional(settings.savedCustom(for: role), forKey: role.savedCustomStorageKey)
-        write(settings.configuration[role], forKey: role.storageKey)
+        let binding = settings.configuration[role]
+        if binding.isCustom, let custom = settings.savedCustom(for: role) {
+            write(custom, forKey: role.savedCustomStorageKey)
+        }
+        write(binding, forKey: role.storageKey)
     }
 
     private struct StoredValue {
