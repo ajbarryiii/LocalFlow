@@ -16,6 +16,8 @@ enum AutocorrectEditorTests {
             ("everyCommitKeyCorrectsTheWordBeforeIt", testEveryCommitKeyCorrectsTheWordBeforeIt),
             ("correctorGetsContextWordPointsLayoutAndParams", testCorrectorGetsContextWordPointsLayoutAndParams),
             ("correctionKeepsTheTypedCase", testCorrectionKeepsTheTypedCase),
+            ("thePronounIIsCapitalized", testThePronounIIsCapitalized),
+            ("thePronounIFollowsTheGates", testThePronounIFollowsTheGates),
             ("apostrophesAreKeptAroundTheWord", testApostrophesAreKeptAroundTheWord),
             ("keptWordsAreNotReplaced", testKeptWordsAreNotReplaced),
             ("swipedWordsAreNotCorrected", testSwipedWordsAreNotCorrected),
@@ -217,6 +219,77 @@ enum AutocorrectEditorTests {
         upper.press(.space)
         TestSupport.expectEqual(upper.text, "paris ")
         TestSupport.expectEqual(upper.corrector.calls.count, 1)
+    }
+
+    private static func testThePronounIIsCapitalized() {
+        // The pronoun and its contractions take a capital I, whatever the case of the typed word's first letter.
+        TestSupport.expectEqual(WordAutocorrect.cased("i", like: "i"), "I")
+        TestSupport.expectEqual(WordAutocorrect.cased("i'm", like: "im"), "I'm")
+        TestSupport.expectEqual(WordAutocorrect.cased("i'll", like: "ill"), "I'll")
+        TestSupport.expectEqual(WordAutocorrect.cased("i've", like: "ive"), "I've")
+        TestSupport.expectEqual(WordAutocorrect.cased("i'd", like: "id"), "I'd")
+        TestSupport.expectEqual(WordAutocorrect.cased("i'm", like: "IM"), "I'M")
+        TestSupport.expectEqual(WordAutocorrect.cased("in", like: "i"), "in")
+        TestSupport.expectEqual(WordAutocorrect.cased("it's", like: "its"), "it's")
+        // Kept by the corrector (one letter is below its minimum length), the word still takes its capital.
+        let rig = AutocorrectRig("", corrections: ["im": "i'm"])
+        rig.tap("i")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "I ")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["i", "I"], inserted: 1))
+        rig.tap("i'm")
+        rig.press(.space)
+        rig.tap("i\u{2019}ll")
+        rig.press(.character(","))
+        rig.press(.space)
+        rig.tap("'i'")
+        rig.press(.space)
+        rig.tap("im")
+        rig.press(.space)
+        rig.tap("i")
+        rig.press(.character("?"))
+        // A curly apostrophe and outer apostrophes stay as typed; a correction to a contraction is capitalized too.
+        TestSupport.expectEqual(rig.text, "I I'm I\u{2019}ll, 'I' I'm I?")
+        // Other words, those starting with i included, are untouched.
+        let others = AutocorrectRig("", corrections: [:])
+        for word in ["it", "in", "is", "ice", "xi", "ii", "ill", "id"] {
+            others.tap(word)
+            others.press(.space)
+        }
+        TestSupport.expectEqual(others.text, "it in is ice xi ii ill id ")
+        // A Delete right after reverts it, and it stays lowercase for the rest of the keyboard session.
+        let reverted = AutocorrectRig.typingASpace(after: "so")
+        reverted.tap("i")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "so I ")
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "so i")
+        TestSupport.expectEqual(reverted.editor.revertedWords, ["i"])
+        reverted.press(.space)
+        reverted.tap("i")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "so i i ")
+    }
+
+    private static func testThePronounIFollowsTheGates() {
+        // Capitalizing I is autocorrect: off with it, in secure fields, in fields that turn autocorrection off,
+        // and for words the keyboard does not own.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        let secure = AutocorrectRig("", corrections: [:])
+        secure.secure = true
+        let literal = AutocorrectRig("", corrections: [:])
+        literal.autocorrectionDisabled = true
+        for rig in [off, secure, literal] {
+            rig.tap("i")
+            rig.press(.space)
+            rig.tap("i'm")
+            rig.press(.space)
+            TestSupport.expectEqual(rig.text, "i i'm ")
+        }
+        let unowned = AutocorrectRig("i", corrections: [:])
+        unowned.press(.space)
+        TestSupport.expectEqual(unowned.text, "i ")
     }
 
     private static func testApostrophesAreKeptAroundTheWord() {

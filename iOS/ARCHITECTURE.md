@@ -1728,10 +1728,19 @@ or a lexicon form.
   log(margin): `marginOOV` for a word outside the lexicon, `marginKnown` for a
   lexicon word, `marginApostrophe` when the best is the same word with
   apostrophes ("cant" → "can't"). An infinite margin never replaces.
-- **Keep.** A result equal to the typed word ignoring case keeps the word.
+- **Keep.** A result equal to the typed word ignoring case keeps the word,
+  except the pronoun I below.
 - **Case.** The result is lowercased, then takes the typed word's case: all
   capitals (two letters or more) → all capitals; a capital first letter →
   capital first letter; otherwise lowercase.
+- **The pronoun I.** A result that is "i", "i'm", "i'll", "i've" or "i'd"
+  (`WordAutocorrect.pronounForms`) takes a capital first letter even when
+  typed lowercase. Kept as typed (one letter is below `minLength`, so the
+  corrector always keeps "i"), a pronoun typed with a lowercase i is a
+  correction too: the capital I, the rest of the word as typed (a curly
+  apostrophe stays curly). It is autocorrect like any other correction: off
+  with the switch and in the same fields, revertible, and offered in the
+  strip ("i", "I").
 
 **Word models** (`WordModel`; reference: `tap/wordlm.py`, `tap/wordlstm.py`).
 All give log P(word | the sentence's previous words) over the lexicon's forms
