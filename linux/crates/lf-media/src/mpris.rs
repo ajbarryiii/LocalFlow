@@ -16,7 +16,7 @@
 //!   `method_timeout`) only times the wait for the reply, not the send, which
 //!   can block on a bus that stops reading; so each call is zbus's async
 //!   call raced against a timer on the calling thread
-//!   (`async_io::block_on`), and a call or connection attempt that loses
+//!   (`lf_dbus::bounded`), and a call or connection attempt that loses
 //!   the race is dropped, cancelling it.
 //! - After a timeout or a connection error the connection is discarded (a
 //!   cancelled send may have left half a message on it) and the next call
@@ -32,9 +32,8 @@
 use std::future::Future;
 use std::time::Duration;
 
-use futures_lite::future;
+use lf_dbus::{DbusErrorKind, bounded};
 use lf_io_api::{MediaError, MediaPlayers, PlaybackStatus, PlayerId};
-use zbus::connection::Builder;
 use zbus::zvariant::Value;
 use zbus::{Connection, Message};
 
@@ -78,23 +77,12 @@ pub struct Mpris {
     session: u64,
 }
 
-/// Runs `fut` on this thread for at most `timeout`; `None` if it did not
-/// finish, in which case it has been dropped (cancelled).
-fn bounded<T>(timeout: Duration, fut: impl Future<Output = T>) -> Option<T> {
-    async_io::block_on(future::or(async { Some(fut.await) }, async {
-        async_io::Timer::after(timeout).await;
-        None
-    }))
-}
-
 /// The kind of `e`; never the text of a remote error.
 fn classify(e: &zbus::Error) -> MediaError {
-    match e {
-        zbus::Error::InputOutput(err) if err.kind() == std::io::ErrorKind::TimedOut => {
-            MediaError::TimedOut
-        }
-        zbus::Error::InputOutput(_) => MediaError::Unavailable,
-        zbus::Error::MethodError(name, _, _) => match name.as_str() {
+    match lf_dbus::error_kind(e) {
+        DbusErrorKind::Io(std::io::ErrorKind::TimedOut) => MediaError::TimedOut,
+        DbusErrorKind::Io(_) => MediaError::Unavailable,
+        DbusErrorKind::Method(name) => match name {
             "org.freedesktop.DBus.Error.ServiceUnknown"
             | "org.freedesktop.DBus.Error.NameHasNoOwner"
             | "org.freedesktop.DBus.Error.UnknownObject" => MediaError::Gone,
@@ -106,7 +94,7 @@ fn classify(e: &zbus::Error) -> MediaError {
             // a player's own errors...: the call had no effect.
             _ => MediaError::Rejected,
         },
-        _ => MediaError::Rejected,
+        DbusErrorKind::Other => MediaError::Rejected,
     }
 }
 
@@ -127,12 +115,8 @@ impl Mpris {
             return Ok(());
         }
         self.conn = None;
-        let builder = match &self.config.address {
-            Some(a) => Builder::address(a.as_str()),
-            None => Builder::session(),
-        }
-        .map_err(|_| MediaError::Unavailable)?;
-        let conn = match bounded(self.config.connect_timeout, builder.build()) {
+        let connect = lf_dbus::connect(self.config.address.as_deref());
+        let conn = match bounded(self.config.connect_timeout, connect) {
             Some(Ok(conn)) => conn,
             Some(Err(_)) | None => return Err(MediaError::Unavailable),
         };

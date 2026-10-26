@@ -18,6 +18,7 @@ pub mod uinput;
 use std::time::{Duration, Instant};
 
 use lf_io_api::IoError;
+use lf_io_api::sys::{pause, wait_budget};
 
 pub use layout::{Layout, Rmlvo, Stroke, Token};
 
@@ -38,28 +39,6 @@ pub trait KeySink {
     /// `deadline`. The default only flushes.
     fn sync(&mut self, deadline: Instant) -> Result<(), IoError> {
         self.flush(deadline)
-    }
-}
-
-/// How long the next wait may take: `timeout`, cut to what is left before
-/// `deadline`. Fails once the deadline has passed.
-pub fn wait_budget(
-    timeout: Duration,
-    deadline: Option<Instant>,
-    now: Instant,
-) -> Result<Duration, IoError> {
-    match deadline {
-        None => Ok(timeout),
-        Some(d) => {
-            let left = d.saturating_duration_since(now);
-            if left.is_zero() {
-                Err(IoError(
-                    "typing did not finish within its time limit".into(),
-                ))
-            } else {
-                Ok(timeout.min(left))
-            }
-        }
     }
 }
 
@@ -95,12 +74,7 @@ pub fn type_strokes(sink: &mut dyn KeySink, strokes: &[Stroke], pace: Pace) -> R
             sink.key(m, false)?;
         }
         sink.flush(deadline)?;
-        if !pace.key_delay.is_zero() {
-            let left = pace.deadline.map_or(pace.key_delay, |d| {
-                d.saturating_duration_since(Instant::now())
-            });
-            std::thread::sleep(pace.key_delay.min(left));
-        }
+        pause(pace.key_delay, pace.deadline);
         if (i + 1) % STROKES_PER_SYNC == 0 {
             sink.sync(until(&pace)?)?;
         }
@@ -210,22 +184,5 @@ mod tests {
         assert!(took < Duration::from_millis(400), "{took:?}");
         // Some strokes went out before the deadline, not all.
         assert!(!r.events.is_empty() && r.events.len() < 40);
-    }
-
-    #[test]
-    fn call_deadline_cuts_every_wait() {
-        let now = Instant::now();
-        let t = Duration::from_secs(1);
-        assert_eq!(wait_budget(t, None, now).unwrap(), t);
-        let d = now + Duration::from_millis(300);
-        assert_eq!(
-            wait_budget(t, Some(d), now).unwrap(),
-            Duration::from_millis(300)
-        );
-        assert_eq!(
-            wait_budget(t, Some(now + Duration::from_secs(9)), now).unwrap(),
-            t
-        );
-        assert!(wait_budget(t, Some(now), now).is_err());
     }
 }

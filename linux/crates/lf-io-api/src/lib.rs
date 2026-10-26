@@ -8,6 +8,8 @@
 //! - Text passed to [`TextOutput`] is never logged or persisted.
 //! - Errors carry no audio, transcript or window content.
 
+pub mod sys;
+
 use std::fmt;
 
 pub const SAMPLE_RATE: u32 = 16_000;

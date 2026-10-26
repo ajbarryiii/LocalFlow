@@ -24,6 +24,7 @@ pub mod paths;
 pub mod picker;
 pub mod portal;
 pub mod portal_token;
+pub(crate) mod private_file;
 pub mod protocol;
 pub mod recognizer;
 pub mod server;

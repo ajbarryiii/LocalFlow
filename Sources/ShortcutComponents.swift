@@ -9,10 +9,7 @@ struct DictationShortcutEditor: View {
     let onCaptureStateChange: ((Bool) -> Void)?
 
     @State private var activeCaptureRole: ShortcutRole?
-    @State private var holdValidationMessage: String?
-    @State private var toggleValidationMessage: String?
-    @State private var copyAgainValidationMessage: String?
-    @State private var promptValidationMessage: String?
+    @State private var validationMessages: [ShortcutRole: String] = [:]
 
     init(showsIntroText: Bool = true, showsPromptShortcut: Bool = false,
          onCaptureStateChange: ((Bool) -> Void)? = nil) {
@@ -35,58 +32,22 @@ struct DictationShortcutEditor: View {
                     .foregroundStyle(.orange)
             }
 
-            ShortcutRoleSection(
-                role: .hold,
-                selection: appState.holdShortcut,
-                validationMessage: holdValidationMessage,
-                isCapturing: Binding(
-                    get: { activeCaptureRole == .hold },
-                    set: { activeCaptureRole = $0 ? .hold : nil }
-                ),
-                onSelect: { binding in
-                    holdValidationMessage = appState.setShortcut(binding, for: .hold)
-                }
-            )
-
-            ShortcutRoleSection(
-                role: .toggle,
-                selection: appState.toggleShortcut,
-                validationMessage: toggleValidationMessage,
-                isCapturing: Binding(
-                    get: { activeCaptureRole == .toggle },
-                    set: { activeCaptureRole = $0 ? .toggle : nil }
-                ),
-                onSelect: { binding in
-                    toggleValidationMessage = appState.setShortcut(binding, for: .toggle)
-                }
-            )
-
-            ShortcutRoleSection(
-                role: .copyAgain,
-                selection: appState.copyAgainShortcut,
-                validationMessage: copyAgainValidationMessage,
-                isCapturing: Binding(
-                    get: { activeCaptureRole == .copyAgain },
-                    set: { activeCaptureRole = $0 ? .copyAgain : nil }
-                ),
-                onSelect: { binding in
-                    copyAgainValidationMessage = appState.setShortcut(binding, for: .copyAgain)
-                }
-            )
-
-            if showsPromptShortcut {
+            ForEach(showsPromptShortcut ? ShortcutRole.allCases : [.hold, .toggle, .copyAgain], id: \.self) { role in
                 ShortcutRoleSection(
-                    role: .prompt,
-                    selection: appState.promptShortcut,
-                    validationMessage: promptValidationMessage,
+                    role: role,
+                    selection: appState.shortcuts.configuration[role],
+                    validationMessage: validationMessages[role],
                     isCapturing: Binding(
-                        get: { activeCaptureRole == .prompt },
-                        set: { activeCaptureRole = $0 ? .prompt : nil }
+                        get: { activeCaptureRole == role },
+                        set: { activeCaptureRole = $0 ? role : nil }
                     ),
                     onSelect: { binding in
-                        promptValidationMessage = appState.setShortcut(binding, for: .prompt)
+                        validationMessages[role] = appState.setShortcut(binding, for: role)
                     }
                 )
+            }
+
+            if showsPromptShortcut {
                 PromptTagField()
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Double-tap Hold to Talk for prompt mode", isOn: $appState.isDoubleTapPromptEnabled)
@@ -145,7 +106,7 @@ struct ShortcutRoleSection: View {
                 }
 
                 ShortcutCaptureRow(
-                    savedBinding: appState.savedCustomShortcut(for: role),
+                    savedBinding: appState.shortcuts.savedCustom(for: role),
                     isSelected: selection.isCustom,
                     isCapturing: $isCapturing,
                     onSelectSaved: onSelect,
@@ -173,7 +134,7 @@ private struct PromptTagField: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Prompt tag")
-                TextField(AppState.defaultPromptTag, text: $text)
+                TextField(SettingsKeys.promptTag.defaultValue, text: $text)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .focused($isFocused)
@@ -195,7 +156,7 @@ private struct PromptTagField: View {
 
     private func commit() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tag = trimmed.isEmpty ? AppState.defaultPromptTag : trimmed
+        let tag = trimmed.isEmpty ? SettingsKeys.promptTag.defaultValue : trimmed
         text = tag
         if appState.promptTag != tag {
             appState.promptTag = tag

@@ -183,6 +183,12 @@ final class KeyAreaView: UIView {
 
     private var isCompact: Bool { bounds.height < 190 }
 
+    private var metrics: KeyboardMetrics { KeyboardMetrics(width: Double(bounds.width), height: Double(bounds.height)) }
+
+    /// The letters layer at the current size, whichever layer shows: the keys soft taps, autocorrect and swipes are
+    /// decided against. Built afresh each time (a few dozen keys), so it always matches the current bounds.
+    var letterKeys: [PlacedKey] { KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: showsGlobe) }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         trail.frame = bounds
@@ -192,7 +198,6 @@ final class KeyAreaView: UIView {
     private func rebuildKeys() {
         builtSize = bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
-        let metrics = KeyboardMetrics(width: Double(bounds.width), height: Double(bounds.height))
         let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
         if let previous = letterGeometry, previous.size != bounds.size || previous.showsGlobe != showsGlobe {
             delegate?.keyAreaChangedLetterGeometry(self)
@@ -470,19 +475,15 @@ final class KeyAreaView: UIView {
 
     private func startHoldTimer(_ id: KeyTouchModel.TouchID) {
         holdTimers.removeValue(forKey: id)?.invalidate()
-        let timer = Timer(timeInterval: trackpadParameters.holdDuration, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.holdTimers[id] = nil
-                let point = self.model.touches.first { $0.id == id }.map { CGPoint(x: $0.x, y: $0.y) }
-                let effects = self.model.holdElapsed(id)
-                if self.model.trackpadTouch == id, let point { self.trackpadLast = point }
-                self.perform(effects, timestamp: CACurrentMediaTime())
-                self.refreshPressed()
-            }
+        holdTimers[id] = Timer.mainLoop(after: trackpadParameters.holdDuration) { [weak self] _ in
+            guard let self else { return }
+            self.holdTimers[id] = nil
+            let point = self.model.touches.first { $0.id == id }.map { CGPoint(x: $0.x, y: $0.y) }
+            let effects = self.model.holdElapsed(id)
+            if self.model.trackpadTouch == id, let point { self.trackpadLast = point }
+            self.perform(effects, timestamp: CACurrentMediaTime())
+            self.refreshPressed()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        holdTimers[id] = timer
     }
 
     private func setBlank(_ blank: Bool) {

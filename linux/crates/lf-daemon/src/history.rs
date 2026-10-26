@@ -4,13 +4,11 @@
 //! When history is turned off the daemon neither reads nor writes the file.
 
 use std::collections::VecDeque;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
+
+use crate::private_file::{self, ModeRule, ReadError, SyncDir};
 
 pub const CAPACITY: usize = 20;
 pub const FILE_NAME: &str = "history.json";
@@ -71,40 +69,26 @@ impl History {
             .collect();
         let doc = json!({"version": 1, "entries": entries});
         let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
-        write_atomic(&self.path, &bytes)
+        private_file::write_atomic(&self.path, &bytes, SyncDir::Yes)
+            .map_err(|e| format!("cannot write {}: {e}", self.path.display()))
     }
 }
 
 fn read(path: &Path) -> Result<VecDeque<Entry>, String> {
-    let file = match OpenOptions::new()
-        .read(true)
-        // Non-blocking so a FIFO planted here cannot hang startup; regular
-        // files ignore the flag.
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(VecDeque::new()),
-        Err(e) => return Err(format!("cannot open {}: {e}", path.display())),
+    let bytes = match private_file::read_private(path, MAX_FILE_BYTES, ModeRule::Any) {
+        Ok(Some(b)) => b,
+        Ok(None) => return Ok(VecDeque::new()),
+        Err(ReadError::Open(e)) => return Err(format!("cannot open {}: {e}", path.display())),
+        Err(ReadError::Metadata(e)) => return Err(e.to_string()),
+        Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+            return Err(format!(
+                "{} is not a regular file owned by the current user",
+                path.display()
+            ));
+        }
+        Err(ReadError::TooLarge) => return Err(format!("{} is too large", path.display())),
+        Err(ReadError::Read(e)) => return Err(format!("cannot read {}: {e}", path.display())),
     };
-    let meta = file.metadata().map_err(|e| e.to_string())?;
-    if !meta.is_file() || meta.uid() != crate::paths::euid() {
-        return Err(format!(
-            "{} is not a regular file owned by the current user",
-            path.display()
-        ));
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(format!("{} is too large", path.display()));
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(format!("{} is too large", path.display()));
-    }
     // Errors below describe structure only; serde_json syntax errors carry
     // positions, not content.
     let doc: Value = serde_json::from_slice(&bytes)
@@ -142,60 +126,20 @@ pub struct Setting {
     pub enabled: bool,
 }
 
-fn temporary_prefix() -> String {
-    format!(".{FILE_NAME}.tmp-")
-}
-
 /// Removes temporary history snapshots left by a crash during a write
 /// (they hold transcripts). Done even when history is off.
 pub fn remove_stale_temporaries(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let prefix = temporary_prefix();
-    for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix)
-            && let Err(e) = fs::remove_file(entry.path())
-        {
-            crate::warn!("history: cannot remove a stale temporary file: {e}");
-        }
+    for e in private_file::remove_stale(dir, FILE_NAME) {
+        crate::warn!("history: cannot remove a stale temporary file: {e}");
     }
-}
-
-/// Writes `bytes` to a new 0600 file next to `path`, syncs it, renames it
-/// over `path` and syncs the directory.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let dir = path.parent().ok_or("history path has no parent")?;
-    let tmp = dir.join(format!(
-        "{}{}-{}",
-        temporary_prefix(),
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| -> std::io::Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, path)?;
-        File::open(dir)?.sync_all()
-    })();
-    result.map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("cannot write {}: {e}", path.display())
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::TempDir;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
 
     fn entry(i: u64) -> Entry {
         Entry {
@@ -277,6 +221,38 @@ mod tests {
         h.push(entry(2)).unwrap();
         assert!(fs::symlink_metadata(&path).unwrap().is_file());
         assert!(fs::read_to_string(&target).unwrap().contains("\"time\": 9"));
+    }
+
+    #[test]
+    fn any_mode_loads_but_oversized_or_irregular_files_do_not() {
+        let t = TempDir::new("history-read");
+        let dir = t.path().join("localflow");
+        crate::paths::ensure_private_dir(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let one =
+            b"{\"version\": 1, \"entries\": [{\"time\": 7, \"raw\": \"r\", \"text\": \"t\"}]}";
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o644, 0o400, 0o666] {
+            fs::write(&path, one).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let h = History::open(&dir).unwrap();
+            assert_eq!(h.entries().next().unwrap().time, 7, "mode {mode:o}");
+            fs::remove_file(&path).unwrap();
+        }
+
+        // Exactly the limit is read (trailing spaces are valid JSON); one
+        // byte more starts fresh.
+        let mut body = one.to_vec();
+        body.resize(MAX_FILE_BYTES as usize, b' ');
+        fs::write(&path, &body).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 1);
+        body.push(b' ');
+        fs::write(&path, &body).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 0);
+        fs::remove_file(&path).unwrap();
+
+        fs::create_dir(&path).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 0);
     }
 
     #[test]

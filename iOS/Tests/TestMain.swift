@@ -19,6 +19,7 @@ struct LocalFlowIOSTests {
             ("TextInsertionFormatter", TextInsertionFormatterTests.tests),
             ("LocalFlowSettings", LocalFlowSettingsTests.tests),
             ("DarwinNotifier", DarwinNotifierTests.tests),
+            ("MainLoopTimer", MainLoopTimerTests.tests),
             ("DictationSampleBuffer", DictationSampleBufferTests.tests),
             ("HostURLRoute", HostURLRouteTests.tests),
             ("RecentRequestIDs", RecentRequestIDsTests.tests),
@@ -48,6 +49,7 @@ struct LocalFlowIOSTests {
             ("FieldProfile", FieldProfileTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
             ("BarControlRegions", BarControlRegionsTests.tests),
+            ("LFBinaryFile", LFBinaryFileTests.tests),
             ("SwipeCore", SwipeCoreTests.tests),
             ("TapCore", TapCoreTests.tests),
             ("AutocorrectSettings", AutocorrectSettingsTests.tests),
@@ -55,6 +57,7 @@ struct LocalFlowIOSTests {
             ("AutocorrectCore", AutocorrectCoreTests.tests),
             ("NeverCorrect", NeverCorrectTests.tests),
             ("ModelLoadSlot", ModelLoadSlotTests.tests),
+            ("BundleModelLoader", BundleModelLoaderTests.tests),
             ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
         ]

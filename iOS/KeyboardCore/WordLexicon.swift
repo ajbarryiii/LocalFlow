@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// Why a word file (LFWL, LFWN or LFWR) was rejected.
-enum WordFileError: Error, Equatable {
+enum WordFileError: LFBinaryFileError, Equatable {
     case badMagic
     case unsupportedVersion
     /// The data's length disagrees with the header's sizes (truncated, trailing bytes).
@@ -18,7 +18,7 @@ enum WordFileError: Error, Equatable {
     case lexiconMismatch
 }
 
-/// Reads the sections of a word file: little-endian, a header that is a multiple of 8 bytes, then sections
+/// Lays out the sections of a word file (`LFBinaryFile`): a header that is a multiple of 8 bytes, then sections
 /// in order, each starting at a multiple of 8 and padded with zeros to one; the file ends right after the
 /// last section's padding.
 struct WordFileSections {
@@ -33,38 +33,6 @@ struct WordFileSections {
         let offset = end
         end += (bytes + 7) / 8 * 8
         return offset
-    }
-
-    /// Data whose bytes start at an 8-byte boundary, so sections can be read in place as typed arrays: the
-    /// data itself when it does (a mapped file always does), else a copy.
-    static func aligned(_ data: Data) -> Data {
-        let misaligned = data.withUnsafeBytes { raw in raw.baseAddress.map { Int(bitPattern: $0) % 8 != 0 } ?? false }
-        return misaligned ? Data(data) : data
-    }
-
-    static func u32(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> UInt32 {
-        UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
-    }
-
-    static func u64(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> UInt64 {
-        UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt64.self))
-    }
-
-    static func f64(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> Double {
-        Double(bitPattern: u64(raw, offset))
-    }
-
-    static func f32(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> Float {
-        Float(bitPattern: u32(raw, offset))
-    }
-
-    /// Checks the magic and version of a file at least `header` bytes long.
-    static func checkHeader(_ data: Data, magic: String, version: UInt32, header: Int) throws {
-        guard data.count >= 4 else { throw WordFileError.wrongSize }
-        guard data.prefix(4).elementsEqual(magic.utf8) else { throw WordFileError.badMagic }
-        guard data.count >= header else { throw WordFileError.wrongSize }
-        let found = data.withUnsafeBytes { u32($0, 4) }
-        guard found == version else { throw WordFileError.unsupportedVersion }
     }
 }
 
@@ -112,10 +80,11 @@ final class WordLexicon: @unchecked Sendable {
     }
 
     init(data input: Data) throws {
-        try WordFileSections.checkHeader(input, magic: "LFWL", version: Self.version, header: Self.headerSize)
-        let data = WordFileSections.aligned(input)
+        try LFBinaryFile.checkHeader(input, magic: "LFWL", version: Self.version, header: Self.headerSize,
+                                     as: WordFileError.self)
+        let data = LFBinaryFile.aligned(input)
         let (header, beta, unknownMass, hash) = data.withUnsafeBytes { raw in
-            ((2 ..< 8).map { Int(WordFileSections.u32(raw, 4 * $0)) }, WordFileSections.f64(raw, 32), WordFileSections.f64(raw, 40),
+            ((2 ..< 8).map { Int(LFBinaryFile.u32(raw, 4 * $0)) }, LFBinaryFile.f64(raw, 32), LFBinaryFile.f64(raw, 40),
              Data(raw[48 ..< 80]))
         }
         let n = header[0], m = header[1], edges = header[2], textBytes = header[3], longest = header[4]
@@ -200,7 +169,7 @@ final class WordLexicon: @unchecked Sendable {
 
     /// The ids of a key's forms (a node's), by frequency, highest first, then code point order.
     func formIDs(ofNode node: Int) -> [Int] {
-        withView { view in view.formRange(node).map { Int(WordFileSections.u32(view.raw, offsets.formList + 4 * $0)) } }
+        withView { view in view.formRange(node).map { Int(LFBinaryFile.u32(view.raw, offsets.formList + 4 * $0)) } }
     }
 
     /// The display forms of a key (its letters), as `formIDs(ofNode:)` orders them; empty for any other text.
@@ -335,7 +304,7 @@ final class WordLexicon: @unchecked Sendable {
         let forms: Int
         let nodes: Int
 
-        func u32(_ offset: Int, _ index: Int) -> Int { Int(WordFileSections.u32(raw, offset + 4 * index)) }
+        func u32(_ offset: Int, _ index: Int) -> Int { Int(LFBinaryFile.u32(raw, offset + 4 * index)) }
 
         func textRange(_ form: Int) -> Range<Int> {
             offsets.text + u32(offsets.formOffsets, form) ..< offsets.text + u32(offsets.formOffsets, form + 1)

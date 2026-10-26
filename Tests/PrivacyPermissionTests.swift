@@ -23,6 +23,25 @@ enum PrivacyPermissionTests {
             )
         }
 
+        TestSupport.expectEqual(
+            PrivacyPermission.microphone.alertText(appName: "Synthetic Dictation", macOSMajorVersion: 27),
+            PermissionAlertText(
+                title: "Microphone Permission Required",
+                message: "Synthetic Dictation cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable Synthetic Dictation.",
+                symbolName: "mic.fill"
+            )
+        )
+        for (version, pane) in [(26, "Accessibility"), (27, "Device Control and Data Access")] {
+            TestSupport.expectEqual(
+                PrivacyPermission.accessibility.alertText(appName: "Synthetic Dictation", macOSMajorVersion: version),
+                PermissionAlertText(
+                    title: "\(pane) Permission Required",
+                    message: "Synthetic Dictation needs this access for global shortcuts and pasting transcribed text.\n\nGo to System Settings > Privacy & Security > \(pane) and enable Synthetic Dictation.\n\nIf the app is already enabled but access is still missing, remove its entry with −, add this copy with +, and enable it again.",
+                    symbolName: "exclamationmark.triangle.fill"
+                )
+            )
+        }
+
         let steps = SetupFlowStep.allCases
         TestSupport.expectEqual(steps, [.welcome, .micPermission, .accessibility, .shortcuts, .testTranscription, .ready])
         for (index, step) in steps.enumerated() {

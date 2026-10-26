@@ -71,7 +71,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private var swipeEngine: SwipeEngine? {
         didSet { updateTouchModes() }
     }
-    private var swipeEngineLoading = false
+    private let swipeEngineLoad = BundleModelLoader<SwipeEngine>()
     /// The App Group settings, read at each commit key: autocorrect corrects only while they are readable;
     /// nil without Full Access.
     var sharedSettings: () -> LocalFlowSettings? = { nil }
@@ -80,12 +80,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private var softKeys: SoftKeyEdgesManifest?
     private var tapPrior: TapPrior?
     /// The soft key edges load: at most one in flight, and only a load for the bundle still wanted is installed.
-    private var softKeysLoad = ModelLoadSlot<URL>()
+    private let softKeysLoad = BundleModelLoader<LoadedSoftKeyEdges>()
     /// Autocorrect once its model has loaded (`configureAutocorrect`): the default preset's parameters and the
     /// corrector. Nil keeps words as typed.
     private var autocorrect: (params: AutocorrectParams, corrector: WordCorrecting)?
     /// The autocorrect load: at most one in flight, and only a load for the bundle still wanted is installed.
-    private var autocorrectLoad = ModelLoadSlot<URL>()
+    private let autocorrectLoad = BundleModelLoader<LoadedAutocorrect>()
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -172,13 +172,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// Loads the swipe bundle from the keyboard extension off the main thread, once. Until it has loaded,
     /// and for good if it is missing or invalid, swipe typing stays off and long drags are taps.
     func loadSwipeEngine() {
-        guard swipeEngine == nil, !swipeEngineLoading, let directory = SwipeEngine.bundledDirectory else { return }
-        swipeEngineLoading = true
-        Task { [weak self] in
-            let engine = await Task.detached(priority: .userInitiated) { try? SwipeEngine.load(from: directory) }.value
-            guard let self else { return }
-            self.swipeEngineLoading = false
-            self.swipeEngine = engine
+        swipeEngineLoad.request(SwipeEngine.bundledDirectory, load: { try? SwipeEngine.load(from: $0) }) { [weak self] engine in
+            self?.swipeEngine = engine
         }
     }
 
@@ -200,33 +195,27 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no `tap` section or a file is
     /// missing or invalid, letter taps type their nearest key.
     func configureSoftKeyEdges(enabled: Bool) {
-        let step = softKeysLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
-        if step.dropModel {
-            softKeys = nil
-            tapPrior = nil
+        let directory = enabled ? SwipeEngine.bundledDirectory : nil
+        softKeysLoad.request(directory, load: { Self.loadSoftKeyEdges(from: $0) }) { [weak self] loaded in
+            guard let self else { return }
+            softKeys = loaded?.manifest
+            tapPrior = loaded.map { TapPrior(model: $0.model, surpriseWindow: $0.manifest.rule.surpriseWindow) }
             updateTouchModes()
-        }
-        guard let ticket = step.load else { return }
-        let directory = ticket.source
-        Task { [weak self] in
-            let loaded = await Task.detached(priority: .userInitiated) {
-                try? Self.loadSoftKeyEdges(from: directory)
-            }.value
-            guard let self, self.softKeysLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
-            self.softKeys = loaded.manifest
-            self.tapPrior = TapPrior(model: loaded.model, surpriseWindow: loaded.manifest.rule.surpriseWindow)
-            self.updateTouchModes()
         }
     }
 
-    /// The swipe bundle's `tap` section and its default model; nil without the section. Slow: off the main
-    /// thread.
-    private nonisolated static func loadSoftKeyEdges(from directory: URL) throws
-        -> (manifest: SoftKeyEdgesManifest, model: TapModel)? {
-        let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
-        guard let manifest = try SoftKeyEdgesManifest.decode(from: data),
-              let path = manifest.models[manifest.defaultModel] else { return nil }
-        return (manifest, try TapModel.load(from: directory.appendingPathComponent(path)))
+    /// What a soft key edges load hands back to the main thread.
+    private struct LoadedSoftKeyEdges: Sendable {
+        var manifest: SoftKeyEdgesManifest
+        var model: TapModel
+    }
+
+    /// The swipe bundle's `tap` section and its default model; nil without a valid section or when the model
+    /// file is missing or invalid. Slow: off the main thread.
+    private nonisolated static func loadSoftKeyEdges(from bundle: SwipeBundle) -> LoadedSoftKeyEdges? {
+        guard let manifest = bundle.tap, let path = manifest.models[manifest.defaultModel],
+              let model = try? TapModel.load(from: bundle.directory.appendingPathComponent(path)) else { return nil }
+        return LoadedSoftKeyEdges(manifest: manifest, model: model)
     }
 
     /// The key a soft tap types: the nearest key, unless `TapDecoder` re-decides it from the prior. The
@@ -244,10 +233,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
         if let field, let current, field != current { return action }
         let context = editor.tapPriorContext(now: now)
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
         let decoder = TapDecoder(touch: TapDecoder.TouchModel(softKeys.touch), rule: TapDecoder.Rule(softKeys.rule))
-        return decoder.resolve(action, x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise)
+        return decoder.resolve(action, x: x, y: y, keys: keyArea.letterKeys, logPrior: prediction.logProbs,
+                               surprise: prediction.surprise)
     }
 
     // MARK: Word autocorrect
@@ -257,20 +245,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// already loaded or loading (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no valid
     /// `autocorrect` section or a file is missing or invalid, words commit as typed.
     func configureAutocorrect(enabled: Bool) {
-        let step = autocorrectLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
-        if step.dropModel {
-            autocorrect = nil
+        let directory = enabled ? SwipeEngine.bundledDirectory : nil
+        autocorrectLoad.request(directory, load: { Self.loadAutocorrect(from: $0) }) { [weak self] loaded in
+            guard let self else { return }
+            autocorrect = loaded.map { (params: $0.params, corrector: $0.corrector) }
             updateTouchModes()
-        }
-        guard let ticket = step.load else { return }
-        let directory = ticket.source
-        Task { [weak self] in
-            let loaded = await Task.detached(priority: .userInitiated) {
-                Self.loadAutocorrect(from: directory)
-            }.value
-            guard let self, self.autocorrectLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
-            self.autocorrect = (loaded.params, loaded.corrector)
-            self.updateTouchModes()
         }
     }
 
@@ -282,10 +261,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// The swipe bundle's `autocorrect` section's default model, as a corrector, and its default preset; nil
     /// without a valid section or when the model cannot be built. Slow: off the main thread.
-    private nonisolated static func loadAutocorrect(from directory: URL) -> LoadedAutocorrect? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent("bundle.json")),
-              let manifest = try? AutocorrectManifest.decode(from: data),
-              let corrector = AutocorrectLoader.load(manifest: manifest, bundleURL: directory, model: manifest.defaultModel)
+    private nonisolated static func loadAutocorrect(from bundle: SwipeBundle) -> LoadedAutocorrect? {
+        guard let manifest = bundle.autocorrect,
+              let corrector = AutocorrectLoader.load(manifest: manifest, bundleURL: bundle.directory, model: manifest.defaultModel)
         else { return nil }
         return LoadedAutocorrect(params: manifest.defaultParams, corrector: corrector)
     }
@@ -308,9 +286,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// readable (Full Access). The editor declines in a secure field.
     private func autocorrectSetup() -> AutocorrectSetup? {
         guard let autocorrect, sharedSettings() != nil, let keyArea else { return nil }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        return AutocorrectSetup(corrector: autocorrect.corrector,
-                                keys: KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe),
+        return AutocorrectSetup(corrector: autocorrect.corrector, keys: keyArea.letterKeys,
                                 params: autocorrect.params,
                                 secureTextEntry: proxy?.isSecureTextEntry == true,
                                 autocorrectionDisabled: proxy?.autocorrectionType == .no)
@@ -343,16 +319,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// After an own edit, the editor follows the proxy for the shift every frame for a while.
     private func scheduleService() {
         guard serviceTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.serviceTimer = nil
-                self.editor.service(now: self.now)
-                if self.editor.needsService { self.scheduleService() }
-            }
+        serviceTimer = Timer.mainLoop(after: 1.0 / 60) { [weak self] _ in
+            guard let self else { return }
+            self.serviceTimer = nil
+            self.editor.service(now: self.now)
+            if self.editor.needsService { self.scheduleService() }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        serviceTimer = timer
     }
 
     private func trackpadFinished() {
@@ -382,15 +354,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
             return
         }
         guard undoTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                // A repeating timer outlives its owner unless told otherwise.
-                guard let self else { return timer.invalidate() }
-                self.handle(self.editor.continueUndo(now: self.now))
-            }
+        undoTimer = Timer.mainLoop(after: 1.0 / 60, repeats: true) { [weak self] timer in
+            // A repeating timer outlives its owner unless told otherwise.
+            guard let self else { return timer.invalidate() }
+            self.handle(self.editor.continueUndo(now: self.now))
         }
-        RunLoop.main.add(timer, forMode: .common)
-        undoTimer = timer
     }
 
     /// The undo was made, used or ended: its timers follow, and Undo's availability is published.
@@ -405,15 +373,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     private func scheduleUndoExpiry(insertedAt: TimeInterval) {
         undoExpiry?.timer.invalidate()
-        let timer = Timer(timeInterval: max(insertedAt + UndoTracker.window - now, 0), repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.undoExpiry = nil
-                self.editor.core.expireUndo(now: self.now + 0.001)
-                self.onUndoAvailabilityChanged?()
-            }
+        let timer = Timer.mainLoop(after: max(insertedAt + UndoTracker.window - now, 0)) { [weak self] _ in
+            guard let self else { return }
+            self.undoExpiry = nil
+            self.editor.core.expireUndo(now: self.now + 0.001)
+            self.onUndoAvailabilityChanged?()
         }
-        RunLoop.main.add(timer, forMode: .common)
         undoExpiry = (timer, insertedAt)
     }
 
@@ -436,16 +401,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
             return
         }
         guard tailExpiry == nil else { return }
-        let timer = Timer(timeInterval: max(expiresAt - now, 0), repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.tailExpiry = nil
-                // A model held since then gets the rest of its own lifetime.
-                self.editor.expireTail(now: self.now)
-            }
+        tailExpiry = Timer.mainLoop(after: max(expiresAt - now, 0)) { [weak self] _ in
+            guard let self else { return }
+            self.tailExpiry = nil
+            // A model held since then gets the rest of its own lifetime.
+            self.editor.expireTail(now: self.now)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        tailExpiry = timer
     }
 
     // MARK: KeyAreaViewDelegate
@@ -497,11 +458,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private func schedule(_ token: Int, at time: TimeInterval, pressedAt: TimeInterval) {
         // Touch timestamps and CACurrentMediaTime share the same clock.
         let delay = max(time - (now - pressedAt), 0)
-        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.fireDelete(token, pressedAt: pressedAt) }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        deleteTimer = timer
+        deleteTimer = Timer.mainLoop(after: delay) { [weak self] _ in self?.fireDelete(token, pressedAt: pressedAt) }
     }
 
     /// A scheduled deletion: only while its press is current and the field is the one it began in.
@@ -523,9 +480,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// field it touched down in. Samples and words are never logged or kept beyond the strip.
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {
         guard let swipeEngine, proxy?.isSecureTextEntry != true else { return }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
-        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keys), field: field, now: now)
+        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keyArea.letterKeys), field: field, now: now)
     }
 
     /// Points recorded for autocorrect belong to the old keys (ARCHITECTURE.md, "Word autocorrect").

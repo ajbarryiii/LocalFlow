@@ -110,17 +110,6 @@ pub const STAMP_FUTURE_TOLERANCE: Duration = Duration::from_millis(50);
 /// trusted.
 pub const STAMP_MAX_AGE: Duration = Duration::from_secs(2);
 
-/// `CLOCK_BOOTTIME`: like `CLOCK_MONOTONIC`, but counting suspend.
-pub fn boottime() -> Duration {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid timespec to write.
-    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
-    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-}
-
 use lf_asr::dictionary::{self as rules, DEFAULT_STRENGTH};
 use lf_dictation::correction::correction_candidates;
 use lf_io_api::{IoError, SAMPLE_RATE};
@@ -379,7 +368,7 @@ impl Controller {
             tap: None,
             start_prompt: false,
             clock: clock_anchor(100, sample_clocks),
-            boot: Box::new(boottime),
+            boot: Box::new(lf_io_api::sys::boottime),
             dictionary: None,
             empty_dictionary: Arc::default(),
             correction: None,

@@ -581,6 +581,7 @@ dependencies = [
  "claxon",
  "futures-lite",
  "lf-asr",
+ "lf-dbus",
  "lf-dictation",
  "lf-io-api",
  "lf-keyboard",
@@ -592,6 +593,15 @@ dependencies = [
  "libc",
  "serde_json",
  "unicode-segmentation",
+ "zbus",
+]
+
+[[package]]
+name = "lf-dbus"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "futures-lite",
  "zbus",
 ]
 
@@ -609,6 +619,9 @@ dependencies = [
 [[package]]
 name = "lf-io-api"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "lf-keyboard"
@@ -623,8 +636,7 @@ dependencies = [
 name = "lf-media"
 version = "0.1.0"
 dependencies = [
- "async-io",
- "futures-lite",
+ "lf-dbus",
  "lf-io-api",
  "zbus",
 ]
@@ -652,6 +664,7 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "futures-lite",
+ "lf-dbus",
  "lf-io-api",
  "lf-keyboard",
  "libc",

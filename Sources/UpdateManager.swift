@@ -142,29 +142,29 @@ final class UpdateManager: ObservableObject {
     @Published var lastCheckDate: Date? {
         didSet {
             if let date = lastCheckDate {
-                UserDefaults.standard.set(date, forKey: "updateLastCheckDate")
+                UserDefaults.standard[SettingsKeys.updateLastCheckDate] = date
             }
         }
     }
 
     var autoCheckEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "updateAutoCheckEnabled") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "updateAutoCheckEnabled") }
+        get { UserDefaults.standard[SettingsKeys.updateAutoCheckEnabled] }
+        set { UserDefaults.standard[SettingsKeys.updateAutoCheckEnabled] = newValue }
     }
 
     private var skippedVersion: String? {
-        get { UserDefaults.standard.string(forKey: "updateSkippedVersion") }
-        set { UserDefaults.standard.set(newValue, forKey: "updateSkippedVersion") }
+        get { UserDefaults.standard[SettingsKeys.updateSkippedVersion] }
+        set { UserDefaults.standard[SettingsKeys.updateSkippedVersion] = newValue }
     }
 
     private var lastPostTranscriptionReminderVersion: String? {
-        get { UserDefaults.standard.string(forKey: "updateLastPostTranscriptionReminderVersion") }
-        set { UserDefaults.standard.set(newValue, forKey: "updateLastPostTranscriptionReminderVersion") }
+        get { UserDefaults.standard[SettingsKeys.updateLastPostTranscriptionReminderVersion] }
+        set { UserDefaults.standard[SettingsKeys.updateLastPostTranscriptionReminderVersion] = newValue }
     }
 
     private var lastPostTranscriptionReminderDate: Date? {
-        get { UserDefaults.standard.object(forKey: "updateLastPostTranscriptionReminderDate") as? Date }
-        set { UserDefaults.standard.set(newValue, forKey: "updateLastPostTranscriptionReminderDate") }
+        get { UserDefaults.standard[SettingsKeys.updateLastPostTranscriptionReminderDate] }
+        set { UserDefaults.standard[SettingsKeys.updateLastPostTranscriptionReminderDate] = newValue }
     }
 
     private let releasesURL = AppName.releasesURL
@@ -191,7 +191,7 @@ final class UpdateManager: ObservableObject {
     }
 
     private init() {
-        lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
+        lastCheckDate = UserDefaults.standard[SettingsKeys.updateLastCheckDate]
     }
 
     // MARK: - Periodic Checks

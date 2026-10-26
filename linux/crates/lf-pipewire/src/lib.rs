@@ -20,7 +20,7 @@ mod wipe;
 pub use presence::{PresenceMonitor, SOURCE_CLASSES, SourceSet};
 
 use std::cell::RefCell;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,7 +28,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use lf_io_api::{AudioCapture, IoError, SAMPLE_RATE};
+use lf_io_api::{AudioCapture, IoError, SAMPLE_RATE, sys};
 use pipewire as pw;
 use pw::spa;
 use spa::param::audio::{AudioFormat, AudioInfoRaw};
@@ -328,18 +328,10 @@ impl EventFd {
             if self.signalled() {
                 return true;
             }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
+            // A failed poll is retried; at the deadline, one last look.
+            if let Ok(false) = sys::wait_fd(self.0.as_fd(), libc::POLLIN, deadline) {
+                return self.signalled();
             }
-            let mut fd = libc::pollfd {
-                fd: self.0.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ms = left.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
-            // SAFETY: polls one valid pollfd.
-            unsafe { libc::poll(&mut fd, 1, ms) };
         }
     }
 }

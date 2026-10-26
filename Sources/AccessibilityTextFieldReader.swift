@@ -15,7 +15,7 @@ final class AccessibilityTextFieldReader: TextFieldReader {
 
     private let ownPID = ProcessInfo.processInfo.processIdentifier
 
-    func isTrusted() -> Bool { AXIsProcessTrusted() }
+    func isTrusted() -> Bool { PrivacyPermission.accessibility.isGranted }
 
     func captureFocusedTextField() -> TextFieldTarget? {
         guard let (pid, element) = focusedElement(), pid != ownPID, isWatchable(element) else { return nil }

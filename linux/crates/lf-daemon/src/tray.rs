@@ -27,7 +27,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use zbus::blocking::Connection;
-use zbus::blocking::connection::Builder;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Str};
 
@@ -382,11 +381,8 @@ fn connect(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let attempt = || {
-            let builder = match address {
-                Some(a) => Builder::address(a.as_str()),
-                None => Builder::session(),
-            }
-            .map_err(|_| TrayError::Connect)?;
+            let builder =
+                lf_dbus::blocking_builder(address.as_deref()).map_err(|_| TrayError::Connect)?;
             let conn = builder
                 .method_timeout(CALL_TIMEOUT)
                 .serve_at(ITEM_PATH, Item { state })

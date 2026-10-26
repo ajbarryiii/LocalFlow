@@ -235,7 +235,7 @@ enum AutocorrectCoreTests {
             guard let spelling, lw > -.infinity else { return motor }
             return TapDecoder.logAddExp(motor, lw + spelled(spelling))
         }
-        let pitch = TapDecoder.letterPitch(in: keys)!
+        let pitch = KeyboardLayout.letterPitch(in: keys)!
         let letterKeys = keys.filter { TapDecoder.outputIndex(of: $0.action).map { $0 < 26 } ?? false }
         func near(_ c: Character) -> [Character] {
             let a = letterKeys.first { $0.action == .character(String(c)) }!
@@ -311,7 +311,7 @@ enum AutocorrectCoreTests {
 
     /// A tap aimed at a key's centre with Gaussian noise of `sigma` letter pitches (Box–Muller).
     static func sample(_ letter: Character, sigma: Double, _ random: inout SplitMix64) -> (x: Double, y: Double) {
-        let pitch = TapDecoder.letterPitch(in: keys)!
+        let pitch = KeyboardLayout.letterPitch(in: keys)!
         func normal() -> Double {
             let u = Double.random(in: Double.ulpOfOne ..< 1, using: &random), v = Double.random(in: 0 ..< 1, using: &random)
             return (-2 * log(u)).squareRoot() * cos(2 * .pi * v)

@@ -52,201 +52,57 @@ enum AppBuild {
     }
 }
 
-private struct PreservedPasteboardEntry {
-    let type: NSPasteboard.PasteboardType
-    let value: Value
-
-    enum Value {
-        case string(String)
-        case propertyList(Any)
-        case data(Data)
-    }
-}
-
-private struct PreservedPasteboardItem {
-    let entries: [PreservedPasteboardEntry]
-
-    init(item: NSPasteboardItem) {
-        self.entries = item.types.compactMap { type in
-            if let string = item.string(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .string(string))
-            }
-            if let propertyList = item.propertyList(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .propertyList(propertyList))
-            }
-            if let data = item.data(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .data(data))
-            }
-            return nil
-        }
-    }
-
-    func makePasteboardItem() -> NSPasteboardItem {
-        let item = NSPasteboardItem()
-        for entry in entries {
-            switch entry.value {
-            case .string(let string):
-                item.setString(string, forType: entry.type)
-            case .propertyList(let propertyList):
-                item.setPropertyList(propertyList, forType: entry.type)
-            case .data(let data):
-                item.setData(data, forType: entry.type)
-            }
-        }
-        return item
-    }
-}
-
-private struct PreservedPasteboardSnapshot {
-    let items: [PreservedPasteboardItem]
-
-    init(pasteboard: NSPasteboard) {
-        self.items = (pasteboard.pasteboardItems ?? []).map(PreservedPasteboardItem.init)
-    }
-
-    func restore(to pasteboard: NSPasteboard) {
-        pasteboard.clearContents()
-        guard !items.isEmpty else { return }
-        _ = pasteboard.writeObjects(items.map { $0.makePasteboardItem() })
-    }
-}
-
-private struct PendingClipboardRestore {
-    let snapshot: PreservedPasteboardSnapshot
-    let expectedChangeCount: Int
-    let writtenTranscript: String
-}
-
 @MainActor
 final class AppState: ObservableObject, DictationCleanupActions {
     private enum ActiveAudioInterruption {
         case muted(previouslyMuted: Bool)
     }
 
-    private let holdShortcutStorageKey = "hold_shortcut"
-    private let toggleShortcutStorageKey = "toggle_shortcut"
-    private let copyAgainShortcutStorageKey = "copy_again_shortcut"
-    private let promptShortcutStorageKey = "prompt_shortcut"
-    private let savedHoldCustomShortcutStorageKey = "saved_hold_custom_shortcut"
-    private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
-    private let savedCopyAgainCustomShortcutStorageKey = "saved_copy_again_custom_shortcut"
-    private let savedPromptCustomShortcutStorageKey = "saved_prompt_custom_shortcut"
-    private let promptTagStorageKey = "prompt_tag"
-    private let selectedMicrophoneStorageKey = "selected_microphone_id"
-    private let shortcutStartDelayStorageKey = "shortcut_start_delay"
-    private let preserveClipboardStorageKey = "preserve_clipboard"
-    private let keepDictationInClipboardHistoryStorageKey = "keep_dictation_in_clipboard_history"
-    private let pressEnterVoiceCommandStorageKey = "press_enter_voice_command_enabled"
-    private let doubleTapPromptStorageKey = "double_tap_prompt_enabled"
-    private let spokenDelimitersStorageKey = "spoken_delimiters_enabled"
-    private let spokenNumbersStorageKey = "spoken_numbers_enabled"
-    private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
-    private let soundVolumeStorageKey = "sound_volume"
-    private let voiceMacrosStorageKey = "voice_macros"
-    private let dictationAudioInterruptionEnabledStorageKey = "dictation_audio_interruption_enabled"
+    private let shortcutStore = ShortcutStore(defaults: .standard)
     private let pasteAfterShortcutReleaseDelay: TimeInterval = 0.03
     private let pressEnterAfterPasteDelay: TimeInterval = 0.08
     private let clipboardRestoreDelay: TimeInterval = 1.0
     let maxPipelineHistoryCount = 20
     @Published var hasCompletedSetup: Bool {
-        didSet {
-            UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
-        }
+        didSet { UserDefaults.standard[SettingsKeys.hasCompletedSetup] = hasCompletedSetup }
     }
 
-    @Published var holdShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(holdShortcut, key: holdShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
+    /// Changed only through `setShortcut`, which validates and persists.
+    @Published private(set) var shortcuts: ShortcutSettings {
+        didSet { restartHotkeyMonitoring() }
     }
 
-    @Published var toggleShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(toggleShortcut, key: toggleShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published var copyAgainShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(copyAgainShortcut, key: copyAgainShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published var promptShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(promptShortcut, key: promptShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published private(set) var savedHoldCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedToggleCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedCopyAgainCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedCopyAgainCustomShortcut, key: savedCopyAgainCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedPromptCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedPromptCustomShortcut, key: savedPromptCustomShortcutStorageKey)
-        }
-    }
+    var holdShortcut: ShortcutBinding { shortcuts.configuration.hold }
+    var toggleShortcut: ShortcutBinding { shortcuts.configuration.toggle }
+    var copyAgainShortcut: ShortcutBinding { shortcuts.configuration.copyAgain }
+    var promptShortcut: ShortcutBinding { shortcuts.configuration.prompt }
 
     /// Placed before dictations started with the prompt shortcut.
     @Published var promptTag: String {
-        didSet {
-            UserDefaults.standard.set(promptTag, forKey: promptTagStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.promptTag] = promptTag }
     }
 
-    static let defaultPromptTag = "[dictated]"
-
     @Published var shortcutStartDelay: TimeInterval {
-        didSet {
-            UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.shortcutStartDelay] = shortcutStartDelay }
     }
 
     @Published var dictationAudioInterruptionEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(
-                dictationAudioInterruptionEnabled,
-                forKey: dictationAudioInterruptionEnabledStorageKey
-            )
-        }
+        didSet { UserDefaults.standard[SettingsKeys.dictationAudioInterruption] = dictationAudioInterruptionEnabled }
     }
 
     @Published var preserveClipboard: Bool {
-        didSet {
-            UserDefaults.standard.set(preserveClipboard, forKey: preserveClipboardStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.preserveClipboard] = preserveClipboard }
     }
 
     @Published var keepDictationInClipboardHistory: Bool {
-        didSet {
-            UserDefaults.standard.set(keepDictationInClipboardHistory, forKey: keepDictationInClipboardHistoryStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.keepDictationInClipboardHistory] = keepDictationInClipboardHistory }
     }
 
     /// Double-tap Hold to Talk for prompt mode; off by default. While on, a Hold to
     /// Talk recording shorter than 0.3 s is discarded untranscribed.
     @Published var isDoubleTapPromptEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(isDoubleTapPromptEnabled, forKey: doubleTapPromptStorageKey)
+            UserDefaults.standard[SettingsKeys.doubleTapPrompt] = isDoubleTapPromptEnabled
             doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
         }
     }
@@ -256,50 +112,30 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private var holdReleasesInFlight = 0
 
     @Published var isPressEnterVoiceCommandEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isPressEnterVoiceCommandEnabled, forKey: pressEnterVoiceCommandStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.pressEnterVoiceCommand] = isPressEnterVoiceCommandEnabled }
     }
 
     @Published var isSpokenDelimitersEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isSpokenDelimitersEnabled, forKey: spokenDelimitersStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.spokenDelimiters] = isSpokenDelimitersEnabled }
     }
 
     @Published var isSpokenNumbersEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isSpokenNumbersEnabled, forKey: spokenNumbersStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.spokenNumbers] = isSpokenNumbersEnabled }
     }
 
     @Published var alertSoundsEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(alertSoundsEnabled, forKey: alertSoundsEnabledStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.alertSoundsEnabled] = alertSoundsEnabled }
     }
 
     @Published var soundVolume: Float {
-        didSet {
-            UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.soundVolume] = soundVolume }
     }
 
     @Published var voiceMacros: [VoiceMacro] = [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(voiceMacros) {
-                UserDefaults.standard.set(data, forKey: voiceMacrosStorageKey)
-            }
-        }
+        didSet { UserDefaults.standard[SettingsKeys.voiceMacros] = voiceMacros }
     }
 
     // MARK: Custom dictionary (DESIGN §3.2, §3.6). Entries and corrections are never logged.
-
-    private static let dictionaryStorageKey = "custom_dictionary"
-    private static let dictionaryIgnoreStorageKey = "custom_dictionary_ignore"
-    /// Which words are limited to which apps; macOS only.
-    private static let dictionaryAppsStorageKey = "custom_dictionary_apps"
-    private static let correctionSuggestionsStorageKey = "correction_suggestions_enabled"
 
     /// The bundled model's vocabulary, so Settings can reject unencodable entries.
     static let dictionaryEncoder: BPEEncoder? = LocalParakeetService.bundleDirectory.flatMap {
@@ -313,7 +149,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// Watch pasted dictations for corrections. On by default; turning it off is remembered.
     @Published var isCorrectionSuggestionsEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(isCorrectionSuggestionsEnabled, forKey: Self.correctionSuggestionsStorageKey)
+            UserDefaults.standard[SettingsKeys.correctionSuggestions] = isCorrectionSuggestionsEnabled
             if !isCorrectionSuggestionsEnabled {
                 stopCorrectionSuggestions()
                 overlayManager.withdrawDictionarySuggestion()
@@ -351,13 +187,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
         return DictionaryApp(id: id, name: app.localizedName)
     }
 
-    private static let dictationStatsStorageKey = "dictation_stats"
-    @Published private(set) var dictationStats = AppState.loadDictationStats() {
-        didSet {
-            if let data = try? JSONEncoder().encode(dictationStats) {
-                UserDefaults.standard.set(data, forKey: Self.dictationStatsStorageKey)
-            }
-        }
+    @Published private(set) var dictationStats = UserDefaults.standard[SettingsKeys.dictationStats] {
+        didSet { UserDefaults.standard[SettingsKeys.dictationStats] = dictationStats }
     }
 
     @Published var isRecording = false {
@@ -388,9 +219,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     @Published var selectedMicrophoneID: String {
-        didSet {
-            UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.selectedMicrophoneID] = selectedMicrophoneID }
     }
     @Published var availableMicrophones: [AudioDevice] = []
 
@@ -427,67 +256,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private let postTranscriptionUpdateReminderDuration: TimeInterval = 7
 
     init() {
-        let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let shortcuts = Self.loadShortcutConfiguration(
-            holdKey: holdShortcutStorageKey,
-            toggleKey: toggleShortcutStorageKey,
-            copyAgainKey: copyAgainShortcutStorageKey,
-            promptKey: promptShortcutStorageKey
-        )
-        let savedHoldCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedHoldCustomShortcutStorageKey,
-            fallback: shortcuts.hold.isCustom ? shortcuts.hold : nil
-        )
-        let savedToggleCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedToggleCustomShortcutStorageKey,
-            fallback: shortcuts.toggle.isCustom ? shortcuts.toggle : nil
-        )
-        let savedCopyAgainCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedCopyAgainCustomShortcutStorageKey,
-            fallback: shortcuts.copyAgain.isCustom ? shortcuts.copyAgain : nil
-        )
-        let savedPromptCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedPromptCustomShortcutStorageKey,
-            fallback: shortcuts.prompt.isCustom ? shortcuts.prompt : nil
-        )
-        let promptTag = UserDefaults.standard.string(forKey: promptTagStorageKey) ?? Self.defaultPromptTag
-        let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
-        let preserveClipboard = UserDefaults.standard.object(forKey: preserveClipboardStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
-        let keepDictationInClipboardHistory = UserDefaults.standard.bool(forKey: keepDictationInClipboardHistoryStorageKey)
-        let dictationAudioInterruptionEnabled = UserDefaults.standard.bool(
-            forKey: dictationAudioInterruptionEnabledStorageKey
-        )
-        let isDoubleTapPromptEnabled = UserDefaults.standard.bool(forKey: doubleTapPromptStorageKey)
-        let isPressEnterVoiceCommandEnabled = UserDefaults.standard.object(forKey: pressEnterVoiceCommandStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: pressEnterVoiceCommandStorageKey)
-        let isSpokenDelimitersEnabled = UserDefaults.standard.object(forKey: spokenDelimitersStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: spokenDelimitersStorageKey)
-        let isSpokenNumbersEnabled = UserDefaults.standard.object(forKey: spokenNumbersStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: spokenNumbersStorageKey)
-        let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
-            ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
-        let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
-            ? UserDefaults.standard.bool(forKey: alertSoundsEnabledStorageKey)
-            : soundVolume > 0
-
-        let initialMacros: [VoiceMacro]
-        if let data = UserDefaults.standard.data(forKey: "voice_macros"),
-           let decoded = try? JSONDecoder().decode([VoiceMacro].self, from: data) {
-            initialMacros = decoded
-        } else {
-            initialMacros = []
-        }
-
+        let defaults = UserDefaults.standard
         let dictionaryLoad = Self.loadCustomDictionary()
-        // On unless the user turned it off.
-        let isCorrectionSuggestionsEnabled = UserDefaults.standard.object(forKey: Self.correctionSuggestionsStorageKey) as? Bool ?? true
-
-        let initialAccessibility = AXIsProcessTrusted()
+        let initialAccessibility = PrivacyPermission.accessibility.isGranted
         var removedAudioFileNames: [String] = []
         do {
             removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
@@ -499,65 +270,33 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
         let savedHistory = pipelineHistoryStore.loadAllHistory()
 
-        let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
-
-        self.hasCompletedSetup = hasCompletedSetup
-        self.holdShortcut = shortcuts.hold
-        self.toggleShortcut = shortcuts.toggle
-        self.copyAgainShortcut = shortcuts.copyAgain
-        self.promptShortcut = shortcuts.prompt
-        self.savedHoldCustomShortcut = savedHoldCustomShortcut.binding
-        self.savedToggleCustomShortcut = savedToggleCustomShortcut.binding
-        self.savedCopyAgainCustomShortcut = savedCopyAgainCustomShortcut.binding
-        self.savedPromptCustomShortcut = savedPromptCustomShortcut.binding
-        self.promptTag = promptTag
-        self.shortcutStartDelay = shortcutStartDelay
-        self.preserveClipboard = preserveClipboard
-        self.keepDictationInClipboardHistory = keepDictationInClipboardHistory
-        self.dictationAudioInterruptionEnabled = dictationAudioInterruptionEnabled
-        self.isPressEnterVoiceCommandEnabled = isPressEnterVoiceCommandEnabled
+        self.hasCompletedSetup = defaults[SettingsKeys.hasCompletedSetup]
+        self.shortcuts = shortcutStore.load()
+        self.promptTag = defaults[SettingsKeys.promptTag]
+        self.shortcutStartDelay = max(0, defaults[SettingsKeys.shortcutStartDelay])
+        self.preserveClipboard = defaults[SettingsKeys.preserveClipboard]
+        self.keepDictationInClipboardHistory = defaults[SettingsKeys.keepDictationInClipboardHistory]
+        self.dictationAudioInterruptionEnabled = defaults[SettingsKeys.dictationAudioInterruption]
+        self.isPressEnterVoiceCommandEnabled = defaults[SettingsKeys.pressEnterVoiceCommand]
+        let isDoubleTapPromptEnabled = defaults[SettingsKeys.doubleTapPrompt]
         self.isDoubleTapPromptEnabled = isDoubleTapPromptEnabled
         self.doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
-        self.isSpokenDelimitersEnabled = isSpokenDelimitersEnabled
-        self.isSpokenNumbersEnabled = isSpokenNumbersEnabled
-        self.alertSoundsEnabled = alertSoundsEnabled
+        self.isSpokenDelimitersEnabled = defaults[SettingsKeys.spokenDelimiters]
+        self.isSpokenNumbersEnabled = defaults[SettingsKeys.spokenNumbers]
+        let soundVolume = defaults[SettingsKeys.soundVolume]
+        self.alertSoundsEnabled = defaults[SettingsKeys.alertSoundsEnabled] ?? (soundVolume > 0)
         self.soundVolume = soundVolume
-        self.voiceMacros = initialMacros
+        self.voiceMacros = defaults[SettingsKeys.voiceMacros]
         self.customDictionary = dictionaryLoad.dictionary
         self.dictionaryLoadFailed = dictionaryLoad.failed
-        self.isCorrectionSuggestionsEnabled = isCorrectionSuggestionsEnabled
+        self.isCorrectionSuggestionsEnabled = defaults[SettingsKeys.correctionSuggestions]
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
-        self.selectedMicrophoneID = selectedMicrophoneID
+        self.selectedMicrophoneID = defaults[SettingsKeys.selectedMicrophoneID]
 
         refreshAvailableMicrophones()
         installAudioDeviceObservers()
-
-        if shortcuts.didUpdateHoldStoredValue {
-            persistShortcut(shortcuts.hold, key: holdShortcutStorageKey)
-        }
-        if shortcuts.didUpdateToggleStoredValue {
-            persistShortcut(shortcuts.toggle, key: toggleShortcutStorageKey)
-        }
-        if shortcuts.didUpdateCopyAgainStoredValue {
-            persistShortcut(shortcuts.copyAgain, key: copyAgainShortcutStorageKey)
-        }
-        if shortcuts.didUpdatePromptStoredValue {
-            persistShortcut(shortcuts.prompt, key: promptShortcutStorageKey)
-        }
-        if savedHoldCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedHoldCustomShortcut.binding, key: savedHoldCustomShortcutStorageKey)
-        }
-        if savedToggleCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedToggleCustomShortcut.binding, key: savedToggleCustomShortcutStorageKey)
-        }
-        if savedCopyAgainCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedCopyAgainCustomShortcut.binding, key: savedCopyAgainCustomShortcutStorageKey)
-        }
-        if savedPromptCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedPromptCustomShortcut.binding, key: savedPromptCustomShortcutStorageKey)
-        }
 
         overlayManager.onStopButtonPressed = { [weak self] in
             DispatchQueue.main.async {
@@ -620,99 +359,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
             notificationCenter.removeObserver(observer)
         }
         audioDeviceObservers.removeAll()
-    }
-
-    private struct StoredShortcutConfiguration {
-        let hold: ShortcutBinding
-        let toggle: ShortcutBinding
-        let copyAgain: ShortcutBinding
-        let prompt: ShortcutBinding
-        let didUpdateHoldStoredValue: Bool
-        let didUpdateToggleStoredValue: Bool
-        let didUpdateCopyAgainStoredValue: Bool
-        let didUpdatePromptStoredValue: Bool
-    }
-
-    private struct StoredOptionalShortcut {
-        let binding: ShortcutBinding?
-        let didUpdateStoredValue: Bool
-    }
-
-    private struct StoredShortcutLoadResult {
-        let binding: ShortcutBinding?
-        let hadStoredValue: Bool
-        let didNormalize: Bool
-    }
-
-    private static func loadShortcutConfiguration(
-        holdKey: String,
-        toggleKey: String,
-        copyAgainKey: String,
-        promptKey: String
-    ) -> StoredShortcutConfiguration {
-        let legacyPreset = ShortcutPreset(
-            rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? ShortcutPreset.fnKey.rawValue
-        ) ?? .fnKey
-        let hold = legacyPreset.binding
-        let toggle = hold.withAddedModifiers(.command)
-        let storedHold = loadShortcut(forKey: holdKey)
-        let storedToggle = loadShortcut(forKey: toggleKey)
-        let storedCopyAgain = loadShortcut(forKey: copyAgainKey)
-        let storedPrompt = loadShortcut(forKey: promptKey)
-        return StoredShortcutConfiguration(
-            hold: storedHold.binding ?? hold,
-            toggle: storedToggle.binding ?? toggle,
-            copyAgain: storedCopyAgain.binding ?? .disabled,
-            prompt: storedPrompt.binding ?? .disabled,
-            didUpdateHoldStoredValue: storedHold.binding == nil || storedHold.didNormalize,
-            didUpdateToggleStoredValue: storedToggle.binding == nil || storedToggle.didNormalize,
-            didUpdateCopyAgainStoredValue: storedCopyAgain.didNormalize,
-            didUpdatePromptStoredValue: storedPrompt.didNormalize
-        )
-    }
-
-    private static func loadShortcut(forKey key: String) -> StoredShortcutLoadResult {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
-            return StoredShortcutLoadResult(binding: nil, hadStoredValue: false, didNormalize: false)
-        }
-        guard let decoded = try? JSONDecoder().decode(ShortcutBinding.self, from: data) else {
-            return StoredShortcutLoadResult(binding: nil, hadStoredValue: true, didNormalize: false)
-        }
-        let normalized = decoded.normalizedForStorageMigration()
-        return StoredShortcutLoadResult(
-            binding: normalized,
-            hadStoredValue: true,
-            didNormalize: normalized != decoded
-        )
-    }
-
-    private static func loadSavedCustomShortcut(
-        forKey key: String,
-        fallback: ShortcutBinding?
-    ) -> StoredOptionalShortcut {
-        let stored = loadShortcut(forKey: key)
-        if let binding = stored.binding {
-            return StoredOptionalShortcut(binding: binding, didUpdateStoredValue: stored.didNormalize)
-        }
-
-        return StoredOptionalShortcut(
-            binding: fallback,
-            didUpdateStoredValue: stored.hadStoredValue || fallback != nil
-        )
-    }
-
-    private func persistShortcut(_ binding: ShortcutBinding, key: String) {
-        let normalizedBinding = binding.normalizedForStorageMigration()
-        guard let data = try? JSONEncoder().encode(normalizedBinding) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-
-    private func persistOptionalShortcut(_ binding: ShortcutBinding?, key: String) {
-        guard let binding else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        persistShortcut(binding, key: key)
     }
 
     struct SavedAudioFile {
@@ -864,14 +510,14 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func startAccessibilityPolling() {
         accessibilityTimer?.invalidate()
         accessibilityTimer = nil
-        hasAccessibility = AXIsProcessTrusted()
+        hasAccessibility = PrivacyPermission.accessibility.isGranted
         if hasAccessibility {
             return
         }
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.hasAccessibility = AXIsProcessTrusted()
+                self.hasAccessibility = PrivacyPermission.accessibility.isGranted
                 if self.hasAccessibility {
                     self.accessibilityTimer?.invalidate()
                     self.accessibilityTimer = nil
@@ -889,12 +535,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
-            openPrivacySettingsPane(.accessibility)
+            PrivacyPermission.accessibility.openSettings()
         }
-    }
-
-    func openMicrophoneSettings() {
-        openPrivacySettingsPane(.microphone)
     }
 
     func requestMicrophoneAccess(completion: @escaping (Bool) -> Void) {
@@ -914,21 +556,15 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 }
             }
         case .denied, .restricted:
-            openMicrophoneSettings()
+            PrivacyPermission.microphone.openSettings()
             DispatchQueue.main.async {
                 completion(false)
             }
         @unknown default:
-            openMicrophoneSettings()
+            PrivacyPermission.microphone.openSettings()
             DispatchQueue.main.async {
                 completion(false)
             }
-        }
-    }
-
-    private func openPrivacySettingsPane(_ permission: PrivacyPermission) {
-        if !NSWorkspace.shared.open(permission.settingsURL) {
-            NSWorkspace.shared.open(PrivacyPermission.privacySettingsURL)
         }
     }
 
@@ -1040,76 +676,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
         Int((shortcutStartDelay * 1000).rounded())
     }
 
-    func savedCustomShortcut(for role: ShortcutRole) -> ShortcutBinding? {
-        switch role {
-        case .hold:
-            return savedHoldCustomShortcut
-        case .toggle:
-            return savedToggleCustomShortcut
-        case .copyAgain:
-            return savedCopyAgainCustomShortcut
-        case .prompt:
-            return savedPromptCustomShortcut
-        }
-    }
-
+    /// Validates, persists and applies `binding`; returns the reason when it is rejected.
     @discardableResult
     func setShortcut(_ binding: ShortcutBinding, for role: ShortcutRole) -> String? {
-        let binding = binding.normalizedForStorageMigration()
-
-        if role == .hold || role == .toggle {
-            let otherDictationBinding = role == .hold ? toggleShortcut : holdShortcut
-            guard !binding.conflicts(with: otherDictationBinding) else {
-                return "Hold and tap shortcuts must be distinct."
-            }
-        }
-
-        if role != .copyAgain, binding.conflicts(with: copyAgainShortcut) {
-            return "This shortcut is already used by Paste Again."
-        }
-        if role == .copyAgain {
-            if binding.conflicts(with: holdShortcut) {
-                return "Paste Again cannot share a shortcut with Hold to Talk."
-            }
-            if binding.conflicts(with: toggleShortcut) {
-                return "Paste Again cannot share a shortcut with Tap to Toggle."
-            }
-        }
-
-        if role != .prompt, binding.conflicts(with: promptShortcut) {
-            return "This shortcut is already used by Hold to Prompt."
-        }
-        if role == .prompt {
-            let others: [(ShortcutRole, ShortcutBinding)] = [(.hold, holdShortcut), (.toggle, toggleShortcut),
-                                                             (.copyAgain, copyAgainShortcut)]
-            for (otherRole, other) in others where binding.conflicts(with: other) {
-                return "Hold to Prompt cannot share a shortcut with \(otherRole.title)."
-            }
-        }
-
-        switch role {
-        case .hold:
-            if binding.isCustom {
-                savedHoldCustomShortcut = binding
-            }
-            holdShortcut = binding
-        case .toggle:
-            if binding.isCustom {
-                savedToggleCustomShortcut = binding
-            }
-            toggleShortcut = binding
-        case .copyAgain:
-            if binding.isCustom {
-                savedCopyAgainCustomShortcut = binding
-            }
-            copyAgainShortcut = binding
-        case .prompt:
-            if binding.isCustom {
-                savedPromptCustomShortcut = binding
-            }
-            promptShortcut = binding
-        }
-
+        var updated = shortcuts
+        if let message = updated.set(binding, for: role) { return message }
+        shortcutStore.save(updated, for: role)
+        shortcuts = updated
         return nil
     }
 
@@ -1174,11 +747,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         restartHotkeyMonitoring()
     }
 
-    private var activeShortcutConfiguration: ShortcutConfiguration {
-        ShortcutConfiguration(hold: holdShortcut, toggle: toggleShortcut, copyAgain: copyAgainShortcut,
-                              prompt: promptShortcut)
-    }
-
     private func restartHotkeyMonitoring() {
         guard shouldMonitorHotkeys, !isCapturingShortcut, !isAwaitingMicrophonePermission else {
             hotkeyManager.stop()
@@ -1186,7 +754,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
 
         do {
-            try hotkeyManager.start(configuration: activeShortcutConfiguration)
+            try hotkeyManager.start(configuration: shortcuts.configuration)
             hotkeyMonitoringErrorMessage = nil
         } catch {
             hotkeyMonitoringErrorMessage = error.localizedDescription
@@ -1447,13 +1015,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     private func prepareRecordingStart(triggerMode: RecordingTriggerMode) -> Bool {
         activeRecordingTriggerMode = triggerMode
-        hasAccessibility = AXIsProcessTrusted()
+        hasAccessibility = PrivacyPermission.accessibility.isGranted
         guard hasAccessibility else {
             errorMessage = "\(PrivacyPermission.accessibility.settingsTitle) permission required. \(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))"
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             shortcutSessionController.reset()
-            showAccessibilityAlert()
+            showPermissionAlert(.accessibility)
             return false
         }
         overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
@@ -1501,7 +1069,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.shortcutSessionController.reset()
-                        strongSelf.showMicrophonePermissionAlert()
+                        strongSelf.showPermissionAlert(.microphone)
                     }
                 }
             }
@@ -1511,7 +1079,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             statusText = "No Microphone"
             activeRecordingTriggerMode = nil
                 shortcutSessionController.reset()
-            showMicrophonePermissionAlert()
+            showPermissionAlert(.microphone)
             return false
         }
     }
@@ -1662,7 +1230,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     /// Audio is retained only while suggestions are on.
     private var retainsAudioForCorrection: Bool {
-        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
+        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && PrivacyPermission.accessibility.isGranted
     }
 
     /// Transcribes the new recording while it is recorded when the model is
@@ -1733,33 +1301,23 @@ final class AppState: ObservableObject, DictationCleanupActions {
         error.localizedDescription
     }
 
-    func showMicrophonePermissionAlert() {
+    func showPermissionAlert(_ permission: PrivacyPermission) {
+        let text = permission.alertText(appName: AppName.displayName)
         let alert = NSAlert()
-        alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\n\(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
+        alert.messageText = text.title
+        alert.informativeText = text.message
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: nil)
+        alert.icon = NSImage(systemSymbolName: text.symbolName, accessibilityDescription: nil)
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            openMicrophoneSettings()
-        }
-    }
-
-    func showAccessibilityAlert() {
-        let alert = NSAlert()
-        alert.messageText = "\(PrivacyPermission.accessibility.settingsTitle) Permission Required"
-        alert.informativeText = "\(AppName.displayName) needs this access for global shortcuts and pasting transcribed text.\n\n\(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))\n\n\(PrivacyPermission.accessibilityRepairInstructions)"
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            openAccessibilitySettings()
+            if permission == .accessibility {
+                openAccessibilitySettings()
+            } else {
+                permission.openSettings()
+            }
         }
     }
 
@@ -1898,14 +1456,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         dictationStats = DictationStats()
     }
 
-    private static func loadDictationStats() -> DictationStats {
-        guard let data = UserDefaults.standard.data(forKey: dictationStatsStorageKey),
-              let stats = try? JSONDecoder().decode(DictationStats.self, from: data) else {
-            return DictationStats()
-        }
-        return stats
-    }
-
     /// Reads only the file header. Called off the main thread during transcription.
     private nonisolated static func audioDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
@@ -2030,117 +1580,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
     }
 
-    private func pasteAtCursor() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        let vKeyCode = keyCodeForCharacter("v") ?? 9
-
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
-        keyDown?.flags = .maskCommand
-        keyDown?.post(tap: .cgSessionEventTap)
-
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
-        keyUp?.flags = .maskCommand
-        keyUp?.post(tap: .cgSessionEventTap)
-    }
-
-    private func keyCodeForCharacter(_ character: String) -> CGKeyCode? {
-        guard let char = character.lowercased().utf16.first else { return nil }
-        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-        guard let layoutDataRef = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
-            return nil
-        }
-        let layoutData = unsafeBitCast(layoutDataRef, to: CFData.self) as Data
-        return layoutData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> CGKeyCode? in
-            guard let layout = ptr.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
-                return nil
-            }
-            for keyCode in UInt16(0)..<UInt16(128) {
-                var chars = [UniChar](repeating: 0, count: 4)
-                var charCount = 0
-                var deadKeyState: UInt32 = 0
-                let status = UCKeyTranslate(
-                    layout, keyCode, UInt16(kUCKeyActionDisplay), 0,
-                    UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit),
-                    &deadKeyState, 4, &charCount, &chars
-                )
-                if status == noErr, charCount > 0, chars[0] == char {
-                    return CGKeyCode(keyCode)
-                }
-            }
-            return nil
-        }
-    }
-
-    private func pressEnter() {
-        let source = CGEventSource(stateID: .hidSystemState)
-
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)
-        keyDown?.post(tap: .cgSessionEventTap)
-
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
-        keyUp?.post(tap: .cgSessionEventTap)
-    }
-
-    /// Writes the final transcript to the system pasteboard.
-    /// Also handles appending necessary trailing spaces, declaring transient
-    /// types for clipboard managers, and saving the clipboard state for later restoration.
-    /// - Parameter transcript: The text to be pasted.
-    /// - Returns: A `PendingClipboardRestore` object if clipboard preservation is enabled, otherwise nil.
-    /// Append a space when ending with sentence-ending punctuation so the
-    /// next dictation does not jam against the prior period.
-    private static func pasteboardText(for transcript: String) -> String {
-        if let last = transcript.last, ".!?".contains(last) {
-            return transcript + " "
-        }
-        return transcript
-    }
-
+    /// Returns what the clipboard held before, when "Preserve clipboard" is on.
     private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
-        let pasteboard = NSPasteboard.general
-        let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
-
-        let textToWrite = Self.pasteboardText(for: transcript)
-
-        if keepDictationInClipboardHistory {
-            // Plain write so clipboard managers record the dictation in history.
-            pasteboard.clearContents()
-            pasteboard.setString(textToWrite, forType: .string)
-        } else {
-            // Declare standard transient types alongside .string so well-behaved
-            // clipboard managers (Maccy, Raycast, Paste, Clipy, Flycut, etc.) skip
-            // recording this entry in their history. The text still pastes normally
-            // via Cmd-V — only clipboard history is affected.
-            //
-            // See: https://github.com/nicke5012/TransientPasteboardType
-            let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
-            let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-            let autoGeneratedType = NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType")
-            let legacyTransientType = NSPasteboard.PasteboardType("de.petermaurer.TransientPasteboardType")
-
-            pasteboard.declareTypes([
-                .string,
-                transientType,
-                concealedType,
-                autoGeneratedType,
-                legacyTransientType
-            ], owner: nil)
-
-            pasteboard.setString(textToWrite, forType: .string)
-
-            // Populate empty values for the marker types — some clipboard managers
-            // check the data presence rather than just the declared type.
-            pasteboard.setString("", forType: transientType)
-            pasteboard.setString("", forType: concealedType)
-            pasteboard.setString("", forType: autoGeneratedType)
-            pasteboard.setString("", forType: legacyTransientType)
-        }
-
-        guard let snapshot else { return nil }
-        return PendingClipboardRestore(
-            snapshot: snapshot,
-            expectedChangeCount: pasteboard.changeCount,
-            writtenTranscript: textToWrite
-        )
+        ClipboardTransaction.write(transcript, preserve: preserveClipboard, keepInHistory: keepDictationInClipboardHistory,
+                                   on: NSPasteboard.general)
     }
 
     private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
@@ -2149,18 +1592,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         // Some apps consume Cmd-V asynchronously, so restoring too quickly can paste
         // the pre-dictation clipboard instead of the transcript.
         DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-            let pasteboard = NSPasteboard.general
-            // A bare changeCount check is too strict: browsers, iCloud Universal
-            // Clipboard sync, and other background apps bump the change count
-            // without the user copying anything, which left the transcript
-            // stranded on the clipboard. Restore when nothing changed, or when the
-            // clipboard still holds exactly the transcript we wrote (so the user
-            // has not deliberately copied something new that we would clobber).
-            let clipboardStillHoldsTranscript =
-                pasteboard.string(forType: .string) == pendingRestore.writtenTranscript
-            guard pasteboard.changeCount == pendingRestore.expectedChangeCount
-                || clipboardStillHoldsTranscript else { return }
-            pendingRestore.snapshot.restore(to: pasteboard)
+            ClipboardTransaction.restore(pendingRestore, on: NSPasteboard.general)
         }
     }
 
@@ -2190,7 +1622,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             guard let correction, self.isCorrectionSuggestionsEnabled,
                   self.correctionWatcher.isCurrent(correction.watchGeneration) else {
                 if let correction { LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID) }
-                self.pasteAtCursor()
+                SyntheticKeyboard.paste()
                 completion?()
                 return
             }
@@ -2198,7 +1630,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 // CorrectionWatcher completes a capture on the main queue.
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.pasteAtCursor()
+                    SyntheticKeyboard.paste()
                     if let capture, self.isCorrectionSuggestionsEnabled {
                         self.correctionApp = (correction.dictationID, correction.app)
                         self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
@@ -2237,7 +1669,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             LocalParakeetService.shared.releaseCorrectionSession(dictationID: dictationID)
             return nil
         }
-        return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID,
+        return CorrectionPasteContext(pasted: ClipboardTransaction.pasteText(for: result.output), dictationID: dictationID,
                                       watchGeneration: watchGeneration, app: app)
     }
 
@@ -2268,7 +1700,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// does (one suggestion per dictation).
     private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool, watch: UInt64) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
-        guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
+        guard mayPresentCorrectionSuggestion, PrivacyPermission.accessibility.isGranted,
               customDictionary.dictionary.entries.count < DictionaryValidation.capacity,
               let watched = correctionApp, watched.dictationID == edit.dictationID else {
             stopCorrectionSuggestions()
@@ -2362,9 +1794,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     /// The explicit recovery for unreadable saved data: removes it and starts empty.
     func resetSavedDictionary() {
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryStorageKey)
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryIgnoreStorageKey)
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryAppsStorageKey)
+        DictionaryStorage.remove(from: .standard)
+        UserDefaults.standard.removeObject(forKey: DictionaryAppStorage.storageKey)
         dictionaryLoadFailed = false
         customDictionary = ScopedDictionary()
         dictionaryDidChange()
@@ -2374,10 +1805,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// unreadable saved data.
     private func applyDictionary(_ updated: ScopedDictionary) {
         guard !dictionaryLoadFailed else { return }
-        let encoded = DictionaryStorage.encode(updated.dictionary)
-        UserDefaults.standard.set(encoded.entries, forKey: Self.dictionaryStorageKey)
-        UserDefaults.standard.set(encoded.ignore, forKey: Self.dictionaryIgnoreStorageKey)
-        UserDefaults.standard.set(DictionaryAppStorage.encode(updated.scopes), forKey: Self.dictionaryAppsStorageKey)
+        DictionaryStorage.save(updated.dictionary, to: .standard)
+        UserDefaults.standard.set(DictionaryAppStorage.encode(updated.scopes), forKey: DictionaryAppStorage.storageKey)
         customDictionary = updated
         dictionaryDidChange()
     }
@@ -2391,32 +1820,25 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     private static func loadCustomDictionary() -> (dictionary: ScopedDictionary, failed: Bool) {
-        let defaults = UserDefaults.standard
-        let entries = defaults.object(forKey: dictionaryStorageKey)
-        let ignore = defaults.object(forKey: dictionaryIgnoreStorageKey)
-        let apps = defaults.object(forKey: dictionaryAppsStorageKey)
-        // A value of the wrong type is unreadable, never "missing".
-        if [entries, ignore, apps].contains(where: { $0 != nil && !($0 is Data) }) {
-            return (ScopedDictionary(), true)
-        }
-        guard case .success(let dictionary) = DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data,
-                                                                     encoder: dictionaryEncoder),
-              case .success(let scopes) = DictionaryAppStorage.load(apps as? Data, entries: dictionary.entries) else {
+        // Words limited to apps are macOS only, so their key is checked here.
+        guard case .success(let apps) = DictionaryStorage.storedData(forKey: DictionaryAppStorage.storageKey, in: .standard),
+              case .success(let dictionary) = DictionaryStorage.load(from: .standard, encoder: dictionaryEncoder),
+              case .success(let scopes) = DictionaryAppStorage.load(apps, entries: dictionary.entries) else {
             return (ScopedDictionary(), true)
         }
         return (ScopedDictionary(dictionary: dictionary, scopes: scopes), false)
     }
 
     private func pressEnterWhenShortcutReleased(completion: (() -> Void)? = nil) {
-        performAfterShortcutReleased { [weak self] in
-            self?.pressEnter()
+        performAfterShortcutReleased {
+            SyntheticKeyboard.press(SyntheticKeyboard.returnKey)
             completion?()
         }
     }
 
     private func pressEnterAfterPaste(completion: (() -> Void)? = nil) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + pressEnterAfterPasteDelay) { [weak self] in
-            self?.pressEnter()
+        DispatchQueue.main.asyncAfter(deadline: .now() + pressEnterAfterPasteDelay) {
+            SyntheticKeyboard.press(SyntheticKeyboard.returnKey)
             completion?()
         }
     }

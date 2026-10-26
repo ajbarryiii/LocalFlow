@@ -14,6 +14,9 @@ struct LocalFlowTests {
         SpokenNumberTests.run()
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
+        ShortcutStoreTests.run()
+        SettingsKeysTests.run()
+        ClipboardTransactionTests.run()
         DoubleTapPromptTests.run()
         DictationCleanupStepsTests.run()
         SemanticVersionTests.run()
@@ -24,6 +27,7 @@ struct LocalFlowTests {
         DictionaryTests.run()
         DictionaryAppTests.run()
         StrengthProbeTests.run()
+        OverlayWaveformMetricsTests.run()
         print("LocalFlowTests passed")
     }
 }

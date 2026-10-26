@@ -15,6 +15,15 @@ enum KeyAction: Hashable, Sendable {
     case nextKeyboard
 }
 
+extension KeyAction {
+    /// The letter a–z this key types, as 0–25; nil for every other key.
+    var letterIndex: Int? {
+        guard case .character(let character) = self, let scalar = character.unicodeScalars.first,
+              character.unicodeScalars.count == 1, ("a" ... "z").contains(scalar) else { return nil }
+        return Int(scalar.value - Unicode.Scalar("a").value)
+    }
+}
+
 struct KeyRect: Equatable, Sendable {
     var x: Double
     var y: Double
@@ -158,6 +167,16 @@ enum KeyboardLayout {
         add(.space, "space", x: x, row: 3, width: max(returnX - m.keyGap - x, 1))
         add(.returnKey, "", x: returnX, row: 3, width: m.returnWidth)
         return keys
+    }
+
+    /// The distance between neighbouring top-row letter (a–z) centres, or nil without two of them: on the letters
+    /// layer, a letter width plus a key gap; the other layers have no letters.
+    static func letterPitch(in keys: [PlacedKey]) -> Double? {
+        let letters = keys.filter { $0.action.letterIndex != nil }
+        guard let top = letters.map(\.frame.y).min() else { return nil }
+        let centres = letters.filter { $0.frame.y == top }.map(\.frame.midX).sorted()
+        guard centres.count >= 2, let first = centres.first, let last = centres.last, last > first else { return nil }
+        return (last - first) / Double(centres.count - 1)
     }
 
     /// A point outside the space bar counts as this much farther from it (points): the biggest key gets the

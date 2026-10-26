@@ -205,6 +205,10 @@ enum SwipeCoreTests {
         expectRejected(mutated { data, layout in setU32(&data, 20, UInt32(layout.blob + 1)) }, .wrongSize,
                        "blob size larger than the data")
         expectRejected(mutated { data, _ in setU32(&data, 12, .max) }, .wrongSize, "huge edge count")
+        // The magic is checked before the size, and the size of the header before the version.
+        expectRejected(Data("XFLX".utf8), .badMagic, "bad magic without a header")
+        expectRejected(good.prefix(4), .wrongSize, "the magic alone")
+        expectRejected(mutated { data, _ in setU32(&data, 4, 2) }.prefix(20), .wrongSize, "truncated header of version 2")
     }
 
     private static func testLexiconRejectsBadEdges() {

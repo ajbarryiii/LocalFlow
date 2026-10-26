@@ -46,6 +46,29 @@ struct MenuBarView: View {
         NotificationCenter.default.post(name: .showSettings, object: nil)
     }
 
+    /// A choice the shortcut rules would reject is disabled, so every enabled one applies.
+    private func shortcutMenu(_ title: String, for role: ShortcutRole) -> some View {
+        Menu(title) {
+            ForEach(appState.shortcuts.menuChoices(for: role)) { choice in
+                if choice.binding.isCustom {
+                    Divider()
+                }
+                Button {
+                    appState.setShortcut(choice.binding, for: role)
+                } label: {
+                    Text(choice.isSelected ? "✓ \(choice.title)" : "  \(choice.title)")
+                }
+                .disabled(!choice.isEnabled)
+            }
+
+            Divider()
+            Button("Customize…") {
+                appState.selectedSettingsTab = .general
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             Text("\(AppName.displayName) v\(appVersion)")
@@ -68,7 +91,7 @@ struct MenuBarView: View {
             // Accessibility warning
             if !appState.hasAccessibility {
                 Button {
-                    appState.showAccessibilityAlert()
+                    appState.showPermissionAlert(.accessibility)
                 } label: {
                     Label("\(PrivacyPermission.accessibility.settingsTitle) Required", systemImage: "exclamationmark.triangle.fill")
                 }
@@ -172,137 +195,9 @@ struct MenuBarView: View {
 
             Divider()
 
-            Menu("Hold Shortcut") {
-                Button {
-                    _ = appState.setShortcut(.disabled, for: .hold)
-                } label: {
-                    if appState.holdShortcut.isDisabled {
-                        Text("✓ Disabled")
-                    } else {
-                        Text("  Disabled")
-                    }
-                }
-
-                ForEach(ShortcutPreset.allCases) { preset in
-                    Button {
-                        _ = appState.setShortcut(preset.binding, for: .hold)
-                    } label: {
-                        if appState.holdShortcut == preset.binding {
-                            Text("✓ \(preset.title)")
-                        } else {
-                            Text("  \(preset.title)")
-                        }
-                    }
-                    .disabled(preset.binding == appState.toggleShortcut)
-                }
-
-                if let savedCustomShortcut = appState.savedCustomShortcut(for: .hold) {
-                    Divider()
-                    Button {
-                        _ = appState.setShortcut(savedCustomShortcut, for: .hold)
-                    } label: {
-                        if appState.holdShortcut == savedCustomShortcut {
-                            Text("✓ Custom: \(savedCustomShortcut.displayName)")
-                        } else {
-                            Text("  Custom: \(savedCustomShortcut.displayName)")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Customize…") {
-                    appState.selectedSettingsTab = .general
-                    NotificationCenter.default.post(name: .showSettings, object: nil)
-                }
-            }
-
-            Menu("Toggle Shortcut") {
-                Button {
-                    _ = appState.setShortcut(.disabled, for: .toggle)
-                } label: {
-                    if appState.toggleShortcut.isDisabled {
-                        Text("✓ Disabled")
-                    } else {
-                        Text("  Disabled")
-                    }
-                }
-
-                ForEach(ShortcutPreset.allCases) { preset in
-                    Button {
-                        _ = appState.setShortcut(preset.binding, for: .toggle)
-                    } label: {
-                        if appState.toggleShortcut == preset.binding {
-                            Text("✓ \(preset.title)")
-                        } else {
-                            Text("  \(preset.title)")
-                        }
-                    }
-                    .disabled(preset.binding == appState.holdShortcut)
-                }
-
-                if let savedCustomShortcut = appState.savedCustomShortcut(for: .toggle) {
-                    Divider()
-                    Button {
-                        _ = appState.setShortcut(savedCustomShortcut, for: .toggle)
-                    } label: {
-                        if appState.toggleShortcut == savedCustomShortcut {
-                            Text("✓ Custom: \(savedCustomShortcut.displayName)")
-                        } else {
-                            Text("  Custom: \(savedCustomShortcut.displayName)")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Customize…") {
-                    appState.selectedSettingsTab = .general
-                    NotificationCenter.default.post(name: .showSettings, object: nil)
-                }
-            }
-
-            Menu("Paste Again Shortcut") {
-                Button {
-                    _ = appState.setShortcut(.disabled, for: .copyAgain)
-                } label: {
-                    if appState.copyAgainShortcut.isDisabled {
-                        Text("✓ Disabled")
-                    } else {
-                        Text("  Disabled")
-                    }
-                }
-
-                ForEach(ShortcutPreset.allCases) { preset in
-                    Button {
-                        _ = appState.setShortcut(preset.binding, for: .copyAgain)
-                    } label: {
-                        if appState.copyAgainShortcut == preset.binding {
-                            Text("✓ \(preset.title)")
-                        } else {
-                            Text("  \(preset.title)")
-                        }
-                    }
-                    .disabled(preset.binding == appState.holdShortcut || preset.binding == appState.toggleShortcut)
-                }
-
-                if let savedCustomShortcut = appState.savedCustomShortcut(for: .copyAgain) {
-                    Divider()
-                    Button {
-                        _ = appState.setShortcut(savedCustomShortcut, for: .copyAgain)
-                    } label: {
-                        if appState.copyAgainShortcut == savedCustomShortcut {
-                            Text("✓ Custom: \(savedCustomShortcut.displayName)")
-                        } else {
-                            Text("  Custom: \(savedCustomShortcut.displayName)")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Customize…") {
-                    appState.selectedSettingsTab = .general
-                    NotificationCenter.default.post(name: .showSettings, object: nil)
-                }
-            }
+            shortcutMenu("Hold Shortcut", for: .hold)
+            shortcutMenu("Toggle Shortcut", for: .toggle)
+            shortcutMenu("Paste Again Shortcut", for: .copyAgain)
 
             Menu("Microphone") {
                 Button {
