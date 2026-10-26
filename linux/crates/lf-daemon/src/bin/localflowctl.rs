@@ -64,6 +64,7 @@ use lf_daemon::waybar::{Class, Indicator};
 use lf_daemon::{dictionary, paths, t3};
 
 const USAGE: &str = "usage: localflowctl [--timeout-ms N] <command>
+       localflowctl --version
        localflowctl [--timeout-ms N] watch [--waybar]
        localflowctl [--timeout-ms N] tray
        localflowctl [--timeout-ms N] correct
@@ -295,6 +296,10 @@ fn parse_args() -> Result<Args, Failure> {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{USAGE}");
+                std::process::exit(0);
+            }
+            "--version" => {
+                println!("localflowctl {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--timeout-ms" => {

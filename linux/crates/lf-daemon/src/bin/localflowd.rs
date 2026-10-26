@@ -13,6 +13,7 @@ use lf_daemon::{backends, error, info, log, paths, portal, recognizer, signals, 
 use lf_daemon::{dictionary, history};
 
 const USAGE: &str = "usage: localflowd [--config PATH] [--check-config] [--fake-io]
+       localflowd --version
 
   --config PATH    configuration file (default $XDG_CONFIG_HOME/localflow/config.json)
   --check-config   validate the configuration and exit
@@ -42,6 +43,10 @@ fn parse_args() -> Result<Args, String> {
             Some("--fake-io") => a.fake_io = true,
             Some("-h" | "--help") => {
                 println!("{USAGE}");
+                std::process::exit(0);
+            }
+            Some("--version") => {
+                println!("localflowd {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => return Err(format!("unexpected argument {arg:?}\n{USAGE}")),

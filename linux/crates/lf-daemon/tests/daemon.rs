@@ -414,6 +414,28 @@ fn malformed_requests_are_rejected() {
 }
 
 #[test]
+fn both_binaries_print_their_version() {
+    // Without a configuration, runtime directory or home: --version reads
+    // nothing.
+    for (bin, name) in [
+        (env!("CARGO_BIN_EXE_localflowd"), "localflowd"),
+        (env!("CARGO_BIN_EXE_localflowctl"), "localflowctl"),
+    ] {
+        let out = std::process::Command::new(bin)
+            .arg("--version")
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{name}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("{name} {}\n", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{name}");
+    }
+}
+
+#[test]
 fn localflowd_writes_its_fatal_error_before_exiting() {
     // Logging goes through a background thread; the exit path flushes it.
     let dir = TempDir::new("fatal-log");
