@@ -15,7 +15,7 @@ use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, IsTerminal};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
@@ -169,6 +169,10 @@ pub enum Error {
         path: PathBuf,
         reason: String,
     },
+    /// A directory above the destination can be changed by another user.
+    Untrusted(PathBuf),
+    /// The file system cannot swap the destination for the new export.
+    NoExchange(PathBuf),
     /// `curl` is not installed.
     NoCurl,
     /// A download failed.
@@ -195,6 +199,19 @@ impl fmt::Display for Error {
                 "cannot install into {}: {reason}; pass --dest DIR, or set export_path \
                  to a writable directory",
                 path.display()
+            ),
+            Error::Untrusted(dir) => write!(
+                f,
+                "{} can be changed by other users (a directory above the destination \
+                 must be owned by you or root, and not writable by others unless \
+                 sticky); pass --dest DIR somewhere only you can change",
+                dir.display()
+            ),
+            Error::NoExchange(p) => write!(
+                f,
+                "the file system of {} cannot replace it in one step; remove it and \
+                 run fetch-model again",
+                p.display()
             ),
             Error::NoCurl => f.write_str(
                 "curl is not installed (fetch-model downloads with it); install curl, \
@@ -379,6 +396,36 @@ fn outside_store(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Fails unless `dir` (canonical) and every directory above it are owned
+/// by this user or root and not writable by others, or sticky (like
+/// `/tmp`). Otherwise another user could swap the staging directory or the
+/// destination between the checks and the rename.
+fn trusted(dir: &Path) -> Result<(), Error> {
+    for d in dir.ancestors() {
+        let m = fs::symlink_metadata(d).map_err(io("inspect", d))?;
+        let owner_ok = m.uid() == paths::euid() || m.uid() == 0;
+        let others_write = m.mode() & 0o022 != 0 && m.mode() & libc::S_ISVTX == 0;
+        if !owner_ok || others_write || !m.is_dir() {
+            return Err(Error::Untrusted(d.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+/// The nearest existing directory at or above `path`, resolved.
+fn existing_ancestor(path: &Path) -> Result<PathBuf, Error> {
+    let mut p = path;
+    loop {
+        match p.canonicalize() {
+            Ok(c) => return Ok(c),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                p = p.parent().ok_or_else(|| io("resolve", path)(e))?;
+            }
+            Err(e) => return Err(io("resolve", p)(e)),
+        }
+    }
+}
+
 /// A [`Error::ReadOnly`] for errors that mean "cannot write here".
 fn write_error(what: &str, path: &Path, e: std::io::Error) -> Error {
     match e.raw_os_error() {
@@ -464,8 +511,10 @@ fn unsupported(e: &std::io::Error) -> bool {
 /// - `dest` already holding exactly this export: [`Outcome::Present`],
 ///   nothing downloaded.
 /// - `dest` holding anything else: [`Error::Exists`] unless `force`; with
-///   `force` it is replaced in one atomic exchange where the file system
-///   supports it.
+///   `force` it is replaced in one atomic exchange ([`Error::NoExchange`]
+///   on file systems without one).
+/// - The directories above `dest` must be ones no other user can change
+///   ([`Error::Untrusted`]).
 /// - Missing parents of `dest` are created with mode 0700 (the daemon's
 ///   data directory must be private).
 ///
@@ -504,6 +553,8 @@ pub fn install(
     if existed && !force {
         return Err(Error::Exists(dest.to_owned()));
     }
+    // Before creating anything, then again for what was created.
+    trusted(&existing_ancestor(parent)?)?;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -511,7 +562,12 @@ pub fn install(
         .map_err(|e| write_error("create", parent, e))?;
     let parent = parent.canonicalize().map_err(io("resolve", parent))?;
     outside_store(&parent)?;
+    trusted(&parent)?;
     let staging = Staging::new(&parent, name)?;
+    if existed {
+        // Found out before the download, not after.
+        probe_exchange(&staging.0, dest)?;
+    }
     let cancelled = || match cancel.load(Ordering::SeqCst) {
         0 => Ok(()),
         sig => Err(Error::Cancelled(sig)),
@@ -577,29 +633,38 @@ pub fn install(
     Ok(outcome)
 }
 
-/// Puts the staged export in place of `dest` and removes the old entry.
-/// Without `RENAME_EXCHANGE`, the old entry is moved aside first and moved
-/// back if the export cannot take its place.
+/// Swaps the staged export with `dest` in one step and removes the old
+/// entry. A file system without `RENAME_EXCHANGE` is refused: replacing in
+/// two renames would leave no export between them.
 fn replace(staged: &Path, dest: &Path) -> Result<(), Error> {
-    let old = match rename_with(staged, dest, libc::RENAME_EXCHANGE) {
-        // `staged` names the old entry now.
-        Ok(()) => staged.to_owned(),
-        Err(e) if !unsupported(&e) => return Err(write_error("replace", dest, e)),
-        Err(_) => {
-            let mut aside = staged.as_os_str().to_owned();
-            aside.push(".old");
-            let aside = PathBuf::from(aside);
-            fs::rename(dest, &aside).map_err(|e| write_error("move aside", dest, e))?;
-            if let Err(e) = fs::rename(staged, dest) {
-                let _ = fs::rename(&aside, dest);
-                return Err(write_error("replace", dest, e));
-            }
-            aside
-        }
-    };
-    // The export is in place; a leftover old entry is not a failure.
-    let _ = remove_entry(&old);
+    match rename_with(staged, dest, libc::RENAME_EXCHANGE) {
+        Ok(()) => {}
+        Err(e) if unsupported(&e) => return Err(Error::NoExchange(dest.to_owned())),
+        Err(e) => return Err(write_error("replace", dest, e)),
+    }
+    // `staged` names the old entry now. The export is in place, so a
+    // leftover old entry is not a failure.
+    let _ = remove_entry(staged);
     Ok(())
+}
+
+/// Fails with [`Error::NoExchange`] for `dest` unless the file system of
+/// `staging` (and so of `dest`) supports `RENAME_EXCHANGE`, found by
+/// swapping two empty directories in `staging`.
+fn probe_exchange(staging: &Path, dest: &Path) -> Result<(), Error> {
+    let (a, b) = (staging.join("a"), staging.join("b"));
+    for d in [&a, &b] {
+        fs::create_dir(d).map_err(io("create", d))?;
+    }
+    let swapped = rename_with(&a, &b, libc::RENAME_EXCHANGE);
+    for d in [&a, &b] {
+        fs::remove_dir(d).map_err(io("remove", d))?;
+    }
+    match swapped {
+        Ok(()) => Ok(()),
+        Err(e) if unsupported(&e) => Err(Error::NoExchange(dest.to_owned())),
+        Err(e) => Err(write_error("replace", dest, e)),
+    }
 }
 
 /// Flushes `path` (a file or directory) to disk.
@@ -1151,6 +1216,41 @@ mod tests {
             &cancel,
         );
         assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+    }
+
+    #[test]
+    fn directories_other_users_can_change_are_refused() {
+        let t = TempDir::new("fetch-shared");
+        let (pins, files) = synthetic("one");
+        let cancel = AtomicI32::new(0);
+        // Writable by everyone and not sticky: another user could swap the
+        // staging directory for their own.
+        let shared = t.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        for dest in [shared.join("model"), shared.join("a/b/model")] {
+            let mut fake = Fake::new(&pins, &files);
+            let r = install(&pins, &dest, false, &mut fake, &cancel);
+            assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
+            assert!(r.unwrap_err().to_string().contains("--dest"));
+            assert!(fake.urls.is_empty());
+            assert!(entries(&shared).is_empty(), "nothing created");
+        }
+        // Group-writable too.
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o770)).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        let r = install(&pins, &shared.join("model"), false, &mut fake, &cancel);
+        assert!(matches!(r, Err(Error::Untrusted(_))), "{r:?}");
+        // Sticky, like /tmp: others cannot rename what is not theirs.
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        let dest = shared.join("model");
+        assert_eq!(
+            install(&pins, &dest, false, &mut fake, &cancel),
+            Ok(Outcome::Installed)
+        );
+        assert_holds(&dest, &files);
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ---- curl ----
