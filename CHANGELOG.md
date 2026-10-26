@@ -9,6 +9,28 @@ This project uses semantic versioning for public releases. Use `MAJOR.MINOR.PATC
 - `MINOR` changes add user-visible features and improvements.
 - `PATCH` changes fix bugs, polish existing behavior, or make small internal improvements.
 
+## [2.1.8] - 2026-10-26
+
+Tenth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
+or later. Uses the same app identity and local data locations as 2.1.7.
+
+### Added
+
+- Granting Accessibility no longer means finding LocalFlow in System
+  Settings yourself. Grant Access opens the Accessibility pane with a card
+  beside it: drag LocalFlow from the card into the list. The card follows
+  the Settings window and confirms once access is granted.
+
+### Fixed
+
+- Installing an in-app update is safer. LocalFlow checks that it can replace
+  itself before downloading, and asks you to move it to Applications when it
+  is running from the DMG or a folder it cannot write to. A failure while
+  swapping in the new version no longer damages the new app, and LocalFlow
+  always reopens. This applies to updates installed by 2.1.8 and later.
+- The menu-bar shortcut menus now disable every choice that would be
+  rejected. Before, some choices stayed enabled and did nothing when picked.
+
 ## [2.1.7] - 2026-10-21
 
 Ninth LocalFlow macOS beta. Requires an Apple Silicon Mac running macOS 26
