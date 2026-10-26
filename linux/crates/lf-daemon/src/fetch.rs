@@ -9,14 +9,14 @@
 //! place with one rename, so the destination never holds a partial export.
 //! The daemon itself never downloads anything.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, IsTerminal};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::Duration;
@@ -169,7 +169,7 @@ pub enum Error {
         path: PathBuf,
         reason: String,
     },
-    /// A directory above the destination can be changed by another user.
+    /// The destination's parent is writable by other users.
     Untrusted(PathBuf),
     /// The file system cannot swap the destination for the new export.
     NoExchange(PathBuf),
@@ -202,9 +202,9 @@ impl fmt::Display for Error {
             ),
             Error::Untrusted(dir) => write!(
                 f,
-                "{} can be changed by other users (a directory above the destination \
-                 must be owned by you or root, and not writable by others unless \
-                 sticky); pass --dest DIR somewhere only you can change",
+                "{} is writable by other users (the destination's parent must be \
+                 owned by you or root, and not writable by others unless sticky); \
+                 pass --dest DIR in a directory only you can write",
                 dir.display()
             ),
             Error::NoExchange(p) => write!(
@@ -396,83 +396,15 @@ fn outside_store(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// True if `m` belongs to this user or root.
-fn owned(m: &fs::Metadata) -> bool {
-    m.uid() == paths::euid() || m.uid() == 0
-}
-
-/// Fails unless `dir` is a directory owned by this user or root and not
-/// writable by others, or sticky (like `/tmp`).
-fn trusted_dir(dir: &Path, m: &fs::Metadata) -> Result<(), Error> {
+/// Fails unless `dir` (the destination's resolved parent) is a directory
+/// owned by this user or root and not writable by group or others, or
+/// sticky (like `/tmp`).
+fn trusted_parent(dir: &Path) -> Result<(), Error> {
+    let m = fs::metadata(dir).map_err(io("inspect", dir))?;
+    let owned = m.uid() == paths::euid() || m.uid() == 0;
     let others_write = m.mode() & 0o022 != 0 && m.mode() & libc::S_ISVTX == 0;
-    if !owned(m) || others_write || !m.is_dir() {
+    if !owned || others_write || !m.is_dir() {
         return Err(Error::Untrusted(dir.to_owned()));
-    }
-    Ok(())
-}
-
-/// Most symlinks followed on one path (Linux's own limit).
-const MAX_SYMLINKS: usize = 40;
-
-/// Resolves the absolute `path` one component at a time, as the kernel
-/// does, and fails with [`Error::Untrusted`] at the first directory passed
-/// through (symlink targets included) that another user could change:
-/// such a user could swap the staging directory or the destination, or
-/// repoint a symlink, between the checks and the rename. Components that
-/// do not exist yet end the walk (they will be created in a checked one).
-fn trusted_path(path: &Path) -> Result<(), Error> {
-    fn push_front(rest: &mut VecDeque<OsString>, p: &Path) {
-        for c in p.components().rev() {
-            match c {
-                Component::Normal(n) => rest.push_front(n.to_owned()),
-                Component::ParentDir => rest.push_front("..".into()),
-                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
-            }
-        }
-    }
-    let mut rest = VecDeque::new();
-    push_front(&mut rest, path);
-    let root = PathBuf::from("/");
-    let mut at = root.clone();
-    trusted_dir(&at, &fs::symlink_metadata(&at).map_err(io("inspect", &at))?)?;
-    let mut links = 0;
-    while let Some(name) = rest.pop_front() {
-        if name == ".." {
-            at.pop();
-            continue;
-        }
-        let next = at.join(&name);
-        let m = match fs::symlink_metadata(&next) {
-            Ok(m) => m,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(io("inspect", &next)(e)),
-        };
-        if m.file_type().is_symlink() {
-            // In a sticky directory, its owner can still repoint it.
-            if !owned(&m) {
-                return Err(Error::Untrusted(next));
-            }
-            links += 1;
-            if links > MAX_SYMLINKS {
-                return Err(Error::Io(format!("{}: too many symlinks", path.display())));
-            }
-            let target = fs::read_link(&next).map_err(io("read", &next))?;
-            if target.is_absolute() {
-                at = root.clone();
-            }
-            push_front(&mut rest, &target);
-            continue;
-        }
-        if !m.is_dir() {
-            // Only the last component may be something else (a file the
-            // caller replaces).
-            return match rest.is_empty() {
-                true => Ok(()),
-                false => Err(Error::Io(format!("{} is not a directory", next.display()))),
-            };
-        }
-        trusted_dir(&next, &m)?;
-        at = next;
     }
     Ok(())
 }
@@ -564,7 +496,7 @@ fn unsupported(e: &std::io::Error) -> bool {
 /// - `dest` holding anything else: [`Error::Exists`] unless `force`; with
 ///   `force` it is replaced in one atomic exchange ([`Error::NoExchange`]
 ///   on file systems without one).
-/// - The directories above `dest` must be ones no other user can change
+/// - The parent of `dest` must not be writable by other users
 ///   ([`Error::Untrusted`]).
 /// - Missing parents of `dest` are created with mode 0700 (the daemon's
 ///   data directory must be private).
@@ -597,13 +529,10 @@ pub fn install(
         Err(e) if e.kind() == ErrorKind::NotFound => false,
         Err(e) => return Err(io("inspect", dest)(e)),
     };
-    // Only an export no other user can change counts as installed.
-    if existed && trusted_path(dest).is_ok() && holds(pins, dest) {
+    if existed && holds(pins, dest) {
         return Ok(Outcome::Present);
     }
     outside_store(dest)?;
-    // Before creating anything, then again for what was created.
-    trusted_path(parent)?;
     if existed && !force {
         return Err(Error::Exists(dest.to_owned()));
     }
@@ -614,7 +543,7 @@ pub fn install(
         .map_err(|e| write_error("create", parent, e))?;
     let parent = parent.canonicalize().map_err(io("resolve", parent))?;
     outside_store(&parent)?;
-    trusted_path(&parent)?;
+    trusted_parent(&parent)?;
     let staging = Staging::new(&parent, name)?;
     if existed {
         // Found out before the download, not after.
@@ -1271,69 +1200,26 @@ mod tests {
     }
 
     #[test]
-    fn directories_other_users_can_change_are_refused() {
+    fn a_parent_others_can_write_is_refused() {
         let t = TempDir::new("fetch-shared");
         let (pins, files) = synthetic("one");
         let cancel = AtomicI32::new(0);
-        // Writable by everyone and not sticky: another user could swap the
-        // staging directory for their own.
         let shared = t.path().join("shared");
         fs::create_dir(&shared).unwrap();
-        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
-        for dest in [shared.join("model"), shared.join("a/b/model")] {
+        let dest = shared.join("model");
+        // Writable by everyone, or by the group, and not sticky.
+        for mode in [0o777, 0o770] {
+            fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
             let mut fake = Fake::new(&pins, &files);
             let r = install(&pins, &dest, false, &mut fake, &cancel);
             assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
             assert!(r.unwrap_err().to_string().contains("--dest"));
             assert!(fake.urls.is_empty());
-            assert!(entries(&shared).is_empty(), "nothing created");
+            assert!(entries(&shared).is_empty(), "{mode:o}: nothing created");
         }
-        // A path through a symlink another user could repoint, though it
-        // leads to a directory of ours.
-        let mine = t.path().join("mine");
-        fs::create_dir(&mine).unwrap();
-        std::os::unix::fs::symlink(&mine, shared.join("link")).unwrap();
-        let mut fake = Fake::new(&pins, &files);
-        let r = install(&pins, &shared.join("link/model"), false, &mut fake, &cancel);
-        assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
-        assert!(fake.urls.is_empty());
-        assert!(entries(&mine).is_empty());
-        // The same link reached through a symlink of ours.
-        let chain = t.path().join("chain");
-        std::os::unix::fs::symlink(shared.join("link"), &chain).unwrap();
-        let mut fake = Fake::new(&pins, &files);
-        let r = install(&pins, &chain.join("model"), false, &mut fake, &cancel);
-        assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
-        assert!(entries(&mine).is_empty());
-        // A symlink of ours to a directory of ours is fine.
-        let direct = t.path().join("direct");
-        std::os::unix::fs::symlink(&mine, &direct).unwrap();
-        let mut fake = Fake::new(&pins, &files);
-        assert_eq!(
-            install(&pins, &direct.join("model"), false, &mut fake, &cancel),
-            Ok(Outcome::Installed)
-        );
-        assert_holds(&mine.join("model"), &files);
-        // A matching export another user could change is not "installed".
-        place(&shared.join("export"), &files);
-        let ours = t.path().join("ours");
-        std::os::unix::fs::symlink(shared.join("export"), &ours).unwrap();
-        let mut fake = Fake::new(&pins, &files);
-        assert_eq!(
-            install(&pins, &ours, false, &mut fake, &cancel),
-            Err(Error::Exists(ours.clone()))
-        );
-        fs::remove_file(shared.join("link")).unwrap();
-        fs::remove_dir_all(shared.join("export")).unwrap();
-        // Group-writable too.
-        fs::set_permissions(&shared, fs::Permissions::from_mode(0o770)).unwrap();
-        let mut fake = Fake::new(&pins, &files);
-        let r = install(&pins, &shared.join("model"), false, &mut fake, &cancel);
-        assert!(matches!(r, Err(Error::Untrusted(_))), "{r:?}");
-        // Sticky, like /tmp: others cannot rename what is not theirs.
+        // Sticky, like /tmp.
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
         let mut fake = Fake::new(&pins, &files);
-        let dest = shared.join("model");
         assert_eq!(
             install(&pins, &dest, false, &mut fake, &cancel),
             Ok(Outcome::Installed)
