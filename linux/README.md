@@ -65,8 +65,24 @@ and licensed CC-BY-4.0 (attribution in each export's `NOTICE`):
   and slower (see `export_path` below).
 
 The daemon checks every file against the SHA-256 hashes in `manifest.json`
-when it loads. With Nix, the flake packages both exports, pinned to a
-Hugging Face revision:
+when it loads. To install one where the daemon looks for it (the
+configuration's `export_path`, else `~/.local/share/localflow/model`):
+
+```bash
+localflowctl fetch-model          # kea-b
+localflowctl fetch-model kea-t    # or the ternary model
+```
+
+`fetch-model` downloads from huggingface.co with `curl` (HTTPS only), pinned
+to a Hugging Face revision and to every file's SHA-256 (the pins are in
+`linux/models.json`). It downloads into a temporary directory beside the
+destination, checks every file, and only then moves the export into place,
+so an interrupted or failed download leaves nothing behind. `--dest DIR`
+installs somewhere else. An export that is already there is left alone;
+anything else at the destination is replaced only with `--force`. It sends
+nothing about you, and the daemon itself never downloads anything.
+
+With Nix, the flake packages both exports with the same pins:
 
 ```bash
 nix build ./linux#kea-b   # result/ is the export directory
@@ -74,14 +90,15 @@ nix build ./linux#kea-b   # result/ is the export directory
 
 In a Home Manager or NixOS configuration that has this flake as the input
 `localflow`, set `export_path = "${localflow.packages.x86_64-linux.kea-b}"`.
-Without Nix, download the repository into the default location:
+`fetch-model` refuses to write to a store path; use `--dest`, or leave
+`export_path` unset.
+
+Or download the repository by hand (`git lfs` must be installed;
+`hf download rajb3/kea-b --local-dir …` works too):
 
 ```bash
 git clone https://huggingface.co/rajb3/kea-b ~/.local/share/localflow/model
 ```
-
-(`git lfs` must be installed; `hf download rajb3/kea-b --local-dir …` works
-too).
 
 ## Configure
 
@@ -226,7 +243,9 @@ Exit codes: 0 ok, 1 daemon error, 2 usage, 3 daemon not running (or, for
 dictionary file cannot be read (`dict list`/`ignored`), 7 the picker failed
 or none can be used (`correct`, `dict review`), 8 the T3 token file is
 missing or unsafe (`agents t3`), 9 the D-Bus session bus cannot be used or
-was lost (`tray`). `watch` exits 0 when its reader goes away.
+was lost (`tray`), 10 the model export was not installed (`fetch-model`),
+128 + N interrupted by signal N (`fetch-model`). `watch` exits 0 when its
+reader goes away.
 
 `watch` lines also carry microphone presence (`mic=present|absent|unknown`,
 from the PipeWire node list) and, about 15 times a second while recording,

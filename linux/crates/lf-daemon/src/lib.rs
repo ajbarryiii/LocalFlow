@@ -16,6 +16,7 @@ pub mod config;
 pub mod controller;
 pub mod daemon;
 pub mod dictionary;
+pub mod fetch;
 pub mod history;
 pub mod link;
 pub mod media;

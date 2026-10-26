@@ -137,8 +137,8 @@ impl Recognizer for AsrRecognizer {
 pub const WARM_UP_SECONDS: usize = 30;
 
 /// Where to get a model when `export_path` holds none.
-pub const MODEL_HINT: &str = "download an export such as kea-b \
-     (https://huggingface.co/rajb3/kea-b) and point export_path at it";
+pub const MODEL_HINT: &str = "run `localflowctl fetch-model` to install kea-b \
+     (https://huggingface.co/rajb3/kea-b) there, or point export_path at an export";
 
 /// Fails with [`MODEL_HINT`] when `export` has no `manifest.json`. Other
 /// errors (permissions, I/O) are left to the loader, which reports them.
@@ -196,5 +196,6 @@ mod tests {
             format!("no model export at {}; {MODEL_HINT}", dir.display())
         );
         assert!(MODEL_HINT.contains("https://huggingface.co/rajb3/kea-b"));
+        assert!(MODEL_HINT.contains("localflowctl fetch-model"));
     }
 }

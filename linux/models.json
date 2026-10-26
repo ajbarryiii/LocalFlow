@@ -1,0 +1,28 @@
+{
+  "kea-b": {
+    "repo": "rajb3/kea-b",
+    "rev": "cfb1353488655282683ba699c402ae3b16b6de30",
+    "files": {
+      "LICENSE": "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+      "NOTICE": "314119184052a636e9002f69dd36a2077d32d5e487bbe5ba958da9f646ede56a",
+      "export.safetensors": "9873d2f1a53127c673d0201db98cd3ba859ba432f334fef55e9e24fd057b9651",
+      "manifest.json": "f3737a538da81939aabe04acd5334afd0e3cd4160ec113bd889e771b67991dbd",
+      "tokenizer/tokenizer.model": "5a3a82c48998709f9bc9f5db2924d99a899d20bf82550ca52272da7c7557b0a0",
+      "tokenizer/tokenizer.vocab": "dbe7ec6bd066c4526080940e1614e6582b9161515e856c2c39a1d49267c88cbc",
+      "tokenizer/vocab.txt": "70b25deed256d79365a3c290d6191c31cc2315d952faf18d5c3a334f46e4866e"
+    }
+  },
+  "kea-t": {
+    "repo": "rajb3/kea-t",
+    "rev": "c4a1f10ad23015ea43e8fa0802c30795e0442c4f",
+    "files": {
+      "LICENSE": "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+      "NOTICE": "a63eeea2b250401da1b54679221d096f9fd188c354817740639c1da4cf4cddc0",
+      "export.safetensors": "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503",
+      "manifest.json": "5c8b4bea0393db4072351e07b0d2206079373ca52646efdec4bb30876e0c8c61",
+      "tokenizer/tokenizer.model": "5a3a82c48998709f9bc9f5db2924d99a899d20bf82550ca52272da7c7557b0a0",
+      "tokenizer/tokenizer.vocab": "dbe7ec6bd066c4526080940e1614e6582b9161515e856c2c39a1d49267c88cbc",
+      "tokenizer/vocab.txt": "70b25deed256d79365a3c290d6191c31cc2315d952faf18d5c3a334f46e4866e"
+    }
+  }
+}

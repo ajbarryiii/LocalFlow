@@ -19,6 +19,11 @@
 //! printed, and reaches a picker only through a pipe or an inherited
 //! descriptor, never its command line or environment.
 //!
+//! `localflowctl fetch-model` downloads a pinned model export from Hugging
+//! Face (with curl) and installs it where the daemon loads it (see
+//! `lf_daemon::fetch`). It is the only command that uses the network, and
+//! only when run.
+//!
 //! Exit codes:
 //! - 0: the daemon accepted the command (stdout: the reply fields, without
 //!   any text), or the reader of `watch` output went away;
@@ -32,7 +37,10 @@
 //! - 7: the picker failed, or no picker can be used (`correct`, `dict
 //!   review`);
 //! - 8: the T3 token file is missing, unreadable or unsafe (`agents t3`);
-//! - 9: the D-Bus session bus cannot be used, or was lost (`tray`).
+//! - 9: the D-Bus session bus cannot be used, or was lost (`tray`);
+//! - 10: the model export was not installed (`fetch-model`; nothing
+//!   changed at the destination);
+//! - 128 + N: interrupted by signal N (`fetch-model`, after cleaning up).
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -43,6 +51,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use lf_daemon::config::Config;
+use lf_daemon::fetch::{self, Pins};
 use lf_daemon::picker::{self, Answer, Choice, Op, Picker};
 use lf_daemon::protocol::{
     self, ClientReply, Command, MAX_LINE, MAX_TEXT_LINE, Request, Resolve, WORDS_TTL, decode_pct,
@@ -67,6 +76,7 @@ const USAGE: &str = "usage: localflowctl [--timeout-ms N] <command>
        localflowctl [--timeout-ms N] words clear <name>
        localflowctl [--timeout-ms N] agents clear
        localflowctl [--timeout-ms N] agents t3 [--token-file PATH] [--interval-ms N]
+       localflowctl fetch-model [kea-b|kea-t] [--dest DIR] [--force]
 
 commands:
   press     start hold-to-talk (key down)
@@ -95,7 +105,13 @@ commands:
             from T3 Code (threads needing approval or input, working, done),
             polling every --interval-ms (500 to 60000, default 2000) with
             the token in --token-file (default ~/.config/localflow/t3-token)
-            until killed";
+            until killed
+  fetch-model
+            download a model export from huggingface.co (kea-b by default,
+            or kea-t), check every file against the pinned SHA-256, and
+            install it in --dest (default: the configuration's export_path,
+            else ~/.local/share/localflow/model). An existing export is
+            replaced only with --force";
 
 /// How often `agents t3` polls T3 Code, and the range `--interval-ms` takes.
 const BRIDGE_INTERVAL: Duration = Duration::from_secs(2);
@@ -131,6 +147,10 @@ enum Failure {
     Credentials(String),
     /// The session bus cannot be used, or was lost (`tray`).
     Tray(String),
+    /// The model export was not installed (`fetch-model`).
+    Model(String),
+    /// A signal interrupted `fetch-model` (the signal number).
+    Interrupted(i32),
 }
 
 impl Failure {
@@ -146,6 +166,8 @@ impl Failure {
             Failure::Helper(_) => 7,
             Failure::Credentials(_) => 8,
             Failure::Tray(_) => 9,
+            Failure::Model(_) => 10,
+            Failure::Interrupted(sig) => (128 + sig).clamp(0, 255) as u8,
         }
     }
 }
@@ -183,6 +205,11 @@ enum Action {
         token_file: Option<PathBuf>,
         interval: Duration,
     },
+    FetchModel {
+        pins: Pins,
+        dest: Option<PathBuf>,
+        force: bool,
+    },
 }
 
 struct Args {
@@ -212,6 +239,9 @@ fn main() -> ExitCode {
             token_file,
             interval,
         } => agents_t3(token_file.clone(), *interval, &args).map(|()| None),
+        Action::FetchModel { pins, dest, force } => {
+            fetch_model(pins, dest.as_deref(), *force).map(Some)
+        }
     });
     match result {
         Ok(out) => {
@@ -231,6 +261,10 @@ fn main() -> ExitCode {
                 Failure::Helper(m) => eprintln!("localflowctl: {m}"),
                 Failure::Credentials(m) => eprintln!("localflowctl: {m}"),
                 Failure::Tray(m) => eprintln!("localflowctl: tray: {m}"),
+                Failure::Model(m) => eprintln!("localflowctl: fetch-model: {m}"),
+                Failure::Interrupted(_) => {
+                    eprintln!("localflowctl: fetch-model: interrupted; nothing was installed")
+                }
                 Failure::Closed => {}
             }
             ExitCode::from(f.code())
@@ -253,6 +287,8 @@ fn parse_args() -> Result<Args, Failure> {
     let mut ttl = None;
     let mut token_file = None;
     let mut interval = None;
+    let mut dest = None;
+    let mut force = false;
     let mut words: Vec<String> = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -293,6 +329,14 @@ fn parse_args() -> Result<Args, Failure> {
                         .ok_or_else(|| usage("--interval-ms needs 500..60000"))?,
                 ));
             }
+            "--dest" => {
+                dest = Some(PathBuf::from(
+                    it.next()
+                        .filter(|p| !p.is_empty())
+                        .ok_or_else(|| usage("--dest needs a directory"))?,
+                ));
+            }
+            "--force" => force = true,
             "--ttl" => {
                 ttl = Some(
                     it.next()
@@ -370,6 +414,21 @@ fn parse_args() -> Result<Args, Failure> {
             },
             _ => return Err(usage("unknown agents subcommand")),
         },
+        "fetch-model" => {
+            let name = match rest.as_slice() {
+                [] => fetch::DEFAULT_MODEL,
+                [name] => name.as_str(),
+                _ => return Err(usage("fetch-model takes one model name")),
+            };
+            let pins = Pins::find(name)
+                .map_err(Failure::Model)?
+                .ok_or_else(|| usage(&format!("unknown model {name:?}; choose kea-b or kea-t")))?;
+            Action::FetchModel {
+                pins,
+                dest: dest.take(),
+                force: std::mem::take(&mut force),
+            }
+        }
         cmd => match Command::parse(cmd).filter(|c| !c.is_text()) {
             Some(Command::Watch) if rest.is_empty() => Action::Watch,
             Some(c) if rest.is_empty() => Action::Send(c),
@@ -388,6 +447,9 @@ fn parse_args() -> Result<Args, Failure> {
     }
     if token_file.is_some() || interval.is_some() {
         return Err(usage("--token-file and --interval-ms need agents t3"));
+    }
+    if dest.is_some() || force {
+        return Err(usage("--dest and --force need fetch-model"));
     }
     Ok(Args {
         action,
@@ -802,6 +864,41 @@ fn agents_t3(token_file: Option<PathBuf>, interval: Duration, args: &Args) -> Re
         }
         std::thread::sleep(interval.saturating_sub(started.elapsed()));
     }
+}
+
+/// `fetch-model`: downloads and installs `pins` in `dest`, else where the
+/// daemon loads its model. Prints what was done; progress goes to stderr.
+fn fetch_model(pins: &Pins, dest: Option<&Path>, force: bool) -> Result<String, Failure> {
+    let configured = fetch::configured_dest();
+    let dest = match dest {
+        Some(d) => {
+            std::path::absolute(d).map_err(|e| Failure::Model(format!("{}: {e}", d.display())))?
+        }
+        None => configured.clone().map_err(Failure::Model)?,
+    };
+    let cancel = fetch::cancel_on_signals().map_err(Failure::Model)?;
+    let mut curl = fetch::Curl::default();
+    curl.announce = true;
+    let outcome = match fetch::install(pins, &dest, force, &mut curl, cancel) {
+        Ok(o) => o,
+        Err(fetch::Error::Cancelled(sig)) => return Err(Failure::Interrupted(sig)),
+        Err(e) => return Err(Failure::Model(e.to_string())),
+    };
+    if let Ok(c) = configured
+        && c != dest
+    {
+        eprintln!(
+            "localflowctl: localflowd loads {}; set export_path to {} to use this export",
+            c.display(),
+            dest.display()
+        );
+    }
+    let (name, dir) = (&pins.name, dest.display());
+    Ok(match outcome {
+        fetch::Outcome::Installed => format!("installed {name} in {dir}"),
+        fetch::Outcome::Present => format!("{name} is already installed in {dir}"),
+        fetch::Outcome::Replaced => format!("replaced {dir} with {name}"),
+    })
 }
 
 /// Words from stdin, one per line; blank lines are left out. A word with a
