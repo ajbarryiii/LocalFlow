@@ -17,6 +17,7 @@ The first Linux release.
 - `localflowd`, the daemon that records, transcribes, post-processes and
   types, and `localflowctl`, which controls it: `press`, `release`, `toggle`,
   `cancel`, `again` (type the last dictation again), `status` and `watch`.
+  Both print their version with `--version`.
 - Speech recognition with the 1-bit [kea-b](https://huggingface.co/rajb3/kea-b)
   (recommended) or ternary [kea-t](https://huggingface.co/rajb3/kea-t) model
   exports of NVIDIA's Parakeet TDT 0.6B v2. Every model file is checked
