@@ -392,17 +392,15 @@ mod tests {
         Some(format!("synthetic note: {n} dropped\n"))
     }
 
-    /// Writes instantly, except that the first line (so later ones are
-    /// dropped) and a drop note take a while.
-    struct SlowNotes(Output);
+    /// A [`Gate`] whose drop notes take a while to write.
+    struct SlowNotes(Gate);
 
     impl Write for SlowNotes {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if buf.starts_with(b"synthetic note") || buf == b"synthetic 0\n" {
+            if buf.starts_with(b"synthetic note") {
                 std::thread::sleep(Duration::from_millis(300));
             }
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
+            self.0.write(buf)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -412,18 +410,29 @@ mod tests {
 
     #[test]
     fn flush_waits_for_a_drop_note_being_written() {
+        let (tx, rx) = mpsc::channel();
+        let (entered_tx, entered) = mpsc::channel();
         let out: Output = Arc::default();
-        // A queue of one, flooded: some lines are dropped.
-        let logger = Logger::spawn(SlowNotes(Arc::clone(&out)), 1, test_note);
-        for i in 0..100 {
+        let gate = Gate {
+            open: rx,
+            entered: entered_tx,
+            opened: false,
+            out: Arc::clone(&out),
+        };
+        let logger = Logger::spawn(SlowNotes(gate), 1, test_note);
+        // A queue of one, flooded while the first line is held: one line
+        // waits and the rest are dropped.
+        logger.submit("synthetic 0\n".into());
+        entered.recv().unwrap();
+        for i in 1..100 {
             logger.submit(format!("synthetic {i}\n"));
         }
-        assert!(logger.dropped() > 0);
+        assert_eq!(logger.dropped(), 98);
+        tx.send(()).unwrap();
         assert!(logger.flush(Duration::from_secs(10)));
-        let all = text(&out);
-        assert!(
-            all.ends_with(&format!("synthetic note: {} dropped\n", logger.dropped())),
-            "{all}"
+        assert_eq!(
+            text(&out),
+            "synthetic 0\nsynthetic 1\nsynthetic note: 98 dropped\n"
         );
     }
 

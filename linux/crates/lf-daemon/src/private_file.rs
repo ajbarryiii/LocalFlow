@@ -259,17 +259,31 @@ mod tests {
                 }
             }
         }
-        // Special bits count for Exact0600 only.
-        write_mode(&p, b"synthetic", 0o4600);
-        assert!(matches!(
-            read_private(&p, 100, ModeRule::Exact0600),
-            Err(ReadError::Mode(0o4600))
-        ));
-        assert!(
-            read_private(&p, 100, ModeRule::NoGroupOther)
-                .unwrap()
-                .is_some()
-        );
+        // Special bits count for Exact0600 only. The Nix build sandbox
+        // refuses setuid and setgid bits (EPERM), so 0o4600 is checked only
+        // where it can be set; the sticky bit always can.
+        for mode in [0o1600, 0o4600] {
+            let _ = fs::remove_file(&p);
+            fs::write(&p, b"synthetic").unwrap();
+            match fs::set_permissions(&p, fs::Permissions::from_mode(mode)) {
+                Ok(()) => {}
+                Err(e) if mode == 0o4600 && e.raw_os_error() == Some(libc::EPERM) => continue,
+                Err(e) => panic!("{mode:o}: {e}"),
+            }
+            assert!(
+                matches!(
+                    read_private(&p, 100, ModeRule::Exact0600),
+                    Err(ReadError::Mode(m)) if m == mode
+                ),
+                "{mode:o}"
+            );
+            assert!(
+                read_private(&p, 100, ModeRule::NoGroupOther)
+                    .unwrap()
+                    .is_some(),
+                "{mode:o}"
+            );
+        }
     }
 
     #[test]
