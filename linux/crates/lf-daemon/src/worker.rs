@@ -4,22 +4,25 @@
 //! except for at most one output call when it cancels (see [`CancelToken`]).
 
 use std::borrow::Cow;
+use std::ops::Range;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use lf_asr::Projection;
 use lf_asr::dictionary::DictionaryEntry;
+use lf_chunk::{Chunk, ChunkedTranscription, TranscriptAssembler, Word};
 use lf_dictation::VoiceMacro;
 use lf_dictation::correction::{Candidate, CandidateKind, Expected, apply_casing};
 use lf_io_api::TextOutput;
+use lf_io_api::wipe::Wiped;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::dictionary::Snapshot;
-use crate::recognizer::{Recognizer, RecognizerFactory};
+use crate::recognizer::{ChunkResult, Recognizer, RecognizerFactory};
 
 /// Longest typed text kept for correction (UTF-8 bytes).
 pub const MAX_SESSION_BYTES: usize = 4096;
@@ -30,6 +33,41 @@ pub const VERIFY_STRENGTHS: [f32; 7] = [1.0, 1.41, 2.0, 2.83, 4.0, 5.66, 8.0];
 /// Verification stops once this much time has passed.
 pub const VERIFY_BUDGET: Duration = Duration::from_secs(3);
 
+/// Most bytes of projections a dictation keeps for correction, as on the
+/// Mac: past this nothing is kept (transcription goes on).
+pub const MAX_RETAINED_BYTES: usize = 16 << 20;
+
+/// One chunk's place in the compacted recording, so re-decoding stitches
+/// overlaps exactly as the transcription did. No projection: a silent chunk,
+/// which stitches as no words.
+pub struct RetainedChunk {
+    pub range: Range<usize>,
+    pub projection: Option<Projection>,
+}
+
+impl std::fmt::Debug for RetainedChunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RetainedChunk({:?}, {} frames)",
+            self.range,
+            self.projection.as_ref().map_or(0, |p| p.frames)
+        )
+    }
+}
+
+impl PartialEq for RetainedChunk {
+    fn eq(&self, o: &Self) -> bool {
+        let bits = |p: &Projection| p.data.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        self.range == o.range
+            && match (&self.projection, &o.projection) {
+                (Some(a), Some(b)) => a.frames == b.frames && bits(a) == bits(b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
 /// What a typed dictation leaves for a later correction: in memory only,
 /// never logged (its `Debug` shows no text).
 pub struct Retained {
@@ -37,17 +75,25 @@ pub struct Retained {
     pub raw: String,
     /// What was typed.
     pub output: String,
-    pub projection: Projection,
+    /// Every chunk of the dictation, in order.
+    pub chunks: Vec<RetainedChunk>,
     /// The dictionary it was transcribed with.
     pub dictionary: Arc<Snapshot>,
 }
 
 impl std::fmt::Debug for Retained {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let frames: usize = self
+            .chunks
+            .iter()
+            .filter_map(|c| c.projection.as_ref())
+            .map(|p| p.frames)
+            .sum();
         write!(
             f,
-            "Retained({} frames, revision {})",
-            self.projection.frames, self.dictionary.revision
+            "Retained({} chunks, {frames} frames, revision {})",
+            self.chunks.len(),
+            self.dictionary.revision
         )
     }
 }
@@ -56,12 +102,7 @@ impl PartialEq for Retained {
     fn eq(&self, o: &Self) -> bool {
         self.raw == o.raw
             && self.output == o.output
-            && self.projection.frames == o.projection.frames
-            && self.projection.data.iter().map(|v| v.to_bits()).eq(o
-                .projection
-                .data
-                .iter()
-                .map(|v| v.to_bits()))
+            && self.chunks == o.chunks
             && Arc::ptr_eq(&self.dictionary, &o.dictionary)
     }
 }
@@ -185,15 +226,21 @@ pub struct Job {
     pub kind: JobKind,
 }
 
+/// A recording is transcribed while it is captured: [`JobKind::Begin`], its
+/// [`JobKind::Audio`], then [`JobKind::Finish`] or [`JobKind::End`], all with
+/// the same id and cancel token. Every complete chunk is transcribed as soon
+/// as its audio arrives, so `Finish` is left with the last one.
 pub enum JobKind {
-    /// `prompt`: a Hold to Prompt recording; the output gets
-    /// [`Settings::prompt_tag`]. `dictionary` is boosted and its casing
-    /// restored.
-    Transcribe {
-        audio: Audio,
-        prompt: bool,
-        dictionary: Arc<Snapshot>,
-    },
+    /// Starts a recording's transcription. `dictionary` is boosted and its
+    /// casing restored, for the whole recording.
+    Begin { dictionary: Arc<Snapshot> },
+    /// The recording's next samples, in order.
+    Audio(Audio),
+    /// The recording is over: transcribe the rest and type. `prompt`: a Hold
+    /// to Prompt recording; the output gets [`Settings::prompt_tag`].
+    Finish { prompt: bool },
+    /// The recording was discarded: drop its audio and partial transcript.
+    End,
     /// Type the given text again (Paste Again). No Return, no history.
     Retype(String),
     /// Check a correction (DESIGN §1.6); answered with
@@ -293,15 +340,276 @@ fn work(
         }
     };
     events(WorkerEvent::ModelReady);
-    for job in jobs {
-        let id = job.id;
-        if let JobKind::Verify(v) = job.kind {
-            let found = verify(&v, &job.cancel, recognizer.as_mut());
-            events(WorkerEvent::Verified(id, found));
-            continue;
+    let mut worker = Worker {
+        recognizer: recognizer.as_mut(),
+        output: output.as_mut(),
+        settings,
+        session: None,
+    };
+    loop {
+        let job = match jobs.try_recv() {
+            Ok(job) => job,
+            Err(TryRecvError::Empty) => {
+                // Nothing queued: spend the wait on the recording's ending.
+                worker.idle();
+                match jobs.recv() {
+                    Ok(job) => job,
+                    Err(_) => break,
+                }
+            }
+            Err(TryRecvError::Disconnected) => break,
+        };
+        worker.handle(job, events);
+    }
+}
+
+/// The worker's state between jobs: the recording being transcribed.
+struct Worker<'a> {
+    recognizer: &'a mut dyn Recognizer,
+    output: &'a mut dyn TextOutput,
+    settings: &'a Settings,
+    session: Option<Session>,
+}
+
+impl Worker<'_> {
+    /// No job is waiting: transcribe the recording's ending ahead of time
+    /// if the speaker has paused (see [`Session::look_ahead`]).
+    fn idle(&mut self) {
+        if let Some(s) = &mut self.session {
+            s.look_ahead(self.recognizer);
         }
-        let outcome = run(job, recognizer.as_mut(), output.as_mut(), settings, events);
-        events(WorkerEvent::Done(id, outcome));
+    }
+
+    fn handle(&mut self, job: Job, events: &impl Fn(WorkerEvent)) {
+        let id = job.id;
+        match job.kind {
+            JobKind::Begin { dictionary } => {
+                // A recording that never finished is over.
+                self.session = Some(Session::new(id, job.cancel, dictionary));
+            }
+            JobKind::Audio(audio) => {
+                if let Some(s) = self.session.as_mut().filter(|s| s.id == id) {
+                    s.feed(audio.samples(), self.recognizer);
+                }
+            }
+            JobKind::Finish { prompt } => {
+                let outcome = match self.session.take() {
+                    Some(s) if s.id == id => finish(
+                        s,
+                        prompt,
+                        self.recognizer,
+                        self.output,
+                        self.settings,
+                        events,
+                    ),
+                    other => {
+                        self.session = other;
+                        Outcome::Cancelled
+                    }
+                };
+                events(WorkerEvent::Done(id, outcome));
+            }
+            JobKind::End => {
+                if self.session.as_ref().is_some_and(|s| s.id == id) {
+                    self.session = None;
+                }
+            }
+            JobKind::Retype(text) => {
+                let outcome = deliver(
+                    id,
+                    &job.cancel,
+                    Typing {
+                        raw: String::new(),
+                        text,
+                        enter: false,
+                        retype: true,
+                        keep: None,
+                    },
+                    self.output,
+                    self.settings,
+                    events,
+                );
+                events(WorkerEvent::Done(id, outcome));
+            }
+            JobKind::Verify(v) => {
+                let found = verify(&v, &job.cancel, self.recognizer);
+                events(WorkerEvent::Verified(id, found));
+            }
+        }
+    }
+}
+
+/// Why a recording's transcription stopped early.
+enum Stop {
+    Cancelled,
+    Failed(String),
+}
+
+/// A recording being transcribed chunk by chunk as its audio arrives.
+struct Session {
+    id: u64,
+    transcription: ChunkedTranscription,
+    windows: Windows,
+    /// Set by the first chunk that fails (or a cancel); later audio is
+    /// dropped and `Finish` reports it.
+    stopped: Option<Stop>,
+    /// [`ChunkedTranscription::position`] when the ending was last
+    /// transcribed ahead.
+    ahead_at: Option<usize>,
+}
+
+/// What transcribing a recording's windows needs and keeps.
+struct Windows {
+    cancel: Arc<CancelToken>,
+    dictionary: Arc<Snapshot>,
+    /// The chunks kept for correction, until they outgrow
+    /// [`MAX_RETAINED_BYTES`].
+    retained: Option<Vec<RetainedChunk>>,
+    retained_bytes: usize,
+    /// Windows of the ending transcribed during a pause, used by `finish`
+    /// when the recording ends exactly there.
+    ahead: Vec<Ahead>,
+}
+
+/// A window transcribed ahead of the recording's end.
+struct Ahead {
+    start: usize,
+    samples: Wiped,
+    result: ChunkResult,
+}
+
+impl Session {
+    fn new(id: u64, cancel: Arc<CancelToken>, dictionary: Arc<Snapshot>) -> Session {
+        Session {
+            id,
+            transcription: ChunkedTranscription::recording(),
+            windows: Windows {
+                cancel,
+                dictionary,
+                retained: Some(Vec::new()),
+                retained_bytes: 0,
+                ahead: Vec::new(),
+            },
+            stopped: None,
+            ahead_at: None,
+        }
+    }
+
+    /// Transcribes every chunk `samples` completes.
+    fn feed(&mut self, samples: &[f32], recognizer: &mut dyn Recognizer) {
+        if self.stopped.is_some() {
+            return;
+        }
+        let windows = &mut self.windows;
+        let mut transcribe = |c: &Chunk| windows.transcribe(c, recognizer);
+        if let Err(stop) = self.transcription.append(samples, &mut transcribe) {
+            self.stopped = Some(stop);
+        }
+    }
+
+    /// Once the speaker has paused, the windows `finish` would transcribe
+    /// are known (see [`ChunkedTranscription::ending`]): transcribes them now,
+    /// so a recording that ends in this pause only waits for the decoder's
+    /// result to be joined. Speech that resumes makes them stale; `finish`
+    /// uses a window only if its audio is exactly the same, so the text never
+    /// depends on this.
+    fn look_ahead(&mut self, recognizer: &mut dyn Recognizer) {
+        let at = self.transcription.position();
+        if self.stopped.is_some() || self.windows.cancel.is_cancelled() || self.ahead_at == Some(at)
+        {
+            return;
+        }
+        let mut ending = Vec::new();
+        if !self.transcription.ending(&mut |c: &Chunk| {
+            ending.push((c.start, Wiped(c.samples.to_vec())));
+        }) {
+            return;
+        }
+        self.ahead_at = Some(at);
+        let w = &mut self.windows;
+        w.ahead.clear();
+        for (start, samples) in ending {
+            if w.cancel.is_cancelled() {
+                return;
+            }
+            let chunk = Chunk {
+                start,
+                samples: &samples.0,
+            };
+            match recognizer.transcribe_chunk(&chunk, &w.dictionary, w.retained.is_some()) {
+                Ok(result) => w.ahead.push(Ahead {
+                    start,
+                    samples,
+                    result,
+                }),
+                // `finish` transcribes it again and reports the failure.
+                Err(_) => {
+                    w.ahead.clear();
+                    return;
+                }
+            }
+        }
+        crate::debug!("transcribed the ending ahead");
+    }
+
+    /// Transcribes the last chunk; the joined text and the kept chunks.
+    fn finish(
+        self,
+        recognizer: &mut dyn Recognizer,
+    ) -> Result<(String, Option<Vec<RetainedChunk>>), Stop> {
+        let Session {
+            transcription,
+            mut windows,
+            stopped,
+            ..
+        } = self;
+        if let Some(stop) = stopped {
+            return Err(stop);
+        }
+        let mut transcribe = |c: &Chunk| windows.transcribe(c, recognizer);
+        let text = transcription.finish(&mut transcribe)?;
+        Ok((recognizer.tidy(&text), windows.retained))
+    }
+}
+
+impl Windows {
+    /// One chunk's words (transcribed ahead if its audio is exactly that),
+    /// keeping its projection while the dictation's stay within
+    /// [`MAX_RETAINED_BYTES`].
+    fn transcribe(
+        &mut self,
+        chunk: &Chunk,
+        recognizer: &mut dyn Recognizer,
+    ) -> Result<Vec<Word>, Stop> {
+        if self.cancel.is_cancelled() {
+            return Err(Stop::Cancelled);
+        }
+        let same = |a: &Ahead| {
+            a.start == chunk.start
+                && a.samples.0.len() == chunk.samples.len()
+                && a.samples
+                    .0
+                    .iter()
+                    .zip(chunk.samples)
+                    .all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        let r = match self.ahead.iter().position(same) {
+            Some(i) => self.ahead.swap_remove(i).result,
+            None => recognizer
+                .transcribe_chunk(chunk, &self.dictionary, self.retained.is_some())
+                .map_err(Stop::Failed)?,
+        };
+        if let Some(chunks) = &mut self.retained {
+            self.retained_bytes += r.projection.as_ref().map_or(0, Projection::bytes);
+            chunks.push(RetainedChunk {
+                range: chunk.range(),
+                projection: r.projection,
+            });
+            if self.retained_bytes > MAX_RETAINED_BYTES {
+                self.retained = None;
+            }
+        }
+        Ok(r.words)
     }
 }
 
@@ -370,13 +678,29 @@ pub fn verify_with_clock(
                 text: c.surface.clone(),
                 strength,
             };
-            let n = match recognizer.redecode(&s.projection, &s.dictionary, &extra) {
-                Ok(n) => n,
-                Err(e) => {
-                    crate::warn!("correction check failed: {e}");
-                    return None;
-                }
-            };
+            // Every chunk again, stitched exactly as the transcription was;
+            // the budget and cancel are checked before each decode.
+            let mut transcript = TranscriptAssembler::default();
+            for (i, chunk) in s.chunks.iter().enumerate() {
+                let words = match &chunk.projection {
+                    Some(p) => {
+                        if i > 0 && stop(now) {
+                            return None;
+                        }
+                        match recognizer.redecode_chunk(p, chunk.range.start, &s.dictionary, &extra)
+                        {
+                            Ok(w) => w,
+                            Err(e) => {
+                                crate::warn!("correction check failed: {e}");
+                                return None;
+                            }
+                        }
+                    }
+                    None => Vec::new(),
+                };
+                transcript.append(words, chunk.range.clone());
+            }
+            let n = recognizer.tidy(&transcript.text());
             // A result that arrives cancelled or past the budget is dropped.
             if stop(now) {
                 return None;
@@ -393,63 +717,86 @@ pub fn verify_with_clock(
     None
 }
 
-fn run(
-    job: Job,
+/// Text ready to type, and what a dictation keeps for correction.
+struct Typing {
+    raw: String,
+    text: String,
+    enter: bool,
+    retype: bool,
+    keep: Option<(Vec<RetainedChunk>, Arc<Snapshot>)>,
+}
+
+/// Transcribes the recording's last chunk, post-processes the text and types
+/// it.
+fn finish(
+    session: Session,
+    prompt: bool,
     recognizer: &mut dyn Recognizer,
     output: &mut dyn TextOutput,
     settings: &Settings,
     events: &impl Fn(WorkerEvent),
 ) -> Outcome {
-    let cancel = &job.cancel;
-    let (raw, text, enter, retype, keep) = match job.kind {
-        JobKind::Transcribe {
-            audio,
-            prompt,
-            dictionary,
-        } => {
-            if cancel.is_cancelled() {
-                return Outcome::Cancelled;
-            }
-            let start = Instant::now();
-            let heard = recognizer.transcribe(audio.samples(), &dictionary, true);
-            drop(audio);
-            let heard = match heard {
-                Ok(t) => t,
-                Err(e) => {
-                    crate::error!("recognition failed: {e}");
-                    return Outcome::RecognizeFailed;
-                }
-            };
-            crate::debug!("recognized in {:.0?}", start.elapsed());
-            if cancel.is_cancelled() {
-                return Outcome::Cancelled;
-            }
-            // Casing restoration runs on the raw transcript, before the
-            // post-processing (DESIGN §1.4).
-            let text = apply_casing(&heard.text, &dictionary.dictionary.entries);
-            let tag = prompt.then_some(settings.prompt_tag.as_str());
-            let r = lf_dictation::process(&text, &settings.macros, settings.options, tag);
-            let eligible = !r.used_macro
-                && !r.should_press_enter
-                && !r.output.is_empty()
-                && r.output.len() <= MAX_SESSION_BYTES
-                && !r.output.chars().any(crate::protocol::is_control);
-            let keep = heard
-                .projection
-                .filter(|_| eligible)
-                .map(|projection| (projection, dictionary));
-            (
-                r.raw_transcript,
-                r.output,
-                r.should_press_enter,
-                false,
-                keep,
-            )
+    let id = session.id;
+    let cancel = Arc::clone(&session.windows.cancel);
+    let dictionary = Arc::clone(&session.windows.dictionary);
+    if cancel.is_cancelled() {
+        return Outcome::Cancelled;
+    }
+    let start = Instant::now();
+    let (heard, chunks) = match session.finish(recognizer) {
+        Ok(heard) => heard,
+        Err(Stop::Cancelled) => return Outcome::Cancelled,
+        Err(Stop::Failed(e)) => {
+            crate::error!("recognition failed: {e}");
+            return Outcome::RecognizeFailed;
         }
-        JobKind::Retype(text) => (String::new(), text, false, true, None),
-        // Handled by `work`; never reaches here.
-        JobKind::Verify(_) => return Outcome::Nothing,
     };
+    crate::debug!(
+        "recognized {:.0?} after the recording ended",
+        start.elapsed()
+    );
+    if cancel.is_cancelled() {
+        return Outcome::Cancelled;
+    }
+    // Casing restoration runs on the raw transcript, before the
+    // post-processing (DESIGN §1.4).
+    let text = apply_casing(&heard, &dictionary.dictionary.entries);
+    let tag = prompt.then_some(settings.prompt_tag.as_str());
+    let r = lf_dictation::process(&text, &settings.macros, settings.options, tag);
+    let eligible = !r.used_macro
+        && !r.should_press_enter
+        && !r.output.is_empty()
+        && r.output.len() <= MAX_SESSION_BYTES
+        && !r.output.chars().any(crate::protocol::is_control);
+    let keep = chunks
+        .filter(|_| eligible)
+        .map(|chunks| (chunks, dictionary));
+    let typing = Typing {
+        raw: r.raw_transcript,
+        text: r.output,
+        enter: r.should_press_enter,
+        retype: false,
+        keep,
+    };
+    deliver(id, &cancel, typing, output, settings, events)
+}
+
+/// Types the text (and Return), unless cancelled.
+fn deliver(
+    id: u64,
+    cancel: &CancelToken,
+    typing: Typing,
+    output: &mut dyn TextOutput,
+    settings: &Settings,
+    events: &impl Fn(WorkerEvent),
+) -> Outcome {
+    let Typing {
+        raw,
+        text,
+        enter,
+        retype,
+        keep,
+    } = typing;
     if text.is_empty() && !enter {
         return Outcome::Nothing;
     }
@@ -459,7 +806,7 @@ fn run(
         crate::error!("typing refused: {e}");
         return Outcome::OutputFailed;
     }
-    events(WorkerEvent::Typing(job.id));
+    events(WorkerEvent::Typing(id));
     let typed = with_sentence_space(&text, enter);
     for piece in chunks(&typed, settings.type_chunk_chars) {
         match cancel.run(|| output.type_text(piece)) {
@@ -481,11 +828,11 @@ fn run(
             Some(Ok(())) => {}
         }
     }
-    let retained = keep.map(|(projection, dictionary)| {
+    let retained = keep.map(|(chunks, dictionary)| {
         Box::new(Retained {
             raw: raw.clone(),
             output: text.clone(),
-            projection,
+            chunks,
             dictionary,
         })
     });
@@ -564,6 +911,54 @@ pub fn chunks(text: &str, max: usize) -> Vec<&str> {
 mod tests {
     use super::*;
 
+    /// Runs `jobs` through one worker, as its thread would; the events.
+    fn run_jobs(
+        jobs: Vec<Job>,
+        recognizer: &mut dyn Recognizer,
+        output: &mut dyn TextOutput,
+        settings: &Settings,
+    ) -> Vec<WorkerEvent> {
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut worker = Worker {
+            recognizer,
+            output,
+            settings,
+            session: None,
+        };
+        for job in jobs {
+            worker.handle(job, &|e| events.borrow_mut().push(e));
+        }
+        events.into_inner()
+    }
+
+    /// The outcome among `events`.
+    fn outcome(events: Vec<WorkerEvent>) -> Outcome {
+        events
+            .into_iter()
+            .find_map(|e| match e {
+                WorkerEvent::Done(_, o) => Some(o),
+                _ => None,
+            })
+            .expect("a Done event")
+    }
+
+    /// A whole recording's jobs: begin, `samples` in blocks of `block`,
+    /// finish.
+    fn recording(id: u64, samples: &[f32], block: usize, dictionary: Arc<Snapshot>) -> Vec<Job> {
+        let cancel = Arc::new(CancelToken::default());
+        let job = |kind| Job {
+            id,
+            cancel: Arc::clone(&cancel),
+            kind,
+        };
+        let mut jobs = vec![job(JobKind::Begin { dictionary })];
+        for piece in samples.chunks(block.max(1)) {
+            jobs.push(job(JobKind::Audio(Audio::new(piece.to_vec()))));
+        }
+        jobs.push(job(JobKind::Finish { prompt: false }));
+        jobs
+    }
+
     fn check(text: &str, max: usize) {
         let pieces = chunks(text, max);
         assert_eq!(pieces.concat(), text);
@@ -591,7 +986,7 @@ mod tests {
             kind: JobKind::Retype(text),
         };
         let mut rec = FakeRecognizer::returning("unused");
-        let outcome = run(job, &mut rec, &mut out.clone(), &settings, &|_| {});
+        let outcome = outcome(run_jobs(vec![job], &mut rec, &mut out.clone(), &settings));
         assert_eq!(outcome, Outcome::OutputFailed);
         assert!(out.state().typed.is_empty(), "nothing may be typed");
     }
@@ -605,22 +1000,13 @@ mod tests {
             type_chunk_chars: TYPE_CHUNK_CHARS,
             prompt_tag: "[dictated]".into(),
         };
-        let typed = |kind: JobKind, heard: &str| {
+        let typed = |jobs: Vec<Job>, heard: &str| {
             let out = FakeOutput::default();
-            let job = Job {
-                id: 1,
-                cancel: Arc::new(CancelToken::default()),
-                kind,
-            };
             let mut rec = FakeRecognizer::returning(heard);
-            let outcome = run(job, &mut rec, &mut out.clone(), &settings, &|_| {});
+            let outcome = outcome(run_jobs(jobs, &mut rec, &mut out.clone(), &settings));
             (out.text(), outcome)
         };
-        let transcribe = || JobKind::Transcribe {
-            audio: Audio::new(vec![0.1; 16]),
-            prompt: false,
-            dictionary: Arc::default(),
-        };
+        let transcribe = || recording(1, &[0.1; 16], 16, Arc::default());
         // So the next dictation does not jam against the prior sentence.
         for end in [".", "!", "?"] {
             let (text, _) = typed(transcribe(), &format!("Synthetic words{end}"));
@@ -654,7 +1040,12 @@ mod tests {
             "Synthetic words.\n"
         );
         // Paste Again types the space too.
-        let (text, _) = typed(JobKind::Retype("Synthetic again?".into()), "unused");
+        let retype = Job {
+            id: 2,
+            cancel: Arc::new(CancelToken::default()),
+            kind: JobKind::Retype("Synthetic again?".into()),
+        };
+        let (text, _) = typed(vec![retype], "unused");
         assert_eq!(text, "Synthetic again? ");
     }
 
@@ -762,10 +1153,13 @@ mod tests {
             Arc::new(Retained {
                 raw: output.into(),
                 output: output.into(),
-                projection: Projection {
-                    data: vec![0.25; 8],
-                    frames: 2,
-                },
+                chunks: vec![RetainedChunk {
+                    range: 0..3200,
+                    projection: Some(Projection {
+                        data: vec![0.25; 8],
+                        frames: 2,
+                    }),
+                }],
                 dictionary: Arc::default(),
             })
         }
@@ -995,17 +1389,9 @@ mod tests {
             settings: &Settings,
         ) -> (String, Outcome) {
             let out = FakeOutput::default();
-            let job = Job {
-                id: 1,
-                cancel: Arc::new(CancelToken::default()),
-                kind: JobKind::Transcribe {
-                    audio: Audio::new(vec![0.1; 16]),
-                    prompt: false,
-                    dictionary,
-                },
-            };
             let mut rec = FakeRecognizer::returning(heard);
-            let outcome = run(job, &mut rec, &mut out.clone(), settings, &|_| {});
+            let jobs = super::recording(1, &[0.1; 16], 16, dictionary);
+            let outcome = super::outcome(run_jobs(jobs, &mut rec, &mut out.clone(), settings));
             (out.text(), outcome)
         }
 
@@ -1046,10 +1432,14 @@ mod tests {
             assert_eq!(r.raw, "i run NixOS daily.");
             assert_eq!(r.output, "i run NixOS daily.");
             assert!(Arc::ptr_eq(&r.dictionary, &snap));
-            assert_eq!(r.projection.frames, 1);
+            assert_eq!(r.chunks.len(), 1);
+            assert_eq!(r.chunks[0].range, 0..16);
             // Debug shows no text.
             let d = format!("{outcome:?}");
-            assert!(d.contains("Retained(1 frames, revision 9)"), "{d}");
+            assert!(
+                d.contains("Retained(1 chunks, 1 frames, revision 9)"),
+                "{d}"
+            );
         }
 
         #[test]
@@ -1065,6 +1455,308 @@ mod tests {
             }
             let (_, outcome) = transcribe("Synthetic words", Arc::default(), &s);
             assert!(kept(&outcome).is_some());
+        }
+    }
+
+    /// Transcription while the recording is captured.
+    mod streaming {
+        use super::*;
+        use crate::testing::{FakeOutput, FakeRecognizer};
+
+        const SECOND: usize = 16_000;
+
+        fn settings() -> Settings {
+            Settings {
+                options: lf_dictation::Options::default(),
+                macros: Vec::new(),
+                type_chunk_chars: TYPE_CHUNK_CHARS,
+                prompt_tag: "[dictated]".into(),
+            }
+        }
+
+        /// Loud enough to be speech throughout, so nothing is compacted.
+        fn speech(seconds: usize) -> Vec<f32> {
+            (0..seconds * SECOND)
+                .map(|i| if (i / 32) % 2 == 0 { 0.1 } else { -0.1 })
+                .collect()
+        }
+
+        /// A worker whose recognizer and output tests inspect between jobs
+        /// (the fakes share their state with these clones).
+        struct Rig {
+            rec: FakeRecognizer,
+            out: FakeOutput,
+            settings: Settings,
+            session: Option<Session>,
+            events: Vec<WorkerEvent>,
+        }
+
+        impl Rig {
+            fn new(heard: Option<&str>) -> Rig {
+                let rec = FakeRecognizer::default();
+                rec.state().text = heard.map(str::to_owned);
+                Rig {
+                    rec,
+                    out: FakeOutput::default(),
+                    settings: settings(),
+                    session: None,
+                    events: Vec::new(),
+                }
+            }
+
+            fn run(&mut self, jobs: Vec<Job>) {
+                let mut rec = self.rec.clone();
+                let mut out = self.out.clone();
+                let events = std::cell::RefCell::new(Vec::new());
+                let mut worker = Worker {
+                    recognizer: &mut rec,
+                    output: &mut out,
+                    settings: &self.settings,
+                    session: self.session.take(),
+                };
+                for job in jobs {
+                    worker.handle(job, &|e| events.borrow_mut().push(e));
+                }
+                self.session = worker.session.take();
+                self.events.extend(events.into_inner());
+            }
+
+            /// The worker found no job waiting.
+            fn idle(&mut self) {
+                let mut rec = self.rec.clone();
+                let mut out = self.out.clone();
+                let mut worker = Worker {
+                    recognizer: &mut rec,
+                    output: &mut out,
+                    settings: &self.settings,
+                    session: self.session.take(),
+                };
+                worker.idle();
+                self.session = worker.session.take();
+            }
+
+            /// Chunks transcribed so far: start and length.
+            fn chunks(&self) -> Vec<(usize, usize)> {
+                let s = self.rec.state();
+                s.starts
+                    .iter()
+                    .copied()
+                    .zip(s.lengths.iter().copied())
+                    .collect()
+            }
+
+            fn outcome(&mut self) -> Outcome {
+                super::outcome(std::mem::take(&mut self.events))
+            }
+        }
+
+        #[test]
+        fn chunks_do_not_depend_on_how_the_audio_arrives() {
+            let audio = speech(40);
+            let mut r = Rig::new(Some("synthetic words"));
+            r.run(super::recording(1, &audio, audio.len(), Arc::default()));
+            // 15 s windows 13 s apart; the last holds what is left.
+            let whole = r.chunks();
+            assert_eq!(
+                whole,
+                [(0, 240_000), (208_000, 240_000), (416_000, 224_000)]
+            );
+            assert!(matches!(r.outcome(), Outcome::Typed { .. }));
+            for block in [1, 159, 1600, 16_000, 240_001] {
+                let mut r = Rig::new(Some("synthetic words"));
+                r.run(super::recording(1, &audio, block, Arc::default()));
+                assert_eq!(r.chunks(), whole, "blocks of {block}");
+            }
+        }
+
+        #[test]
+        fn full_chunks_are_transcribed_before_the_recording_ends() {
+            let mut r = Rig::new(Some("synthetic words"));
+            let mut jobs = super::recording(1, &speech(30), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            r.run(jobs);
+            // Both full windows are done; nothing is typed yet.
+            assert_eq!(r.chunks(), [(0, 240_000), (208_000, 240_000)]);
+            assert!(r.events.is_empty() && r.out.text().is_empty());
+            // The recording's end leaves only the rest (13 s on from 416 000).
+            r.run(vec![finish]);
+            assert_eq!(r.chunks().last(), Some(&(416_000, 64_000)));
+            assert!(matches!(r.outcome(), Outcome::Typed { .. }));
+            assert!(!r.out.text().is_empty());
+        }
+
+        #[test]
+        fn pauses_are_shortened_before_the_model_hears_them() {
+            // 1 s of speech, 5 s of silence, 1 s of speech, 3 s of silence.
+            let mut audio = speech(1);
+            audio.extend(std::iter::repeat_n(0.0, 5 * SECOND));
+            audio.extend(speech(1));
+            audio.extend(std::iter::repeat_n(0.0, 3 * SECOND));
+            let mut r = Rig::new(Some("synthetic words"));
+            r.run(super::recording(1, &audio, 1600, Arc::default()));
+            // One chunk: both speech runs, the pause cut to 0.8 s and the
+            // trailing silence to 0.3 s.
+            assert_eq!(r.chunks(), [(0, 2 * SECOND + 12_800 + 4800)]);
+        }
+
+        #[test]
+        fn a_cancel_stops_transcription_and_types_nothing() {
+            let mut r = Rig::new(Some("synthetic words"));
+            let mut jobs = super::recording(1, &speech(40), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            let cancel = Arc::clone(&finish.cancel);
+            // Cancelled after the first window.
+            let rest = jobs.split_off(17);
+            r.run(jobs);
+            assert_eq!(r.chunks().len(), 1);
+            cancel.cancel();
+            r.run(rest);
+            r.run(vec![finish]);
+            assert_eq!(r.chunks().len(), 1, "no chunk after the cancel");
+            assert_eq!(r.outcome(), Outcome::Cancelled);
+            assert!(r.out.text().is_empty());
+        }
+
+        #[test]
+        fn a_failed_chunk_fails_the_dictation_at_its_end() {
+            let mut r = Rig::new(None);
+            let mut jobs = super::recording(1, &speech(20), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            r.run(jobs);
+            assert!(r.events.is_empty(), "reported only at the end");
+            r.run(vec![finish]);
+            assert_eq!(r.outcome(), Outcome::RecognizeFailed);
+            // Audio after the failure was not transcribed.
+            assert_eq!(r.rec.state().calls, 1);
+        }
+
+        #[test]
+        fn an_ended_recording_is_dropped() {
+            let mut r = Rig::new(Some("synthetic words"));
+            let mut jobs = super::recording(1, &speech(20), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            let more = jobs.split_off(10);
+            r.run(jobs);
+            r.run(vec![Job {
+                id: 1,
+                cancel: Arc::clone(&finish.cancel),
+                kind: JobKind::End,
+            }]);
+            r.run(more);
+            assert!(r.chunks().is_empty(), "its audio is dropped");
+            r.run(vec![finish]);
+            assert_eq!(r.outcome(), Outcome::Cancelled);
+            // A new recording starts afresh.
+            r.run(super::recording(2, &speech(2), SECOND, Arc::default()));
+            assert_eq!(r.chunks(), [(0, 2 * SECOND)]);
+        }
+
+        #[test]
+        fn every_chunk_is_kept_for_correction_and_re_decoded() {
+            let mut r = Rig::new(Some("synthetic words"));
+            r.run(super::recording(1, &speech(20), SECOND, Arc::default()));
+            let Outcome::Typed {
+                retained: Some(kept),
+                ..
+            } = r.outcome()
+            else {
+                panic!("not kept");
+            };
+            let ranges: Vec<_> = kept.chunks.iter().map(|c| c.range.clone()).collect();
+            assert_eq!(ranges, [0..240_000, 208_000..320_000]);
+            let before = "synthetic words";
+            let v = Verify {
+                session: Arc::from(kept),
+                candidates: lf_dictation::correction::correction_candidates(
+                    before,
+                    "synthetic wordz",
+                    &[],
+                    &[],
+                    &crate::testing::synthetic_tokenizer(),
+                ),
+            };
+            let mut rec = r.rec.clone();
+            assert_eq!(verify(&v, &CancelToken::default(), &mut rec), None);
+            // Every strength decoded both chunks.
+            assert_eq!(r.rec.state().redecodes, 2 * VERIFY_STRENGTHS.len());
+        }
+
+        /// Speech, then `pause` seconds of silence.
+        fn spoken(seconds: usize, pause: usize) -> Vec<f32> {
+            let mut audio = speech(seconds);
+            audio.extend(std::iter::repeat_n(0.0, pause * SECOND));
+            audio
+        }
+
+        #[test]
+        fn the_ending_is_transcribed_during_a_pause() {
+            let mut r = Rig::new(Some("synthetic words"));
+            let mut jobs = super::recording(1, &spoken(20, 1), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            r.run(jobs);
+            assert_eq!(r.chunks().len(), 1);
+            r.idle();
+            // The last window: the speech from 208 000 on and 0.3 s of the pause.
+            assert_eq!(r.chunks()[1], (208_000, 112_000 + 4800));
+            // Idle again in the same pause: nothing new.
+            r.idle();
+            assert_eq!(r.chunks().len(), 2);
+            r.run(vec![finish]);
+            // The release reused it.
+            assert_eq!(r.chunks().len(), 2);
+            // Exactly what transcribing at the release gives.
+            let mut plain = Rig::new(Some("synthetic words"));
+            plain.run(super::recording(1, &spoken(20, 1), SECOND, Arc::default()));
+            assert_eq!(plain.chunks(), r.chunks());
+            let typed = |o: Outcome| match o {
+                Outcome::Typed {
+                    text,
+                    retained: Some(kept),
+                    ..
+                } => (text, kept.chunks),
+                other => panic!("{other:?}"),
+            };
+            let (text, kept) = typed(r.outcome());
+            assert_eq!(typed(plain.outcome()), (text, kept));
+        }
+
+        #[test]
+        fn speech_after_the_pause_is_transcribed_at_the_end() {
+            let mut r = Rig::new(Some("synthetic words"));
+            let first = spoken(3, 1);
+            let mut jobs = super::recording(1, &first, SECOND, Arc::default());
+            jobs.pop();
+            r.run(jobs);
+            r.idle();
+            assert_eq!(r.chunks(), [(0, 3 * SECOND + 4800)]);
+            // Speech resumes and the recording ends mid-word.
+            let more = speech(2);
+            let cancel = Arc::new(CancelToken::default());
+            let job = |kind| Job {
+                id: 1,
+                cancel: Arc::clone(&cancel),
+                kind,
+            };
+            r.run(vec![
+                job(JobKind::Audio(Audio::new(more.clone()))),
+                job(JobKind::Finish { prompt: false }),
+            ]);
+            // 3 s, the pause cut to 0.8 s, 2 s.
+            assert_eq!(r.chunks()[1], (0, 5 * SECOND + 12_800));
+            assert!(matches!(r.outcome(), Outcome::Typed { .. }));
+        }
+
+        #[test]
+        fn too_much_audio_to_keep_keeps_nothing() {
+            let mut r = Rig::new(Some("synthetic words"));
+            // Each chunk's projection is 12 MiB: two outgrow the 16 MiB.
+            r.rec.state().projection_floats = 3 << 20;
+            r.run(super::recording(1, &speech(20), SECOND, Arc::default()));
+            let Outcome::Typed { retained, text, .. } = r.outcome() else {
+                panic!("not typed");
+            };
+            assert!(retained.is_none());
+            assert_eq!(text, "synthetic words");
         }
     }
 }

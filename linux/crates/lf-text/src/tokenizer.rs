@@ -111,6 +111,11 @@ impl Tokenizer {
         self.pieces.is_empty()
     }
 
+    /// The pieces by token id, `<unk>` first.
+    pub fn pieces(&self) -> &[String] {
+        &self.pieces
+    }
+
     /// Text to token ids, SentencePiece BPE as LocalFlow specifies it
     /// (DESIGN §1.3): `▁` before the text and in place of each ASCII space;
     /// one symbol per Unicode scalar; then, repeatedly, the adjacent pair

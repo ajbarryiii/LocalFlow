@@ -37,6 +37,8 @@ pub const DEFAULT_POSITION_CACHE_SECONDS: usize = 60;
 pub struct Transcript {
     pub text: String,
     pub tokens: Vec<usize>,
+    /// The encoder frame each token was emitted at (parallel to `tokens`).
+    pub token_frames: Vec<usize>,
     /// Encoder frames (80 ms each).
     pub frames: usize,
     pub timings: Timings,
@@ -153,6 +155,7 @@ impl Transcriber {
             ..Default::default()
         };
         let tokens: Vec<usize> = emitted.iter().map(|&(t, _)| t).collect();
+        let token_frames: Vec<usize> = emitted.iter().map(|&(_, f)| f).collect();
         let text = self
             .model
             .tokenizer
@@ -161,6 +164,7 @@ impl Transcriber {
         Ok(Transcript {
             text,
             tokens,
+            token_frames,
             frames,
             timings,
         })

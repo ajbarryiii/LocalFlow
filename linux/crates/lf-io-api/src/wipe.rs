@@ -17,6 +17,7 @@ pub fn wipe(v: &mut Vec<f32>) {
 
 /// A temporary audio buffer that is wiped when dropped, including during a
 /// panic unwind.
+#[derive(Default)]
 pub struct Wiped(pub Vec<f32>);
 
 impl Drop for Wiped {
@@ -27,11 +28,7 @@ impl Drop for Wiped {
 
 /// Appends `extra` to `v`. If `v` must grow, the old allocation is wiped
 /// before it is freed instead of being left behind by a reallocation.
-pub fn extend_wiping(
-    v: &mut Vec<f32>,
-    extra: impl ExactSizeIterator<Item = f32>,
-    new_cap: usize,
-) {
+pub fn extend_wiping(v: &mut Vec<f32>, extra: impl ExactSizeIterator<Item = f32>, new_cap: usize) {
     let need = v.len() + extra.len();
     if v.capacity() < need {
         let mut bigger = Vec::with_capacity(new_cap.max(need));
@@ -76,7 +73,10 @@ pub fn truncate_wiping(v: &mut Vec<f32>, len: usize) {
 /// elements at the end.
 pub fn remove_wiping(v: &mut Vec<f32>, range: std::ops::Range<usize>) {
     let len = v.len();
-    assert!(range.start <= range.end && range.end <= len, "range out of bounds");
+    assert!(
+        range.start <= range.end && range.end <= len,
+        "range out of bounds"
+    );
     v.copy_within(range.end..len, range.start);
     truncate_wiping(v, len - range.len());
 }

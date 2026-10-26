@@ -558,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "claxon",
  "lf-asr",
+ "lf-chunk",
  "lf-cpu",
  "lf-model",
  "libc",
@@ -593,6 +594,7 @@ dependencies = [
  "claxon",
  "futures-lite",
  "lf-asr",
+ "lf-chunk",
  "lf-dbus",
  "lf-dictation",
  "lf-io-api",

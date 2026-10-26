@@ -5,6 +5,35 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Linux
 releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 
+## [Unreleased]
+
+### Changed
+
+- Dictations are transcribed while you speak: audio goes to the recognizer
+  as it is captured, and every 15 s window (windows overlap by 2 s) is
+  transcribed as soon as it is complete, so after the key is released only
+  the last window is left. Long dictations no longer wait for the whole
+  recording to be encoded, which matters most on CPUs with few cores.
+- When you stop speaking but still hold the key, the last window is
+  transcribed during the pause, so releasing the key after a pause leaves
+  almost nothing to do. The text is the same either way: the result is used
+  only if the recording ends exactly there.
+- Pauses are shortened before the model hears them, as in the macOS app:
+  silence before and after speech keeps 0.3 s, and a pause longer than
+  0.8 s is cut to 0.8 s. This saves encoder time on every dictation, and
+  can change transcripts slightly.
+- Window transcripts are joined at a word both windows heard, the same way
+  the macOS app joins them (shared test vectors pin the pause shortening,
+  the windows and the joins on both platforms).
+- A dictation uses the dictionary as it was when the recording started (it
+  used the dictionary as it was when the recording stopped).
+- The encoder never sees more than 15 s at once, so its working memory no
+  longer grows with the longest dictation, and the warm-up after loading the
+  model is 15 s of silence instead of 30 s.
+- A dictation keeps at most 16 MiB of encoder output for checking a later
+  correction, as on the Mac; a longer one can still be dictated but not
+  corrected.
+
 ## [0.1.0] - 2026-10-26
 
 The first Linux release.

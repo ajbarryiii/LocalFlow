@@ -95,6 +95,9 @@ struct Args {
     limit: Option<usize>,
     save_hyps: Option<PathBuf>,
     analyze: Vec<Precision>,
+    /// Transcribe as the daemon does: pauses shortened, 15 s windows joined
+    /// at word seams (`--chunked`).
+    chunked: bool,
 }
 
 /// Deterministic tones plus noise; no speech, so only timing and robustness are meaningful.
@@ -159,6 +162,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
         limit: None,
         save_hyps: None,
         analyze: Vec::new(),
+        chunked: false,
     };
     let mut it = argv.into_iter();
     while let Some(flag) = it.next() {
@@ -190,6 +194,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--warmup" => a.warmup = value()?.parse().map_err(|_| "bad --warmup")?,
             "--show" => a.show = true,
             "--quiet" => a.quiet = true,
+            "--chunked" => a.chunked = true,
             "--synthetic" => {
                 a.synthetic = value()?
                     .split(',')
@@ -215,7 +220,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
                      [--joined LIBRISPEECH_SPLIT_DIR [--joined-count N] [--joined-hyps EVAL_JSON]] \
                      [--min-seconds 30] [--max-seconds 60] [--ids FILE] [--offset N] [--limit N] \
                      [--threads 8 | --cpus 0-7,16 | --unpinned] [--precision f32|i8x1|i8x2|i8x3] [--warmup 1] [--show] [--quiet] \
-                     [--save-hyps PATH.jsonl] [--synthetic 10,30,60] [--analyze f32,i8x3,i8x2]"
+                     [--save-hyps PATH.jsonl] [--synthetic 10,30,60] [--analyze f32,i8x3,i8x2] [--chunked]"
                     .into());
             }
             _ => return Err(format!("unknown argument {flag}")),
@@ -233,6 +238,9 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
     }
     if a.analyze.len() == 1 {
         return Err("--analyze needs at least two precisions".into());
+    }
+    if !a.analyze.is_empty() && a.chunked {
+        return Err("--analyze runs the encoder on whole utterances".into());
     }
     if !a.analyze.is_empty() && a.save_hyps.is_some() {
         return Err("--analyze does not save hypotheses".into());
@@ -605,7 +613,11 @@ fn run() -> Result<bool, String> {
     for item in items.iter().take(args.warmup) {
         // Warm-up items are measured again below, where failures are counted.
         if let Ok(samples) = item.samples() {
-            let _ = tr.transcribe(&samples, None);
+            if args.chunked {
+                let _ = transcribe_chunked(&mut tr, &samples);
+            } else {
+                let _ = tr.transcribe(&samples, None);
+            }
         }
     }
     let after_warmup = memory_mib();
@@ -625,6 +637,9 @@ fn run() -> Result<bool, String> {
     let mut sets: BTreeMap<String, SetStats> = BTreeMap::new();
     // (audio seconds, wall-clock ms of the whole transcribe call)
     let mut runs: Vec<(f64, f64)> = Vec::new();
+    // With --chunked: the wait after release, and the slowest window.
+    let mut released: Vec<f64> = Vec::new();
+    let mut slowest_window = 0f64;
     let mut sum = Timings::default();
     let mut failures = 0usize;
     let mut audio_s = 0.0;
@@ -633,7 +648,14 @@ fn run() -> Result<bool, String> {
         let result = item.samples().and_then(|samples| {
             let secs = samples.len() as f64 / SAMPLE_RATE as f64;
             let start = Instant::now();
-            let t = tr.transcribe(&samples, None).map_err(|e| e.to_string())?;
+            let t = if args.chunked {
+                let c = transcribe_chunked(&mut tr, &samples).map_err(|e| e.to_string())?;
+                released.push(c.after_release);
+                slowest_window = slowest_window.max(c.slowest_window);
+                c.transcript
+            } else {
+                tr.transcribe(&samples, None).map_err(|e| e.to_string())?
+            };
             Ok((t, secs, ms(start.elapsed())))
         });
         let (t, secs, wall) = match result {
@@ -806,6 +828,16 @@ fn run() -> Result<bool, String> {
         percentile(&lat, 0.95),
         lat[lat.len() - 1]
     );
+    if args.chunked && !released.is_empty() {
+        released.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "- chunked, after release (pause flush and the last window; the others ran while recording): mean {:.1} ms, p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms; slowest window {slowest_window:.1} ms",
+            released.iter().sum::<f64>() / released.len() as f64,
+            percentile(&released, 0.5),
+            percentile(&released, 0.95),
+            released[released.len() - 1]
+        );
+    }
     for (lo, hi) in [(0.0, 30.0), (30.0, 40.0), (40.0, 50.0), (50.0, 60.5)] {
         let mut b: Vec<f64> = runs
             .iter()
@@ -849,6 +881,70 @@ fn run() -> Result<bool, String> {
         end.0 - resident_audio_mib
     );
     Ok(failures == 0)
+}
+
+/// One utterance transcribed as the daemon transcribes a dictation.
+struct Chunked {
+    /// Text, frames and summed stage times of every window (no tokens).
+    transcript: lf_asr::Transcript,
+    /// Milliseconds `finish` took: shortening the trailing pause and
+    /// transcribing the last window, all that is left after the key is
+    /// released when the earlier windows kept up with the speech.
+    after_release: f64,
+    /// Milliseconds of the slowest window; a window must take under 13 s
+    /// (the stride between windows) to keep up.
+    slowest_window: f64,
+}
+
+/// Pauses shortened, 15 s windows each transcribed alone and joined at word
+/// seams, as `localflowd` does (digital silence skipped, short windows
+/// padded to 480 samples).
+fn transcribe_chunked(tr: &mut Transcriber, samples: &[f32]) -> lf_model::Result<Chunked> {
+    let mut timings = Timings::default();
+    let mut frames = 0;
+    let mut slowest = 0f64;
+    let mut window = |tr: &mut Transcriber, chunk: &lf_chunk::Chunk| {
+        if chunk.samples.iter().all(|&v| v == 0.0) {
+            return Ok(Vec::new());
+        }
+        let mut input = chunk.samples.to_vec();
+        input.resize(input.len().max(480), 0.0);
+        let start = Instant::now();
+        let t = tr.transcribe(&input, None)?;
+        slowest = slowest.max(ms(start.elapsed()));
+        frames += t.frames;
+        timings.frontend += t.timings.frontend;
+        timings.subsampling += t.timings.subsampling;
+        timings.projections += t.timings.projections;
+        timings.attention += t.timings.attention;
+        timings.elementwise += t.timings.elementwise;
+        timings.decoder += t.timings.decoder;
+        let emitted: Vec<(usize, usize)> = t
+            .tokens
+            .iter()
+            .copied()
+            .zip(t.token_frames.iter().copied())
+            .collect();
+        lf_chunk::words(&emitted, tr.tokenizer().pieces(), chunk.start)
+            .map_err(|e| lf_model::Error(e.to_string()))
+    };
+    let mut c = lf_chunk::ChunkedTranscription::recording();
+    c.append(samples, &mut |chunk| window(tr, chunk))?;
+    let start = Instant::now();
+    let text = c.finish(&mut |chunk| window(tr, chunk))?;
+    let after_release = ms(start.elapsed());
+    let text = tr.tokenizer().strip_space_before_punctuation(&text);
+    Ok(Chunked {
+        transcript: lf_asr::Transcript {
+            text,
+            tokens: Vec::new(),
+            token_frames: Vec::new(),
+            frames,
+            timings,
+        },
+        after_release,
+        slowest_window: slowest,
+    })
 }
 
 /// `(VmRSS, VmHWM)` of this process in MiB.

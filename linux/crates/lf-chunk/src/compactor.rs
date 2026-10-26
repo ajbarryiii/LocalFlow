@@ -14,6 +14,7 @@ use lf_io_api::wipe::{push_wiping, remove_wiping, truncate_wiping, wipe};
 /// on how they are split across calls.
 ///
 /// Every buffer is zeroed before it is freed or reused.
+#[derive(Clone)]
 pub struct SilenceCompactor {
     margin: usize,
     interior_pause: usize,
@@ -99,6 +100,13 @@ impl SilenceCompactor {
         // An emit error drops this call's unemitted output.
         truncate_wiping(&mut self.output, 0);
         result
+    }
+
+    /// Whether the stream is in a pause after speech at least `margin`
+    /// long, so the trailing silence `finish` would keep is already
+    /// decided (until speech resumes).
+    pub fn in_trailing_pause(&self) -> bool {
+        self.heard_speech && self.held.len() >= self.margin
     }
 
     /// Emits the rest and resets the compactor for a new stream.
@@ -188,9 +196,7 @@ impl SilenceCompactor {
             return false;
         }
         let level = 10.0 * (energy / samples.len() as f64).log10();
-        self.speaking = level
-            > self.floor
-                + if self.speaking { RELEASE } else { ONSET };
+        self.speaking = level > self.floor + if self.speaking { RELEASE } else { ONSET };
         let next = if level < self.floor {
             level
         } else if self.speaking {

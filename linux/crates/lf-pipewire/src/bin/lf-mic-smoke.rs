@@ -43,7 +43,8 @@ fn main() -> ExitCode {
     let mut capture = PipeWireCapture::new(config);
     for cycle in 1..=cycles {
         let t0 = Instant::now();
-        if let Err(e) = capture.start() {
+        let sink = lf_io_api::CollectSink::default();
+        if let Err(e) = capture.start(Box::new(sink.clone())) {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
@@ -62,13 +63,14 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let n = rec.samples.len();
+        let samples = sink.take();
+        let n = samples.len();
         let rms = if n == 0 {
             0.0
         } else {
-            (rec.samples.iter().map(|&v| f64::from(v * v)).sum::<f64>() / n as f64).sqrt()
+            (samples.iter().map(|&v| f64::from(v * v)).sum::<f64>() / n as f64).sqrt()
         };
-        let peak = rec.samples.iter().fold(0f32, |m, &v| m.max(v.abs()));
+        let peak = samples.iter().fold(0f32, |m, &v| m.max(v.abs()));
         println!(
             "cycle {cycle}: {:.2} s of audio ({n} samples), RMS {rms:.4} ({:.1} dBFS), peak {peak:.3}, \
              max level {peak_level:.3}, start() {:.1} ms, first buffer {}, format {:?}{}",

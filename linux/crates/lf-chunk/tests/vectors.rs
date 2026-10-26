@@ -62,7 +62,7 @@ fn signal(v: &Value) -> Vec<f32> {
             "square" => {
                 let a = seg[2].as_f64().unwrap() as f32;
                 let half = int(&seg[3]) / 2;
-                out.extend((0..n).map(|i| if (i / half) % 2 == 0 { a } else { -a }));
+                out.extend((0..n).map(|i| if (i / half).is_multiple_of(2) { a } else { -a }));
             }
             "noise" => {
                 let a = seg[2].as_f64().unwrap() as f32;
@@ -155,7 +155,10 @@ fn constants() {
         int(&c["alignment_tolerance"]),
         TranscriptAssembler::ALIGNMENT_TOLERANCE
     );
-    assert_eq!(int(&c["compactor_margin"]), SilenceCompactor::DEFAULT_MARGIN);
+    assert_eq!(
+        int(&c["compactor_margin"]),
+        SilenceCompactor::DEFAULT_MARGIN
+    );
     assert_eq!(
         int(&c["compactor_interior_pause"]),
         SilenceCompactor::DEFAULT_INTERIOR_PAUSE

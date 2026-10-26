@@ -60,7 +60,8 @@ pub fn words(
     let mut start = 0;
     for &(id, frame) in emitted {
         for cluster in pieces[id].graphemes(true) {
-            let space = cluster == "\u{2581}" || cluster.chars().next().is_some_and(char::is_whitespace);
+            let space =
+                cluster == "\u{2581}" || cluster.chars().next().is_some_and(char::is_whitespace);
             if space {
                 if !text.is_empty() {
                     words.push(Word {
@@ -197,10 +198,7 @@ fn merge(left: Vec<Word>, right: Vec<Word>, overlap: Range<usize>) -> Vec<Word> 
         .iter()
         .min_by_key(|&&(i, j)| (left[i].start + right[j].start).abs_diff(middle));
     let Some(&(i, j)) = anchor else {
-        let mut words: Vec<Word> = left
-            .into_iter()
-            .filter(|w| 2 * w.start < middle)
-            .collect();
+        let mut words: Vec<Word> = left.into_iter().filter(|w| 2 * w.start < middle).collect();
         words.extend(right.into_iter().filter(|w| 2 * w.start >= middle));
         return words;
     };
@@ -214,7 +212,7 @@ fn merge(left: Vec<Word>, right: Vec<Word>, overlap: Range<usize>) -> Vec<Word> 
 /// Casing comes from the earlier chunk, which heard what preceded the word;
 /// trailing punctuation from the later chunk, which heard what follows it.
 fn seam(left: &Word, right: &Word) -> Word {
-    let last_alnum = |s: &str| s.char_indices().filter(|&(_, c)| is_alnum(c)).last();
+    let last_alnum = |s: &str| s.char_indices().rfind(|&(_, c)| is_alnum(c));
     let (Some((le, lc)), Some((re, rc))) = (last_alnum(&left.text), last_alnum(&right.text)) else {
         return left.clone();
     };

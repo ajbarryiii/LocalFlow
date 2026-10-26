@@ -20,6 +20,7 @@ impl Chunk<'_> {
 /// the final one may be shorter, and it is emitted only when it holds audio no
 /// earlier window covered. The windows do not depend on how the samples are
 /// split across calls.
+#[derive(Clone)]
 pub struct Chunker {
     size: usize,
     overlap: usize,
@@ -69,6 +70,11 @@ impl Chunker {
         }
         push_wiping(&mut self.pending, rest);
         Ok(())
+    }
+
+    /// Samples received so far.
+    pub fn position(&self) -> usize {
+        self.start + self.pending.len()
     }
 
     /// Emits the final window if it holds new audio, and resets the chunker.

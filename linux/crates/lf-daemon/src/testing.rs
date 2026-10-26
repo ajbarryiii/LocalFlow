@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use lf_asr::Projection;
 use lf_asr::dictionary::DictionaryEntry;
 use lf_asr::tokenizer::Tokenizer;
-use lf_io_api::{AudioCapture, IoError, SAMPLE_RATE, TextOutput};
+use lf_chunk::{Chunk, Word};
+use lf_io_api::{AudioCapture, AudioSink, IoError, SAMPLE_RATE, TextOutput};
 
 use crate::dictionary::Snapshot;
-use crate::recognizer::{Recognized, Recognizer};
+use crate::recognizer::{ChunkResult, Recognizer};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -25,8 +26,13 @@ pub struct CaptureState {
     pub starts: usize,
     pub stops: usize,
     pub cancels: usize,
-    /// Returned by the next `stop`.
+    /// Delivered to the sink by the next `stop` (in blocks of `block`
+    /// samples; 0 delivers them in one).
     pub samples: Vec<f32>,
+    pub block: usize,
+    /// Samples delivered to the current recording's sink so far.
+    pub delivered: usize,
+    sink: Sink,
     pub fail_start: bool,
     pub fail_stop: bool,
     /// How long `start` blocks, like a device waking up.
@@ -44,6 +50,20 @@ pub struct CaptureState {
     /// Reported by `level` while recording.
     pub level: f32,
     notify: Notify,
+}
+
+/// The current recording's sink.
+#[derive(Default)]
+struct Sink(Option<Box<dyn AudioSink>>);
+
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Sink(set)"
+        } else {
+            "Sink(none)"
+        })
+    }
 }
 
 /// The `watch_input` callback.
@@ -160,6 +180,18 @@ impl FakeCapture {
         gate
     }
 
+    /// Delivers `samples` to the current recording's sink now, as audio
+    /// arriving while it runs. Nothing happens when not recording.
+    pub fn push(&self, samples: &[f32]) {
+        let sink = self.state().sink.0.take();
+        if let Some(mut sink) = sink {
+            sink.audio(samples);
+            let mut s = self.state();
+            s.delivered += samples.len();
+            s.sink.0 = Some(sink);
+        }
+    }
+
     /// Changes the reported microphone presence and notifies the watcher
     /// registered with `watch_input`, like a device being plugged in or out.
     pub fn set_input(&self, input: Option<bool>) {
@@ -188,7 +220,7 @@ impl AudioCapture for FakeCapture {
         self.state().notify = Notify(Some(Arc::from(notify)));
     }
 
-    fn start(&mut self) -> Result<(), IoError> {
+    fn start(&mut self, sink: Box<dyn AudioSink>) -> Result<(), IoError> {
         let (delay, gate) = {
             let s = self.state();
             (s.start_delay, s.start_gate.clone())
@@ -205,6 +237,8 @@ impl AudioCapture for FakeCapture {
         }
         s.recording = true;
         s.starts += 1;
+        s.delivered = 0;
+        s.sink.0 = Some(sink);
         if s.fail_start {
             // A failure that leaves the stream half-open: the caller must cancel.
             return Err(IoError("synthetic start failure".into()));
@@ -212,22 +246,38 @@ impl AudioCapture for FakeCapture {
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<Vec<f32>, IoError> {
+    fn stop(&mut self) -> Result<usize, IoError> {
         let gate = self.state().stop_gate.clone();
         if let Some(gate) = gate {
             gate.pass();
         }
+        let (samples, block, sink) = {
+            let mut s = self.state();
+            if !s.recording {
+                return Err(IoError("not recording".into()));
+            }
+            s.stops += 1;
+            if s.fail_stop {
+                // Likewise left running.
+                return Err(IoError("synthetic stop failure".into()));
+            }
+            s.recording = false;
+            (s.samples.clone(), s.block, s.sink.0.take())
+        };
+        // Outside the lock: the sink may take its time.
+        if let Some(mut sink) = sink {
+            let size = if block == 0 {
+                samples.len().max(1)
+            } else {
+                block
+            };
+            for piece in samples.chunks(size) {
+                sink.audio(piece);
+            }
+        }
         let mut s = self.state();
-        if !s.recording {
-            return Err(IoError("not recording".into()));
-        }
-        s.stops += 1;
-        if s.fail_stop {
-            // Likewise left running.
-            return Err(IoError("synthetic stop failure".into()));
-        }
-        s.recording = false;
-        Ok(s.samples.clone())
+        s.delivered += samples.len();
+        Ok(s.delivered)
     }
 
     fn cancel(&mut self) {
@@ -240,31 +290,41 @@ impl AudioCapture for FakeCapture {
             s.cancels += 1;
         }
         s.recording = false;
+        s.sink.0 = None;
     }
 }
 
-/// Returns silence as long as the recording lasted (for `--fake-io`).
+/// Delivers silence as long as the recording lasted, at `stop` (for
+/// `--fake-io`).
 #[derive(Default)]
 pub struct SilenceCapture {
-    started: Option<Instant>,
+    started: Option<(Instant, Box<dyn AudioSink>)>,
 }
 
 impl AudioCapture for SilenceCapture {
-    fn start(&mut self) -> Result<(), IoError> {
+    fn start(&mut self, sink: Box<dyn AudioSink>) -> Result<(), IoError> {
         if self.started.is_some() {
             return Err(IoError("already recording".into()));
         }
-        self.started = Some(Instant::now());
+        self.started = Some((Instant::now(), sink));
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<Vec<f32>, IoError> {
-        let started = self.started.take().ok_or(IoError("not recording".into()))?;
+    fn stop(&mut self) -> Result<usize, IoError> {
+        let (started, mut sink) = self.started.take().ok_or(IoError("not recording".into()))?;
         let seconds = started
             .elapsed()
             .as_secs_f64()
             .min(crate::config::MAX_RECORDING_SECONDS);
-        Ok(vec![0.0; (seconds * f64::from(SAMPLE_RATE)) as usize])
+        let n = (seconds * f64::from(SAMPLE_RATE)) as usize;
+        let block = [0.0f32; SAMPLE_RATE as usize];
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(block.len());
+            sink.audio(&block[..k]);
+            left -= k;
+        }
+        Ok(n)
     }
 
     fn cancel(&mut self) {
@@ -370,8 +430,10 @@ pub struct RecognizerState {
     /// Transcriptions begun (counted before `delay`).
     pub started: usize,
     pub calls: usize,
-    /// Number of samples in each call.
+    /// Number of samples in each chunk transcribed.
     pub lengths: Vec<usize>,
+    /// Where each chunk starts in the compacted recording.
+    pub starts: Vec<usize>,
     pub delay: Duration,
     /// The dictionary each transcription saw: revision and entry count.
     pub dictionaries: Vec<(u64, usize)>,
@@ -382,9 +444,12 @@ pub struct RecognizerState {
     pub redecodes: usize,
     /// How long each re-decode takes.
     pub redecode_delay: Duration,
+    /// Floats in each retained projection (0 means 4).
+    pub projection_floats: usize,
 }
 
-/// Returns preset text. Clones share state.
+/// Returns preset text: its whitespace-separated words, all at the chunk's
+/// start, for every chunk. Clones share state.
 #[derive(Clone, Default)]
 pub struct FakeRecognizer(pub Arc<Mutex<RecognizerState>>);
 
@@ -401,12 +466,12 @@ impl FakeRecognizer {
 }
 
 impl Recognizer for FakeRecognizer {
-    fn transcribe(
+    fn transcribe_chunk(
         &mut self,
-        samples: &[f32],
+        chunk: &Chunk,
         dictionary: &Snapshot,
         retain: bool,
-    ) -> Result<Recognized, String> {
+    ) -> Result<ChunkResult, String> {
         let delay = {
             let mut s = self.state();
             s.started += 1;
@@ -415,41 +480,61 @@ impl Recognizer for FakeRecognizer {
         std::thread::sleep(delay);
         let mut s = self.state();
         s.calls += 1;
-        s.lengths.push(samples.len());
+        s.lengths.push(chunk.samples.len());
+        s.starts.push(chunk.start);
         s.dictionaries
             .push((dictionary.revision, dictionary.dictionary.entries.len()));
         let text = s
             .text
             .clone()
             .ok_or_else(|| "synthetic recognition failure".to_string())?;
-        Ok(Recognized {
-            text,
+        Ok(ChunkResult {
+            words: fake_words(&text, chunk.start),
             projection: retain.then(|| Projection {
-                data: vec![0.5; 4],
+                data: vec![
+                    0.5;
+                    if s.projection_floats == 0 {
+                        4
+                    } else {
+                        s.projection_floats
+                    }
+                ],
                 frames: 1,
             }),
         })
     }
 
-    fn redecode(
+    fn redecode_chunk(
         &mut self,
         _projection: &Projection,
+        start: usize,
         _dictionary: &Snapshot,
         extra: &DictionaryEntry,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<Word>, String> {
         let delay = self.state().redecode_delay;
         std::thread::sleep(delay);
         let mut s = self.state();
         s.redecodes += 1;
         let milli = (extra.strength * 1000.0).round() as u32;
-        match s.redecoded.iter().find(|(m, _)| *m == milli) {
-            Some((_, t)) => Ok(t.clone()),
+        let text = match s.redecoded.iter().find(|(m, _)| *m == milli) {
+            Some((_, t)) => t.clone(),
             None => s
                 .text
                 .clone()
-                .ok_or_else(|| "synthetic recognition failure".into()),
-        }
+                .ok_or_else(|| "synthetic recognition failure".to_string())?,
+        };
+        Ok(fake_words(&text, start))
     }
+}
+
+/// The words of `text`, all starting at `start`.
+fn fake_words(text: &str, start: usize) -> Vec<Word> {
+    text.split_whitespace()
+        .map(|w| Word {
+            text: w.to_owned(),
+            start,
+        })
+        .collect()
 }
 
 /// A small invented vocabulary for tests and `--fake-io`-style rigs:

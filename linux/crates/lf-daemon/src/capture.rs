@@ -14,9 +14,9 @@
 //! behind a slow start never reopen the microphone. A capture that panics fails the call instead of taking
 //! the thread down.
 //!
-//! Privacy: stopped audio is wrapped in [`Audio`] on the capture thread, so
-//! it is wiped wherever the event ends up, also when nobody takes it (a
-//! cancelled recording, or a daemon shutting down).
+//! Audio never passes through here: `start` hands the capture the sink that
+//! delivers it to the recognition worker, and `stop` reports only how many
+//! samples went there.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -27,21 +27,44 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use lf_io_api::{AudioCapture, IoError};
+use lf_io_api::{AudioCapture, AudioSink, IoError};
 
-use crate::worker::Audio;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Call {
+    /// Start recording into the sink.
+    Start(Box<dyn AudioSink>),
+    Stop,
+    Cancel,
+}
+
+/// A [`Call`] without its sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallKind {
     Start,
     Stop,
     Cancel,
 }
 
+impl Call {
+    pub fn kind(&self) -> CallKind {
+        match self {
+            Call::Start(_) => CallKind::Start,
+            Call::Stop => CallKind::Stop,
+            Call::Cancel => CallKind::Cancel,
+        }
+    }
+}
+
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.kind())
+    }
+}
+
 /// The result of a call.
 pub enum Done {
     Started(Result<(), IoError>),
-    Stopped(Result<Audio, IoError>),
+    /// How many samples the recording delivered.
+    Stopped(Result<usize, IoError>),
     /// Carries nothing; it wakes the control loop, so readings answered
     /// from the cache while the call held the capture are taken again.
     Cancelled,
@@ -71,8 +94,8 @@ pub trait CapturePort: Send {
 
 fn run(capture: &mut dyn AudioCapture, call: Call) -> Option<Done> {
     match call {
-        Call::Start => {
-            let started = capture.start();
+        Call::Start(sink) => {
+            let started = capture.start(sink);
             if started.is_err() {
                 // A partial start must not leave the microphone open.
                 capture.cancel();
@@ -85,7 +108,7 @@ fn run(capture: &mut dyn AudioCapture, call: Call) -> Option<Done> {
                 // Make sure the stream is closed whatever state it is in.
                 capture.cancel();
             }
-            Some(Done::Stopped(stopped.map(Audio::new)))
+            Some(Done::Stopped(stopped))
         }
         Call::Cancel => {
             capture.cancel();
@@ -94,22 +117,23 @@ fn run(capture: &mut dyn AudioCapture, call: Call) -> Option<Done> {
     }
 }
 
-fn failed(call: Call, why: &str) -> Option<Done> {
+fn failed(call: CallKind, why: &str) -> Option<Done> {
     let err = || IoError(why.into());
     match call {
-        Call::Start => Some(Done::Started(Err(err()))),
-        Call::Stop => Some(Done::Stopped(Err(err()))),
-        Call::Cancel => None,
+        CallKind::Start => Some(Done::Started(Err(err()))),
+        CallKind::Stop => Some(Done::Stopped(Err(err()))),
+        CallKind::Cancel => None,
     }
 }
 
 /// Runs `call`, turning a panic into a failed call (and closing the stream).
 fn run_guarded(capture: &mut dyn AudioCapture, call: Call) -> Option<Done> {
+    let kind = call.kind();
     match catch_unwind(AssertUnwindSafe(|| run(&mut *capture, call))) {
         Ok(done) => done,
         Err(_) => {
             let _ = catch_unwind(AssertUnwindSafe(|| capture.cancel()));
-            failed(call, "audio capture panicked")
+            failed(kind, "audio capture panicked")
         }
     }
 }
@@ -182,18 +206,19 @@ impl CaptureThread {
 
 impl CapturePort for CaptureThread {
     fn send(&mut self, generation: u64, call: Call) {
-        match call {
+        let kind = call.kind();
+        match kind {
             // A new recording never shows the last one's level.
-            Call::Start => self.level.set(0.0),
+            CallKind::Start => self.level.set(0.0),
             // Before sending, so the thread skips this recording's queued
             // calls.
-            Call::Cancel => {
+            CallKind::Cancel => {
                 self.cancelled.fetch_max(generation, Ordering::AcqRel);
             }
-            Call::Stop => {}
+            CallKind::Stop => {}
         }
         if self.calls.send((generation, call)).is_err()
-            && let Some(done) = failed(call, "the audio capture thread has stopped")
+            && let Some(done) = failed(kind, "the audio capture thread has stopped")
         {
             self.failed.push_back(CaptureEvent { generation, done });
         }
@@ -260,7 +285,9 @@ pub fn spawn(
         .spawn(move || {
             let _done = done_tx;
             while let Ok((generation, call)) = queued.recv() {
-                if call != Call::Cancel && generation <= skip.load(Ordering::Acquire) {
+                if call.kind() != CallKind::Cancel && generation <= skip.load(Ordering::Acquire) {
+                    // A skipped start drops its sink here.
+
                     continue;
                 }
                 let result = run_guarded(&mut **lock(&shared), call);
@@ -302,7 +329,7 @@ mod tests {
             let _ = tx.send(e);
         })
         .unwrap();
-        port.send(1, Call::Start);
+        port.send(1, Call::Start(Box::new(lf_io_api::CollectSink::default())));
         gate.wait_entered(1);
         // The call holds the capture: the last readings are answered.
         cap.state().input = Some(false);
@@ -324,7 +351,7 @@ mod tests {
         let cap = FakeCapture::default();
         let gate = cap.gate_start();
         let (mut port, join) = spawn(Box::new(cap.clone()), |_| {}).unwrap();
-        port.send(1, Call::Start);
+        port.send(1, Call::Start(Box::new(lf_io_api::CollectSink::default())));
         gate.wait_entered(1);
         drop(port);
         assert!(!join.join(Duration::from_millis(50)));
@@ -335,10 +362,10 @@ mod tests {
     fn calls_after_the_thread_ended_fail_at_once() {
         struct Panics;
         impl AudioCapture for Panics {
-            fn start(&mut self) -> Result<(), IoError> {
+            fn start(&mut self, _: Box<dyn AudioSink>) -> Result<(), IoError> {
                 panic!("synthetic")
             }
-            fn stop(&mut self) -> Result<Vec<f32>, IoError> {
+            fn stop(&mut self) -> Result<usize, IoError> {
                 panic!("synthetic")
             }
             fn cancel(&mut self) {}
@@ -349,7 +376,7 @@ mod tests {
             let _ = tx.send(e);
         })
         .unwrap();
-        port.send(1, Call::Start);
+        port.send(1, Call::Start(Box::new(lf_io_api::CollectSink::default())));
         let e = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(e.done, Done::Started(Err(_))));
         port.send(2, Call::Stop);
@@ -360,7 +387,7 @@ mod tests {
         // With the thread gone, a call fails through `poll`.
         let (calls, _) = mpsc::channel();
         port.calls = calls;
-        port.send(3, Call::Start);
+        port.send(3, Call::Start(Box::new(lf_io_api::CollectSink::default())));
         port.send(3, Call::Cancel);
         let e = port.poll().unwrap();
         assert!(e.generation == 3 && matches!(e.done, Done::Started(Err(_))));

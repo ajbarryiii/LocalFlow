@@ -29,3 +29,5 @@ libc.workspace = true
 serde_json.workspace = true
 # FLAC decoding for the public test sets (evaluation tooling only).
 claxon = "0.4"
+# The daemon's chunked transcription, for `lf-transcribe --chunked`.
+lf-chunk = { path = "../lf-chunk" }

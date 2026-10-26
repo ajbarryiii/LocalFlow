@@ -79,6 +79,32 @@ impl ChunkedTranscription {
         }
     }
 
+    /// Compacted samples chunked so far: grows with speech and the pauses
+    /// kept, not with silence that is cut.
+    pub fn position(&self) -> usize {
+        self.chunker.position()
+    }
+
+    /// The windows [`Self::finish`] would transcribe if the recording ended
+    /// now, in order, changing nothing. Only once the speaker has paused
+    /// (see [`SilenceCompactor::in_trailing_pause`]): then they stay the same
+    /// until speech resumes, so they can be transcribed ahead of `finish`.
+    /// Returns whether it emitted (always false without a compactor).
+    pub fn ending(&self, emit: &mut impl FnMut(&Chunk)) -> bool {
+        let Some(compactor) = self.compactor.as_ref().filter(|c| c.in_trailing_pause()) else {
+            return false;
+        };
+        let mut compactor = compactor.clone();
+        let mut chunker = self.chunker.clone();
+        let mut window = |chunk: &Chunk| -> Result<(), std::convert::Infallible> {
+            emit(chunk);
+            Ok(())
+        };
+        let _ = compactor.finish(&mut |piece: &[f32]| chunker.append(piece, &mut window));
+        let _ = chunker.finish(&mut window);
+        true
+    }
+
     /// Transcribes the remaining partial window, if it holds new audio, and
     /// returns the text.
     pub fn finish<E>(
@@ -99,5 +125,89 @@ impl ChunkedTranscription {
         }
         chunker.finish(&mut window)?;
         Ok(transcript.text())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::convert::Infallible;
+
+    fn speech(n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| if (i / 32) % 2 == 0 { 0.1 } else { -0.1 })
+            .collect()
+    }
+
+    /// The windows a transcription emits from now to its end.
+    fn finished(t: ChunkedTranscription, rest: &[f32]) -> Vec<(usize, Vec<f32>)> {
+        let mut t = t;
+        let mut seen = Vec::new();
+        let mut record = |c: &Chunk| -> Result<Vec<Word>, Infallible> {
+            seen.push((c.start, c.samples.to_vec()));
+            Ok(Vec::new())
+        };
+        t.append(rest, &mut record).unwrap();
+        t.finish(&mut record).unwrap();
+        seen
+    }
+
+    fn ending(t: &ChunkedTranscription) -> Option<Vec<(usize, Vec<f32>)>> {
+        let mut seen = Vec::new();
+        t.ending(&mut |c: &Chunk| seen.push((c.start, c.samples.to_vec())))
+            .then_some(seen)
+    }
+
+    fn fed(samples: &[f32]) -> ChunkedTranscription {
+        let mut t = ChunkedTranscription::recording();
+        t.append(samples, &mut |_: &Chunk| Ok::<_, Infallible>(Vec::new()))
+            .unwrap();
+        t
+    }
+
+    #[test]
+    fn the_ending_is_known_once_the_speaker_pauses() {
+        let mut audio = speech(20 * SAMPLE_RATE);
+        // Still speaking, or not yet paused for the margin: unknown.
+        assert_eq!(ending(&fed(&audio)), None);
+        audio.extend(std::iter::repeat_n(
+            0.0,
+            SilenceCompactor::DEFAULT_MARGIN - 160,
+        ));
+        assert_eq!(ending(&fed(&audio)), None);
+        // Paused long enough: what finish emits, whatever silence follows.
+        audio.extend(std::iter::repeat_n(0.0, 160));
+        let t = fed(&audio);
+        let at = t.position();
+        let predicted = ending(&t).expect("known");
+        assert_eq!(predicted.len(), 1);
+        assert_eq!(finished(t, &[]), predicted);
+        for more in [1, 4800, 16_000, 5 * SAMPLE_RATE] {
+            let t = fed(&audio);
+            assert_eq!(finished(t, &vec![0.0; more]), predicted, "{more} more");
+        }
+        // Silence does not move the position; resumed speech does.
+        let mut longer = audio.clone();
+        longer.extend(std::iter::repeat_n(0.0, 2 * SAMPLE_RATE));
+        assert_eq!(fed(&longer).position(), at);
+        longer.extend(speech(SAMPLE_RATE));
+        let t = fed(&longer);
+        assert!(t.position() > at);
+        assert_ne!(finished(t, &[]), predicted);
+        // Finding the ending changes nothing.
+        let t = fed(&audio);
+        let _ = ending(&t);
+        assert_eq!(finished(t, &[]), predicted);
+    }
+
+    #[test]
+    fn no_ending_without_speech_or_a_compactor() {
+        assert_eq!(ending(&fed(&vec![0.0; 5 * SAMPLE_RATE])), None);
+        let mut t = ChunkedTranscription::new(CHUNK_SAMPLES, CHUNK_OVERLAP_SAMPLES, None);
+        t.append(&speech(SAMPLE_RATE), &mut |_: &Chunk| {
+            Ok::<_, Infallible>(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(ending(&t), None);
     }
 }
