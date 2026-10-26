@@ -1821,6 +1821,74 @@ mod tests {
             assert!(r.session.as_ref().unwrap().windows.ahead.is_empty());
         }
 
+        /// Cancels the recording when its `nth` chunk is transcribed.
+        struct CancelAt {
+            inner: FakeRecognizer,
+            cancel: Arc<CancelToken>,
+            nth: usize,
+        }
+
+        impl Recognizer for CancelAt {
+            fn transcribe_chunk(
+                &mut self,
+                chunk: &Chunk,
+                dictionary: &Snapshot,
+                retain: bool,
+            ) -> Result<ChunkResult, String> {
+                let r = self.inner.transcribe_chunk(chunk, dictionary, retain);
+                if self.inner.state().calls == self.nth {
+                    self.cancel.cancel();
+                }
+                r
+            }
+
+            fn redecode_chunk(
+                &mut self,
+                p: &Projection,
+                start: usize,
+                dictionary: &Snapshot,
+                extra: &DictionaryEntry,
+            ) -> Result<Vec<Word>, String> {
+                self.inner.redecode_chunk(p, start, dictionary, extra)
+            }
+        }
+
+        #[test]
+        fn a_cancel_between_ending_windows_keeps_nothing_ahead() {
+            // Speech that, with 0.3 s of the pause, completes the second window:
+            // the ending is that window and the remainder after it.
+            let mut audio = speech(28);
+            audio.truncate(445_000);
+            audio.extend(std::iter::repeat_n(0.0, SECOND));
+            let fake = FakeRecognizer::returning("synthetic words");
+            let jobs = super::recording(1, &audio, SECOND, Arc::default());
+            let cancel = Arc::clone(&jobs[0].cancel);
+            let mut rec = CancelAt {
+                inner: fake.clone(),
+                cancel,
+                // The first window while recording, then the first one ahead.
+                nth: 2,
+            };
+            let s = settings();
+            let mut out = FakeOutput::default();
+            let mut worker = Worker {
+                recognizer: &mut rec,
+                output: &mut out,
+                settings: &s,
+                session: None,
+            };
+            let mut jobs = jobs;
+            jobs.pop();
+            for job in jobs {
+                worker.handle(job, &|_| {});
+            }
+            worker.idle();
+            let session = worker.session.as_ref().unwrap();
+            assert!(session.windows.ahead.is_empty(), "nothing kept ahead");
+            // The second window ahead was never transcribed.
+            assert_eq!(fake.state().lengths, [240_000, 240_000]);
+        }
+
         #[test]
         fn too_much_audio_to_keep_keeps_nothing() {
             let mut r = Rig::new(Some("synthetic words"));
