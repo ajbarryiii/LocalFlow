@@ -85,11 +85,14 @@ fn main() -> ExitCode {
 const CONTENT_DEBUG_VARS: [&str; 2] = ["WAYLAND_DEBUG", "REIS_DEBUG"];
 
 fn run() -> Result<(), String> {
+    // First, so --help and --version print only their text: parsing reads
+    // the arguments and nothing else, and starts no thread.
+    let args = parse_args()?;
     let mut cleared = Vec::new();
     for var in CONTENT_DEBUG_VARS {
         if std::env::var_os(var).is_some() {
-            // SAFETY: no other thread exists yet (this is the first thing
-            // `main` does), so nothing can read the environment concurrently.
+            // SAFETY: no other thread exists yet (`main` and `parse_args`
+            // start none), so nothing can read the environment concurrently.
             unsafe { std::env::remove_var(var) };
             cleared.push(var);
         }
@@ -115,7 +118,6 @@ fn run() -> Result<(), String> {
             }
         }
     })?;
-    let args = parse_args()?;
     let data_dir = paths::data_dir()?;
     let config_path = match args.config {
         Some(p) => p,

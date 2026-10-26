@@ -416,22 +416,27 @@ fn malformed_requests_are_rejected() {
 #[test]
 fn both_binaries_print_their_version() {
     // Without a configuration, runtime directory or home: --version reads
-    // nothing.
+    // nothing. With the variables localflowd clears at startup: it prints
+    // no warning either.
+    let debug = [("WAYLAND_DEBUG", "1"), ("REIS_DEBUG", "1")];
     for (bin, name) in [
         (env!("CARGO_BIN_EXE_localflowd"), "localflowd"),
         (env!("CARGO_BIN_EXE_localflowctl"), "localflowctl"),
     ] {
-        let out = std::process::Command::new(bin)
-            .arg("--version")
-            .env_clear()
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(0), "{name}");
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            format!("{name} {}\n", env!("CARGO_PKG_VERSION"))
-        );
-        assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{name}");
+        for env in [&[][..], &debug] {
+            let out = std::process::Command::new(bin)
+                .arg("--version")
+                .env_clear()
+                .envs(env.iter().copied())
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(0), "{name} {env:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                format!("{name} {}\n", env!("CARGO_PKG_VERSION"))
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{name} {env:?}");
+        }
     }
 }
 
