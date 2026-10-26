@@ -53,16 +53,15 @@ The first Linux release.
   afterwards (`pause_media`, on by default).
 - Opt-in history of the last 20 transcripts (`history`, off by default). Logs
   never contain transcripts or typed text.
+- `localflowctl fetch-model`, which downloads kea-b (or kea-t) from a pinned
+  Hugging Face revision, checks every file's SHA-256 hash, and installs it
+  where the daemon looks for its model.
 - A Nix flake with the daemon package, both model exports pinned to a
-  Hugging Face revision, and a development shell.
-- A systemd user unit, a desktop file and key bind examples in `packaging/`.
-<!-- Pending: confirm when nix/install-files merges (the package installs the
-     systemd user unit, desktop file and examples; the T3 bridge unit is not
-     installed), and update the line above. -->
-<!-- Pending: add a line when feat/linux-fetch-model merges
-     (`localflowctl fetch-model` downloads and verifies a model export). -->
-<!-- Pending: add a line when nix/flake-checks merges (the package build runs
-     the sandboxed tests). -->
+  Hugging Face revision, and a development shell. The package runs the test
+  suite while it builds, and installs a systemd user unit, a desktop file for
+  the portal trigger, and the key bind examples.
+- A systemd user unit, a desktop file and key bind examples in `packaging/`
+  for installing by hand.
 <!-- Pending: replace "Unreleased" with the tag date (YYYY-MM-DD) and add the
      link below when linux-v0.1.0 is tagged:
      [0.1.0]: https://github.com/ajbarryiii/LocalFlow/releases/tag/linux-v0.1.0 -->
