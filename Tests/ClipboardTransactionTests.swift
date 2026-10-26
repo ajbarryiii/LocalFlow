@@ -13,6 +13,7 @@ enum ClipboardTransactionTests {
         testRestoreWhenStillHoldingTheDictation()
         testNoRestoreAfterTheUserCopies()
         testRestoreEmptyClipboard()
+        testRestoreEveryItemAndRepresentation()
     }
 
     private static let synthetic = NSPasteboard.PasteboardType("com.example.localflow.synthetic")
@@ -23,45 +24,54 @@ enum ClipboardTransactionTests {
         NSPasteboard.PasteboardType("de.petermaurer.TransientPasteboardType"),
     ]
 
-    /// One item of string values, with NSPasteboard's change count rules.
+    /// Items of typed byte representations, with NSPasteboard's change count rules.
     final class FakePasteboard: PasteboardAccess {
         private(set) var changeCount = 0
         private(set) var declaredTypes: [NSPasteboard.PasteboardType] = []
-        private(set) var strings: [NSPasteboard.PasteboardType: String] = [:]
+        private(set) var items: [[NSPasteboard.PasteboardType: Data]] = []
+
+        /// The first item's representations as text.
+        var strings: [NSPasteboard.PasteboardType: String] {
+            (items.first ?? [:]).compactMapValues { String(data: $0, encoding: .utf8) }
+        }
 
         var pasteboardItems: [NSPasteboardItem]? {
-            guard !strings.isEmpty else { return [] }
-            let item = NSPasteboardItem()
-            for (type, value) in strings { item.setString(value, forType: type) }
-            return [item]
+            items.map { representations in
+                let item = NSPasteboardItem()
+                for (type, data) in representations { item.setData(data, forType: type) }
+                return item
+            }
         }
 
         func clearContents() -> Int {
             changeCount += 1
-            strings = [:]
+            items = []
             declaredTypes = []
             return changeCount
         }
 
         func declareTypes(_ newTypes: [NSPasteboard.PasteboardType], owner newOwner: Any?) -> Int {
             changeCount += 1
-            strings = [:]
+            items = []
             declaredTypes = newTypes
             return changeCount
         }
 
         func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
-            strings[dataType] = string
+            if items.isEmpty { items = [[:]] }
+            items[0][dataType] = Data(string.utf8)
             return true
         }
 
         func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
-            strings[dataType]
+            items.first?[dataType].flatMap { String(data: $0, encoding: .utf8) }
         }
 
         func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool {
             for case let item as NSPasteboardItem in objects {
-                for type in item.types { strings[type] = item.string(forType: type) }
+                var representations: [NSPasteboard.PasteboardType: Data] = [:]
+                for type in item.types { representations[type] = item.data(forType: type) }
+                items.append(representations)
             }
             return true
         }
@@ -69,7 +79,7 @@ enum ClipboardTransactionTests {
         /// Another app copies text.
         func copy(_ text: String) {
             _ = clearContents()
-            strings[.string] = text
+            _ = setString(text, forType: .string)
         }
 
         /// Background activity (browsers, Universal Clipboard) raises the count without new content.
@@ -123,7 +133,7 @@ enum ClipboardTransactionTests {
     private static func testRestoreWhenUnchanged() {
         for keepInHistory in [false, true] {
             let pasteboard = earlierClipboard()
-            let before = pasteboard.strings
+            let before = pasteboard.items
             guard let pending = ClipboardTransaction.write("Invented dictation.", preserve: true,
                                                           keepInHistory: keepInHistory, on: pasteboard) else {
                 TestSupport.expect(false, "nothing to restore")
@@ -132,17 +142,17 @@ enum ClipboardTransactionTests {
             TestSupport.expectEqual(pending.writtenTranscript, "Invented dictation. ")
             TestSupport.expectEqual(pending.expectedChangeCount, pasteboard.changeCount)
             TestSupport.expect(ClipboardTransaction.restore(pending, on: pasteboard), "not restored")
-            TestSupport.expectEqual(pasteboard.strings, before)
+            TestSupport.expectEqual(pasteboard.items, before)
         }
     }
 
     private static func testRestoreWhenStillHoldingTheDictation() {
         let pasteboard = earlierClipboard()
-        let before = pasteboard.strings
+        let before = pasteboard.items
         let pending = ClipboardTransaction.write("Invented dictation", preserve: true, keepInHistory: false, on: pasteboard)!
         pasteboard.touch()
         TestSupport.expect(ClipboardTransaction.restore(pending, on: pasteboard), "not restored after a background change")
-        TestSupport.expectEqual(pasteboard.strings, before)
+        TestSupport.expectEqual(pasteboard.items, before)
     }
 
     private static func testNoRestoreAfterTheUserCopies() {
@@ -157,6 +167,37 @@ enum ClipboardTransactionTests {
         let pasteboard = FakePasteboard()
         let pending = ClipboardTransaction.write("Invented dictation", preserve: true, keepInHistory: true, on: pasteboard)!
         TestSupport.expect(ClipboardTransaction.restore(pending, on: pasteboard), "not restored")
-        TestSupport.expectEqual(pasteboard.strings, [:])
+        TestSupport.expectEqual(pasteboard.items, [])
+    }
+
+    /// Every item and every representation comes back: text and binary data
+    /// that is not text byte for byte, and a property list as the same value.
+    private static func testRestoreEveryItemAndRepresentation() {
+        let binary = NSPasteboard.PasteboardType("com.example.localflow.binary")
+        let propertyList = NSPasteboard.PasteboardType("com.example.localflow.plist")
+        let plistData = try! PropertyListSerialization.data(fromPropertyList: ["invented": [1, 2]], format: .binary, options: 0)
+        let first = NSPasteboardItem()
+        first.setString("First invented item", forType: .string)
+        first.setData(Data([0x00, 0xC3, 0x28, 0xFF, 0x80]), forType: binary)
+        let second = NSPasteboardItem()
+        second.setString("Second invented item", forType: .string)
+        second.setData(plistData, forType: propertyList)
+
+        let pasteboard = FakePasteboard()
+        _ = pasteboard.clearContents()
+        _ = pasteboard.writeObjects([first, second])
+        let before = pasteboard.items
+        TestSupport.expectEqual(before.count, 2)
+        let pending = ClipboardTransaction.write("Invented dictation", preserve: true, keepInHistory: false, on: pasteboard)!
+        TestSupport.expectEqual(pasteboard.items.count, 1)
+        TestSupport.expect(ClipboardTransaction.restore(pending, on: pasteboard), "not restored")
+        func withoutPropertyList(_ items: [[NSPasteboard.PasteboardType: Data]]) -> [[NSPasteboard.PasteboardType: Data]] {
+            items.map { $0.filter { $0.key != propertyList } }
+        }
+        TestSupport.expectEqual(withoutPropertyList(pasteboard.items), withoutPropertyList(before))
+        let restoredList = pasteboard.items.last?[propertyList].flatMap {
+            try? PropertyListSerialization.propertyList(from: $0, format: nil) as? NSDictionary
+        }
+        TestSupport.expect(restoredList == ["invented": [1, 2]] as NSDictionary, "property list not restored")
     }
 }

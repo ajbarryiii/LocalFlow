@@ -157,6 +157,19 @@ enum ShortcutStoreTests {
             TestSupport.expectEqual(reloaded.configuration.prompt, ShortcutPreset.f5.binding)
             TestSupport.expectEqual(reloaded.savedCustom(for: .prompt), f6)
         }
+        TestSupport.withDefaults { defaults in
+            // Choosing a preset or Disabled leaves the remembered custom binding as stored.
+            let storedCustom = Data("  \(storedF6JSON)  ".utf8)
+            defaults.set(storedCustom, forKey: "saved_hold_custom_shortcut")
+            let store = ShortcutStore(defaults: defaults)
+            var settings = store.load()
+            for binding in [ShortcutPreset.rightOption.binding, .disabled] {
+                TestSupport.expectEqual(settings.set(binding, for: .hold), nil)
+                store.save(settings, for: .hold)
+                TestSupport.expectEqual(stored("hold_shortcut", in: defaults), binding)
+                TestSupport.expectEqual(defaults.data(forKey: "saved_hold_custom_shortcut"), storedCustom)
+            }
+        }
     }
 
     private static func testValidationRules() {
