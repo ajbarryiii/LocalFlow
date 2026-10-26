@@ -161,10 +161,26 @@ mod tests {
         store.save("synthetic-token");
         let file = dir.join(FILE_NAME);
 
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(store.load(), None);
+        for mode in [0o644, 0o400, 0o640, 0o700] {
+            fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(store.load(), None, "mode {mode:o}");
+        }
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(store.load().is_some());
+
+        // The longest token loads.
+        let longest = "x".repeat(MAX_TOKEN_BYTES as usize);
+        fs::write(&file, &longest).unwrap();
+        assert_eq!(store.load(), Some(longest));
+        fs::write(&file, [b'x', 0xff]).unwrap();
+        assert_eq!(store.load(), None);
+
+        // A directory in its place is ignored.
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert_eq!(store.load(), None);
+        fs::remove_dir(&file).unwrap();
+        store.save("synthetic-token");
 
         fs::write(&file, "synthetic\u{7}token").unwrap();
         assert_eq!(store.load(), None);

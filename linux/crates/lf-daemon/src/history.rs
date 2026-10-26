@@ -280,6 +280,38 @@ mod tests {
     }
 
     #[test]
+    fn any_mode_loads_but_oversized_or_irregular_files_do_not() {
+        let t = TempDir::new("history-read");
+        let dir = t.path().join("localflow");
+        crate::paths::ensure_private_dir(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let one =
+            b"{\"version\": 1, \"entries\": [{\"time\": 7, \"raw\": \"r\", \"text\": \"t\"}]}";
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o644, 0o400, 0o666] {
+            fs::write(&path, one).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            let h = History::open(&dir).unwrap();
+            assert_eq!(h.entries().next().unwrap().time, 7, "mode {mode:o}");
+            fs::remove_file(&path).unwrap();
+        }
+
+        // Exactly the limit is read (trailing spaces are valid JSON); one
+        // byte more starts fresh.
+        let mut body = one.to_vec();
+        body.resize(MAX_FILE_BYTES as usize, b' ');
+        fs::write(&path, &body).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 1);
+        body.push(b' ');
+        fs::write(&path, &body).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 0);
+        fs::remove_file(&path).unwrap();
+
+        fs::create_dir(&path).unwrap();
+        assert_eq!(History::open(&dir).unwrap().entries().count(), 0);
+    }
+
+    #[test]
     fn removes_stale_temporaries() {
         let t = TempDir::new("history-tmp");
         let dir = t.path().join("localflow");

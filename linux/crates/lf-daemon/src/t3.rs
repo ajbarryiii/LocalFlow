@@ -1141,6 +1141,8 @@ mod tests {
         assert_eq!(read_token(&p).unwrap().expose(), TOKEN);
         write_mode(&p, TOKEN.as_bytes(), 0o400);
         assert_eq!(read_token(&p).unwrap().expose(), TOKEN);
+        write_mode(&p, TOKEN.as_bytes(), 0o700);
+        assert_eq!(read_token(&p).unwrap().expose(), TOKEN);
         let longest = "x".repeat(MAX_TOKEN_FILE_BYTES as usize);
         write_mode(&p, longest.as_bytes(), 0o600);
         assert_eq!(read_token(&p).unwrap().expose(), longest);
