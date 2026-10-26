@@ -42,6 +42,10 @@ Pull-request CI runs these three commands with `LF_SKIP_DBUS_TESTS`,
 `LF_SKIP_COMPOSITOR_TESTS`, and `LF_SKIP_PIPEWIRE_TESTS` set, so the
 private-instance integration tests run only locally.
 
+Linux releases are tagged `linux-vX.Y.Z` from the version in
+`linux/Cargo.toml`. When Linux behavior changes, update `linux/CHANGELOG.md`
+in the same pull request; bump the version only when preparing a release.
+
 ## Working rules
 
 - Search with `rg` or `rg --files` before editing.
