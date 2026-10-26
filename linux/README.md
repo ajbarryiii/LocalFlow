@@ -629,6 +629,12 @@ Hyprland binds the shortcuts with its `global` dispatcher (example in
 both on one key, every key event arrives twice and Hold to Prompt stops
 working.
 
+## Releases
+
+Linux releases are tagged `linux-vX.Y.Z`, where `X.Y.Z` is the version in
+`linux/Cargo.toml`. They are separate from the macOS app's tags (`2.1.7`
+and so on). Changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Tests
 
 ```bash
