@@ -55,6 +55,7 @@ struct LocalFlowIOSTests {
             ("AutocorrectCore", AutocorrectCoreTests.tests),
             ("NeverCorrect", NeverCorrectTests.tests),
             ("ModelLoadSlot", ModelLoadSlotTests.tests),
+            ("BundleModelLoader", BundleModelLoaderTests.tests),
             ("HostSessionLock", HostSessionLockTests.tests),
             ("HostSessionLockLatch", HostSessionLockLatchTests.tests),
         ]

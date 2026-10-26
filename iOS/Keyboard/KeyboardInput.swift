@@ -71,7 +71,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private var swipeEngine: SwipeEngine? {
         didSet { updateTouchModes() }
     }
-    private var swipeEngineLoading = false
+    private let swipeEngineLoad = BundleModelLoader<SwipeEngine>()
     /// The App Group settings, read at each commit key: autocorrect corrects only while they are readable;
     /// nil without Full Access.
     var sharedSettings: () -> LocalFlowSettings? = { nil }
@@ -80,12 +80,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private var softKeys: SoftKeyEdgesManifest?
     private var tapPrior: TapPrior?
     /// The soft key edges load: at most one in flight, and only a load for the bundle still wanted is installed.
-    private var softKeysLoad = ModelLoadSlot<URL>()
+    private let softKeysLoad = BundleModelLoader<LoadedSoftKeyEdges>()
     /// Autocorrect once its model has loaded (`configureAutocorrect`): the default preset's parameters and the
     /// corrector. Nil keeps words as typed.
     private var autocorrect: (params: AutocorrectParams, corrector: WordCorrecting)?
     /// The autocorrect load: at most one in flight, and only a load for the bundle still wanted is installed.
-    private var autocorrectLoad = ModelLoadSlot<URL>()
+    private let autocorrectLoad = BundleModelLoader<LoadedAutocorrect>()
 
     init(controller: UIInputViewController, keyArea: KeyAreaView) {
         self.controller = controller
@@ -172,13 +172,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// Loads the swipe bundle from the keyboard extension off the main thread, once. Until it has loaded,
     /// and for good if it is missing or invalid, swipe typing stays off and long drags are taps.
     func loadSwipeEngine() {
-        guard swipeEngine == nil, !swipeEngineLoading, let directory = SwipeEngine.bundledDirectory else { return }
-        swipeEngineLoading = true
-        Task { [weak self] in
-            let engine = await Task.detached(priority: .userInitiated) { try? SwipeEngine.load(from: directory) }.value
-            guard let self else { return }
-            self.swipeEngineLoading = false
-            self.swipeEngine = engine
+        swipeEngineLoad.request(SwipeEngine.bundledDirectory, load: { try? SwipeEngine.load(from: $0) }) { [weak self] engine in
+            self?.swipeEngine = engine
         }
     }
 
@@ -200,33 +195,27 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no `tap` section or a file is
     /// missing or invalid, letter taps type their nearest key.
     func configureSoftKeyEdges(enabled: Bool) {
-        let step = softKeysLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
-        if step.dropModel {
-            softKeys = nil
-            tapPrior = nil
+        let directory = enabled ? SwipeEngine.bundledDirectory : nil
+        softKeysLoad.request(directory, load: { Self.loadSoftKeyEdges(from: $0) }) { [weak self] loaded in
+            guard let self else { return }
+            softKeys = loaded?.manifest
+            tapPrior = loaded.map { TapPrior(model: $0.model, surpriseWindow: $0.manifest.rule.surpriseWindow) }
             updateTouchModes()
-        }
-        guard let ticket = step.load else { return }
-        let directory = ticket.source
-        Task { [weak self] in
-            let loaded = await Task.detached(priority: .userInitiated) {
-                try? Self.loadSoftKeyEdges(from: directory)
-            }.value
-            guard let self, self.softKeysLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
-            self.softKeys = loaded.manifest
-            self.tapPrior = TapPrior(model: loaded.model, surpriseWindow: loaded.manifest.rule.surpriseWindow)
-            self.updateTouchModes()
         }
     }
 
-    /// The swipe bundle's `tap` section and its default model; nil without the section. Slow: off the main
-    /// thread.
-    private nonisolated static func loadSoftKeyEdges(from directory: URL) throws
-        -> (manifest: SoftKeyEdgesManifest, model: TapModel)? {
-        let data = try Data(contentsOf: directory.appendingPathComponent("bundle.json"))
-        guard let manifest = try SoftKeyEdgesManifest.decode(from: data),
-              let path = manifest.models[manifest.defaultModel] else { return nil }
-        return (manifest, try TapModel.load(from: directory.appendingPathComponent(path)))
+    /// What a soft key edges load hands back to the main thread.
+    private struct LoadedSoftKeyEdges: Sendable {
+        var manifest: SoftKeyEdgesManifest
+        var model: TapModel
+    }
+
+    /// The swipe bundle's `tap` section and its default model; nil without a valid section or when the model
+    /// file is missing or invalid. Slow: off the main thread.
+    private nonisolated static func loadSoftKeyEdges(from bundle: SwipeBundle) -> LoadedSoftKeyEdges? {
+        guard let manifest = bundle.tap, let path = manifest.models[manifest.defaultModel],
+              let model = try? TapModel.load(from: bundle.directory.appendingPathComponent(path)) else { return nil }
+        return LoadedSoftKeyEdges(manifest: manifest, model: model)
     }
 
     /// The key a soft tap types: the nearest key, unless `TapDecoder` re-decides it from the prior. The
@@ -257,20 +246,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// already loaded or loading (`ModelLoadSlot`). Until it has loaded, and for good if the bundle has no valid
     /// `autocorrect` section or a file is missing or invalid, words commit as typed.
     func configureAutocorrect(enabled: Bool) {
-        let step = autocorrectLoad.request(enabled ? SwipeEngine.bundledDirectory : nil)
-        if step.dropModel {
-            autocorrect = nil
+        let directory = enabled ? SwipeEngine.bundledDirectory : nil
+        autocorrectLoad.request(directory, load: { Self.loadAutocorrect(from: $0) }) { [weak self] loaded in
+            guard let self else { return }
+            autocorrect = loaded.map { (params: $0.params, corrector: $0.corrector) }
             updateTouchModes()
-        }
-        guard let ticket = step.load else { return }
-        let directory = ticket.source
-        Task { [weak self] in
-            let loaded = await Task.detached(priority: .userInitiated) {
-                Self.loadAutocorrect(from: directory)
-            }.value
-            guard let self, self.autocorrectLoad.finish(ticket, loaded: loaded != nil), let loaded else { return }
-            self.autocorrect = (loaded.params, loaded.corrector)
-            self.updateTouchModes()
         }
     }
 
@@ -282,10 +262,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     /// The swipe bundle's `autocorrect` section's default model, as a corrector, and its default preset; nil
     /// without a valid section or when the model cannot be built. Slow: off the main thread.
-    private nonisolated static func loadAutocorrect(from directory: URL) -> LoadedAutocorrect? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent("bundle.json")),
-              let manifest = try? AutocorrectManifest.decode(from: data),
-              let corrector = AutocorrectLoader.load(manifest: manifest, bundleURL: directory, model: manifest.defaultModel)
+    private nonisolated static func loadAutocorrect(from bundle: SwipeBundle) -> LoadedAutocorrect? {
+        guard let manifest = bundle.autocorrect,
+              let corrector = AutocorrectLoader.load(manifest: manifest, bundleURL: bundle.directory, model: manifest.defaultModel)
         else { return nil }
         return LoadedAutocorrect(params: manifest.defaultParams, corrector: corrector)
     }
