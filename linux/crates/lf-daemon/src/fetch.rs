@@ -396,12 +396,16 @@ fn outside_store(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// True if `m` belongs to this user or root.
+fn owned(m: &fs::Metadata) -> bool {
+    m.uid() == paths::euid() || m.uid() == 0
+}
+
 /// Fails unless `dir` is a directory owned by this user or root and not
 /// writable by others, or sticky (like `/tmp`).
 fn trusted_dir(dir: &Path, m: &fs::Metadata) -> Result<(), Error> {
-    let owner_ok = m.uid() == paths::euid() || m.uid() == 0;
     let others_write = m.mode() & 0o022 != 0 && m.mode() & libc::S_ISVTX == 0;
-    if !owner_ok || others_write || !m.is_dir() {
+    if !owned(m) || others_write || !m.is_dir() {
         return Err(Error::Untrusted(dir.to_owned()));
     }
     Ok(())
@@ -444,6 +448,10 @@ fn trusted_path(path: &Path) -> Result<(), Error> {
             Err(e) => return Err(io("inspect", &next)(e)),
         };
         if m.file_type().is_symlink() {
+            // In a sticky directory, its owner can still repoint it.
+            if !owned(&m) {
+                return Err(Error::Untrusted(next));
+            }
             links += 1;
             if links > MAX_SYMLINKS {
                 return Err(Error::Io(format!("{}: too many symlinks", path.display())));
