@@ -20,6 +20,7 @@
 
 pub mod ei;
 pub mod portal;
+pub mod request;
 
 use std::cell::RefCell;
 use std::os::fd::OwnedFd;
@@ -187,7 +188,7 @@ fn run(
         guard = n.changed.wait(guard).unwrap_or_else(|e| e.into_inner());
     }
     drop(guard);
-    portal::bounded(
+    lf_dbus::bounded(
         timeouts.call,
         portal::close(&negotiated.conn, &negotiated.session, timeouts.call),
     );
