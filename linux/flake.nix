@@ -10,9 +10,10 @@
       pkgs = import nixpkgs { inherit system; };
       inherit (pkgs) lib;
 
-      # localflowd and localflowctl. The model export is a separate package
-      # (below) or any export directory; `export_path` in the config points
-      # at it.
+      # localflowd and localflowctl, the systemd user unit, the desktop file
+      # for the portal trigger, and the compositor binds as examples. The
+      # model export is a separate package (below) or any export directory;
+      # `export_path` in the config points at it.
       localflow = pkgs.rustPlatform.buildRustPackage {
         pname = "localflow";
         version = "0.1.0";
@@ -22,6 +23,12 @@
             ./Cargo.toml
             ./Cargo.lock
             ./crates
+            ./packaging/localflowd.service
+            ./packaging/com.ajbarryiii.localflow.desktop
+            ./packaging/hyprland.conf
+            ./packaging/sway.conf
+            ./packaging/niri.kdl
+            ./packaging/river-init.sh
           ];
         };
         cargoLock.lockFile = ./Cargo.lock;
@@ -29,6 +36,27 @@
           "-p"
           "lf-daemon"
         ];
+        # localflow-t3-bridge.service is left out: the T3 Code bridge is for
+        # manual setups only.
+        postInstall = ''
+          # stdenv moves user units to share/systemd/user (for Home Manager)
+          # and links lib/systemd/user (for NixOS) to it.
+          unit=$out/lib/systemd/user/localflowd.service
+          install -D -m 644 packaging/localflowd.service $unit
+          # --replace-fail stops the build if the unit's ExecStart line changes.
+          substituteInPlace $unit \
+            --replace-fail 'ExecStart=%h/.local/bin/localflowd' "ExecStart=$out/bin/localflowd"
+
+          # The file name is the app ID the portal trigger registers. The
+          # file only names the app (it is hidden), and Exec stays a bare
+          # `localflowd`: desktops find the file through the same profile
+          # that puts localflowd on PATH, and a copy made outside the store
+          # keeps working after an upgrade.
+          install -D -m 644 -t $out/share/applications packaging/com.ajbarryiii.localflow.desktop
+
+          install -D -m 644 -t $out/share/doc/localflow/examples \
+            packaging/hyprland.conf packaging/sway.conf packaging/niri.kdl packaging/river-init.sh
+        '';
         nativeBuildInputs = [
           pkgs.pkg-config
           pkgs.rustPlatform.bindgenHook
@@ -42,7 +70,8 @@
         # runs in the development shell (see AGENTS.md), not in the sandbox.
         doCheck = false;
         meta = {
-          description = "Local push-to-talk dictation for Hyprland";
+          description = "Local push-to-talk dictation for Wayland and X11 desktops";
+          homepage = "https://github.com/ajbarryiii/LocalFlow";
           license = lib.licenses.mit;
           mainProgram = "localflowd";
           platforms = [ system ];
