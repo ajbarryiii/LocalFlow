@@ -6,3 +6,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# poll(2) and clock_gettime(2) for the `sys` module; already a workspace
+# dependency.
+libc.workspace = true

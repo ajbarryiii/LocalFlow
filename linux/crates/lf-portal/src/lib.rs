@@ -20,6 +20,7 @@
 
 pub mod ei;
 pub mod portal;
+pub mod request;
 
 use std::cell::RefCell;
 use std::os::fd::OwnedFd;
@@ -27,8 +28,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use lf_io_api::sys::wait_budget;
 use lf_io_api::{IoError, TextOutput};
-use lf_keyboard::{Pace, Rmlvo, Token, type_strokes, wait_budget};
+use lf_keyboard::{Pace, Rmlvo, Token, type_strokes};
 
 pub use portal::{Timeouts, probe};
 
@@ -186,7 +188,7 @@ fn run(
         guard = n.changed.wait(guard).unwrap_or_else(|e| e.into_inner());
     }
     drop(guard);
-    portal::bounded(
+    lf_dbus::bounded(
         timeouts.call,
         portal::close(&negotiated.conn, &negotiated.session, timeouts.call),
     );

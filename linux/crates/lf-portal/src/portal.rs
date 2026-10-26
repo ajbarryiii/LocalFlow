@@ -12,17 +12,18 @@
 //! messages or the restore token.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use futures_lite::{StreamExt, future};
+use futures_lite::StreamExt;
+use lf_dbus::{DbusErrorKind, bounded, connect, race, within};
 use lf_io_api::IoError;
-use zbus::connection::Builder;
 use zbus::message::Type;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream};
+
+use crate::request::{sender_path_element, string_result};
 
 pub const DEST: &str = "org.freedesktop.portal.Desktop";
 pub const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -51,52 +52,14 @@ pub struct Timeouts {
     pub permission: Duration,
 }
 
-/// Runs `fut` for at most `timeout`; `None` if it did not finish, in which
-/// case it has been dropped (cancelled).
-pub fn bounded<T>(timeout: Duration, fut: impl Future<Output = T>) -> Option<T> {
-    async_io::block_on(race(timeout, None, fut))
-}
-
-/// `fut`, unless `timeout` passes or `stop` turns true first.
-async fn race<T>(
-    timeout: Duration,
-    stop: Option<&AtomicBool>,
-    fut: impl Future<Output = T>,
-) -> Option<T> {
-    let stopped = async {
-        loop {
-            async_io::Timer::after(Duration::from_millis(50)).await;
-            if stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
-                return None;
-            }
-        }
-    };
-    let timer = async {
-        async_io::Timer::after(timeout).await;
-        None
-    };
-    future::or(async { Some(fut.await) }, future::or(timer, stopped)).await
-}
-
-/// Connects to `address`, or to the session bus.
-pub async fn connect(address: Option<&str>) -> zbus::Result<Connection> {
-    match address {
-        Some(a) => Builder::address(a)?,
-        None => Builder::session()?,
-    }
-    .build()
-    .await
-}
-
 fn dbus_error(what: &str, e: &zbus::Error) -> IoError {
-    match e {
+    match lf_dbus::error_kind(e) {
         // A portal that lacks the interface or method, or refuses the call.
-        zbus::Error::MethodError(..) => IoError(format!("the desktop portal refused {what}")),
-        zbus::Error::InputOutput(err) => IoError(format!(
-            "D-Bus connection failed during {what}: {}",
-            err.kind()
-        )),
-        _ => IoError(format!("D-Bus error during {what}")),
+        DbusErrorKind::Method(_) => IoError(format!("the desktop portal refused {what}")),
+        DbusErrorKind::Io(kind) => {
+            IoError(format!("D-Bus connection failed during {what}: {kind}"))
+        }
+        DbusErrorKind::Other => IoError(format!("D-Bus error during {what}")),
     }
 }
 
@@ -148,20 +111,6 @@ pub struct Negotiated {
     pub conn: Connection,
     pub session: OwnedObjectPath,
     pub eis: OwnedFd,
-}
-
-/// The sender part of request paths: the unique name without `:`, with
-/// `.` as `_`.
-pub fn sender_path_element(unique_name: &str) -> String {
-    unique_name.trim_start_matches(':').replace('.', "_")
-}
-
-/// The object path the portal uses for a request made with `token`.
-pub fn request_path(unique_name: &str, token: &str) -> String {
-    format!(
-        "{PATH}/request/{}/{token}",
-        sender_path_element(unique_name)
-    )
 }
 
 fn next_token() -> String {
@@ -226,7 +175,7 @@ impl Requests<'_> {
             // portal that uses another path than the predicted one works too.
             self.response(&handle).await
         };
-        let (code, results) = race(timeout, Some(stop), wait).await.unwrap_or_else(|| {
+        let (code, results) = race(timeout, stop, wait).await.unwrap_or_else(|| {
             Err(IoError(if stop.load(Ordering::SeqCst) {
                 "the portal negotiation was abandoned".into()
             } else {
@@ -265,15 +214,6 @@ impl Requests<'_> {
     }
 }
 
-fn string_result(results: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    let value = results.get(key)?;
-    match &**value {
-        Value::Str(s) => Some(s.as_str().to_owned()),
-        Value::ObjectPath(p) => Some(p.as_str().to_owned()),
-        _ => None,
-    }
-}
-
 /// Negotiates a keyboard session on `address` (or the session bus), using
 /// `restore_token` if given. A new restore token goes to `save_token` as soon
 /// as `Start` grants access (it replaces the one used, even if a later step
@@ -285,7 +225,7 @@ pub async fn negotiate(
     timeouts: Timeouts,
     stop: &AtomicBool,
 ) -> Result<Negotiated, IoError> {
-    let conn = race(timeouts.call, Some(stop), connect(address))
+    let conn = race(timeouts.call, stop, connect(address))
         .await
         .ok_or_else(|| IoError("the D-Bus session bus did not answer in time".into()))?
         .map_err(|e| dbus_error("connecting", &e))?;
@@ -333,13 +273,11 @@ pub async fn negotiate(
             .map_err(|e| dbus_error("subscribing", &e))?;
         Ok::<_, IoError>((owner, stream))
     };
-    let (owner, stream) = race(timeouts.call, Some(stop), setup)
-        .await
-        .unwrap_or_else(|| {
-            Err(IoError(
-                "the D-Bus session bus did not answer in time".into(),
-            ))
-        })?;
+    let (owner, stream) = race(timeouts.call, stop, setup).await.unwrap_or_else(|| {
+        Err(IoError(
+            "the D-Bus session bus did not answer in time".into(),
+        ))
+    })?;
     let mut requests = Requests {
         conn: &conn,
         stream,
@@ -402,7 +340,7 @@ pub async fn negotiate(
                 .map_err(|_| IoError("the desktop portal answered ConnectToEIS oddly".into()))?;
             Ok::<_, IoError>(OwnedFd::from(fd))
         };
-        let eis = race(timeouts.call, Some(stop), connect_eis)
+        let eis = race(timeouts.call, stop, connect_eis)
             .await
             .unwrap_or_else(|| {
                 Err(IoError(
@@ -425,7 +363,7 @@ pub async fn negotiate(
 /// Closes `session`, waiting at most `timeout`.
 pub async fn close(conn: &Connection, session: &ObjectPath<'_>, timeout: Duration) {
     let call = conn.call_method(Some(DEST), session, Some(SESSION), "Close", &());
-    let _ = race(timeout, None, call).await;
+    let _ = within(timeout, call).await;
 }
 
 #[cfg(test)]
@@ -433,12 +371,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_paths_follow_the_portal_spec() {
-        assert_eq!(sender_path_element(":1.42"), "1_42");
-        assert_eq!(
-            request_path(":1.42", "localflow_7_0"),
-            "/org/freedesktop/portal/desktop/request/1_42/localflow_7_0"
-        );
+    fn request_tokens_are_unique_and_path_safe() {
         let t = next_token();
         assert!(
             t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),

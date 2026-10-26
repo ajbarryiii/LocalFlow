@@ -15,6 +15,8 @@ path = "src/bin/localflowctl.rs"
 
 [dependencies]
 lf-asr.workspace = true
+# Bounded zbus calls and connections, shared with lf-media and lf-portal.
+lf-dbus = { path = "../lf-dbus" }
 lf-dictation = { path = "../lf-dictation" }
 lf-io-api.workspace = true
 lf-keyboard = { path = "../lf-keyboard" }

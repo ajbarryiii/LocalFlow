@@ -765,15 +765,7 @@ pub fn request_line(req: &Request) -> String {
 
 /// `CLOCK_MONOTONIC` now, in nanoseconds (shared by all processes).
 pub fn monotonic_ns() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid timespec to write.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    (ts.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(ts.tv_nsec as u64)
+    u64::try_from(lf_io_api::sys::monotonic().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Bytes kept literal by `<pct>`.

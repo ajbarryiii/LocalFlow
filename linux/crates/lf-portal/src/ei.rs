@@ -12,12 +12,12 @@
 //! caller's deadline. Nothing here logs; server messages (disconnect
 //! explanations) are dropped.
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
-use lf_io_api::IoError;
+use lf_io_api::{IoError, sys};
 use lf_keyboard::{KeySink, Layout, Rmlvo};
 use reis::ei;
 use reis::handshake::EiHandshaker;
@@ -73,43 +73,16 @@ fn io(what: &str, e: std::io::Error) -> IoError {
 
 /// Waits until `fd` is ready for `events` or `deadline` passes.
 fn wait_fd(fd: BorrowedFd<'_>, events: i16, deadline: Instant) -> Result<(), IoError> {
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(IoError("timed out waiting for the desktop".into()));
-        }
-        let mut pfd = libc::pollfd {
-            fd: fd.as_raw_fd(),
-            events,
-            revents: 0,
-        };
-        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
-        // SAFETY: one valid pollfd.
-        let n = unsafe { libc::poll(&mut pfd, 1, ms) };
-        if n < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(io("poll", err));
-        }
-        if n > 0 {
-            return Ok(());
-        }
+    match sys::wait_fd(fd, events, deadline) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(IoError("timed out waiting for the desktop".into())),
+        Err(e) => Err(io("poll", e)),
     }
 }
 
 /// Microseconds of CLOCK_MONOTONIC, the clock libei timestamps use.
 fn now_us() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: valid pointer to a timespec; CLOCK_MONOTONIC always exists.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    (ts.tv_sec as u64)
-        .wrapping_mul(1_000_000)
-        .wrapping_add(ts.tv_nsec as u64 / 1000)
+    sys::monotonic().as_micros() as u64
 }
 
 /// Reads a keymap the server shared as a file descriptor.

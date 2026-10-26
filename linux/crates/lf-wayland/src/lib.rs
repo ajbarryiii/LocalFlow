@@ -32,6 +32,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use lf_io_api::sys::{self, pause, wait_budget};
 use lf_io_api::{IoError, TextOutput};
 use wayland_client::backend::WaylandError;
 use wayland_client::protocol::{wl_callback, wl_keyboard, wl_registry, wl_seat};
@@ -80,28 +81,6 @@ impl Default for TyperConfig {
             key_delay: Duration::from_millis(1),
             timeout: Duration::from_secs(5),
             call_timeout: None,
-        }
-    }
-}
-
-/// How long the next wait may take: `timeout`, cut to what is left before
-/// `deadline`. Fails once the deadline has passed.
-fn wait_budget(
-    timeout: Duration,
-    deadline: Option<Instant>,
-    now: Instant,
-) -> Result<Duration, IoError> {
-    match deadline {
-        None => Ok(timeout),
-        Some(d) => {
-            let left = d.saturating_duration_since(now);
-            if left.is_zero() {
-                Err(IoError(
-                    "typing did not finish within its time limit".into(),
-                ))
-            } else {
-                Ok(timeout.min(left))
-            }
         }
     }
 }
@@ -195,13 +174,9 @@ impl WaylandTyper {
                     .code(sym)
                     .expect("planned keymap covers its batch");
                 session.tap(code)?;
-                if !delay.is_zero() {
-                    // Never sleep past the call's deadline; the next flush or
-                    // sync then fails the call.
-                    let left =
-                        deadline.map_or(delay, |d| d.saturating_duration_since(Instant::now()));
-                    std::thread::sleep(delay.min(left));
-                }
+                // Never sleeps past the call's deadline; the next flush or
+                // sync then fails the call.
+                pause(delay, deadline);
                 if (i + 1) % KEYS_PER_SYNC == 0 {
                     session.sync()?;
                 }
@@ -448,15 +423,7 @@ impl Session {
 /// Milliseconds of CLOCK_MONOTONIC, the clock compositors use for input
 /// timestamps. Wraps after 49 days, as the protocol expects.
 fn now_ms() -> u32 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: valid pointer to a timespec; CLOCK_MONOTONIC always exists.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    (ts.tv_sec as u64)
-        .wrapping_mul(1000)
-        .wrapping_add(ts.tv_nsec as u64 / 1_000_000) as u32
+    sys::monotonic().as_millis() as u32
 }
 
 /// Maps a backend error to a fixed description. The compositor's free-form
@@ -594,35 +561,15 @@ fn would_block(e: &WaylandError) -> bool {
 }
 
 /// Waits until `fd` is ready for `events` or the deadline passes.
+/// Readiness, hang-up or error: the caller's next I/O operation reports
+/// what happened.
 fn wait_fd(fd: std::os::fd::BorrowedFd<'_>, events: i16, deadline: Instant) -> Result<(), IoError> {
-    use std::os::fd::AsRawFd;
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(IoError(
-                "timed out waiting for the Wayland compositor".into(),
-            ));
-        }
-        let mut pfd = libc::pollfd {
-            fd: fd.as_raw_fd(),
-            events,
-            revents: 0,
-        };
-        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
-        // SAFETY: one valid pollfd.
-        let n = unsafe { libc::poll(&mut pfd, 1, ms) };
-        if n < 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(IoError(format!("poll on the Wayland socket failed: {err}")));
-        }
-        if n > 0 {
-            // Readiness, hang-up or error: let the caller's next I/O
-            // operation report what happened.
-            return Ok(());
-        }
+    match sys::wait_fd(fd, events, deadline) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(IoError(
+            "timed out waiting for the Wayland compositor".into(),
+        )),
+        Err(err) => Err(IoError(format!("poll on the Wayland socket failed: {err}"))),
     }
 }
 
@@ -721,28 +668,6 @@ mod tests {
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::fs::DirBuilderExt;
-
-    #[test]
-    fn call_deadline_cuts_every_wait() {
-        let now = Instant::now();
-        let t = Duration::from_secs(1);
-        // No call deadline: the per-wait timeout.
-        assert_eq!(wait_budget(t, None, now).unwrap(), t);
-        // A nearer deadline shortens the wait.
-        let d = now + Duration::from_millis(300);
-        assert_eq!(
-            wait_budget(t, Some(d), now).unwrap(),
-            Duration::from_millis(300)
-        );
-        // A farther one does not lengthen it.
-        assert_eq!(
-            wait_budget(t, Some(now + Duration::from_secs(9)), now).unwrap(),
-            t
-        );
-        // Once it has passed, the call fails.
-        assert!(wait_budget(t, Some(now), now).is_err());
-        assert!(wait_budget(t, Some(now), now + Duration::from_millis(1)).is_err());
-    }
 
     /// A private listening socket with a backlog of 0 that never accepts.
     fn stuck_listener(dir: &Path) -> (OwnedFd, PathBuf) {

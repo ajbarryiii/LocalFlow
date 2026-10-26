@@ -37,13 +37,13 @@
 //!   or other text from the portal.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use futures_lite::{StreamExt, future, stream};
-use zbus::connection::Builder;
+use lf_dbus::{DbusErrorKind, within};
+use lf_portal::request::string_value;
 use zbus::message::Type;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, MatchRule, Message, MessageStream};
@@ -276,21 +276,12 @@ fn sleep_unless_stopped(d: Duration, stop: &async_channel::Receiver<()>) -> bool
     ))
 }
 
-/// `fut`, or `None` after `timeout`.
-async fn bounded<T>(timeout: Duration, fut: impl Future<Output = T>) -> Option<T> {
-    future::or(async { Some(fut.await) }, async {
-        async_io::Timer::after(timeout).await;
-        None
-    })
-    .await
-}
-
 /// The D-Bus error name of `e`, never a remote error message.
 fn error_name(e: &zbus::Error) -> String {
-    match e {
-        zbus::Error::MethodError(name, _, _) => name.as_str().to_owned(),
-        zbus::Error::InputOutput(_) => "I/O error".into(),
-        _ => "D-Bus error".into(),
+    match lf_dbus::error_kind(e) {
+        DbusErrorKind::Method(name) => name.to_owned(),
+        DbusErrorKind::Io(_) => "I/O error".into(),
+        DbusErrorKind::Other => "D-Bus error".into(),
     }
 }
 
@@ -317,7 +308,7 @@ async fn call<B>(
 where
     B: zbus::export::serde::Serialize + zbus::zvariant::DynamicType,
 {
-    match bounded(
+    match within(
         timeout,
         conn.call_method(Some(destination), path, Some(interface), method, body),
     )
@@ -425,19 +416,15 @@ async fn response(
 /// `/org/freedesktop/portal/desktop/request/SENDER/TOKEN`, where the
 /// portal will answer a request made with `token`.
 fn request_path(conn: &Connection, token: &str) -> String {
-    let sender = conn
-        .unique_name()
-        .map(|n| n.as_str().trim_start_matches(':').replace('.', "_"))
-        .unwrap_or_default();
-    format!("{DESKTOP_PATH}/request/{sender}/{token}")
+    let sender = conn.unique_name().map(|n| n.as_str()).unwrap_or_default();
+    lf_portal::request::request_path(sender, token)
 }
 
+/// [`string_value`], also inside variants.
 fn string(v: &Value<'_>) -> Option<String> {
     match v {
-        Value::Str(s) => Some(s.as_str().to_owned()),
-        Value::ObjectPath(p) => Some(p.as_str().to_owned()),
         Value::Value(inner) => string(inner),
-        _ => None,
+        v => string_value(v),
     }
 }
 
@@ -466,12 +453,8 @@ fn vardict<const N: usize>(entries: [(&str, Value<'static>); N]) -> HashMap<Stri
 /// events on until it ends.
 async fn session(setting: &Setting, keys: &mut Keys<'_>) -> End {
     let timeout = setting.call_timeout;
-    let builder = match &setting.address {
-        Some(a) => Builder::address(a.as_str()),
-        None => Builder::session(),
-    };
-    let conn = match builder {
-        Ok(b) => match bounded(timeout, b.build()).await {
+    let conn = match lf_dbus::builder(setting.address.as_deref()) {
+        Ok(b) => match within(timeout, b.build()).await {
             Some(Ok(c)) => c,
             Some(Err(_)) | None => {
                 return End::Unavailable("cannot connect to the D-Bus session bus".into());
@@ -500,7 +483,7 @@ async fn session(setting: &Setting, keys: &mut Keys<'_>) -> End {
         let b = MessageStream::for_match_rule(owner_rule, &conn, Some(MAX_QUEUED)).await?;
         Ok::<_, zbus::Error>(stream::or(a, b))
     };
-    let mut signals = match bounded(timeout, subscribe).await {
+    let mut signals = match within(timeout, subscribe).await {
         Some(Ok(s)) => s,
         Some(Err(e)) => return End::Unavailable(format!("cannot subscribe: {}", error_name(&e))),
         None => return End::Unavailable("subscribing timed out".into()),
