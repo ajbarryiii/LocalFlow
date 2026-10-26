@@ -412,18 +412,18 @@ fn trusted(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// The nearest existing directory at or above `path`, resolved.
-fn existing_ancestor(path: &Path) -> Result<PathBuf, Error> {
-    let mut p = path;
-    loop {
+/// [`trusted`] for every existing directory on the way to `path` as
+/// written, each resolved: a symlink along it is only as safe as the
+/// directory holding it, which resolving `path` alone would skip.
+fn trusted_path(path: &Path) -> Result<(), Error> {
+    for p in path.ancestors() {
         match p.canonicalize() {
-            Ok(c) => return Ok(c),
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                p = p.parent().ok_or_else(|| io("resolve", path)(e))?;
-            }
+            Ok(c) => trusted(&c)?,
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(io("resolve", p)(e)),
         }
     }
+    Ok(())
 }
 
 /// A [`Error::ReadOnly`] for errors that mean "cannot write here".
@@ -546,15 +546,16 @@ pub fn install(
         Err(e) if e.kind() == ErrorKind::NotFound => false,
         Err(e) => return Err(io("inspect", dest)(e)),
     };
-    if existed && holds(pins, dest) {
+    // Only an export no other user can change counts as installed.
+    if existed && trusted_path(dest).is_ok() && holds(pins, dest) {
         return Ok(Outcome::Present);
     }
     outside_store(dest)?;
+    // Before creating anything, then again for what was created.
+    trusted_path(parent)?;
     if existed && !force {
         return Err(Error::Exists(dest.to_owned()));
     }
-    // Before creating anything, then again for what was created.
-    trusted(&existing_ancestor(parent)?)?;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -1236,6 +1237,27 @@ mod tests {
             assert!(fake.urls.is_empty());
             assert!(entries(&shared).is_empty(), "nothing created");
         }
+        // A path through a symlink another user could repoint, though it
+        // leads to a directory of ours.
+        let mine = t.path().join("mine");
+        fs::create_dir(&mine).unwrap();
+        std::os::unix::fs::symlink(&mine, shared.join("link")).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        let r = install(&pins, &shared.join("link/model"), false, &mut fake, &cancel);
+        assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
+        assert!(fake.urls.is_empty());
+        assert!(entries(&mine).is_empty());
+        // A matching export another user could change is not "installed".
+        place(&shared.join("export"), &files);
+        let ours = t.path().join("ours");
+        std::os::unix::fs::symlink(shared.join("export"), &ours).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        assert_eq!(
+            install(&pins, &ours, false, &mut fake, &cancel),
+            Err(Error::Exists(ours.clone()))
+        );
+        fs::remove_file(shared.join("link")).unwrap();
+        fs::remove_dir_all(shared.join("export")).unwrap();
         // Group-writable too.
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o770)).unwrap();
         let mut fake = Fake::new(&pins, &files);
