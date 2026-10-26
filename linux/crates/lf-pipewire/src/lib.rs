@@ -935,8 +935,8 @@ mod tests {
         let rec = st.into_recording().unwrap();
         // 400 samples at 8 kHz -> 800 at 16 kHz, then 2 downmixed frames.
         let samples = sink.take();
-        assert_eq!((rec.samples, samples.len()), (802, 802));
-        assert_eq!(&samples[800..], &[0.25, 0.25]);
+        assert_eq!((rec.samples, samples.0.len()), (802, 802));
+        assert_eq!(&samples.0[800..], &[0.25, 0.25]);
         assert_eq!(rec.negotiated, Some((16_000, 2)));
     }
 
@@ -948,7 +948,7 @@ mod tests {
         st.ingest(&block, 0, block.len() as u32, 0);
         st.ingest(&block, 0, block.len() as u32, 0);
         let rec = st.into_recording().unwrap();
-        assert_eq!((rec.samples, sink.take().len()), (1000, 1000));
+        assert_eq!((rec.samples, sink.take().0.len()), (1000, 1000));
         assert!(rec.truncated);
 
         let (mut st, _) = state(1000, Overflow::Error);

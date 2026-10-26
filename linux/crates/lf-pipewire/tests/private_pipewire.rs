@@ -800,7 +800,7 @@ fn main() {
             "level {max_level} for a 0.354 RMS tone"
         );
         assert_eq!(cap.level(), 0.0, "level resets when idle");
-        check_tone(&format!("cycle {cycle}"), &rec, &sink.take(), elapsed);
+        check_tone(&format!("cycle {cycle}"), &rec, &sink.take().0, elapsed);
         first_buffers.push(rec.start_latency.unwrap());
     }
     assert!(cap.stop().is_err(), "stop when idle must fail");
@@ -831,7 +831,7 @@ fn main() {
     std::thread::sleep(Duration::from_millis(700));
     let rec = short.stop_recording().expect("truncating stop");
     assert!(rec.truncated);
-    assert_eq!((rec.samples, sink.take().len()), (4000, 4000));
+    assert_eq!((rec.samples, sink.take().0.len()), (4000, 4000));
     println!(
         "ok   truncate at 0.25 s: {} samples, truncated",
         rec.samples

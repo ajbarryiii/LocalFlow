@@ -537,11 +537,29 @@ impl Session {
                 samples: &samples.0,
             };
             match recognizer.transcribe_chunk(&chunk, &w.dictionary, w.retained.is_some()) {
-                Ok(result) => w.ahead.push(Ahead {
-                    start,
-                    samples,
-                    result,
-                }),
+                Ok(result) => {
+                    w.ahead.push(Ahead {
+                        start,
+                        samples,
+                        result,
+                    });
+                    // The windows still to come hold at least the ending's
+                    // audio, so a dictation over the budget now stays over
+                    // it: keep nothing from here on, as `transcribe` would
+                    // at the end.
+                    let ahead: usize = w
+                        .ahead
+                        .iter()
+                        .filter_map(|a| a.result.projection.as_ref())
+                        .map(Projection::bytes)
+                        .sum();
+                    if w.retained.is_some() && w.retained_bytes + ahead > MAX_RETAINED_BYTES {
+                        w.retained = None;
+                        for a in &mut w.ahead {
+                            a.result.projection = None;
+                        }
+                    }
+                }
                 // `finish` transcribes it again and reports the failure.
                 Err(_) => {
                     w.ahead.clear();
@@ -1744,6 +1762,28 @@ mod tests {
             // 3 s, the pause cut to 0.8 s, 2 s.
             assert_eq!(r.chunks()[1], (0, 5 * SECOND + 12_800));
             assert!(matches!(r.outcome(), Outcome::Typed { .. }));
+        }
+
+        #[test]
+        fn the_ending_transcribed_ahead_counts_toward_the_budget() {
+            let mut r = Rig::new(Some("synthetic words"));
+            // 12 MiB per window: the first one fits, the ending ahead does not.
+            r.rec.state().projection_floats = 3 << 20;
+            let mut jobs = super::recording(1, &spoken(20, 1), SECOND, Arc::default());
+            let finish = jobs.pop().unwrap();
+            r.run(jobs);
+            assert!(r.session.as_ref().unwrap().windows.retained.is_some());
+            r.idle();
+            let w = &r.session.as_ref().unwrap().windows;
+            assert!(w.retained.is_none(), "over the budget during the pause");
+            assert!(w.ahead.iter().all(|a| a.result.projection.is_none()));
+            r.run(vec![finish]);
+            assert_eq!(r.chunks().len(), 2, "the ending was reused");
+            let Outcome::Typed { retained, text, .. } = r.outcome() else {
+                panic!("not typed");
+            };
+            assert!(retained.is_none());
+            assert_eq!(text, "synthetic words");
         }
 
         #[test]

@@ -63,7 +63,9 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+        // Wiped when dropped, at the end of the cycle.
         let samples = sink.take();
+        let samples = &samples.0;
         let n = samples.len();
         let rms = if n == 0 {
             0.0

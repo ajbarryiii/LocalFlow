@@ -41,10 +41,10 @@ pub trait AudioSink: Send {
 pub struct CollectSink(std::sync::Arc<std::sync::Mutex<wipe::Wiped>>);
 
 impl CollectSink {
-    /// Takes the samples collected so far.
-    pub fn take(&self) -> Vec<f32> {
+    /// Takes the samples collected so far, still wiped when dropped.
+    pub fn take(&self) -> wipe::Wiped {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut s.0)
+        std::mem::take(&mut *s)
     }
 }
 
