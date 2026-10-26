@@ -565,6 +565,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lf-chunk"
+version = "0.1.0"
+dependencies = [
+ "lf-io-api",
+ "lf-text",
+ "serde_json",
+ "unicode-normalization",
+ "unicode-properties",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "lf-cpu"
 version = "0.1.0"
 dependencies = [

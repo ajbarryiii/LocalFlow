@@ -1,0 +1,20 @@
+[package]
+name = "lf-chunk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Wiping audio buffers before they are freed.
+lf-io-api.workspace = true
+# The scalar case folding the dictionary rules use.
+lf-text.workspace = true
+# Seams match words the way Swift compares strings: canonical equivalence
+# (NFD), over grapheme clusters, by general category.
+unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
+unicode-segmentation = "1"
+
+[dev-dependencies]
+serde_json.workspace = true

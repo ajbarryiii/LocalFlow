@@ -15,7 +15,7 @@
 
 pub mod convert;
 mod presence;
-mod wipe;
+use lf_io_api::wipe;
 
 pub use presence::{PresenceMonitor, SOURCE_CLASSES, SourceSet};
 
@@ -583,7 +583,7 @@ fn decode_chunk(
     }
     // Frames whose bytes lie entirely within the valid region.
     let frames = (size - frame) / stride + 1;
-    crate::wipe::reserve_wiping(out, frames * channels);
+    lf_io_api::wipe::reserve_wiping(out, frames * channels);
     let mut bytes = [0u8; 4];
     for f in 0..frames {
         let base = start + f * stride;

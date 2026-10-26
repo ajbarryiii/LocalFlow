@@ -9,6 +9,7 @@
 //! - Errors carry no audio, transcript or window content.
 
 pub mod sys;
+pub mod wipe;
 
 use std::fmt;
 
