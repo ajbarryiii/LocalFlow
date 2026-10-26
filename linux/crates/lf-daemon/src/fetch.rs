@@ -329,15 +329,24 @@ impl Fetcher for Curl {
         if self.announce {
             eprintln!("localflowctl: downloading {file}");
         }
-        let mut child = match Command::new(&self.program)
-            .args(Curl::args(url, out, progress))
+        let mut cmd = Command::new(&self.program);
+        cmd.args(Curl::args(url, out, progress))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Err(Error::NoCurl),
-            Err(e) => return Err(Error::Download(format!("cannot run curl: {e}"))),
+            .stdout(Stdio::null());
+        // A program written a moment ago can be briefly busy (ETXTBSY: a
+        // process forked meanwhile still holds it open for writing until it
+        // execs), so that is retried a few times, as for the pickers.
+        let mut tries = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.kind() == ErrorKind::ExecutableFileBusy && tries < 5 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) if e.kind() == ErrorKind::NotFound => return Err(Error::NoCurl),
+                Err(e) => return Err(Error::Download(format!("cannot run curl: {e}"))),
+            }
         };
         loop {
             let sig = cancel.load(Ordering::SeqCst);
