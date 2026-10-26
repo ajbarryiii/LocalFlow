@@ -27,8 +27,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use lf_io_api::sys::wait_budget;
 use lf_io_api::{IoError, TextOutput};
-use lf_keyboard::{Pace, Rmlvo, Token, type_strokes, wait_budget};
+use lf_keyboard::{Pace, Rmlvo, Token, type_strokes};
 
 pub use portal::{Timeouts, probe};
 

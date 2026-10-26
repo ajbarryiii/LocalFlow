@@ -25,10 +25,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use lf_io_api::sys::wait_budget;
 use lf_io_api::{IoError, TextOutput};
 
 use crate::layout::{self, Layout, Rmlvo, Token};
-use crate::{KeySink, Pace, type_strokes, wait_budget};
+use crate::{KeySink, Pace, type_strokes};
 
 /// The device node.
 pub const DEFAULT_PATH: &str = "/dev/uinput";
