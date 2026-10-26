@@ -14,7 +14,7 @@ import Foundation
 /// ids 1...31 (`TapPrior.symbols`) and BOS (32); output j is the logit of symbol id j + 1. Float32 as in
 /// the reference. Immutable after loading, so it is shared unchecked.
 final class TapModel: @unchecked Sendable {
-    enum FormatError: Error, Equatable {
+    enum FormatError: LFBinaryFileError, Equatable {
         case badMagic
         case unsupportedVersion
         /// Inputs or outputs other than 33 and 31, or sizes out of range.
@@ -47,20 +47,14 @@ final class TapModel: @unchecked Sendable {
     private let bOut: [Float]
 
     init(data: Data) throws {
-        guard data.count >= 4 else { throw FormatError.wrongSize }
-        guard data.prefix(4).elementsEqual("LFTP".utf8) else { throw FormatError.badMagic }
-        guard data.count >= 32 else { throw FormatError.wrongSize }
+        try LFBinaryFile.checkHeader(data, magic: "LFTP", version: Self.version, header: 32, as: FormatError.self)
         let floats: [Float] = data.withUnsafeBytes { raw in
-            stride(from: 28, to: raw.count - raw.count % 4, by: 4).map {
-                Float(bitPattern: UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: $0, as: UInt32.self)))
-            }
+            stride(from: 28, to: raw.count - raw.count % 4, by: 4).map { LFBinaryFile.f32(raw, $0) }
         }
-        let header: [Int] = data.withUnsafeBytes { raw in
-            (0 ..< 6).map { Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 4 + 4 * $0, as: UInt32.self))) }
-        }
-        guard header[0] == Self.version else { throw FormatError.unsupportedVersion }
-        let embed = header[1], hidden = header[2], contextLength = header[3]
-        guard header[4] == Self.inputs, header[5] == Self.outputs, Self.sizeRange.contains(embed),
+        // embed, hidden, context_length, inputs, outputs.
+        let header: [Int] = data.withUnsafeBytes { raw in (2 ..< 7).map { Int(LFBinaryFile.u32(raw, 4 * $0)) } }
+        let embed = header[0], hidden = header[1], contextLength = header[2]
+        guard header[3] == Self.inputs, header[4] == Self.outputs, Self.sizeRange.contains(embed),
               Self.sizeRange.contains(hidden), Self.sizeRange.contains(contextLength) else {
             throw FormatError.unsupportedShape
         }

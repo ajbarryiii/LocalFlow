@@ -10,7 +10,7 @@ import Foundation
 /// Node 0 is the root and a node's key is the path of edge letters from it. The initializer
 /// validates the whole structure, so readers never go out of bounds.
 final class SwipeLexicon: @unchecked Sendable {   // immutable after init
-    enum FormatError: Error, Equatable {
+    enum FormatError: LFBinaryFileError, Equatable {
         case badMagic
         case unsupportedVersion
         /// The sizes in the header disagree with the data's length (truncated, trailing bytes, no root).
@@ -39,17 +39,12 @@ final class SwipeLexicon: @unchecked Sendable {   // immutable after init
     private let keyRank: [UInt32]
 
     init(data: Data) throws {
-        guard data.count >= 4 else { throw FormatError.wrongSize }
-        let layout = try data.withUnsafeBytes { raw -> Layout in
-            guard raw[0] == UInt8(ascii: "L"), raw[1] == UInt8(ascii: "F"), raw[2] == UInt8(ascii: "L"),
-                  raw[3] == UInt8(ascii: "X") else { throw FormatError.badMagic }
-            guard raw.count >= 24 else { throw FormatError.wrongSize }
-            guard Self.u32(raw, 4) == Self.version else { throw FormatError.unsupportedVersion }
-            let layout = Layout(nodes: Int(Self.u32(raw, 8)), edges: Int(Self.u32(raw, 12)), words: Int(Self.u32(raw, 16)),
-                                blob: Int(Self.u32(raw, 20)))
-            guard layout.nodes >= 1, layout.blobStart + layout.blob == raw.count else { throw FormatError.wrongSize }
-            return layout
+        try LFBinaryFile.checkHeader(data, magic: "LFLX", version: Self.version, header: 24, as: FormatError.self)
+        let layout = data.withUnsafeBytes { raw in
+            Layout(nodes: Int(LFBinaryFile.u32(raw, 8)), edges: Int(LFBinaryFile.u32(raw, 12)),
+                   words: Int(LFBinaryFile.u32(raw, 16)), blob: Int(LFBinaryFile.u32(raw, 20)))
         }
+        guard layout.nodes >= 1, layout.blobStart + layout.blob == data.count else { throw FormatError.wrongSize }
         let rank = try data.withUnsafeBytes { raw -> [UInt32] in
             let view = View(raw: raw, layout: layout)
             try view.validateOffsets()
@@ -74,10 +69,6 @@ final class SwipeLexicon: @unchecked Sendable {   // immutable after init
         }
     }
 
-    fileprivate static func u32(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> UInt32 {
-        UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
-    }
-
     struct Layout: Sendable {
         let nodes: Int, edges: Int, words: Int, blob: Int
         var edgeStart: Int { 24 }
@@ -96,7 +87,7 @@ final class SwipeLexicon: @unchecked Sendable {   // immutable after init
 
         /// Entry `index` of an offsets table and the next one, as a range.
         private func range(_ table: Int, _ index: Int) -> Range<Int> {
-            Int(SwipeLexicon.u32(raw, table + 4 * index)) ..< Int(SwipeLexicon.u32(raw, table + 4 * index + 4))
+            Int(LFBinaryFile.u32(raw, table + 4 * index)) ..< Int(LFBinaryFile.u32(raw, table + 4 * index + 4))
         }
 
         func edges(of node: Int) -> Range<Int> { range(layout.edgeStart, node) }
@@ -104,7 +95,7 @@ final class SwipeLexicon: @unchecked Sendable {   // immutable after init
         /// ASCII 'a'...'z'.
         func letter(_ edge: Int) -> UInt8 { raw[layout.edgeLetter + edge] }
 
-        func child(_ edge: Int) -> Int { Int(SwipeLexicon.u32(raw, layout.edgeChild + 4 * edge)) }
+        func child(_ edge: Int) -> Int { Int(LFBinaryFile.u32(raw, layout.edgeChild + 4 * edge)) }
 
         func words(of node: Int) -> Range<Int> { range(layout.wordStart, node) }
 
@@ -122,10 +113,10 @@ final class SwipeLexicon: @unchecked Sendable {   // immutable after init
 
         /// `table` holds `count + 1` offsets: the first 0, never decreasing, the last `total`.
         private func validOffsets(at table: Int, count: Int, total: Int, strictly: Bool = false) -> Bool {
-            guard SwipeLexicon.u32(raw, table) == 0, Int(SwipeLexicon.u32(raw, table + 4 * count)) == total else { return false }
+            guard LFBinaryFile.u32(raw, table) == 0, Int(LFBinaryFile.u32(raw, table + 4 * count)) == total else { return false }
             var previous: UInt32 = 0
             for index in stride(from: 1, through: count, by: 1) {
-                let value = SwipeLexicon.u32(raw, table + 4 * index)
+                let value = LFBinaryFile.u32(raw, table + 4 * index)
                 if value < previous || (strictly && value == previous) { return false }
                 previous = value
             }

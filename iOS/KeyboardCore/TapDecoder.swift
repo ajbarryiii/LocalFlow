@@ -6,7 +6,7 @@ import Foundation
 /// `tap/decide.py` (rule "strict") and `tap/touch.py`.
 ///
 /// - Lengths of the touch model are in letter pitches: the distance between neighbouring top-row
-///   letter centres (`letterPitch`).
+///   letter centres (`KeyboardLayout.letterPitch`).
 /// - Only letters and the space bar are ever chosen; if the nearest key is anything else, it types.
 /// - Ties go to the earlier key in layout order, as `argmax` does.
 struct TapDecoder: Equatable, Sendable {
@@ -41,31 +41,13 @@ struct TapDecoder: Equatable, Sendable {
 
     /// The OUTPUT column of a key's action, or nil for keys a prior never chooses.
     static func outputIndex(of action: KeyAction) -> Int? {
-        switch action {
-        case .space:
-            return 26
-        case .character(let character):
-            guard let scalar = character.unicodeScalars.first, character.unicodeScalars.count == 1,
-                  ("a" ... "z").contains(scalar) else { return nil }
-            return Int(scalar.value - Unicode.Scalar("a").value)
-        default:
-            return nil
-        }
-    }
-
-    /// The distance between neighbouring top-row letter centres, or nil without two of them.
-    static func letterPitch(in keys: [PlacedKey]) -> Double? {
-        let letters = keys.filter { outputIndex(of: $0.action).map { $0 < 26 } ?? false }
-        guard let top = letters.map(\.frame.y).min() else { return nil }
-        let centres = letters.filter { $0.frame.y == top }.map(\.frame.midX).sorted()
-        guard centres.count >= 2, let first = centres.first, let last = centres.last, last > first else { return nil }
-        return (last - first) / Double(centres.count - 1)
+        action == .space ? 26 : action.letterIndex
     }
 
     /// The log density (per square point) of a tap at (x, y) under each key, in `keys` order; −∞ for keys
     /// other than letters and space. Empty without a letter pitch.
     func logLikelihoods(x: Double, y: Double, keys: [PlacedKey]) -> [Double] {
-        guard let pitch = Self.letterPitch(in: keys) else { return [] }
+        guard let pitch = KeyboardLayout.letterPitch(in: keys) else { return [] }
         let sx = touch.sigma * pitch, sy = touch.sigma * touch.ratio * pitch
         return keys.map { key in
             guard Self.outputIndex(of: key.action) != nil else { return -.infinity }

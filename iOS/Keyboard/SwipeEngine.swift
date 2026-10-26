@@ -59,6 +59,38 @@ struct SwipeBundleManifest: Decodable {
     }
 }
 
+/// The swipe bundle's `bundle.json`, read once and each section decoded on its own, so an invalid section
+/// turns off only its own feature (ARCHITECTURE.md, "Typing model v4 and swipe typing", "Soft key edges" and
+/// "Word autocorrect"). Holds the manifests only, never model data.
+struct SwipeBundle: Sendable {
+    let directory: URL
+    /// The swipe decoder's settings; nil when they are invalid (swipe typing stays off).
+    let swipe: SwipeDecodeConfig?
+    /// The `tap` section; nil without a valid one (no soft key edges).
+    let tap: SoftKeyEdgesManifest?
+    /// The `autocorrect` section; nil without a valid one (no corrector).
+    let autocorrect: AutocorrectManifest?
+
+    /// The bundle in `directory`, or nil when its `bundle.json` cannot be read. Reads a file: off the main thread.
+    init?(directory: URL) {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("bundle.json")) else { return nil }
+        self.directory = directory
+        swipe = try? SwipeBundleManifest.decodeConfig(from: data)
+        tap = (try? SoftKeyEdgesManifest.decode(from: data)) ?? nil
+        autocorrect = (try? AutocorrectManifest.decode(from: data)) ?? nil
+    }
+
+    /// The keyboard extension's own bundle (`SwipeEngine.bundledDirectory`), decoded once per process on first
+    /// use; its files never change while the process runs.
+    private static let bundled = SwipeEngine.bundledDirectory.flatMap(SwipeBundle.init(directory:))
+
+    /// The bundle in `directory`: the extension's own, decoded once, or any other read afresh. Off the main thread.
+    static func decoded(at directory: URL) -> SwipeBundle? {
+        if let bundled, bundled.directory == directory { return bundled }
+        return SwipeBundle(directory: directory)
+    }
+}
+
 /// Decodes a swipe into candidate words: the frame from the letter keys, the samples normalized and
 /// resampled, the encoder, then the lexicon-constrained beam search. Loaded once off the main thread;
 /// immutable afterwards and used on the main thread only, so it is shared unchecked. Samples,
@@ -77,10 +109,12 @@ final class SwipeEngine: @unchecked Sendable {
         self.config = config
     }
 
-    /// Loads `bundle.json`, `lexicon.bin` (memory-mapped) and `SwipeEncoder.mlmodelc` (CPU only) from
-    /// `directory`, and runs the encoder once to check its output. Slow: call off the main thread.
-    static func load(from directory: URL) throws -> SwipeEngine {
-        let config = try SwipeBundleManifest.decodeConfig(from: Data(contentsOf: directory.appendingPathComponent("bundle.json")))
+    /// Loads `lexicon.bin` (memory-mapped) and `SwipeEncoder.mlmodelc` (CPU only) from the bundle, with the
+    /// decoder settings of its `bundle.json`, and runs the encoder once to check its output. Slow: call off the
+    /// main thread.
+    static func load(from bundle: SwipeBundle) throws -> SwipeEngine {
+        guard let config = bundle.swipe else { throw SwipeEngineError.invalidSettings }
+        let directory = bundle.directory
         let lexicon = try SwipeLexicon(data: Data(contentsOf: directory.appendingPathComponent("lexicon.bin"),
                                                   options: .alwaysMapped))
         let encoder = try CoreMLSwipeEncoder(url: directory.appendingPathComponent("SwipeEncoder.mlmodelc"))

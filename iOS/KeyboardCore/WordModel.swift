@@ -80,10 +80,10 @@ final class NGramWordModel: WordModel {
     }
 
     init(data input: Data, lexicon: WordLexicon) throws {
-        try WordFileSections.checkHeader(input, magic: "LFWN", version: Self.version, header: 72)
-        let data = WordFileSections.aligned(input)
+        try LFBinaryFile.checkHeader(input, magic: "LFWN", version: Self.version, header: 72, as: WordFileError.self)
+        let data = LFBinaryFile.aligned(input)
         let (header, alpha, beta, hash) = data.withUnsafeBytes { raw in
-            ((2 ..< 6).map { Int(WordFileSections.u32(raw, 4 * $0)) }, WordFileSections.f64(raw, 24), WordFileSections.f64(raw, 32),
+            ((2 ..< 6).map { Int(LFBinaryFile.u32(raw, 4 * $0)) }, LFBinaryFile.f64(raw, 24), LFBinaryFile.f64(raw, 32),
              Data(raw[40 ..< 72]))
         }
         let order = header[0], bits = header[1], ids = header[2]
@@ -97,9 +97,9 @@ final class NGramWordModel: WordModel {
         guard data.count >= directory else { throw WordFileError.wrongSize }
         var orders = try data.withUnsafeBytes { raw in
             try (0 ..< order - 1).map { index -> Order in
-                let contexts = WordFileSections.u64(raw, 72 + 24 * index), grams = WordFileSections.u64(raw, 80 + 24 * index)
+                let contexts = LFBinaryFile.u64(raw, 72 + 24 * index), grams = LFBinaryFile.u64(raw, 80 + 24 * index)
                 guard contexts <= UInt64(UInt32.max), grams <= UInt64(UInt32.max) else { throw WordFileError.unsupportedShape }
-                return Order(contexts: Int(contexts), grams: Int(grams), discount: WordFileSections.f64(raw, 88 + 24 * index))
+                return Order(contexts: Int(contexts), grams: Int(grams), discount: LFBinaryFile.f64(raw, 88 + 24 * index))
             }
         }
         var sections = WordFileSections(header: directory)
@@ -114,32 +114,32 @@ final class NGramWordModel: WordModel {
         guard sections.end == data.count else { throw WordFileError.wrongSize }
         try data.withUnsafeBytes { raw in
             for id in 0 ..< ids {
-                let p = WordFileSections.f32(raw, p1 + 4 * id)
+                let p = LFBinaryFile.f32(raw, p1 + 4 * id)
                 guard p.isFinite, p >= 0 else { throw WordFileError.invalidValues }
             }
             for table in orders {
                 guard table.discount.isFinite, table.discount >= 0 else { throw WordFileError.invalidValues }
                 for i in 0 ..< table.contexts {
-                    let total = WordFileSections.f32(raw, table.contextTotal + 4 * i)
-                    let gamma = WordFileSections.f32(raw, table.contextGamma + 4 * i)
+                    let total = LFBinaryFile.f32(raw, table.contextTotal + 4 * i)
+                    let gamma = LFBinaryFile.f32(raw, table.contextGamma + 4 * i)
                     guard total.isFinite, total > 0, gamma.isFinite, gamma >= 0 else { throw WordFileError.invalidValues }
                     if i > 0 {
-                        guard WordFileSections.u64(raw, table.contextCodes + 8 * (i - 1)) < WordFileSections.u64(raw, table.contextCodes + 8 * i)
+                        guard LFBinaryFile.u64(raw, table.contextCodes + 8 * (i - 1)) < LFBinaryFile.u64(raw, table.contextCodes + 8 * i)
                         else { throw WordFileError.invalidStructure }
                     }
                 }
                 // Codes strictly increasing, and every n-gram's context stored (a merge: both are sorted).
                 var context = 0
                 for i in 0 ..< table.grams {
-                    let count = WordFileSections.f32(raw, table.gramCounts + 4 * i)
+                    let count = LFBinaryFile.f32(raw, table.gramCounts + 4 * i)
                     guard count.isFinite, count >= 0 else { throw WordFileError.invalidValues }
-                    let code = WordFileSections.u64(raw, table.gramCodes + 8 * i)
+                    let code = LFBinaryFile.u64(raw, table.gramCodes + 8 * i)
                     if i > 0 {
-                        guard WordFileSections.u64(raw, table.gramCodes + 8 * (i - 1)) < code else { throw WordFileError.invalidStructure }
+                        guard LFBinaryFile.u64(raw, table.gramCodes + 8 * (i - 1)) < code else { throw WordFileError.invalidStructure }
                     }
                     let owner = code >> UInt64(bits)
-                    while context < table.contexts, WordFileSections.u64(raw, table.contextCodes + 8 * context) < owner { context += 1 }
-                    guard context < table.contexts, WordFileSections.u64(raw, table.contextCodes + 8 * context) == owner else {
+                    while context < table.contexts, LFBinaryFile.u64(raw, table.contextCodes + 8 * context) < owner { context += 1 }
+                    guard context < table.contexts, LFBinaryFile.u64(raw, table.contextCodes + 8 * context) == owner else {
                         throw WordFileError.invalidStructure
                     }
                 }
@@ -185,20 +185,20 @@ final class NGramWordModel: WordModel {
                 var h: UInt64 = 0
                 for a in history.suffix(k - 1) { h = (h << b) | a }
                 let i = Self.lowerBound(raw, table.contextCodes, table.contexts, h)
-                guard i < table.contexts, WordFileSections.u64(raw, table.contextCodes + 8 * i) == h else { continue }
+                guard i < table.contexts, LFBinaryFile.u64(raw, table.contextCodes + 8 * i) == h else { continue }
                 let lo = Self.lowerBound(raw, table.gramCodes, table.grams, h << b)
                 let hi = Self.lowerBound(raw, table.gramCodes, table.grams, (h + 1) << b)
                 found.append((table, i, lo ..< hi, h))
             }
             return ids.map { w in
-                var p = Double(WordFileSections.f32(raw, p1 + 4 * Int(w)))
+                var p = Double(LFBinaryFile.f32(raw, p1 + 4 * Int(w)))
                 for (table, i, range, h) in found {
                     let code = (h << b) | w
                     let j = range.lowerBound + Self.lowerBound(raw, table.gramCodes + 8 * range.lowerBound, range.count, code)
-                    let c = j < range.upperBound && WordFileSections.u64(raw, table.gramCodes + 8 * j) == code
-                        ? Double(WordFileSections.f32(raw, table.gramCounts + 4 * j)) : 0
-                    let total = Double(WordFileSections.f32(raw, table.contextTotal + 4 * i))
-                    let gamma = Double(WordFileSections.f32(raw, table.contextGamma + 4 * i))
+                    let c = j < range.upperBound && LFBinaryFile.u64(raw, table.gramCodes + 8 * j) == code
+                        ? Double(LFBinaryFile.f32(raw, table.gramCounts + 4 * j)) : 0
+                    let total = Double(LFBinaryFile.f32(raw, table.contextTotal + 4 * i))
+                    let gamma = Double(LFBinaryFile.f32(raw, table.contextGamma + 4 * i))
                     p = max(c - table.discount, 0) / total + gamma * p
                 }
                 return log(p)
@@ -211,7 +211,7 @@ final class NGramWordModel: WordModel {
         var lo = 0, hi = count
         while lo < hi {
             let mid = (lo + hi) / 2
-            if WordFileSections.u64(raw, offset + 8 * mid) < value { lo = mid + 1 } else { hi = mid }
+            if LFBinaryFile.u64(raw, offset + 8 * mid) < value { lo = mid + 1 } else { hi = mid }
         }
         return lo
     }
@@ -271,11 +271,11 @@ final class LSTMWordModel: WordModel {
     private var clock = 0
 
     init(data input: Data, lexicon: WordLexicon) throws {
-        try WordFileSections.checkHeader(input, magic: "LFWR", version: Self.version, header: 80)
-        let data = WordFileSections.aligned(input)
+        try LFBinaryFile.checkHeader(input, magic: "LFWR", version: Self.version, header: 80, as: WordFileError.self)
+        let data = LFBinaryFile.aligned(input)
         let (header, u, beta, logZRare, hash) = data.withUnsafeBytes { raw in
-            ((2 ..< 6).map { Int(WordFileSections.u32(raw, 4 * $0)) }, WordFileSections.f64(raw, 24), WordFileSections.f64(raw, 32),
-             WordFileSections.f64(raw, 40), Data(raw[48 ..< 80]))
+            ((2 ..< 6).map { Int(LFBinaryFile.u32(raw, 4 * $0)) }, LFBinaryFile.f64(raw, 24), LFBinaryFile.f64(raw, 32),
+             LFBinaryFile.f64(raw, 40), Data(raw[48 ..< 80]))
         }
         let e = header[0], h = header[1], v = header[2], n = header[3]
         guard hash == lexicon.hash, n == lexicon.formCount else { throw WordFileError.lexiconMismatch }
@@ -296,15 +296,15 @@ final class LSTMWordModel: WordModel {
             // form_words is the inverse of words: model word k's form maps to k, every other form is rare.
             var models = 0
             for form in 0 ..< n {
-                let k = WordFileSections.u32(raw, offsets.formWords + 4 * form)
-                guard k == Self.rare || (Int(k) < v && Int(WordFileSections.u32(raw, words + 4 * Int(k))) == form) else {
+                let k = LFBinaryFile.u32(raw, offsets.formWords + 4 * form)
+                guard k == Self.rare || (Int(k) < v && Int(LFBinaryFile.u32(raw, words + 4 * Int(k))) == form) else {
                     throw WordFileError.invalidStructure
                 }
                 if k != Self.rare { models += 1 }
             }
             guard models == v else { throw WordFileError.invalidStructure }
             for offset in stride(from: offsets.embedding, to: offsets.outBias + 4 * (v + 2), by: 4) {
-                guard WordFileSections.f32(raw, offset).isFinite else { throw WordFileError.invalidValues }
+                guard LFBinaryFile.f32(raw, offset).isFinite else { throw WordFileError.invalidValues }
             }
         }
         self.lexicon = lexicon
@@ -354,7 +354,7 @@ final class LSTMWordModel: WordModel {
     /// A context word's input id: 3 + k for model word k, else "<unk>" (2).
     private func input(_ word: String) -> Int32 {
         guard let form = lexicon.formID(of: word) else { return 2 }
-        let k = data.withUnsafeBytes { WordFileSections.u32($0, offsets.formWords + 4 * form) }
+        let k = data.withUnsafeBytes { LFBinaryFile.u32($0, offsets.formWords + 4 * form) }
         return k == Self.rare ? 2 : Int32(k) + 3
     }
 
@@ -362,7 +362,7 @@ final class LSTMWordModel: WordModel {
     private func score(_ word: String, _ raw: UnsafeRawBufferPointer) -> (Int, Double) {
         if word == WordModelVocabulary.end { return (0, 0) }
         guard let form = lexicon.formID(of: word) else { return (1, logUnknown) }
-        let k = WordFileSections.u32(raw, offsets.formWords + 4 * form)
+        let k = LFBinaryFile.u32(raw, offsets.formWords + 4 * form)
         if k != Self.rare { return (Int(k) + 2, 0) }
         return (1, rareByFrequency[lexicon.frequency(ofFormAt: form)])
     }

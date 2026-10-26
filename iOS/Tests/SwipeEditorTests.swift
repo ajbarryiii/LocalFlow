@@ -973,13 +973,15 @@ enum SwipeEditorTests {
     private static func testLoadingAnIncompleteBundleFails() {
         let directory = TestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        TestSupport.expect((try? SwipeEngine.load(from: directory)) == nil, "an empty bundle loaded")
+        // Without its bundle.json a directory is no bundle.
+        func load() -> SwipeEngine? { SwipeBundle(directory: directory).flatMap { try? SwipeEngine.load(from: $0) } }
+        TestSupport.expect(load() == nil, "an empty bundle loaded")
         try! manifest().write(to: directory.appendingPathComponent("bundle.json"))
-        TestSupport.expect((try? SwipeEngine.load(from: directory)) == nil, "a bundle without a lexicon loaded")
+        TestSupport.expect(load() == nil, "a bundle without a lexicon loaded")
         try! Data("not a lexicon".utf8).write(to: directory.appendingPathComponent("lexicon.bin"))
-        TestSupport.expect((try? SwipeEngine.load(from: directory)) == nil, "a bundle with an invalid lexicon loaded")
+        TestSupport.expect(load() == nil, "a bundle with an invalid lexicon loaded")
         try! Data(base64Encoded: SwipeFixtures.lexiconBase64)!.write(to: directory.appendingPathComponent("lexicon.bin"))
-        TestSupport.expect((try? SwipeEngine.load(from: directory)) == nil, "a bundle without a model loaded")
+        TestSupport.expect(load() == nil, "a bundle without a model loaded")
     }
 }
 

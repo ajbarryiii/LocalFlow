@@ -100,23 +100,16 @@ final class KeyboardDictationClient: ObservableObject {
             keyHapticsEnabled = settings?.keyHapticsEnabled ?? false
             observations = [notifier.observe(.status) { [weak self] in self?.refresh() },
                             notifier.observe(.result) { [weak self] in self?.resultPosted() }]
-            let poll = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] timer in
-                MainActor.assumeIsolated {
-                    guard let self else { return timer.invalidate() }
-                    self.refresh()
-                }
+            let poll = Timer.mainLoop(after: Self.pollInterval, repeats: true, tolerance: 0.05) { [weak self] timer in
+                guard let self else { return timer.invalidate() }
+                self.refresh()
             }
-            let presence = Timer(timeInterval: DictationProtocol.keyboardPresenceInterval, repeats: true) { [weak self] timer in
-                MainActor.assumeIsolated {
-                    guard let self else { return timer.invalidate() }
-                    self.writePresence()
-                }
+            let presence = Timer.mainLoop(after: DictationProtocol.keyboardPresenceInterval, repeats: true,
+                                          tolerance: 0.05) { [weak self] timer in
+                guard let self else { return timer.invalidate() }
+                self.writePresence()
             }
             timers = [poll, presence]
-            for timer in timers {
-                timer.tolerance = 0.05
-                RunLoop.main.add(timer, forMode: .common)
-            }
             writePresence()
         }
         refresh()

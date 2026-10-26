@@ -157,6 +157,10 @@ enum TapCoreTests {
         TestSupport.expectEqual(error(valid.dropLast(4)), .wrongSize)
         TestSupport.expectEqual(error(valid + Data([0])), .wrongSize)
         TestSupport.expectEqual(error(valid + Data([0, 0, 0, 0])), .wrongSize)
+        // The magic is checked before the size, and the size of the header before the version.
+        TestSupport.expectEqual(error(Data("LFTQ".utf8)), .badMagic)
+        TestSupport.expectEqual(error(valid.prefix(31)), .wrongSize)
+        TestSupport.expectEqual(error(patched(at: 4, [2, 0, 0, 0]).prefix(31)), .wrongSize)
         TestSupport.expectEqual(error(patched(at: 28, [0, 0, 0, 0])), .invalidValues)
         TestSupport.expectEqual(error(patched(at: 40, [0, 0, 0xC0, 0x7F])), .invalidValues)
     }

@@ -1438,7 +1438,10 @@ each hash, and adds `bundle.json` and the licenses in `Resources/Swipe/`.
 Without `SWIPE_BUNDLE_DIR` the keyboard has no swipe typing and long drags
 across the letters are taps. The keyboard loads the bundle off the main
 thread when it starts; any missing or invalid file, or decode settings out of
-range, leaves swipe typing off.
+range, leaves swipe typing off. `bundle.json` is read once per process and
+each section decoded on its own (`SwipeBundle`), so an invalid section turns
+off only its own feature; swipe typing, soft key edges and autocorrect each
+load through their own `BundleModelLoader`, in parallel.
 
 **Inserting a swiped word** (`KeyboardEditor.insertSwipe`):
 
@@ -1625,8 +1628,9 @@ edges, and an invalid section, or a model file that is missing or invalid,
 turns off soft key edges only, never the swipe bundle. The default model
 loads off the main thread when the keyboard appears with the switch on; until
 it has loaded, taps type the nearest key. The load is bookkept by
-`ModelLoadSlot` (KeyboardCore): appearing again while it is in flight, as when
-switching to the emoji keyboard and back, starts no second load. Turning the
+`ModelLoadSlot` (KeyboardCore), through the keyboard's `BundleModelLoader`:
+appearing again while it is in flight, as when switching to the emoji
+keyboard and back, starts no second load. Turning the
 switch off drops the model and discards a load that ends while it is off; a
 load still in flight when the switch comes back on is kept and installed. A load
 that failed or was discarded is tried again the next time the keyboard

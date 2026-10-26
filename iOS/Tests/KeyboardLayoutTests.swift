@@ -14,6 +14,8 @@ enum KeyboardLayoutTests {
             ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
             ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
             ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
+            ("letterPitchIsTheTopRowPitch", testLetterPitchIsTheTopRowPitch),
+            ("letterIndexIsAToZOnly", testLetterIndexIsAToZOnly),
         ]
     }
 
@@ -235,5 +237,53 @@ enum KeyboardLayoutTests {
             TestSupport.expectEqual(hit(delete.midX, delete.maxY + (ret.y - delete.maxY) / 2 - 0.5), .delete)
             TestSupport.expectEqual(hit(delete.midX, delete.maxY + (ret.y - delete.maxY) / 2 + 0.5), .returnKey)
         }
+    }
+}
+
+// MARK: Letter pitch
+
+extension KeyboardLayoutTests {
+    /// Every key area the keyboard lays out: iPhone portrait and landscape widths, iPad widths, at the
+    /// regular and compact heights, with and without the globe.
+    static var shippedMetrics: [(metrics: KeyboardMetrics, globe: Bool)] {
+        let widths: [Double] = [320, 375, 390, 393, 402, 414, 428, 430, 440, 667, 744, 812, 820, 844, 852, 874, 896,
+                                926, 932, 956, 1024, 1180, 1366]
+        let heights = [KeyboardMetrics.regularHeight, KeyboardMetrics.compactHeight, 260]
+        return widths.flatMap { width in
+            heights.flatMap { height in [false, true].map { (KeyboardMetrics(width: width, height: height), $0) } }
+        }
+    }
+
+    fileprivate static func testLetterPitchIsTheTopRowPitch() {
+        // The distance between neighbouring top-row letter centres on the letters layer; the other layers
+        // have no letters, so no pitch.
+        for (metrics, globe) in shippedMetrics {
+            let letters = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: globe)
+            let pitch = KeyboardLayout.letterPitch(in: letters)
+            TestSupport.expect(pitch.map { abs($0 - (metrics.letterWidth + metrics.keyGap)) < 1e-9 } == true,
+                               "pitch \(String(describing: pitch)) at \(metrics.width)×\(metrics.height)")
+            for layer in [KeyboardLayer.numbers, .symbols] {
+                let keys = KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: globe)
+                TestSupport.expectEqual(KeyboardLayout.letterPitch(in: keys), nil)
+            }
+        }
+        TestSupport.expectEqual(KeyboardLayout.letterPitch(in: []), nil)
+        // One top-row letter has no pitch.
+        let q = keys(.letters).filter { $0.action == .character("q") }
+        TestSupport.expectEqual(KeyboardLayout.letterPitch(in: q), nil)
+    }
+
+    fileprivate static func testLetterIndexIsAToZOnly() {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz".map { KeyAction.character(String($0)).letterIndex }
+        TestSupport.expectEqual(alphabet, Array(0 ..< 26))
+        let others: [KeyAction] = [.character("A"), .character("é"), .character("e\u{301}"), .character("1"),
+                                   .character("ab"), .character(""), .character("'"), .space, .shift, .delete, .returnKey,
+                                   .layer(.numbers), .nextKeyboard]
+        TestSupport.expectEqual(others.map(\.letterIndex), Array(repeating: nil, count: others.count))
+        // The tap prior's columns: the letters, then the space bar.
+        TestSupport.expectEqual(TapDecoder.outputIndex(of: .space), 26)
+        TestSupport.expectEqual(TapDecoder.outputIndex(of: .character("q")), 16)
+        TestSupport.expectEqual(others.filter { $0 != .space }.map { TapDecoder.outputIndex(of: $0) },
+                                Array(repeating: nil, count: others.count - 1))
     }
 }

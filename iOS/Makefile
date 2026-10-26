@@ -101,8 +101,9 @@ KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
 TEST_SOURCES ?= $(call swift_sources,Tests)
 # The swipe engine is Foundation and Core ML only; the host tests drive it with a fake encoder. The
 # autocorrect loader is Foundation only; the host tests load invented bundles with it. The keyboard's
-# messages are Foundation only.
-KEYBOARD_TEST_SOURCES ?= Keyboard/SwipeEngine.swift Keyboard/AutocorrectLoader.swift Keyboard/KeyboardMessages.swift
+# messages and model loader are Foundation only.
+KEYBOARD_TEST_SOURCES ?= Keyboard/SwipeEngine.swift Keyboard/AutocorrectLoader.swift Keyboard/KeyboardMessages.swift \
+	Keyboard/BundleModelLoader.swift
 PARAKEET_SOURCES ?= $(call swift_sources,../Sources/Parakeet)
 # The custom dictionary (boosting, casing and "Find strength"), shared with the
 # macOS app. HostCore's DictionaryLibrary uses it, so the host tests compile it too.

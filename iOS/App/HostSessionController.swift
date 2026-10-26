@@ -93,11 +93,7 @@ final class HostSessionController: ObservableObject {
         // Locked at launch: nothing may be admitted until an unlock.
         if !UIApplication.shared.isProtectedDataAvailable { core.deviceWillLock() }
         core.launch()
-        let timer = Timer(timeInterval: HostSessionPolicy.tickInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        timer = Timer.mainLoop(after: HostSessionPolicy.tickInterval, repeats: true) { [weak self] _ in self?.tick() }
         intentObservation = configuration.map(DarwinNotifier.init(configuration:))?.observe(.intent) { [weak self] in
             self?.core?.reconcile(.intentSignal)
         }

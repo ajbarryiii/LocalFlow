@@ -193,14 +193,10 @@ final class StrengthProbeModel: ObservableObject {
 
     private func startLevelTimer() {
         stopLevelTimer()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.level = self.recorder.level
-            }
+        levelTimer = Timer.mainLoop(after: 0.05, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.level = self.recorder.level
         }
-        RunLoop.main.add(timer, forMode: .common)
-        levelTimer = timer
     }
 
     private func stopLevelTimer() {
