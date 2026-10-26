@@ -78,9 +78,10 @@ to a Hugging Face revision and to every file's SHA-256 (the pins are in
 `linux/models.json`). It downloads into a temporary directory beside the
 destination, checks every file, and only then moves the export into place,
 so an interrupted or failed download leaves nothing behind. `--dest DIR`
-installs somewhere else. An export that is already there is left alone;
-anything else at the destination is replaced only with `--force`. It sends
-nothing about you, and the daemon itself never downloads anything.
+installs somewhere else, but not in a directory other users can change
+(/tmp and your home are fine). An export that is already there is left
+alone; anything else at the destination is replaced only with `--force`. It
+sends nothing about you, and the daemon itself never downloads anything.
 
 With Nix, the flake packages both exports with the same pins:
 
