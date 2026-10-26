@@ -123,14 +123,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         case muted(previouslyMuted: Bool)
     }
 
-    private let holdShortcutStorageKey = "hold_shortcut"
-    private let toggleShortcutStorageKey = "toggle_shortcut"
-    private let copyAgainShortcutStorageKey = "copy_again_shortcut"
-    private let promptShortcutStorageKey = "prompt_shortcut"
-    private let savedHoldCustomShortcutStorageKey = "saved_hold_custom_shortcut"
-    private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
-    private let savedCopyAgainCustomShortcutStorageKey = "saved_copy_again_custom_shortcut"
-    private let savedPromptCustomShortcutStorageKey = "saved_prompt_custom_shortcut"
+    private let shortcutStore = ShortcutStore(defaults: .standard)
     private let promptTagStorageKey = "prompt_tag"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
@@ -154,57 +147,15 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
     }
 
-    @Published var holdShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(holdShortcut, key: holdShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
+    /// Changed only through `setShortcut`, which validates and persists.
+    @Published private(set) var shortcuts: ShortcutSettings {
+        didSet { restartHotkeyMonitoring() }
     }
 
-    @Published var toggleShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(toggleShortcut, key: toggleShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published var copyAgainShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(copyAgainShortcut, key: copyAgainShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published var promptShortcut: ShortcutBinding {
-        didSet {
-            persistShortcut(promptShortcut, key: promptShortcutStorageKey)
-            restartHotkeyMonitoring()
-        }
-    }
-
-    @Published private(set) var savedHoldCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedToggleCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedCopyAgainCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedCopyAgainCustomShortcut, key: savedCopyAgainCustomShortcutStorageKey)
-        }
-    }
-
-    @Published private(set) var savedPromptCustomShortcut: ShortcutBinding? {
-        didSet {
-            persistOptionalShortcut(savedPromptCustomShortcut, key: savedPromptCustomShortcutStorageKey)
-        }
-    }
+    var holdShortcut: ShortcutBinding { shortcuts.configuration.hold }
+    var toggleShortcut: ShortcutBinding { shortcuts.configuration.toggle }
+    var copyAgainShortcut: ShortcutBinding { shortcuts.configuration.copyAgain }
+    var promptShortcut: ShortcutBinding { shortcuts.configuration.prompt }
 
     /// Placed before dictations started with the prompt shortcut.
     @Published var promptTag: String {
@@ -428,28 +379,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     init() {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let shortcuts = Self.loadShortcutConfiguration(
-            holdKey: holdShortcutStorageKey,
-            toggleKey: toggleShortcutStorageKey,
-            copyAgainKey: copyAgainShortcutStorageKey,
-            promptKey: promptShortcutStorageKey
-        )
-        let savedHoldCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedHoldCustomShortcutStorageKey,
-            fallback: shortcuts.hold.isCustom ? shortcuts.hold : nil
-        )
-        let savedToggleCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedToggleCustomShortcutStorageKey,
-            fallback: shortcuts.toggle.isCustom ? shortcuts.toggle : nil
-        )
-        let savedCopyAgainCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedCopyAgainCustomShortcutStorageKey,
-            fallback: shortcuts.copyAgain.isCustom ? shortcuts.copyAgain : nil
-        )
-        let savedPromptCustomShortcut = Self.loadSavedCustomShortcut(
-            forKey: savedPromptCustomShortcutStorageKey,
-            fallback: shortcuts.prompt.isCustom ? shortcuts.prompt : nil
-        )
         let promptTag = UserDefaults.standard.string(forKey: promptTagStorageKey) ?? Self.defaultPromptTag
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let preserveClipboard = UserDefaults.standard.object(forKey: preserveClipboardStorageKey) == nil
@@ -502,14 +431,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
 
         self.hasCompletedSetup = hasCompletedSetup
-        self.holdShortcut = shortcuts.hold
-        self.toggleShortcut = shortcuts.toggle
-        self.copyAgainShortcut = shortcuts.copyAgain
-        self.promptShortcut = shortcuts.prompt
-        self.savedHoldCustomShortcut = savedHoldCustomShortcut.binding
-        self.savedToggleCustomShortcut = savedToggleCustomShortcut.binding
-        self.savedCopyAgainCustomShortcut = savedCopyAgainCustomShortcut.binding
-        self.savedPromptCustomShortcut = savedPromptCustomShortcut.binding
+        self.shortcuts = shortcutStore.load()
         self.promptTag = promptTag
         self.shortcutStartDelay = shortcutStartDelay
         self.preserveClipboard = preserveClipboard
@@ -533,31 +455,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
         refreshAvailableMicrophones()
         installAudioDeviceObservers()
-
-        if shortcuts.didUpdateHoldStoredValue {
-            persistShortcut(shortcuts.hold, key: holdShortcutStorageKey)
-        }
-        if shortcuts.didUpdateToggleStoredValue {
-            persistShortcut(shortcuts.toggle, key: toggleShortcutStorageKey)
-        }
-        if shortcuts.didUpdateCopyAgainStoredValue {
-            persistShortcut(shortcuts.copyAgain, key: copyAgainShortcutStorageKey)
-        }
-        if shortcuts.didUpdatePromptStoredValue {
-            persistShortcut(shortcuts.prompt, key: promptShortcutStorageKey)
-        }
-        if savedHoldCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedHoldCustomShortcut.binding, key: savedHoldCustomShortcutStorageKey)
-        }
-        if savedToggleCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedToggleCustomShortcut.binding, key: savedToggleCustomShortcutStorageKey)
-        }
-        if savedCopyAgainCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedCopyAgainCustomShortcut.binding, key: savedCopyAgainCustomShortcutStorageKey)
-        }
-        if savedPromptCustomShortcut.didUpdateStoredValue {
-            persistOptionalShortcut(savedPromptCustomShortcut.binding, key: savedPromptCustomShortcutStorageKey)
-        }
 
         overlayManager.onStopButtonPressed = { [weak self] in
             DispatchQueue.main.async {
@@ -620,99 +517,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
             notificationCenter.removeObserver(observer)
         }
         audioDeviceObservers.removeAll()
-    }
-
-    private struct StoredShortcutConfiguration {
-        let hold: ShortcutBinding
-        let toggle: ShortcutBinding
-        let copyAgain: ShortcutBinding
-        let prompt: ShortcutBinding
-        let didUpdateHoldStoredValue: Bool
-        let didUpdateToggleStoredValue: Bool
-        let didUpdateCopyAgainStoredValue: Bool
-        let didUpdatePromptStoredValue: Bool
-    }
-
-    private struct StoredOptionalShortcut {
-        let binding: ShortcutBinding?
-        let didUpdateStoredValue: Bool
-    }
-
-    private struct StoredShortcutLoadResult {
-        let binding: ShortcutBinding?
-        let hadStoredValue: Bool
-        let didNormalize: Bool
-    }
-
-    private static func loadShortcutConfiguration(
-        holdKey: String,
-        toggleKey: String,
-        copyAgainKey: String,
-        promptKey: String
-    ) -> StoredShortcutConfiguration {
-        let legacyPreset = ShortcutPreset(
-            rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? ShortcutPreset.fnKey.rawValue
-        ) ?? .fnKey
-        let hold = legacyPreset.binding
-        let toggle = hold.withAddedModifiers(.command)
-        let storedHold = loadShortcut(forKey: holdKey)
-        let storedToggle = loadShortcut(forKey: toggleKey)
-        let storedCopyAgain = loadShortcut(forKey: copyAgainKey)
-        let storedPrompt = loadShortcut(forKey: promptKey)
-        return StoredShortcutConfiguration(
-            hold: storedHold.binding ?? hold,
-            toggle: storedToggle.binding ?? toggle,
-            copyAgain: storedCopyAgain.binding ?? .disabled,
-            prompt: storedPrompt.binding ?? .disabled,
-            didUpdateHoldStoredValue: storedHold.binding == nil || storedHold.didNormalize,
-            didUpdateToggleStoredValue: storedToggle.binding == nil || storedToggle.didNormalize,
-            didUpdateCopyAgainStoredValue: storedCopyAgain.didNormalize,
-            didUpdatePromptStoredValue: storedPrompt.didNormalize
-        )
-    }
-
-    private static func loadShortcut(forKey key: String) -> StoredShortcutLoadResult {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
-            return StoredShortcutLoadResult(binding: nil, hadStoredValue: false, didNormalize: false)
-        }
-        guard let decoded = try? JSONDecoder().decode(ShortcutBinding.self, from: data) else {
-            return StoredShortcutLoadResult(binding: nil, hadStoredValue: true, didNormalize: false)
-        }
-        let normalized = decoded.normalizedForStorageMigration()
-        return StoredShortcutLoadResult(
-            binding: normalized,
-            hadStoredValue: true,
-            didNormalize: normalized != decoded
-        )
-    }
-
-    private static func loadSavedCustomShortcut(
-        forKey key: String,
-        fallback: ShortcutBinding?
-    ) -> StoredOptionalShortcut {
-        let stored = loadShortcut(forKey: key)
-        if let binding = stored.binding {
-            return StoredOptionalShortcut(binding: binding, didUpdateStoredValue: stored.didNormalize)
-        }
-
-        return StoredOptionalShortcut(
-            binding: fallback,
-            didUpdateStoredValue: stored.hadStoredValue || fallback != nil
-        )
-    }
-
-    private func persistShortcut(_ binding: ShortcutBinding, key: String) {
-        let normalizedBinding = binding.normalizedForStorageMigration()
-        guard let data = try? JSONEncoder().encode(normalizedBinding) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-
-    private func persistOptionalShortcut(_ binding: ShortcutBinding?, key: String) {
-        guard let binding else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        persistShortcut(binding, key: key)
     }
 
     struct SavedAudioFile {
@@ -1040,76 +844,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
         Int((shortcutStartDelay * 1000).rounded())
     }
 
-    func savedCustomShortcut(for role: ShortcutRole) -> ShortcutBinding? {
-        switch role {
-        case .hold:
-            return savedHoldCustomShortcut
-        case .toggle:
-            return savedToggleCustomShortcut
-        case .copyAgain:
-            return savedCopyAgainCustomShortcut
-        case .prompt:
-            return savedPromptCustomShortcut
-        }
-    }
-
+    /// Validates, persists and applies `binding`; returns the reason when it is rejected.
     @discardableResult
     func setShortcut(_ binding: ShortcutBinding, for role: ShortcutRole) -> String? {
-        let binding = binding.normalizedForStorageMigration()
-
-        if role == .hold || role == .toggle {
-            let otherDictationBinding = role == .hold ? toggleShortcut : holdShortcut
-            guard !binding.conflicts(with: otherDictationBinding) else {
-                return "Hold and tap shortcuts must be distinct."
-            }
-        }
-
-        if role != .copyAgain, binding.conflicts(with: copyAgainShortcut) {
-            return "This shortcut is already used by Paste Again."
-        }
-        if role == .copyAgain {
-            if binding.conflicts(with: holdShortcut) {
-                return "Paste Again cannot share a shortcut with Hold to Talk."
-            }
-            if binding.conflicts(with: toggleShortcut) {
-                return "Paste Again cannot share a shortcut with Tap to Toggle."
-            }
-        }
-
-        if role != .prompt, binding.conflicts(with: promptShortcut) {
-            return "This shortcut is already used by Hold to Prompt."
-        }
-        if role == .prompt {
-            let others: [(ShortcutRole, ShortcutBinding)] = [(.hold, holdShortcut), (.toggle, toggleShortcut),
-                                                             (.copyAgain, copyAgainShortcut)]
-            for (otherRole, other) in others where binding.conflicts(with: other) {
-                return "Hold to Prompt cannot share a shortcut with \(otherRole.title)."
-            }
-        }
-
-        switch role {
-        case .hold:
-            if binding.isCustom {
-                savedHoldCustomShortcut = binding
-            }
-            holdShortcut = binding
-        case .toggle:
-            if binding.isCustom {
-                savedToggleCustomShortcut = binding
-            }
-            toggleShortcut = binding
-        case .copyAgain:
-            if binding.isCustom {
-                savedCopyAgainCustomShortcut = binding
-            }
-            copyAgainShortcut = binding
-        case .prompt:
-            if binding.isCustom {
-                savedPromptCustomShortcut = binding
-            }
-            promptShortcut = binding
-        }
-
+        var updated = shortcuts
+        if let message = updated.set(binding, for: role) { return message }
+        shortcutStore.save(updated, for: role)
+        shortcuts = updated
         return nil
     }
 
@@ -1174,11 +915,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         restartHotkeyMonitoring()
     }
 
-    private var activeShortcutConfiguration: ShortcutConfiguration {
-        ShortcutConfiguration(hold: holdShortcut, toggle: toggleShortcut, copyAgain: copyAgainShortcut,
-                              prompt: promptShortcut)
-    }
-
     private func restartHotkeyMonitoring() {
         guard shouldMonitorHotkeys, !isCapturingShortcut, !isAwaitingMicrophonePermission else {
             hotkeyManager.stop()
@@ -1186,7 +922,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
 
         do {
-            try hotkeyManager.start(configuration: activeShortcutConfiguration)
+            try hotkeyManager.start(configuration: shortcuts.configuration)
             hotkeyMonitoringErrorMessage = nil
         } catch {
             hotkeyMonitoringErrorMessage = error.localizedDescription

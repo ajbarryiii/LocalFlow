@@ -14,6 +14,7 @@ struct LocalFlowTests {
         SpokenNumberTests.run()
         PipelineHistoryStoreTests.run()
         ShortcutCoreTests.run()
+        ShortcutStoreTests.run()
         DoubleTapPromptTests.run()
         DictationCleanupStepsTests.run()
         SemanticVersionTests.run()
