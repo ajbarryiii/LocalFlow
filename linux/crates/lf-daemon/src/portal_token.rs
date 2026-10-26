@@ -9,14 +9,13 @@
 //! file that fails these checks is ignored (the desktop asks again) with a
 //! warning that names only the problem.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use lf_portal::TokenStore;
 
 use crate::paths;
+use crate::private_file::{self, ModeRule, ReadError, SyncDir};
 
 pub const FILE_NAME: &str = "portal-restore-token";
 /// Longest token accepted from the file.
@@ -33,10 +32,6 @@ impl FileTokenStore {
     }
 }
 
-fn temporary_prefix() -> String {
-    format!(".{FILE_NAME}.tmp-")
-}
-
 /// The stored token; `Ok(None)` if there is none.
 fn read(dir: &Path) -> Result<Option<String>, &'static str> {
     match fs::symlink_metadata(dir) {
@@ -46,34 +41,23 @@ fn read(dir: &Path) -> Result<Option<String>, &'static str> {
     }
     paths::check_private_dir(dir).map_err(|_| "its directory is not private")?;
     // Snapshots left by a crash during a write hold the token too.
-    if let Ok(entries) = fs::read_dir(dir) {
-        let prefix = temporary_prefix();
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&prefix) {
-                let _ = fs::remove_file(entry.path());
-            }
+    private_file::remove_stale(dir, FILE_NAME);
+    let bytes = match private_file::read_private(
+        &dir.join(FILE_NAME),
+        MAX_TOKEN_BYTES,
+        ModeRule::Exact0600,
+    ) {
+        Ok(Some(b)) => b,
+        Ok(None) => return Ok(None),
+        Err(ReadError::Open(_)) => return Err("the file cannot be opened"),
+        Err(ReadError::Metadata(_)) => return Err("the file cannot be read"),
+        Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+            return Err("the file is not a private regular file (mode 0600)");
         }
-    }
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(dir.join(FILE_NAME))
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("the file cannot be opened"),
+        Err(ReadError::TooLarge) => return Err("the file is too large"),
+        Err(ReadError::Read(_)) => return Err("the file is not text"),
     };
-    let meta = file.metadata().map_err(|_| "the file cannot be read")?;
-    if !meta.is_file() || meta.uid() != paths::euid() || meta.mode() & 0o7777 != 0o600 {
-        return Err("the file is not a private regular file (mode 0600)");
-    }
-    if meta.len() > MAX_TOKEN_BYTES {
-        return Err("the file is too large");
-    }
-    let mut text = String::new();
-    file.take(MAX_TOKEN_BYTES)
-        .read_to_string(&mut text)
-        .map_err(|_| "the file is not text")?;
+    let text = String::from_utf8(bytes).map_err(|_| "the file is not text")?;
     let token = text.trim();
     if token.is_empty() || token.chars().any(char::is_control) {
         return Err("the file does not hold a token");
@@ -84,24 +68,8 @@ fn read(dir: &Path) -> Result<Option<String>, &'static str> {
 /// Replaces the stored token atomically.
 fn write(dir: &Path, token: &str) -> Result<(), &'static str> {
     paths::ensure_private_dir(dir).map_err(|_| "its directory is not private")?;
-    let tmp = dir.join(format!("{}{}", temporary_prefix(), std::process::id()));
-    let result = (|| -> std::io::Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&tmp)?;
-        f.write_all(token.as_bytes())?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, dir.join(FILE_NAME))?;
-        File::open(dir)?.sync_all()
-    })();
-    result.map_err(|_| {
-        let _ = fs::remove_file(&tmp);
-        "the file cannot be written"
-    })
+    private_file::write_atomic(&dir.join(FILE_NAME), token.as_bytes(), SyncDir::Yes)
+        .map_err(|_| "the file cannot be written")
 }
 
 impl TokenStore for FileTokenStore {
@@ -134,7 +102,7 @@ impl TokenStore for FileTokenStore {
 mod tests {
     use super::*;
     use crate::testing::TempDir;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     #[test]
     fn saves_privately_and_loads_back() {
@@ -207,7 +175,7 @@ mod tests {
         assert_eq!(store.load().as_deref(), Some("synthetic-token"));
 
         // Stale temporaries from a crash are removed.
-        let stale = dir.join(format!("{}999", temporary_prefix()));
+        let stale = dir.join(format!(".{FILE_NAME}.tmp-999"));
         fs::write(&stale, "synthetic-token").unwrap();
         store.load();
         assert!(!stale.exists());

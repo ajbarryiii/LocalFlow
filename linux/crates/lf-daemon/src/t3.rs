@@ -17,14 +17,15 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
+
+use crate::private_file::{self, ModeRule, ReadError};
 
 /// The largest token file accepted.
 pub const MAX_TOKEN_FILE_BYTES: u64 = 4096;
@@ -232,36 +233,21 @@ impl fmt::Debug for Token {
 
 /// Reads and checks the token file (see the module docs).
 pub fn read_token(path: &Path) -> Result<Token, TokenError> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => TokenError::Missing,
-            _ if e.raw_os_error() == Some(libc::ELOOP) => TokenError::NotRegular,
-            kind => TokenError::Io(kind),
-        })?;
-    let meta = file.metadata().map_err(|e| TokenError::Io(e.kind()))?;
-    if !meta.is_file() {
-        return Err(TokenError::NotRegular);
-    }
-    if meta.uid() != crate::paths::euid() {
-        return Err(TokenError::WrongOwner);
-    }
-    if meta.mode() & 0o077 != 0 {
-        return Err(TokenError::Permissions(meta.mode() & 0o7777));
-    }
-    if meta.len() > MAX_TOKEN_FILE_BYTES {
-        return Err(TokenError::TooBig);
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(MAX_TOKEN_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| TokenError::Io(e.kind()))?;
-    if bytes.len() as u64 > MAX_TOKEN_FILE_BYTES {
-        return Err(TokenError::TooBig);
-    }
+    let bytes = match private_file::read_private(path, MAX_TOKEN_FILE_BYTES, ModeRule::NoGroupOther)
+    {
+        Ok(Some(b)) => b,
+        Ok(None) => return Err(TokenError::Missing),
+        Err(ReadError::Open(e)) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(TokenError::NotRegular);
+        }
+        Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
+            return Err(TokenError::Io(e.kind()));
+        }
+        Err(ReadError::NotRegular) => return Err(TokenError::NotRegular),
+        Err(ReadError::WrongOwner) => return Err(TokenError::WrongOwner),
+        Err(ReadError::Mode(mode)) => return Err(TokenError::Permissions(mode)),
+        Err(ReadError::TooLarge) => return Err(TokenError::TooBig),
+    };
     let token = bytes.trim_ascii();
     if token.is_empty() || !token.iter().all(|b| (0x21..=0x7e).contains(b)) {
         return Err(TokenError::Invalid);

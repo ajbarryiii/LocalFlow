@@ -22,9 +22,7 @@
 //!
 //! The daemon owns the file; `localflowctl dict list` reads it the same way.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +32,8 @@ use lf_asr::dictionary::{
 };
 use lf_asr::tokenizer::Tokenizer;
 use serde_json::{Value, json};
+
+use crate::private_file::{self, ModeRule, ReadError, SyncDir};
 
 pub const FILE_NAME: &str = "dictionary.json";
 /// Largest dictionary file read; above what a full dictionary serializes to (DESIGN §2.1).
@@ -287,8 +287,7 @@ impl Store {
             self.faults.dir_syncs -= 1;
             return Err(std::io::Error::other("injected fault"));
         }
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        File::open(dir)?.sync_all()
+        private_file::sync_dir(&self.path)
     }
 
     fn skip_rollback(&self) -> bool {
@@ -411,90 +410,42 @@ pub fn parse(bytes: &[u8], tokenizer: Option<&Tokenizer>) -> Result<Dictionary, 
 /// Reads `path` safely (see the module docs); a missing file is empty.
 pub fn read(path: &Path, tokenizer: Option<&Tokenizer>) -> Result<Dictionary, String> {
     let name = || path.display().to_string();
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Dictionary::default()),
-        Err(e) => return Err(format!("cannot open {}: {e}", name())),
+    let bytes = match private_file::read_private(path, MAX_FILE_BYTES, ModeRule::Exact0600) {
+        Ok(Some(b)) => b,
+        Ok(None) => return Ok(Dictionary::default()),
+        Err(ReadError::Open(e)) => return Err(format!("cannot open {}: {e}", name())),
+        Err(ReadError::Metadata(e)) => return Err(format!("{}: {e}", name())),
+        Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+            return Err(format!(
+                "{} must be a regular file owned by the current user with mode 0600",
+                name()
+            ));
+        }
+        Err(ReadError::TooLarge) => return Err(format!("{} is too large", name())),
+        Err(ReadError::Read(e)) => return Err(format!("cannot read {}: {e}", name())),
     };
-    let meta = file.metadata().map_err(|e| format!("{}: {e}", name()))?;
-    if !meta.is_file() || meta.uid() != crate::paths::euid() || meta.mode() & 0o7777 != 0o600 {
-        return Err(format!(
-            "{} must be a regular file owned by the current user with mode 0600",
-            name()
-        ));
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(format!("{} is too large", name()));
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read {}: {e}", name()))?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err(format!("{} is too large", name()));
-    }
     parse(&bytes, tokenizer).map_err(|why| format!("{} {why}", name()))
-}
-
-fn temporary_prefix() -> String {
-    format!(".{FILE_NAME}.tmp-")
 }
 
 /// Removes temporary dictionary files left by a crash during a write.
 pub fn remove_stale_temporaries(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let prefix = temporary_prefix();
-    for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix)
-            && let Err(e) = fs::remove_file(entry.path())
-        {
-            crate::warn!("dictionary: cannot remove a stale temporary file: {e}");
-        }
+    for e in private_file::remove_stale(dir, FILE_NAME) {
+        crate::warn!("dictionary: cannot remove a stale temporary file: {e}");
     }
 }
 
 /// Writes `bytes` to a new 0600 file next to `path`, syncs it and renames
 /// it over `path`. The caller syncs the directory.
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let dir = path.parent().ok_or("the dictionary path has no parent")?;
-    let tmp = dir.join(format!(
-        "{}{}-{}",
-        temporary_prefix(),
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = (|| -> std::io::Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, path)
-    })();
-    if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("cannot write {}: {e}", path.display()));
-    }
-    Ok(())
+    private_file::write_atomic(path, bytes, SyncDir::No)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::{TempDir, synthetic_tokenizer};
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn setting(t: &TempDir) -> Setting {
         Setting {
