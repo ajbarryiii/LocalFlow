@@ -88,23 +88,26 @@ enum BundleModelLoaderTests {
     }
 
     /// A load that records its calls and whether it ran on the main thread, waits for `gate` when given, and
-    /// returns `result`.
+    /// returns `results[n]` from its nth call (the last one from then on).
     private final class FakeLoad: @unchecked Sendable {
         let calls = Locked<[Bool]>([])
         let bundles = Locked<[URL]>([])
         let gate: DispatchSemaphore?
-        let result: Locked<String?>
+        let results: [String?]
 
-        init(result: String?, gated: Bool = false) {
-            self.result = Locked(result)
+        init(results: [String?], gated: Bool = false) {
+            self.results = results
             gate = gated ? DispatchSemaphore(value: 0) : nil
         }
 
         func callAsFunction(_ bundle: SwipeBundle) -> String? {
-            calls.update { $0.append(Thread.isMainThread) }
+            let call = calls.update { calls in
+                calls.append(Thread.isMainThread)
+                return calls.count - 1
+            }
             bundles.update { $0.append(bundle.directory) }
             gate?.wait()
-            return result.current
+            return results[min(call, results.count - 1)]
         }
     }
 
@@ -113,7 +116,7 @@ enum BundleModelLoaderTests {
         withBundle(manifest(decode)) { directory in
             let loader = BundleModelLoader<String>()
             let installs = Installs()
-            let load = FakeLoad(result: "model")
+            let load = FakeLoad(results: ["model"])
             var installedOnMain: [Bool] = []
             loader.request(directory, load: { load($0) }) { model in
                 installedOnMain.append(Thread.isMainThread)
@@ -136,7 +139,7 @@ enum BundleModelLoaderTests {
         withBundle(manifest(decode)) { directory in
             let loader = BundleModelLoader<String>()
             let installs = Installs()
-            let load = FakeLoad(result: "model", gated: true)
+            let load = FakeLoad(results: ["model"], gated: true)
             for _ in 0 ..< 3 { loader.request(directory, load: { load($0) }) { installs.models.append($0) } }
             TestSupport.expect(TestSupport.waitUntil(timeout: 5) { load.calls.current.count == 1 }, "not loading")
             load.gate?.signal()
@@ -150,7 +153,7 @@ enum BundleModelLoaderTests {
         withBundle(manifest(decode)) { directory in
             let loader = BundleModelLoader<String>()
             let installs = Installs()
-            let load = FakeLoad(result: "model")
+            let load = FakeLoad(results: ["model"])
             loader.request(directory, load: { load($0) }) { installs.models.append($0) }
             TestSupport.expect(TestSupport.waitUntil(timeout: 5) { installs.models == ["model"] }, "not installed")
             loader.request(nil, load: { load($0) }) { installs.models.append($0) }
@@ -170,10 +173,9 @@ enum BundleModelLoaderTests {
         withBundle(manifest(decode)) { directory in
             let loader = BundleModelLoader<String>()
             let installs = Installs()
-            let load = FakeLoad(result: nil)
+            let load = FakeLoad(results: [nil, "model"])
             loader.request(directory, load: { load($0) }) { installs.models.append($0) }
             TestSupport.expect(TestSupport.waitUntil(timeout: 5) { load.calls.current.count == 1 }, "not loading")
-            load.result.update { $0 = "model" }
             // Asking again starts nothing while the failed load is in flight, then loads once it has ended.
             TestSupport.expect(TestSupport.waitUntil(timeout: 5) {
                 loader.request(directory, load: { load($0) }) { installs.models.append($0) }
@@ -189,7 +191,7 @@ enum BundleModelLoaderTests {
         withBundle(nil) { directory in
             let loader = BundleModelLoader<String>()
             let installs = Installs()
-            let load = FakeLoad(result: "model")
+            let load = FakeLoad(results: ["model"])
             loader.request(directory, load: { load($0) }) { installs.models.append($0) }
             TestSupport.expect(!TestSupport.waitUntil(timeout: 0.3) { !installs.models.isEmpty }, "installed without a manifest")
             TestSupport.expectEqual(load.calls.current.count, 0)
