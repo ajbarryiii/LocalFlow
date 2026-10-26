@@ -233,10 +233,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
         if let field, let current, field != current { return action }
         let context = editor.tapPriorContext(now: now)
         guard let prediction = tapPrior?.prediction(context: context) else { return action }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
         let decoder = TapDecoder(touch: TapDecoder.TouchModel(softKeys.touch), rule: TapDecoder.Rule(softKeys.rule))
-        return decoder.resolve(action, x: x, y: y, keys: keys, logPrior: prediction.logProbs, surprise: prediction.surprise)
+        return decoder.resolve(action, x: x, y: y, keys: keyArea.letterKeys, logPrior: prediction.logProbs,
+                               surprise: prediction.surprise)
     }
 
     // MARK: Word autocorrect
@@ -287,9 +286,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// readable (Full Access). The editor declines in a secure field.
     private func autocorrectSetup() -> AutocorrectSetup? {
         guard let autocorrect, sharedSettings() != nil, let keyArea else { return nil }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        return AutocorrectSetup(corrector: autocorrect.corrector,
-                                keys: KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe),
+        return AutocorrectSetup(corrector: autocorrect.corrector, keys: keyArea.letterKeys,
                                 params: autocorrect.params,
                                 secureTextEntry: proxy?.isSecureTextEntry == true,
                                 autocorrectionDisabled: proxy?.autocorrectionType == .no)
@@ -502,9 +499,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// field it touched down in. Samples and words are never logged or kept beyond the strip.
     func keyArea(_ keyArea: KeyAreaView, swiped samples: [SwipeSample], field: UUID?, timestamp: TimeInterval) {
         guard let swipeEngine, proxy?.isSecureTextEntry != true else { return }
-        let metrics = KeyboardMetrics(width: Double(keyArea.bounds.width), height: Double(keyArea.bounds.height))
-        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: keyArea.showsGlobe)
-        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keys), field: field, now: now)
+        editor.insertSwipe(swipeEngine.candidates(for: samples, keys: keyArea.letterKeys), field: field, now: now)
     }
 
     /// Points recorded for autocorrect belong to the old keys (ARCHITECTURE.md, "Word autocorrect").

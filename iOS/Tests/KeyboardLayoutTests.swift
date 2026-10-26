@@ -15,7 +15,7 @@ enum KeyboardLayoutTests {
             ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
             ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
             ("letterPitchIsTheTopRowPitch", testLetterPitchIsTheTopRowPitch),
-            ("pitchFiltersCompared", testPitchFiltersCompared),
+            ("letterIndexIsAToZOnly", testLetterIndexIsAToZOnly),
         ]
     }
 
@@ -259,41 +259,31 @@ extension KeyboardLayoutTests {
         // have no letters, so no pitch.
         for (metrics, globe) in shippedMetrics {
             let letters = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: globe)
-            let pitch = TapDecoder.letterPitch(in: letters)
+            let pitch = KeyboardLayout.letterPitch(in: letters)
             TestSupport.expect(pitch.map { abs($0 - (metrics.letterWidth + metrics.keyGap)) < 1e-9 } == true,
                                "pitch \(String(describing: pitch)) at \(metrics.width)×\(metrics.height)")
             for layer in [KeyboardLayer.numbers, .symbols] {
                 let keys = KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: globe)
-                TestSupport.expectEqual(TapDecoder.letterPitch(in: keys), nil)
+                TestSupport.expectEqual(KeyboardLayout.letterPitch(in: keys), nil)
             }
         }
-        TestSupport.expectEqual(TapDecoder.letterPitch(in: []), nil)
+        TestSupport.expectEqual(KeyboardLayout.letterPitch(in: []), nil)
         // One top-row letter has no pitch.
         let q = keys(.letters).filter { $0.action == .character("q") }
-        TestSupport.expectEqual(TapDecoder.letterPitch(in: q), nil)
+        TestSupport.expectEqual(KeyboardLayout.letterPitch(in: q), nil)
     }
 
-    /// TEMPORARY (removed with the refactor): the swipe threshold's filter (any character key) against the tap
-    /// decoder's (a–z) on every shipped layout and layer.
-    fileprivate static func testPitchFiltersCompared() {
-        func pitch(_ keys: [PlacedKey], _ include: (KeyAction) -> Bool) -> Double? {
-            let letters = keys.filter { include($0.action) }
-            guard let top = letters.map(\.frame.y).min() else { return nil }
-            let centers = letters.filter { $0.frame.y == top }.map(\.frame.midX).sorted()
-            guard centers.count >= 2, let first = centers.first, let last = centers.last, last > first else { return nil }
-            return (last - first) / Double(centers.count - 1)
-        }
-        func character(_ action: KeyAction) -> Bool { if case .character = action { return true }; return false }
-        func letter(_ action: KeyAction) -> Bool { TapDecoder.outputIndex(of: action).map { $0 < 26 } ?? false }
-        for (metrics, globe) in shippedMetrics {
-            let letters = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: globe)
-            TestSupport.expect(pitch(letters, character) != nil && pitch(letters, character) == pitch(letters, letter),
-                               "letters: \(String(describing: pitch(letters, character))) vs \(String(describing: pitch(letters, letter)))")
-            for layer in [KeyboardLayer.numbers, .symbols] {
-                let keys = KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: globe)
-                TestSupport.expect(pitch(keys, letter) == nil, "\(layer): a–z pitch")
-                TestSupport.expect(pitch(keys, character) == pitch(letters, letter), "\(layer): character pitch \(String(describing: pitch(keys, character)))")
-            }
-        }
+    fileprivate static func testLetterIndexIsAToZOnly() {
+        let alphabet = "abcdefghijklmnopqrstuvwxyz".map { KeyAction.character(String($0)).letterIndex }
+        TestSupport.expectEqual(alphabet, Array(0 ..< 26))
+        let others: [KeyAction] = [.character("A"), .character("é"), .character("e\u{301}"), .character("1"),
+                                   .character("ab"), .character(""), .character("'"), .space, .shift, .delete, .returnKey,
+                                   .layer(.numbers), .nextKeyboard]
+        TestSupport.expectEqual(others.map(\.letterIndex), Array(repeating: nil, count: others.count))
+        // The tap prior's columns: the letters, then the space bar.
+        TestSupport.expectEqual(TapDecoder.outputIndex(of: .space), 26)
+        TestSupport.expectEqual(TapDecoder.outputIndex(of: .character("q")), 16)
+        TestSupport.expectEqual(others.filter { $0 != .space }.map { TapDecoder.outputIndex(of: $0) },
+                                Array(repeating: nil, count: others.count - 1))
     }
 }

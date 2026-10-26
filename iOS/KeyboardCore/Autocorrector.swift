@@ -318,10 +318,10 @@ final class Autocorrector: WordCorrecting {
 
     private func layout(for keys: [PlacedKey]) -> Layout? {
         if let layout, layout.keys == keys { return layout }
-        guard let pitch = TapDecoder.letterPitch(in: keys) else { return nil }
+        guard let pitch = KeyboardLayout.letterPitch(in: keys) else { return nil }
         var columns = [Int?](repeating: nil, count: 26)
         for (index, key) in keys.enumerated() {
-            if let column = TapDecoder.outputIndex(of: key.action), column < 26 { columns[column] = index }
+            if let column = key.action.letterIndex { columns[column] = index }
         }
         // The area of the letter and space keys' bounding box: a uniform stray tap.
         let pad = keys.filter { TapDecoder.outputIndex(of: $0.action) != nil }
@@ -330,18 +330,18 @@ final class Autocorrector: WordCorrecting {
         let area = (maxX - minX) * (maxY - minY)
         guard area > 0, area.isFinite else { return nil }
         // Neighbours as `tap.typos.neighbours`: every other letter key within the reach, by key.
-        let letters = keys.indices.filter { TapDecoder.outputIndex(of: keys[$0].action).map { $0 < 26 } ?? false }
+        let letters = keys.indices.filter { keys[$0].action.letterIndex != nil }
         let reach = Self.neighbourReach * pitch
         var near = [Set<Int>](repeating: [], count: 26)
         var counted = [Int](repeating: 0, count: 26)
         for a in letters {
-            let c = TapDecoder.outputIndex(of: keys[a].action)!
+            let c = keys[a].action.letterIndex!
             var labels = Set<Int>()
             var count = 0
             for b in letters where b != a {
                 let dx = keys[a].frame.midX - keys[b].frame.midX, dy = keys[a].frame.midY - keys[b].frame.midY
                 if (dx * dx + dy * dy).squareRoot() <= reach {
-                    labels.insert(TapDecoder.outputIndex(of: keys[b].action)!)
+                    labels.insert(keys[b].action.letterIndex!)
                     count += 1
                 }
             }

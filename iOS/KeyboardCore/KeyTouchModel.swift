@@ -331,7 +331,8 @@ struct KeyTouchModel: Equatable, Sendable {
     mutating func keysChanged(_ keys: [PlacedKey], layer: KeyboardLayer) -> [Effect] {
         self.keys = keys
         self.layer = layer
-        if layer == .letters, let threshold = Self.swipeThreshold(in: keys) { swipeThreshold = threshold }
+        // Half the letter pitch.
+        if layer == .letters, let pitch = KeyboardLayout.letterPitch(in: keys) { swipeThreshold = pitch / 2 }
         var resized = false
         if layer == .letters {
             let frames = keys.map(\.frame)
@@ -445,15 +446,6 @@ struct KeyTouchModel: Equatable, Sendable {
     private func reachesSwipeThreshold(_ touch: Touch, x: Double, y: Double) -> Bool {
         let dx = x - touch.startX, dy = y - touch.startY
         return (dx * dx + dy * dy).squareRoot() >= swipeThreshold
-    }
-
-    /// Half the pitch of the top row's letter keys, or nil without two of them.
-    private static func swipeThreshold(in keys: [PlacedKey]) -> Double? {
-        let letters = keys.filter { $0.action.isCharacter }
-        guard let top = letters.map(\.frame.y).min() else { return nil }
-        let centers = letters.filter { $0.frame.y == top }.map(\.frame.midX).sorted()
-        guard centers.count >= 2, let first = centers.first, let last = centers.last, last > first else { return nil }
-        return (last - first) / Double(centers.count - 1) / 2
     }
 
     /// What a held character types: for a character touch that touched down on a letter key while
