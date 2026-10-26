@@ -24,6 +24,7 @@ struct LocalFlowTests {
         DictionaryTests.run()
         DictionaryAppTests.run()
         StrengthProbeTests.run()
+        OverlayWaveformMetricsTests.run()
         print("LocalFlowTests passed")
     }
 }

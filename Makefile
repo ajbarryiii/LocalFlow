@@ -18,6 +18,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/DictationStats.swift \
 	Sources/PrivacyPermission.swift \
 	Sources/LocalDictationCore.swift \
+	Sources/OverlayWaveformMetrics.swift \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
 	Sources/SetupFlowCore.swift \
