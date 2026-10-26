@@ -53,14 +53,15 @@ final class SpellingTables: @unchecked Sendable, Equatable {
     /// Reads an LFWE file: `badMagic`, `unsupportedVersion`, `wrongSize` for any length but `fileSize`, and
     /// the initializer's checks on the widened values.
     convenience init(data: Data) throws {
-        try WordFileSections.checkHeader(data, magic: "LFWE", version: Self.version, header: Self.headerSize)
+        try LFBinaryFile.checkHeader(data, magic: "LFWE", version: Self.version, header: Self.headerSize,
+                                     as: WordFileError.self)
         guard data.count == Self.fileSize else { throw WordFileError.wrongSize }
         var sections = WordFileSections(header: Self.headerSize)
         let offsets = try Self.rows.map { try sections.next(count: $0 * Self.columns, size: 4) }
         guard sections.end == data.count else { throw WordFileError.wrongSize }
         let tables = data.withUnsafeBytes { raw in
             zip(offsets, Self.rows).map { offset, rows in
-                (0 ..< rows * Self.columns).map { Double(WordFileSections.f32(raw, offset + 4 * $0)) }
+                (0 ..< rows * Self.columns).map { Double(LFBinaryFile.f32(raw, offset + 4 * $0)) }
             }
         }
         try self.init(sub: tables[0], dele: tables[1], ins: tables[2], trans: tables[3])
