@@ -18,6 +18,7 @@ enum ParakeetModelStoreTests {
         testRejectedStoreFallsBackOnce()
         testFirstLoadFailureFallsBack()
         testConcurrentInstalls()
+        testInstallKeepsOtherProcessCopy()
     }
 
     private static func testInstallCopiesBundle() {
@@ -229,6 +230,40 @@ enum ParakeetModelStoreTests {
         TestSupport.expectEqual(entries(scratch.root), [identity(bundle)])
     }
 
+    // Two app processes share the root (two stores here). One install finding no
+    // complete copy must not remove the copy the other finished and handed out
+    // meanwhile: removing it races the other's rename and can leave a partial
+    // copy that passes the completeness check.
+    private static func testInstallKeepsOtherProcessCopy() {
+        let scratch = Scratch(), bundle = scratch.bundle(manifest: "first")
+        let target = scratch.root.appendingPathComponent(identity(bundle)).standardizedFileURL.path
+        let other = ParakeetModelStore(root: scratch.root)
+        let handedOut = Results(), finished = DispatchGroup()
+        let store = ParakeetModelStore(root: scratch.root, afterCheck: {
+            // The other process installs inside this window if it can. A store
+            // that keeps it out makes it wait, so its chance here is bounded.
+            finished.enter()
+            DispatchQueue.global().async {
+                let directory = other.directory(for: bundle)
+                handedOut.append(directory.standardizedFileURL.path)
+                handedOut.append("\(fileNumber(directory.appendingPathComponent(Scratch.weights)) ?? 0)")
+                finished.leave()
+            }
+            _ = finished.wait(timeout: .now() + 1)
+        })
+        TestSupport.expectEqual(store.directory(for: bundle).standardizedFileURL.path, target)
+        finished.wait()
+        let weights = scratch.root.appendingPathComponent(identity(bundle)).appendingPathComponent(Scratch.weights)
+        TestSupport.expectEqual(handedOut.all, [target, "\(fileNumber(weights) ?? 0)"])
+
+        let settled = try! ParakeetModelStore(root: scratch.root).open(bundle: bundle, make: { url -> URL in
+            guard contents(of: url) == contents(of: bundle) else { throw LocalParakeetError.invalid("incomplete") }
+            return url
+        }, prepare: { _ in })
+        TestSupport.expectEqual(settled.standardizedFileURL.path, target)
+        TestSupport.expectEqual(entries(scratch.root), [identity(bundle)])
+    }
+
     private final class Results: @unchecked Sendable {
         private let lock = NSLock()
         private var urls: [String] = []
@@ -271,8 +306,9 @@ enum ParakeetModelStoreTests {
         ((try? files.attributesOfItem(atPath: url.path))?[.systemFileNumber] as? NSNumber)?.uint64Value
     }
 
+    /// Entries other than the store's lock file, which stays in root by design.
     private static func entries(_ directory: URL) -> [String] {
-        ((try? files.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
+        ((try? files.contentsOfDirectory(atPath: directory.path)) ?? []).filter { $0 != ".lock" }.sorted()
     }
 
     /// Regular files by relative path, ignoring the store's hidden bookkeeping.
