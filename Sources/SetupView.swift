@@ -62,11 +62,11 @@ struct SetupView: View {
             Text("No account or API key is needed. Set up microphone access and shortcuts to start dictating.")
                 .foregroundStyle(.secondary)
         case .micPermission:
-            permissionStep(.microphone, granted: micGranted) {
+            permissionStep(.microphone, granted: micGranted) { _ in
                 appState.requestMicrophoneAccess { micGranted = $0 }
             }
         case .accessibility:
-            permissionStep(.accessibility, granted: accessibilityGranted) { appState.openAccessibilitySettings() }
+            permissionStep(.accessibility, granted: accessibilityGranted) { appState.openAccessibilitySettings(from: $0) }
         case .shortcuts:
             Text("Dictation Shortcuts").font(.title).fontWeight(.bold)
             DictationShortcutEditor(onCaptureStateChange: { capturing in
@@ -93,7 +93,7 @@ struct SetupView: View {
         }
     }
 
-    private func permissionStep(_ permission: PrivacyPermission, granted: Bool, action: @escaping () -> Void) -> some View {
+    private func permissionStep(_ permission: PrivacyPermission, granted: Bool, action: @escaping (NSRect?) -> Void) -> some View {
         VStack(spacing: 20) {
             Image(systemName: permission == .microphone ? "mic.fill" : "hand.raised.fill")
                 .font(.system(size: 60)).foregroundStyle(.blue)
@@ -102,7 +102,7 @@ struct SetupView: View {
                 .foregroundStyle(.secondary)
             if granted { Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             else {
-                Button("Grant Access", action: action)
+                GrantAccessButton(action: action)
                 PermissionRepairHint(permission: permission)
             }
         }.multilineTextAlignment(.center)

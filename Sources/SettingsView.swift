@@ -137,10 +137,10 @@ struct GeneralSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
-                    permissionRow(.microphone, granted: micGranted) {
+                    permissionRow(.microphone, granted: micGranted) { _ in
                         appState.requestMicrophoneAccess { micGranted = $0 }
                     }
-                    permissionRow(.accessibility, granted: appState.hasAccessibility) { appState.openAccessibilitySettings() }
+                    permissionRow(.accessibility, granted: appState.hasAccessibility) { appState.openAccessibilitySettings(from: $0) }
                     Text("Screen Recording is not needed for local dictation.").font(.caption).foregroundStyle(.secondary)
                 }
                 SettingsCard("Build", icon: "info.circle.fill") {
@@ -164,13 +164,13 @@ struct GeneralSettingsView: View {
         appState.hasAccessibility = PrivacyPermission.accessibility.isGranted
     }
 
-    private func permissionRow(_ permission: PrivacyPermission, granted: Bool, action: @escaping () -> Void) -> some View {
+    private func permissionRow(_ permission: PrivacyPermission, granted: Bool, action: @escaping (NSRect?) -> Void) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(permission.settingsTitle)
                 Spacer()
                 if granted { Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-                else { Button("Grant Access", action: action) }
+                else { GrantAccessButton(action: action) }
             }
             if !granted { PermissionRepairHint(permission: permission) }
         }

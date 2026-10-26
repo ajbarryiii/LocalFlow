@@ -24,7 +24,9 @@ are not supported by this model bundle yet. The app and model are about
 1. Open the bundled app and complete local setup.
 2. Grant Microphone and Accessibility access. On macOS 27, the Accessibility
    permission pane is named **Device Control and Data Access** under
-   System Settings → Privacy & Security. Screen Recording is not needed.
+   System Settings → Privacy & Security. Grant Access opens that pane with
+   a card beside it: drag LocalFlow from the card into the list. Screen
+   Recording is not needed.
 3. Choose Hold to Talk, Tap to Toggle, and optional Paste Again shortcuts.
 4. Dictate into any text field. LocalFlow transcribes locally and pastes at
    the cursor, optionally restoring the previous clipboard.
@@ -108,4 +110,8 @@ Zach Latta and contributors. The original copyright and MIT license are
 preserved, with attribution included in Settings and every built app bundle.
 Application code retains the [MIT license](LICENSE). Model and adapted
 inference-code licenses and attribution are included in
-[Resources/Parakeet](Resources/Parakeet).
+[Resources/Parakeet](Resources/Parakeet). The Accessibility drag-to-allow card
+is adapted from [Scrawl](https://github.com/kitlangton/scrawl) by Kit Langton
+and [AskForPermission](https://github.com/riko2chen/AskForPermission) by Riko,
+both MIT-licensed; their notices are in
+[Resources/Attribution.txt](Resources/Attribution.txt).

@@ -227,6 +227,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     let hotkeyManager = HotkeyManager()
     let overlayManager = RecordingOverlayManager()
     private var accessibilityTimer: Timer?
+    private var accessibilityPanel: PermissionPanel.Controller?
     private var audioLevelCancellable: AnyCancellable?
     private var debugOverlayTimer: Timer?
     private var recordingInitializationTimer: DispatchSourceTimer?
@@ -531,12 +532,21 @@ final class AppState: ObservableObject, DictationCleanupActions {
         accessibilityTimer = nil
     }
 
-    func openAccessibilitySettings() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        if !trusted {
-            PrivacyPermission.accessibility.openSettings()
+    /// Opens the Accessibility pane with a card beside it to drag this app
+    /// into the list, instead of Apple's prompt. `source` is the Grant Access
+    /// button's frame on screen, where the card flies from.
+    func openAccessibilitySettings(from source: NSRect? = nil) {
+        accessibilityPanel?.cancel()
+        let panel = PermissionPanel.Controller(permission: .accessibility, source: source)
+        panel.onFinish = { [weak self, weak panel] granted in
+            guard let self else { return }
+            if self.accessibilityPanel === panel { self.accessibilityPanel = nil }
+            self.hasAccessibility = PrivacyPermission.accessibility.isGranted
+            // Back to the Setup or Settings window the card flew from.
+            if granted, source != nil { NSApp.activate() }
         }
+        accessibilityPanel = panel
+        panel.start()
     }
 
     func requestMicrophoneAccess(completion: @escaping (Bool) -> Void) {
