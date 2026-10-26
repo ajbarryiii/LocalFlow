@@ -24,9 +24,13 @@ final class ParakeetModelStore: @unchecked Sendable {
     private let lock = NSLock()
     // Set once a store copy is rejected; the bundle is used until relaunch.
     private var disabled = false
+    // Test seam: runs between an install's completeness check and its
+    // replacement of the target. Nil in production.
+    private let afterCheck: (() -> Void)?
 
-    init(root: URL) {
+    init(root: URL, afterCheck: (() -> Void)? = nil) {
         self.root = root
+        self.afterCheck = afterCheck
     }
 
     /// Opens the model with `make` and its first load with `prepare`, from the
@@ -97,6 +101,7 @@ final class ParakeetModelStore: @unchecked Sendable {
             var excluded = root
             try? excluded.setResourceValues(values)
             if isComplete(target, identity: identity) { return true }
+            afterCheck?()
             if files.fileExists(atPath: target.path) { try files.removeItem(at: target) }
             try files.copyItem(at: bundle, to: staging)
             try Data(identity.utf8).write(to: staging.appendingPathComponent(Self.marker))
