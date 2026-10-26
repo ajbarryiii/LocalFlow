@@ -22,6 +22,9 @@
             ./Cargo.toml
             ./Cargo.lock
             ./crates
+            # Shared test vectors, read by the lf-dictation, lf-text and
+            # lf-asr tests.
+            ./testdata
           ];
         };
         cargoLock.lockFile = ./Cargo.lock;
@@ -38,9 +41,17 @@
           pipewire
           wayland
         ];
-        # The test suite needs a private sway, PipeWire and D-Bus session and
-        # runs in the development shell (see AGENTS.md), not in the sandbox.
-        doCheck = false;
+        # The whole workspace's tests run in the sandbox, as in CI. The
+        # integration tests that start a private D-Bus session, headless
+        # sway or PipeWire are skipped here; they run in the development
+        # shell (see AGENTS.md).
+        doCheck = true;
+        cargoTestFlags = [ "--workspace" ];
+        env = {
+          LF_SKIP_DBUS_TESTS = "1";
+          LF_SKIP_COMPOSITOR_TESTS = "1";
+          LF_SKIP_PIPEWIRE_TESTS = "1";
+        };
         meta = {
           description = "Local push-to-talk dictation for Hyprland";
           license = lib.licenses.mit;
