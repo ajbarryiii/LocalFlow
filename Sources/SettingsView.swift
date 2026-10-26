@@ -160,8 +160,8 @@ struct GeneralSettingsView: View {
     }
 
     private func refreshPermissions() {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        appState.hasAccessibility = AXIsProcessTrusted()
+        micGranted = PrivacyPermission.microphone.isGranted
+        appState.hasAccessibility = PrivacyPermission.accessibility.isGranted
     }
 
     private func permissionRow(_ permission: PrivacyPermission, granted: Bool, action: @escaping () -> Void) -> some View {
@@ -172,14 +172,7 @@ struct GeneralSettingsView: View {
                 if granted { Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 else { Button("Grant Access", action: action) }
             }
-            if !granted {
-                Text(permission.enableInstructions(appName: AppName.displayName)).font(.caption).foregroundStyle(.secondary)
-                if permission == .accessibility {
-                    Text(PrivacyPermission.accessibilityRepairInstructions).font(.caption).foregroundStyle(.secondary)
-                    Button("Show This App in Finder") { appState.revealAppForPermissionRepair() }
-                        .accessibilityLabel("Show This App in Finder")
-                }
-            }
+            if !granted { PermissionRepairHint(permission: permission) }
         }
     }
 }

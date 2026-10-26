@@ -91,7 +91,7 @@ struct MenuBarView: View {
             // Accessibility warning
             if !appState.hasAccessibility {
                 Button {
-                    appState.showAccessibilityAlert()
+                    appState.showPermissionAlert(.accessibility)
                 } label: {
                     Label("\(PrivacyPermission.accessibility.settingsTitle) Required", systemImage: "exclamationmark.triangle.fill")
                 }

@@ -103,19 +103,14 @@ struct SetupView: View {
             if granted { Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             else {
                 Button("Grant Access", action: action)
-                Text(permission.enableInstructions(appName: AppName.displayName)).font(.caption).foregroundStyle(.secondary)
-                if permission == .accessibility {
-                    Text(PrivacyPermission.accessibilityRepairInstructions).font(.caption).foregroundStyle(.secondary)
-                    Button("Show This App in Finder") { appState.revealAppForPermissionRepair() }
-                        .accessibilityLabel("Show This App in Finder")
-                }
+                PermissionRepairHint(permission: permission)
             }
         }.multilineTextAlignment(.center)
     }
 
     private func refreshPermissions() {
-        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        accessibilityGranted = AXIsProcessTrusted()
+        micGranted = PrivacyPermission.microphone.isGranted
+        accessibilityGranted = PrivacyPermission.accessibility.isGranted
     }
 
     private var testStep: some View {

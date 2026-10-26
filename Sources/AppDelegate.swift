@@ -24,15 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !appState.hasCompletedSetup {
             showSetupWindow()
         } else {
-            appState.startHotkeyMonitoring()
-            appState.startAccessibilityPolling()
-            Task { @MainActor in
-                UpdateManager.shared.startPeriodicChecks()
-            }
-
-            if !AXIsProcessTrusted() {
-                appState.showAccessibilityAlert()
-            }
+            startBackgroundServices()
         }
 
     }
@@ -178,14 +170,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupWindow?.close()
         setupWindow = nil
         NSApp.setActivationPolicy(.accessory)
+        startBackgroundServices()
+    }
+
+    /// Shortcuts, permission polling and update checks, once setup is complete.
+    private func startBackgroundServices() {
         appState.startHotkeyMonitoring()
         appState.startAccessibilityPolling()
         Task { @MainActor in
             UpdateManager.shared.startPeriodicChecks()
         }
 
-        if !AXIsProcessTrusted() {
-            appState.showAccessibilityAlert()
+        if !PrivacyPermission.accessibility.isGranted {
+            appState.showPermissionAlert(.accessibility)
         }
     }
 }

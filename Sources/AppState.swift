@@ -263,7 +263,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     init() {
         let defaults = UserDefaults.standard
         let dictionaryLoad = Self.loadCustomDictionary()
-        let initialAccessibility = AXIsProcessTrusted()
+        let initialAccessibility = PrivacyPermission.accessibility.isGranted
         var removedAudioFileNames: [String] = []
         do {
             removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
@@ -515,14 +515,14 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func startAccessibilityPolling() {
         accessibilityTimer?.invalidate()
         accessibilityTimer = nil
-        hasAccessibility = AXIsProcessTrusted()
+        hasAccessibility = PrivacyPermission.accessibility.isGranted
         if hasAccessibility {
             return
         }
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.hasAccessibility = AXIsProcessTrusted()
+                self.hasAccessibility = PrivacyPermission.accessibility.isGranted
                 if self.hasAccessibility {
                     self.accessibilityTimer?.invalidate()
                     self.accessibilityTimer = nil
@@ -540,12 +540,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
-            openPrivacySettingsPane(.accessibility)
+            PrivacyPermission.accessibility.openSettings()
         }
-    }
-
-    func openMicrophoneSettings() {
-        openPrivacySettingsPane(.microphone)
     }
 
     func requestMicrophoneAccess(completion: @escaping (Bool) -> Void) {
@@ -565,21 +561,15 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 }
             }
         case .denied, .restricted:
-            openMicrophoneSettings()
+            PrivacyPermission.microphone.openSettings()
             DispatchQueue.main.async {
                 completion(false)
             }
         @unknown default:
-            openMicrophoneSettings()
+            PrivacyPermission.microphone.openSettings()
             DispatchQueue.main.async {
                 completion(false)
             }
-        }
-    }
-
-    private func openPrivacySettingsPane(_ permission: PrivacyPermission) {
-        if !NSWorkspace.shared.open(permission.settingsURL) {
-            NSWorkspace.shared.open(PrivacyPermission.privacySettingsURL)
         }
     }
 
@@ -1030,13 +1020,13 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     private func prepareRecordingStart(triggerMode: RecordingTriggerMode) -> Bool {
         activeRecordingTriggerMode = triggerMode
-        hasAccessibility = AXIsProcessTrusted()
+        hasAccessibility = PrivacyPermission.accessibility.isGranted
         guard hasAccessibility else {
             errorMessage = "\(PrivacyPermission.accessibility.settingsTitle) permission required. \(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))"
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             shortcutSessionController.reset()
-            showAccessibilityAlert()
+            showPermissionAlert(.accessibility)
             return false
         }
         overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
@@ -1084,7 +1074,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.shortcutSessionController.reset()
-                        strongSelf.showMicrophonePermissionAlert()
+                        strongSelf.showPermissionAlert(.microphone)
                     }
                 }
             }
@@ -1094,7 +1084,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             statusText = "No Microphone"
             activeRecordingTriggerMode = nil
                 shortcutSessionController.reset()
-            showMicrophonePermissionAlert()
+            showPermissionAlert(.microphone)
             return false
         }
     }
@@ -1245,7 +1235,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     /// Audio is retained only while suggestions are on.
     private var retainsAudioForCorrection: Bool {
-        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && AXIsProcessTrusted()
+        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && PrivacyPermission.accessibility.isGranted
     }
 
     /// Transcribes the new recording while it is recorded when the model is
@@ -1316,33 +1306,23 @@ final class AppState: ObservableObject, DictationCleanupActions {
         error.localizedDescription
     }
 
-    func showMicrophonePermissionAlert() {
+    func showPermissionAlert(_ permission: PrivacyPermission) {
+        let text = permission.alertText(appName: AppName.displayName)
         let alert = NSAlert()
-        alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "\(AppName.displayName) cannot record audio without Microphone access.\n\n\(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
+        alert.messageText = text.title
+        alert.informativeText = text.message
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: nil)
+        alert.icon = NSImage(systemSymbolName: text.symbolName, accessibilityDescription: nil)
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            openMicrophoneSettings()
-        }
-    }
-
-    func showAccessibilityAlert() {
-        let alert = NSAlert()
-        alert.messageText = "\(PrivacyPermission.accessibility.settingsTitle) Permission Required"
-        alert.informativeText = "\(AppName.displayName) needs this access for global shortcuts and pasting transcribed text.\n\n\(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))\n\n\(PrivacyPermission.accessibilityRepairInstructions)"
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            openAccessibilitySettings()
+            if permission == .accessibility {
+                openAccessibilitySettings()
+            } else {
+                permission.openSettings()
+            }
         }
     }
 
@@ -1725,7 +1705,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// does (one suggestion per dictation).
     private func handleCorrectionEdit(_ edit: CorrectionEdit, isLast: Bool, watch: UInt64) {
         // A full dictionary could not take a new word, so nothing is verified or offered.
-        guard mayPresentCorrectionSuggestion, AXIsProcessTrusted(),
+        guard mayPresentCorrectionSuggestion, PrivacyPermission.accessibility.isGranted,
               customDictionary.dictionary.entries.count < DictionaryValidation.capacity,
               let watched = correctionApp, watched.dictationID == edit.dictationID else {
             stopCorrectionSuggestions()
