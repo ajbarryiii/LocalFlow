@@ -41,8 +41,8 @@ The first Linux release.
   after a finished sentence so consecutive dictations do not run together.
 - A custom dictionary (`localflowctl dict`) that boosts names and jargon
   while decoding and keeps their capitals, and `localflowctl correct`, which
-  suggests a dictionary word after you correct a recent dictation in a
-  picker (rofi, fuzzel, wofi or tofi).
+  suggests a dictionary word after you correct a recent dictation in rofi
+  or wofi. Suggestions can also be reviewed in fuzzel or tofi.
 - Coding agent support: project words (`localflowctl words`), dictionary
   suggestions that you approve with `localflowctl dict review`, an agent
   skill for `[dictated]` prompts, and a T3 Code bridge
