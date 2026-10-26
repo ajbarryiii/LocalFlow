@@ -92,7 +92,9 @@
           homepage = "https://github.com/ajbarryiii/LocalFlow";
           license = lib.licenses.mit;
           mainProgram = "localflowd";
-          platforms = [ system ];
+          # The speech kernels are x86-64 only (AVX-512 and AVX2). Elsewhere
+          # the build succeeds but the daemon cannot load a model.
+          platforms = [ "x86_64-linux" ];
         };
       };
 
