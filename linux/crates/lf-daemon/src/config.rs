@@ -9,6 +9,7 @@ use lf_keyboard::Rmlvo;
 use serde_json::{Map, Value};
 
 use crate::log::Level;
+use crate::private_file::{ReadError, read_regular};
 
 /// Largest accepted config file.
 const MAX_CONFIG_BYTES: u64 = 1 << 20;
@@ -177,23 +178,26 @@ impl Config {
         }
     }
 
-    /// Reads `path`; a missing file yields the defaults.
+    /// Reads `path`; a missing file yields the defaults. Symlinks are
+    /// followed and neither owner nor mode is checked: home-manager links
+    /// the config into the read-only Nix store.
     pub fn load(path: &Path, data_dir: &Path) -> Result<Config, String> {
-        let meta = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Config::defaults(data_dir));
+        let name = || path.display();
+        let bytes = match read_regular(path, MAX_CONFIG_BYTES) {
+            Ok(Some(b)) => b,
+            Ok(None) => return Ok(Config::defaults(data_dir)),
+            // `read_regular` checks neither owner nor mode.
+            Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+                return Err(format!("config {} is not a regular file", name()));
             }
-            Err(e) => return Err(format!("config {}: {e}", path.display())),
+            Err(ReadError::TooLarge) => {
+                return Err(format!("config {} is larger than 1 MiB", name()));
+            }
+            Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
+                return Err(format!("config {}: {e}", name()));
+            }
         };
-        if !meta.is_file() {
-            return Err(format!("config {} is not a regular file", path.display()));
-        }
-        if meta.len() > MAX_CONFIG_BYTES {
-            return Err(format!("config {} is larger than 1 MiB", path.display()));
-        }
-        let bytes = std::fs::read(path).map_err(|e| format!("config {}: {e}", path.display()))?;
-        Config::parse(&bytes, data_dir).map_err(|e| format!("config {}: {e}", path.display()))
+        Config::parse(&bytes, data_dir).map_err(|e| format!("config {}: {e}", name()))
     }
 
     pub fn parse(bytes: &[u8], data_dir: &Path) -> Result<Config, String> {
@@ -834,6 +838,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c, Config::defaults(Path::new("/d")));
+    }
+
+    #[test]
+    fn a_symlinked_read_only_config_loads() {
+        // home-manager installs the config as a symlink into the read-only
+        // Nix store: links are followed and neither owner nor mode matter.
+        let t = crate::testing::TempDir::new("config-link");
+        let target = t.path().join("store-config.json");
+        std::fs::write(&target, br#"{"version": 1, "press_enter": false}"#).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let path = t.path().join("config.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let c = Config::load(&path, Path::new("/d")).unwrap();
+        assert!(!c.press_enter);
+    }
+
+    #[test]
+    fn only_bounded_regular_files_load() {
+        let t = crate::testing::TempDir::new("config-file");
+        let path = t.path().join("config.json");
+
+        // Exactly 1 MiB loads; one byte more does not.
+        let mut body = vec![b' '; MAX_CONFIG_BYTES as usize - 2];
+        body.extend_from_slice(b"{}");
+        std::fs::write(&path, &body).unwrap();
+        assert_eq!(
+            Config::load(&path, Path::new("/d")).unwrap(),
+            Config::defaults(Path::new("/d"))
+        );
+        body.insert(0, b' ');
+        std::fs::write(&path, &body).unwrap();
+        let e = Config::load(&path, Path::new("/d")).unwrap_err();
+        assert!(e.contains("larger than 1 MiB"), "{e}");
+
+        // A directory is refused.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let e = Config::load(&path, Path::new("/d")).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+        std::fs::remove_dir(&path).unwrap();
+
+        // A FIFO is refused without blocking.
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let e = Config::load(&path, Path::new("/d")).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
+
+        // A dangling symlink is a missing file.
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(t.path().join("nowhere"), &path).unwrap();
+        assert_eq!(
+            Config::load(&path, Path::new("/d")).unwrap(),
+            Config::defaults(Path::new("/d"))
+        );
     }
 
     #[test]
