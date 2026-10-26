@@ -52,71 +52,6 @@ enum AppBuild {
     }
 }
 
-private struct PreservedPasteboardEntry {
-    let type: NSPasteboard.PasteboardType
-    let value: Value
-
-    enum Value {
-        case string(String)
-        case propertyList(Any)
-        case data(Data)
-    }
-}
-
-private struct PreservedPasteboardItem {
-    let entries: [PreservedPasteboardEntry]
-
-    init(item: NSPasteboardItem) {
-        self.entries = item.types.compactMap { type in
-            if let string = item.string(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .string(string))
-            }
-            if let propertyList = item.propertyList(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .propertyList(propertyList))
-            }
-            if let data = item.data(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .data(data))
-            }
-            return nil
-        }
-    }
-
-    func makePasteboardItem() -> NSPasteboardItem {
-        let item = NSPasteboardItem()
-        for entry in entries {
-            switch entry.value {
-            case .string(let string):
-                item.setString(string, forType: entry.type)
-            case .propertyList(let propertyList):
-                item.setPropertyList(propertyList, forType: entry.type)
-            case .data(let data):
-                item.setData(data, forType: entry.type)
-            }
-        }
-        return item
-    }
-}
-
-private struct PreservedPasteboardSnapshot {
-    let items: [PreservedPasteboardItem]
-
-    init(pasteboard: NSPasteboard) {
-        self.items = (pasteboard.pasteboardItems ?? []).map(PreservedPasteboardItem.init)
-    }
-
-    func restore(to pasteboard: NSPasteboard) {
-        pasteboard.clearContents()
-        guard !items.isEmpty else { return }
-        _ = pasteboard.writeObjects(items.map { $0.makePasteboardItem() })
-    }
-}
-
-private struct PendingClipboardRestore {
-    let snapshot: PreservedPasteboardSnapshot
-    let expectedChangeCount: Int
-    let writtenTranscript: String
-}
-
 @MainActor
 final class AppState: ObservableObject, DictationCleanupActions {
     private enum ActiveAudioInterruption {
@@ -1670,117 +1605,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
     }
 
-    private func pasteAtCursor() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        let vKeyCode = keyCodeForCharacter("v") ?? 9
-
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
-        keyDown?.flags = .maskCommand
-        keyDown?.post(tap: .cgSessionEventTap)
-
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
-        keyUp?.flags = .maskCommand
-        keyUp?.post(tap: .cgSessionEventTap)
-    }
-
-    private func keyCodeForCharacter(_ character: String) -> CGKeyCode? {
-        guard let char = character.lowercased().utf16.first else { return nil }
-        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-        guard let layoutDataRef = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
-            return nil
-        }
-        let layoutData = unsafeBitCast(layoutDataRef, to: CFData.self) as Data
-        return layoutData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> CGKeyCode? in
-            guard let layout = ptr.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {
-                return nil
-            }
-            for keyCode in UInt16(0)..<UInt16(128) {
-                var chars = [UniChar](repeating: 0, count: 4)
-                var charCount = 0
-                var deadKeyState: UInt32 = 0
-                let status = UCKeyTranslate(
-                    layout, keyCode, UInt16(kUCKeyActionDisplay), 0,
-                    UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysBit),
-                    &deadKeyState, 4, &charCount, &chars
-                )
-                if status == noErr, charCount > 0, chars[0] == char {
-                    return CGKeyCode(keyCode)
-                }
-            }
-            return nil
-        }
-    }
-
-    private func pressEnter() {
-        let source = CGEventSource(stateID: .hidSystemState)
-
-        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true)
-        keyDown?.post(tap: .cgSessionEventTap)
-
-        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
-        keyUp?.post(tap: .cgSessionEventTap)
-    }
-
-    /// Writes the final transcript to the system pasteboard.
-    /// Also handles appending necessary trailing spaces, declaring transient
-    /// types for clipboard managers, and saving the clipboard state for later restoration.
-    /// - Parameter transcript: The text to be pasted.
-    /// - Returns: A `PendingClipboardRestore` object if clipboard preservation is enabled, otherwise nil.
-    /// Append a space when ending with sentence-ending punctuation so the
-    /// next dictation does not jam against the prior period.
-    private static func pasteboardText(for transcript: String) -> String {
-        if let last = transcript.last, ".!?".contains(last) {
-            return transcript + " "
-        }
-        return transcript
-    }
-
+    /// Returns what the clipboard held before, when "Preserve clipboard" is on.
     private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
-        let pasteboard = NSPasteboard.general
-        let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
-
-        let textToWrite = Self.pasteboardText(for: transcript)
-
-        if keepDictationInClipboardHistory {
-            // Plain write so clipboard managers record the dictation in history.
-            pasteboard.clearContents()
-            pasteboard.setString(textToWrite, forType: .string)
-        } else {
-            // Declare standard transient types alongside .string so well-behaved
-            // clipboard managers (Maccy, Raycast, Paste, Clipy, Flycut, etc.) skip
-            // recording this entry in their history. The text still pastes normally
-            // via Cmd-V — only clipboard history is affected.
-            //
-            // See: https://github.com/nicke5012/TransientPasteboardType
-            let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
-            let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-            let autoGeneratedType = NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType")
-            let legacyTransientType = NSPasteboard.PasteboardType("de.petermaurer.TransientPasteboardType")
-
-            pasteboard.declareTypes([
-                .string,
-                transientType,
-                concealedType,
-                autoGeneratedType,
-                legacyTransientType
-            ], owner: nil)
-
-            pasteboard.setString(textToWrite, forType: .string)
-
-            // Populate empty values for the marker types — some clipboard managers
-            // check the data presence rather than just the declared type.
-            pasteboard.setString("", forType: transientType)
-            pasteboard.setString("", forType: concealedType)
-            pasteboard.setString("", forType: autoGeneratedType)
-            pasteboard.setString("", forType: legacyTransientType)
-        }
-
-        guard let snapshot else { return nil }
-        return PendingClipboardRestore(
-            snapshot: snapshot,
-            expectedChangeCount: pasteboard.changeCount,
-            writtenTranscript: textToWrite
-        )
+        ClipboardTransaction.write(transcript, preserve: preserveClipboard, keepInHistory: keepDictationInClipboardHistory,
+                                   on: NSPasteboard.general)
     }
 
     private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
@@ -1789,18 +1617,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         // Some apps consume Cmd-V asynchronously, so restoring too quickly can paste
         // the pre-dictation clipboard instead of the transcript.
         DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-            let pasteboard = NSPasteboard.general
-            // A bare changeCount check is too strict: browsers, iCloud Universal
-            // Clipboard sync, and other background apps bump the change count
-            // without the user copying anything, which left the transcript
-            // stranded on the clipboard. Restore when nothing changed, or when the
-            // clipboard still holds exactly the transcript we wrote (so the user
-            // has not deliberately copied something new that we would clobber).
-            let clipboardStillHoldsTranscript =
-                pasteboard.string(forType: .string) == pendingRestore.writtenTranscript
-            guard pasteboard.changeCount == pendingRestore.expectedChangeCount
-                || clipboardStillHoldsTranscript else { return }
-            pendingRestore.snapshot.restore(to: pasteboard)
+            ClipboardTransaction.restore(pendingRestore, on: NSPasteboard.general)
         }
     }
 
@@ -1830,7 +1647,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             guard let correction, self.isCorrectionSuggestionsEnabled,
                   self.correctionWatcher.isCurrent(correction.watchGeneration) else {
                 if let correction { LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID) }
-                self.pasteAtCursor()
+                SyntheticKeyboard.paste()
                 completion?()
                 return
             }
@@ -1838,7 +1655,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 // CorrectionWatcher completes a capture on the main queue.
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.pasteAtCursor()
+                    SyntheticKeyboard.paste()
                     if let capture, self.isCorrectionSuggestionsEnabled {
                         self.correctionApp = (correction.dictationID, correction.app)
                         self.correctionWatcher.start(capture, pasted: correction.pasted, dictationID: correction.dictationID)
@@ -1877,7 +1694,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
             LocalParakeetService.shared.releaseCorrectionSession(dictationID: dictationID)
             return nil
         }
-        return CorrectionPasteContext(pasted: Self.pasteboardText(for: result.output), dictationID: dictationID,
+        return CorrectionPasteContext(pasted: ClipboardTransaction.pasteText(for: result.output), dictationID: dictationID,
                                       watchGeneration: watchGeneration, app: app)
     }
 
@@ -2048,15 +1865,15 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     private func pressEnterWhenShortcutReleased(completion: (() -> Void)? = nil) {
-        performAfterShortcutReleased { [weak self] in
-            self?.pressEnter()
+        performAfterShortcutReleased {
+            SyntheticKeyboard.press(SyntheticKeyboard.returnKey)
             completion?()
         }
     }
 
     private func pressEnterAfterPaste(completion: (() -> Void)? = nil) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + pressEnterAfterPasteDelay) { [weak self] in
-            self?.pressEnter()
+        DispatchQueue.main.asyncAfter(deadline: .now() + pressEnterAfterPasteDelay) {
+            SyntheticKeyboard.press(SyntheticKeyboard.returnKey)
             completion?()
         }
     }

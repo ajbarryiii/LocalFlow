@@ -16,6 +16,7 @@ struct LocalFlowTests {
         ShortcutCoreTests.run()
         ShortcutStoreTests.run()
         SettingsKeysTests.run()
+        ClipboardTransactionTests.run()
         DoubleTapPromptTests.run()
         DictationCleanupStepsTests.run()
         SemanticVersionTests.run()
