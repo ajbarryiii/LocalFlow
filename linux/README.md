@@ -825,3 +825,9 @@ your dictation key.
     icon comes back. `busctl --user introspect
     org.kde.StatusNotifierItem-$(pgrep -f 'localflowctl tray')-1
     /StatusNotifierItem` lists only state properties.
+
+## License
+
+The Linux implementation (everything under `linux/`) is MIT licensed; see
+[`LICENSE`](LICENSE). The model exports are licensed separately
+(CC-BY-4.0; see [Model](#model)).
