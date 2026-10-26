@@ -319,16 +319,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     /// After an own edit, the editor follows the proxy for the shift every frame for a while.
     private func scheduleService() {
         guard serviceTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.serviceTimer = nil
-                self.editor.service(now: self.now)
-                if self.editor.needsService { self.scheduleService() }
-            }
+        serviceTimer = Timer.mainLoop(after: 1.0 / 60) { [weak self] _ in
+            guard let self else { return }
+            self.serviceTimer = nil
+            self.editor.service(now: self.now)
+            if self.editor.needsService { self.scheduleService() }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        serviceTimer = timer
     }
 
     private func trackpadFinished() {
@@ -358,15 +354,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
             return
         }
         guard undoTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                // A repeating timer outlives its owner unless told otherwise.
-                guard let self else { return timer.invalidate() }
-                self.handle(self.editor.continueUndo(now: self.now))
-            }
+        undoTimer = Timer.mainLoop(after: 1.0 / 60, repeats: true) { [weak self] timer in
+            // A repeating timer outlives its owner unless told otherwise.
+            guard let self else { return timer.invalidate() }
+            self.handle(self.editor.continueUndo(now: self.now))
         }
-        RunLoop.main.add(timer, forMode: .common)
-        undoTimer = timer
     }
 
     /// The undo was made, used or ended: its timers follow, and Undo's availability is published.
@@ -381,15 +373,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     private func scheduleUndoExpiry(insertedAt: TimeInterval) {
         undoExpiry?.timer.invalidate()
-        let timer = Timer(timeInterval: max(insertedAt + UndoTracker.window - now, 0), repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.undoExpiry = nil
-                self.editor.core.expireUndo(now: self.now + 0.001)
-                self.onUndoAvailabilityChanged?()
-            }
+        let timer = Timer.mainLoop(after: max(insertedAt + UndoTracker.window - now, 0)) { [weak self] _ in
+            guard let self else { return }
+            self.undoExpiry = nil
+            self.editor.core.expireUndo(now: self.now + 0.001)
+            self.onUndoAvailabilityChanged?()
         }
-        RunLoop.main.add(timer, forMode: .common)
         undoExpiry = (timer, insertedAt)
     }
 
@@ -412,16 +401,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
             return
         }
         guard tailExpiry == nil else { return }
-        let timer = Timer(timeInterval: max(expiresAt - now, 0), repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.tailExpiry = nil
-                // A model held since then gets the rest of its own lifetime.
-                self.editor.expireTail(now: self.now)
-            }
+        tailExpiry = Timer.mainLoop(after: max(expiresAt - now, 0)) { [weak self] _ in
+            guard let self else { return }
+            self.tailExpiry = nil
+            // A model held since then gets the rest of its own lifetime.
+            self.editor.expireTail(now: self.now)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        tailExpiry = timer
     }
 
     // MARK: KeyAreaViewDelegate
@@ -473,11 +458,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
     private func schedule(_ token: Int, at time: TimeInterval, pressedAt: TimeInterval) {
         // Touch timestamps and CACurrentMediaTime share the same clock.
         let delay = max(time - (now - pressedAt), 0)
-        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.fireDelete(token, pressedAt: pressedAt) }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        deleteTimer = timer
+        deleteTimer = Timer.mainLoop(after: delay) { [weak self] _ in self?.fireDelete(token, pressedAt: pressedAt) }
     }
 
     /// A scheduled deletion: only while its press is current and the field is the one it began in.

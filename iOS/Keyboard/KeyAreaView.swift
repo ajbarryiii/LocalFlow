@@ -475,19 +475,15 @@ final class KeyAreaView: UIView {
 
     private func startHoldTimer(_ id: KeyTouchModel.TouchID) {
         holdTimers.removeValue(forKey: id)?.invalidate()
-        let timer = Timer(timeInterval: trackpadParameters.holdDuration, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.holdTimers[id] = nil
-                let point = self.model.touches.first { $0.id == id }.map { CGPoint(x: $0.x, y: $0.y) }
-                let effects = self.model.holdElapsed(id)
-                if self.model.trackpadTouch == id, let point { self.trackpadLast = point }
-                self.perform(effects, timestamp: CACurrentMediaTime())
-                self.refreshPressed()
-            }
+        holdTimers[id] = Timer.mainLoop(after: trackpadParameters.holdDuration) { [weak self] _ in
+            guard let self else { return }
+            self.holdTimers[id] = nil
+            let point = self.model.touches.first { $0.id == id }.map { CGPoint(x: $0.x, y: $0.y) }
+            let effects = self.model.holdElapsed(id)
+            if self.model.trackpadTouch == id, let point { self.trackpadLast = point }
+            self.perform(effects, timestamp: CACurrentMediaTime())
+            self.refreshPressed()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        holdTimers[id] = timer
     }
 
     private func setBlank(_ blank: Bool) {

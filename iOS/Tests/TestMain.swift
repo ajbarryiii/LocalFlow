@@ -19,6 +19,7 @@ struct LocalFlowIOSTests {
             ("TextInsertionFormatter", TextInsertionFormatterTests.tests),
             ("LocalFlowSettings", LocalFlowSettingsTests.tests),
             ("DarwinNotifier", DarwinNotifierTests.tests),
+            ("MainLoopTimer", MainLoopTimerTests.tests),
             ("DictationSampleBuffer", DictationSampleBufferTests.tests),
             ("HostURLRoute", HostURLRouteTests.tests),
             ("RecentRequestIDs", RecentRequestIDsTests.tests),
