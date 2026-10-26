@@ -12,6 +12,7 @@ enum DictionaryTests {
         testDictionaryRules()
         testStorage()
         testStorageCapacity()
+        testUserDefaultsStorage()
         testGraphHandCases()
         testDecisionHandCases()
         testSurfacesAndBuild()
@@ -229,6 +230,58 @@ enum DictionaryTests {
         let tooMany = "{\"version\":1,\"entries\":[" + (0...DictionaryValidation.capacity)
             .map { "{\"text\":\"w\($0)x\",\"strength\":1}" }.joined(separator: ",") + "]}"
         TestSupport.expect(load(tooMany, nil) == .failure(.unreadable), "More than 1000 entries is corrupt")
+    }
+
+    /// The saved dictionary in UserDefaults, shared by the macOS and iOS apps
+    /// (DESIGN §3.2): fixed key names, and unreadable data is reported, never
+    /// overwritten or removed by loading.
+    private static func testUserDefaultsStorage() {
+        TestSupport.expectEqual(DictionaryStorage.entriesKey, "custom_dictionary")
+        TestSupport.expectEqual(DictionaryStorage.ignoreKey, "custom_dictionary_ignore")
+        TestSupport.expectEqual(DictionaryAppStorage.storageKey, "custom_dictionary_apps")
+
+        TestSupport.withDefaults { defaults in
+            TestSupport.expect(DictionaryStorage.load(from: defaults, encoder: testEncoder) == .success(CustomDictionary()),
+                               "Missing data loads as empty")
+            TestSupport.expect(DictionaryStorage.storedData(forKey: "custom_dictionary", in: defaults) == .success(nil),
+                               "Missing data is not unreadable")
+
+            var dictionary = CustomDictionary()
+            _ = dictionary.upsert(entry("Zorblax", 1.41))
+            _ = dictionary.addIgnore(DictionaryKey("quint"))
+            DictionaryStorage.save(dictionary, to: defaults)
+            let encoded = DictionaryStorage.encode(dictionary)
+            TestSupport.expectEqual(defaults.data(forKey: "custom_dictionary"), encoded.entries)
+            TestSupport.expectEqual(defaults.data(forKey: "custom_dictionary_ignore"), encoded.ignore)
+            TestSupport.expect(DictionaryStorage.load(from: defaults, encoder: testEncoder) == .success(dictionary),
+                               "Saved dictionary loads")
+
+            defaults.set(Data("synthetic apps".utf8), forKey: "custom_dictionary_apps")
+            DictionaryStorage.remove(from: defaults)
+            TestSupport.expect(defaults.object(forKey: "custom_dictionary") == nil, "Entries kept after remove")
+            TestSupport.expect(defaults.object(forKey: "custom_dictionary_ignore") == nil, "Ignore list kept after remove")
+            TestSupport.expectEqual(defaults.data(forKey: "custom_dictionary_apps"), Data("synthetic apps".utf8))
+        }
+
+        let unreadable: [(key: String, value: Any)] = [
+            ("custom_dictionary", Data("not json".utf8)),
+            ("custom_dictionary", "a string, not data"),
+            ("custom_dictionary_ignore", Data(#"["quint"]"#.utf8)),
+            ("custom_dictionary_ignore", 7),
+        ]
+        for (key, value) in unreadable {
+            TestSupport.withDefaults { defaults in
+                defaults.set(value, forKey: key)
+                TestSupport.expect(DictionaryStorage.load(from: defaults, encoder: testEncoder) == .failure(.unreadable),
+                                   "Unreadable \(key) loaded")
+                TestSupport.expect((defaults.object(forKey: key) as AnyObject).isEqual(value), "Loading changed \(key)")
+            }
+        }
+        TestSupport.withDefaults { defaults in
+            defaults.set("a string, not data", forKey: "custom_dictionary_apps")
+            TestSupport.expect(DictionaryStorage.storedData(forKey: "custom_dictionary_apps", in: defaults) == .failure(.unreadable),
+                               "A value of the wrong type is unreadable, never missing")
+        }
     }
 
     /// Whatever `encode` writes must load again (DESIGN §3.2). The ignore list

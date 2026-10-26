@@ -137,11 +137,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     // MARK: Custom dictionary (DESIGN §3.2, §3.6). Entries and corrections are never logged.
 
-    private static let dictionaryStorageKey = "custom_dictionary"
-    private static let dictionaryIgnoreStorageKey = "custom_dictionary_ignore"
-    /// Which words are limited to which apps; macOS only.
-    private static let dictionaryAppsStorageKey = "custom_dictionary_apps"
-
     /// The bundled model's vocabulary, so Settings can reject unencodable entries.
     static let dictionaryEncoder: BPEEncoder? = LocalParakeetService.bundleDirectory.flatMap {
         try? BPEEncoder(vocabularyFile: $0.appendingPathComponent("vocabulary.json"))
@@ -1799,9 +1794,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     /// The explicit recovery for unreadable saved data: removes it and starts empty.
     func resetSavedDictionary() {
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryStorageKey)
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryIgnoreStorageKey)
-        UserDefaults.standard.removeObject(forKey: Self.dictionaryAppsStorageKey)
+        DictionaryStorage.remove(from: .standard)
+        UserDefaults.standard.removeObject(forKey: DictionaryAppStorage.storageKey)
         dictionaryLoadFailed = false
         customDictionary = ScopedDictionary()
         dictionaryDidChange()
@@ -1811,10 +1805,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// unreadable saved data.
     private func applyDictionary(_ updated: ScopedDictionary) {
         guard !dictionaryLoadFailed else { return }
-        let encoded = DictionaryStorage.encode(updated.dictionary)
-        UserDefaults.standard.set(encoded.entries, forKey: Self.dictionaryStorageKey)
-        UserDefaults.standard.set(encoded.ignore, forKey: Self.dictionaryIgnoreStorageKey)
-        UserDefaults.standard.set(DictionaryAppStorage.encode(updated.scopes), forKey: Self.dictionaryAppsStorageKey)
+        DictionaryStorage.save(updated.dictionary, to: .standard)
+        UserDefaults.standard.set(DictionaryAppStorage.encode(updated.scopes), forKey: DictionaryAppStorage.storageKey)
         customDictionary = updated
         dictionaryDidChange()
     }
@@ -1828,17 +1820,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     private static func loadCustomDictionary() -> (dictionary: ScopedDictionary, failed: Bool) {
-        let defaults = UserDefaults.standard
-        let entries = defaults.object(forKey: dictionaryStorageKey)
-        let ignore = defaults.object(forKey: dictionaryIgnoreStorageKey)
-        let apps = defaults.object(forKey: dictionaryAppsStorageKey)
-        // A value of the wrong type is unreadable, never "missing".
-        if [entries, ignore, apps].contains(where: { $0 != nil && !($0 is Data) }) {
-            return (ScopedDictionary(), true)
-        }
-        guard case .success(let dictionary) = DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data,
-                                                                     encoder: dictionaryEncoder),
-              case .success(let scopes) = DictionaryAppStorage.load(apps as? Data, entries: dictionary.entries) else {
+        // Words limited to apps are macOS only, so their key is checked here.
+        guard case .success(let apps) = DictionaryStorage.storedData(forKey: DictionaryAppStorage.storageKey, in: .standard),
+              case .success(let dictionary) = DictionaryStorage.load(from: .standard, encoder: dictionaryEncoder),
+              case .success(let scopes) = DictionaryAppStorage.load(apps, entries: dictionary.entries) else {
             return (ScopedDictionary(), true)
         }
         return (ScopedDictionary(dictionary: dictionary, scopes: scopes), false)

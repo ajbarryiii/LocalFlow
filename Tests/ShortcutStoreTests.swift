@@ -18,13 +18,6 @@ enum ShortcutStoreTests {
         testMenuChoicesFollowValidation()
     }
 
-    static func withDefaults(_ body: (UserDefaults) -> Void) {
-        let name = "LocalFlowTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
-        body(defaults)
-    }
-
     private static let f6 = ShortcutBinding(keyCode: 97, keyDisplay: "F6", modifiers: [.control], kind: .key, preset: nil)
     private static let customF5 = ShortcutBinding(keyCode: 96, keyDisplay: "F5", modifiers: [], kind: .key, preset: nil)
     /// A stored value in the format saved by earlier versions.
@@ -50,7 +43,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testEmptyDefaultsWriteBackHoldAndToggle() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             let loaded = ShortcutStore(defaults: defaults).load()
             TestSupport.expectEqual(loaded.configuration, ShortcutConfiguration(hold: .defaultHold, toggle: .defaultToggle))
             TestSupport.expectEqual(loaded.savedCustom, [:])
@@ -65,7 +58,7 @@ enum ShortcutStoreTests {
 
     private static func testLegacyPresetMigration() {
         for (legacy, preset) in [("rightOption", ShortcutPreset.rightOption), ("f5", .f5), ("fn", .fnKey), ("unknown", .fnKey)] {
-            withDefaults { defaults in
+            TestSupport.withDefaults { defaults in
                 defaults.set(legacy, forKey: "hotkey_option")
                 let loaded = ShortcutStore(defaults: defaults).load()
                 TestSupport.expectEqual(loaded.configuration.hold, preset.binding)
@@ -80,7 +73,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testStoredBindingsWinOverLegacyPreset() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             defaults.set("rightOption", forKey: "hotkey_option")
             defaults.set(Data(#"{"keyCode":63,"keyDisplay":"Fn","modifiers":0,"kind":"modifierKey","preset":"fn"}"#.utf8),
                          forKey: "hold_shortcut")
@@ -97,7 +90,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testStoredCustomBindingIsRemembered() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             // A custom binding without a remembered custom one: it becomes the remembered one.
             defaults.set(Data(storedF6JSON.utf8), forKey: "copy_again_shortcut")
             let loaded = ShortcutStore(defaults: defaults).load()
@@ -105,7 +98,7 @@ enum ShortcutStoreTests {
             TestSupport.expectEqual(loaded.savedCustom, [.copyAgain: f6])
             TestSupport.expectEqual(stored("saved_copy_again_custom_shortcut", in: defaults), f6)
         }
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             // A remembered custom binding stays while a preset is chosen.
             defaults.set(Data(storedF6JSON.utf8), forKey: "saved_hold_custom_shortcut")
             let loaded = ShortcutStore(defaults: defaults).load()
@@ -117,7 +110,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testUnreadableValues() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             let garbage = Data("not a shortcut".utf8)
             for key in ["hold_shortcut", "copy_again_shortcut", "saved_hold_custom_shortcut", "saved_prompt_custom_shortcut"] {
                 defaults.set(garbage, forKey: key)
@@ -136,7 +129,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testNormalizationIsWrittenBack() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             let unnormalized = #"{"keyCode":96,"keyDisplay":"F5","modifiers":0,"kind":"key","exactModifierKeyCodes":[999,61]}"#
             defaults.set(Data(unnormalized.utf8), forKey: "prompt_shortcut")
             defaults.set(Data(unnormalized.utf8), forKey: "saved_toggle_custom_shortcut")
@@ -152,7 +145,7 @@ enum ShortcutStoreTests {
     }
 
     private static func testSaveRoundTrips() {
-        withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             let store = ShortcutStore(defaults: defaults)
             var settings = store.load()
             TestSupport.expectEqual(settings.set(f6, for: .prompt), nil)

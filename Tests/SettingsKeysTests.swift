@@ -48,7 +48,7 @@ enum SettingsKeysTests {
     }
 
     private static func testReadsFallBackToDefaults() {
-        ShortcutStoreTests.withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             TestSupport.expectEqual(defaults[SettingsKeys.preserveClipboard], true)
             TestSupport.expectEqual(defaults[SettingsKeys.keepDictationInClipboardHistory], false)
             TestSupport.expectEqual(defaults[SettingsKeys.soundVolume], 1)
@@ -66,7 +66,7 @@ enum SettingsKeysTests {
     }
 
     private static func testWritesRoundTrip() {
-        ShortcutStoreTests.withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             let date = Date(timeIntervalSince1970: 1_700_000_000)
             defaults[SettingsKeys.spokenNumbers] = false
             defaults[SettingsKeys.shortcutStartDelay] = 0.25
@@ -88,7 +88,7 @@ enum SettingsKeysTests {
     }
 
     private static func testOptionalKeysRemoveOnNil() {
-        ShortcutStoreTests.withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             defaults[SettingsKeys.updateSkippedVersion] = "9.9.9"
             defaults[SettingsKeys.updateSkippedVersion] = nil
             TestSupport.expect(defaults.object(forKey: "updateSkippedVersion") == nil, "nil did not remove the value")
@@ -96,7 +96,7 @@ enum SettingsKeysTests {
     }
 
     private static func testCodableKeys() {
-        ShortcutStoreTests.withDefaults { defaults in
+        TestSupport.withDefaults { defaults in
             TestSupport.expectEqual(defaults[SettingsKeys.voiceMacros], [])
             let macros = [VoiceMacro(command: "synthetic sign off", payload: "Invented closing text")]
             defaults[SettingsKeys.voiceMacros] = macros

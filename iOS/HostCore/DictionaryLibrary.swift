@@ -6,10 +6,6 @@ import Foundation
 /// untouched: the dictionary is empty for decoding and refuses edits until an explicit `reset()`.
 @MainActor
 final class DictionaryLibrary {
-    /// The macOS keys and payloads (`DictionaryStorage`).
-    static let entriesKey = "custom_dictionary"
-    static let ignoreKey = "custom_dictionary_ignore"
-
     private let defaults: UserDefaults
     private let editor: DictionaryEditor
     private(set) var dictionary: CustomDictionary
@@ -22,15 +18,8 @@ final class DictionaryLibrary {
     init(defaults: UserDefaults, encoder: BPEEncoder?) {
         self.defaults = defaults
         editor = DictionaryEditor(encoder: encoder)
-        let entries = defaults.object(forKey: Self.entriesKey)
-        let ignore = defaults.object(forKey: Self.ignoreKey)
-        // A value of the wrong type is unreadable, never "missing".
-        if (entries != nil && !(entries is Data)) || (ignore != nil && !(ignore is Data)) {
-            dictionary = CustomDictionary()
-            loadFailed = true
-            return
-        }
-        switch DictionaryStorage.load(entriesData: entries as? Data, ignoreData: ignore as? Data, encoder: encoder) {
+        // The macOS keys and payloads.
+        switch DictionaryStorage.load(from: defaults, encoder: encoder) {
         case .success(let loaded):
             dictionary = loaded
             loadFailed = false
@@ -70,8 +59,7 @@ final class DictionaryLibrary {
 
     /// The only recovery from unreadable saved data: removes it and starts empty.
     func reset() {
-        defaults.removeObject(forKey: Self.entriesKey)
-        defaults.removeObject(forKey: Self.ignoreKey)
+        DictionaryStorage.remove(from: defaults)
         loadFailed = false
         dictionary = CustomDictionary()
         changed()
@@ -93,9 +81,7 @@ final class DictionaryLibrary {
         guard !loadFailed else { return Self.resetFirstMessage }
         switch result {
         case .success(let updated):
-            let encoded = DictionaryStorage.encode(updated)
-            defaults.set(encoded.entries, forKey: Self.entriesKey)
-            defaults.set(encoded.ignore, forKey: Self.ignoreKey)
+            DictionaryStorage.save(updated, to: defaults)
             dictionary = updated
             changed()
             return nil

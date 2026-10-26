@@ -198,3 +198,40 @@ enum DictionaryStorage {
         return (entries, ignore)
     }
 }
+
+/// The dictionary in UserDefaults, under the same keys on macOS and iOS.
+/// Callers must not save over data that failed to load: it stays untouched
+/// until an explicit `remove`.
+extension DictionaryStorage {
+    static let entriesKey = "custom_dictionary"
+    static let ignoreKey = "custom_dictionary_ignore"
+
+    /// The data under `key`, nil when nothing is stored. A value of the wrong
+    /// type is unreadable, never "missing".
+    static func storedData(forKey key: String, in defaults: UserDefaults) -> Result<Data?, DictionaryStorageError> {
+        guard let value = defaults.object(forKey: key) else { return .success(nil) }
+        guard let data = value as? Data else { return .failure(.unreadable) }
+        return .success(data)
+    }
+
+    /// Reads and validates the saved dictionary; never writes.
+    static func load(from defaults: UserDefaults, encoder: BPEEncoder?) -> Result<CustomDictionary, DictionaryStorageError> {
+        guard case .success(let entries) = storedData(forKey: entriesKey, in: defaults),
+              case .success(let ignore) = storedData(forKey: ignoreKey, in: defaults) else {
+            return .failure(.unreadable)
+        }
+        return load(entriesData: entries, ignoreData: ignore, encoder: encoder)
+    }
+
+    static func save(_ dictionary: CustomDictionary, to defaults: UserDefaults) {
+        let encoded = encode(dictionary)
+        defaults.set(encoded.entries, forKey: entriesKey)
+        defaults.set(encoded.ignore, forKey: ignoreKey)
+    }
+
+    /// The explicit recovery for unreadable saved data.
+    static func remove(from defaults: UserDefaults) {
+        defaults.removeObject(forKey: entriesKey)
+        defaults.removeObject(forKey: ignoreKey)
+    }
+}

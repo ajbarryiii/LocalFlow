@@ -222,6 +222,8 @@ struct ScopedDictionaryEditor {
 /// `{"apps":[{"id":…,"name":…}],"version":1,"words":[{"apps":[…],"key":…}]}`.
 /// Loading validates everything; any failure rejects the whole dictionary.
 enum DictionaryAppStorage {
+    /// macOS only; iOS has no per-app words.
+    static let storageKey = "custom_dictionary_apps"
     static let version = 1
     /// Above the largest payload `encode` can produce: 32 apps and 1000
     /// words of 300-scalar keys, each in every app.

@@ -1,6 +1,14 @@
 import Foundation
 
 enum TestSupport {
+    /// A fresh UserDefaults suite, removed when `body` returns.
+    static func withDefaults(_ body: (UserDefaults) -> Void) {
+        let name = "LocalFlowTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        body(defaults)
+    }
+
     static func expect(
         _ condition: @autoclosure () -> Bool,
         _ message: String,
