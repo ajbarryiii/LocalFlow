@@ -134,7 +134,7 @@ private struct PromptTagField: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Prompt tag")
-                TextField(AppState.defaultPromptTag, text: $text)
+                TextField(SettingsKeys.promptTag.defaultValue, text: $text)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .focused($isFocused)
@@ -156,7 +156,7 @@ private struct PromptTagField: View {
 
     private func commit() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tag = trimmed.isEmpty ? AppState.defaultPromptTag : trimmed
+        let tag = trimmed.isEmpty ? SettingsKeys.promptTag.defaultValue : trimmed
         text = tag
         if appState.promptTag != tag {
             appState.promptTag = tag

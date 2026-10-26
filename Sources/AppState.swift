@@ -124,27 +124,12 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     private let shortcutStore = ShortcutStore(defaults: .standard)
-    private let promptTagStorageKey = "prompt_tag"
-    private let selectedMicrophoneStorageKey = "selected_microphone_id"
-    private let shortcutStartDelayStorageKey = "shortcut_start_delay"
-    private let preserveClipboardStorageKey = "preserve_clipboard"
-    private let keepDictationInClipboardHistoryStorageKey = "keep_dictation_in_clipboard_history"
-    private let pressEnterVoiceCommandStorageKey = "press_enter_voice_command_enabled"
-    private let doubleTapPromptStorageKey = "double_tap_prompt_enabled"
-    private let spokenDelimitersStorageKey = "spoken_delimiters_enabled"
-    private let spokenNumbersStorageKey = "spoken_numbers_enabled"
-    private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
-    private let soundVolumeStorageKey = "sound_volume"
-    private let voiceMacrosStorageKey = "voice_macros"
-    private let dictationAudioInterruptionEnabledStorageKey = "dictation_audio_interruption_enabled"
     private let pasteAfterShortcutReleaseDelay: TimeInterval = 0.03
     private let pressEnterAfterPasteDelay: TimeInterval = 0.08
     private let clipboardRestoreDelay: TimeInterval = 1.0
     let maxPipelineHistoryCount = 20
     @Published var hasCompletedSetup: Bool {
-        didSet {
-            UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
-        }
+        didSet { UserDefaults.standard[SettingsKeys.hasCompletedSetup] = hasCompletedSetup }
     }
 
     /// Changed only through `setShortcut`, which validates and persists.
@@ -159,45 +144,30 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     /// Placed before dictations started with the prompt shortcut.
     @Published var promptTag: String {
-        didSet {
-            UserDefaults.standard.set(promptTag, forKey: promptTagStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.promptTag] = promptTag }
     }
 
-    static let defaultPromptTag = "[dictated]"
-
     @Published var shortcutStartDelay: TimeInterval {
-        didSet {
-            UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.shortcutStartDelay] = shortcutStartDelay }
     }
 
     @Published var dictationAudioInterruptionEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(
-                dictationAudioInterruptionEnabled,
-                forKey: dictationAudioInterruptionEnabledStorageKey
-            )
-        }
+        didSet { UserDefaults.standard[SettingsKeys.dictationAudioInterruption] = dictationAudioInterruptionEnabled }
     }
 
     @Published var preserveClipboard: Bool {
-        didSet {
-            UserDefaults.standard.set(preserveClipboard, forKey: preserveClipboardStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.preserveClipboard] = preserveClipboard }
     }
 
     @Published var keepDictationInClipboardHistory: Bool {
-        didSet {
-            UserDefaults.standard.set(keepDictationInClipboardHistory, forKey: keepDictationInClipboardHistoryStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.keepDictationInClipboardHistory] = keepDictationInClipboardHistory }
     }
 
     /// Double-tap Hold to Talk for prompt mode; off by default. While on, a Hold to
     /// Talk recording shorter than 0.3 s is discarded untranscribed.
     @Published var isDoubleTapPromptEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(isDoubleTapPromptEnabled, forKey: doubleTapPromptStorageKey)
+            UserDefaults.standard[SettingsKeys.doubleTapPrompt] = isDoubleTapPromptEnabled
             doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
         }
     }
@@ -207,41 +177,27 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private var holdReleasesInFlight = 0
 
     @Published var isPressEnterVoiceCommandEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isPressEnterVoiceCommandEnabled, forKey: pressEnterVoiceCommandStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.pressEnterVoiceCommand] = isPressEnterVoiceCommandEnabled }
     }
 
     @Published var isSpokenDelimitersEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isSpokenDelimitersEnabled, forKey: spokenDelimitersStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.spokenDelimiters] = isSpokenDelimitersEnabled }
     }
 
     @Published var isSpokenNumbersEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isSpokenNumbersEnabled, forKey: spokenNumbersStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.spokenNumbers] = isSpokenNumbersEnabled }
     }
 
     @Published var alertSoundsEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(alertSoundsEnabled, forKey: alertSoundsEnabledStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.alertSoundsEnabled] = alertSoundsEnabled }
     }
 
     @Published var soundVolume: Float {
-        didSet {
-            UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.soundVolume] = soundVolume }
     }
 
     @Published var voiceMacros: [VoiceMacro] = [] {
-        didSet {
-            if let data = try? JSONEncoder().encode(voiceMacros) {
-                UserDefaults.standard.set(data, forKey: voiceMacrosStorageKey)
-            }
-        }
+        didSet { UserDefaults.standard[SettingsKeys.voiceMacros] = voiceMacros }
     }
 
     // MARK: Custom dictionary (DESIGN §3.2, §3.6). Entries and corrections are never logged.
@@ -250,7 +206,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private static let dictionaryIgnoreStorageKey = "custom_dictionary_ignore"
     /// Which words are limited to which apps; macOS only.
     private static let dictionaryAppsStorageKey = "custom_dictionary_apps"
-    private static let correctionSuggestionsStorageKey = "correction_suggestions_enabled"
 
     /// The bundled model's vocabulary, so Settings can reject unencodable entries.
     static let dictionaryEncoder: BPEEncoder? = LocalParakeetService.bundleDirectory.flatMap {
@@ -264,7 +219,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     /// Watch pasted dictations for corrections. On by default; turning it off is remembered.
     @Published var isCorrectionSuggestionsEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(isCorrectionSuggestionsEnabled, forKey: Self.correctionSuggestionsStorageKey)
+            UserDefaults.standard[SettingsKeys.correctionSuggestions] = isCorrectionSuggestionsEnabled
             if !isCorrectionSuggestionsEnabled {
                 stopCorrectionSuggestions()
                 overlayManager.withdrawDictionarySuggestion()
@@ -302,13 +257,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
         return DictionaryApp(id: id, name: app.localizedName)
     }
 
-    private static let dictationStatsStorageKey = "dictation_stats"
-    @Published private(set) var dictationStats = AppState.loadDictationStats() {
-        didSet {
-            if let data = try? JSONEncoder().encode(dictationStats) {
-                UserDefaults.standard.set(data, forKey: Self.dictationStatsStorageKey)
-            }
-        }
+    @Published private(set) var dictationStats = UserDefaults.standard[SettingsKeys.dictationStats] {
+        didSet { UserDefaults.standard[SettingsKeys.dictationStats] = dictationStats }
     }
 
     @Published var isRecording = false {
@@ -339,9 +289,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     @Published var selectedMicrophoneID: String {
-        didSet {
-            UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
-        }
+        didSet { UserDefaults.standard[SettingsKeys.selectedMicrophoneID] = selectedMicrophoneID }
     }
     @Published var availableMicrophones: [AudioDevice] = []
 
@@ -378,44 +326,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private let postTranscriptionUpdateReminderDuration: TimeInterval = 7
 
     init() {
-        let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let promptTag = UserDefaults.standard.string(forKey: promptTagStorageKey) ?? Self.defaultPromptTag
-        let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
-        let preserveClipboard = UserDefaults.standard.object(forKey: preserveClipboardStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
-        let keepDictationInClipboardHistory = UserDefaults.standard.bool(forKey: keepDictationInClipboardHistoryStorageKey)
-        let dictationAudioInterruptionEnabled = UserDefaults.standard.bool(
-            forKey: dictationAudioInterruptionEnabledStorageKey
-        )
-        let isDoubleTapPromptEnabled = UserDefaults.standard.bool(forKey: doubleTapPromptStorageKey)
-        let isPressEnterVoiceCommandEnabled = UserDefaults.standard.object(forKey: pressEnterVoiceCommandStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: pressEnterVoiceCommandStorageKey)
-        let isSpokenDelimitersEnabled = UserDefaults.standard.object(forKey: spokenDelimitersStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: spokenDelimitersStorageKey)
-        let isSpokenNumbersEnabled = UserDefaults.standard.object(forKey: spokenNumbersStorageKey) == nil
-            ? true
-            : UserDefaults.standard.bool(forKey: spokenNumbersStorageKey)
-        let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
-            ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
-        let alertSoundsEnabled = UserDefaults.standard.object(forKey: alertSoundsEnabledStorageKey) != nil
-            ? UserDefaults.standard.bool(forKey: alertSoundsEnabledStorageKey)
-            : soundVolume > 0
-
-        let initialMacros: [VoiceMacro]
-        if let data = UserDefaults.standard.data(forKey: "voice_macros"),
-           let decoded = try? JSONDecoder().decode([VoiceMacro].self, from: data) {
-            initialMacros = decoded
-        } else {
-            initialMacros = []
-        }
-
+        let defaults = UserDefaults.standard
         let dictionaryLoad = Self.loadCustomDictionary()
-        // On unless the user turned it off.
-        let isCorrectionSuggestionsEnabled = UserDefaults.standard.object(forKey: Self.correctionSuggestionsStorageKey) as? Bool ?? true
-
         let initialAccessibility = AXIsProcessTrusted()
         var removedAudioFileNames: [String] = []
         do {
@@ -428,30 +340,30 @@ final class AppState: ObservableObject, DictationCleanupActions {
         }
         let savedHistory = pipelineHistoryStore.loadAllHistory()
 
-        let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
-
-        self.hasCompletedSetup = hasCompletedSetup
+        self.hasCompletedSetup = defaults[SettingsKeys.hasCompletedSetup]
         self.shortcuts = shortcutStore.load()
-        self.promptTag = promptTag
-        self.shortcutStartDelay = shortcutStartDelay
-        self.preserveClipboard = preserveClipboard
-        self.keepDictationInClipboardHistory = keepDictationInClipboardHistory
-        self.dictationAudioInterruptionEnabled = dictationAudioInterruptionEnabled
-        self.isPressEnterVoiceCommandEnabled = isPressEnterVoiceCommandEnabled
+        self.promptTag = defaults[SettingsKeys.promptTag]
+        self.shortcutStartDelay = max(0, defaults[SettingsKeys.shortcutStartDelay])
+        self.preserveClipboard = defaults[SettingsKeys.preserveClipboard]
+        self.keepDictationInClipboardHistory = defaults[SettingsKeys.keepDictationInClipboardHistory]
+        self.dictationAudioInterruptionEnabled = defaults[SettingsKeys.dictationAudioInterruption]
+        self.isPressEnterVoiceCommandEnabled = defaults[SettingsKeys.pressEnterVoiceCommand]
+        let isDoubleTapPromptEnabled = defaults[SettingsKeys.doubleTapPrompt]
         self.isDoubleTapPromptEnabled = isDoubleTapPromptEnabled
         self.doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
-        self.isSpokenDelimitersEnabled = isSpokenDelimitersEnabled
-        self.isSpokenNumbersEnabled = isSpokenNumbersEnabled
-        self.alertSoundsEnabled = alertSoundsEnabled
+        self.isSpokenDelimitersEnabled = defaults[SettingsKeys.spokenDelimiters]
+        self.isSpokenNumbersEnabled = defaults[SettingsKeys.spokenNumbers]
+        let soundVolume = defaults[SettingsKeys.soundVolume]
+        self.alertSoundsEnabled = defaults[SettingsKeys.alertSoundsEnabled] ?? (soundVolume > 0)
         self.soundVolume = soundVolume
-        self.voiceMacros = initialMacros
+        self.voiceMacros = defaults[SettingsKeys.voiceMacros]
         self.customDictionary = dictionaryLoad.dictionary
         self.dictionaryLoadFailed = dictionaryLoad.failed
-        self.isCorrectionSuggestionsEnabled = isCorrectionSuggestionsEnabled
+        self.isCorrectionSuggestionsEnabled = defaults[SettingsKeys.correctionSuggestions]
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
-        self.selectedMicrophoneID = selectedMicrophoneID
+        self.selectedMicrophoneID = defaults[SettingsKeys.selectedMicrophoneID]
 
         refreshAvailableMicrophones()
         installAudioDeviceObservers()
@@ -1632,14 +1544,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     func resetDictationStats() {
         dictationStats = DictationStats()
-    }
-
-    private static func loadDictationStats() -> DictationStats {
-        guard let data = UserDefaults.standard.data(forKey: dictationStatsStorageKey),
-              let stats = try? JSONDecoder().decode(DictationStats.self, from: data) else {
-            return DictationStats()
-        }
-        return stats
     }
 
     /// Reads only the file header. Called off the main thread during transcription.

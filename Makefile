@@ -20,6 +20,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/LocalDictationCore.swift \
 	Sources/PipelineHistoryItem.swift \
 	Sources/PipelineHistoryStore.swift \
+	Sources/SettingsKeys.swift \
 	Sources/SetupFlowCore.swift \
 	Sources/SpokenNumberFormatter.swift \
 	Sources/Dictionary/BiasGraph.swift \

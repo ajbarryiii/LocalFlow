@@ -67,9 +67,9 @@ struct DictationPaceView: View {
 struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var updateManager = UpdateManager.shared
-    @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
-    @AppStorage("use_compact_overlay") private var useCompactOverlay = true
-    @AppStorage("overlay_display_id") private var overlayDisplayID = 0
+    @AppStorage(SettingsKeys.showMenuBarIcon.name) private var showMenuBarIcon = SettingsKeys.showMenuBarIcon.defaultValue
+    @AppStorage(SettingsKeys.useCompactOverlay.name) private var useCompactOverlay = SettingsKeys.useCompactOverlay.defaultValue
+    @AppStorage(SettingsKeys.overlayDisplayID.name) private var overlayDisplayID = SettingsKeys.overlayDisplayID.defaultValue
     @State private var micGranted = false
     private let permissionRefresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 

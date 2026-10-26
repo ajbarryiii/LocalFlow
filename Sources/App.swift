@@ -4,7 +4,7 @@ import SwiftUI
 @main
 struct LocalFlowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
+    @AppStorage(SettingsKeys.showMenuBarIcon.name) private var showMenuBarIcon = SettingsKeys.showMenuBarIcon.defaultValue
 
     var body: some Scene {
         MenuBarExtra(isInserted: $showMenuBarIcon) {
