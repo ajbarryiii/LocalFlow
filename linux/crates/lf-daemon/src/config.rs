@@ -9,6 +9,7 @@ use lf_keyboard::Rmlvo;
 use serde_json::{Map, Value};
 
 use crate::log::Level;
+use crate::private_file::{ReadError, read_regular};
 
 /// Largest accepted config file.
 const MAX_CONFIG_BYTES: u64 = 1 << 20;
@@ -177,23 +178,26 @@ impl Config {
         }
     }
 
-    /// Reads `path`; a missing file yields the defaults.
+    /// Reads `path`; a missing file yields the defaults. Symlinks are
+    /// followed and neither owner nor mode is checked: home-manager links
+    /// the config into the read-only Nix store.
     pub fn load(path: &Path, data_dir: &Path) -> Result<Config, String> {
-        let meta = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Config::defaults(data_dir));
+        let name = || path.display();
+        let bytes = match read_regular(path, MAX_CONFIG_BYTES) {
+            Ok(Some(b)) => b,
+            Ok(None) => return Ok(Config::defaults(data_dir)),
+            // `read_regular` checks neither owner nor mode.
+            Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+                return Err(format!("config {} is not a regular file", name()));
             }
-            Err(e) => return Err(format!("config {}: {e}", path.display())),
+            Err(ReadError::TooLarge) => {
+                return Err(format!("config {} is larger than 1 MiB", name()));
+            }
+            Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
+                return Err(format!("config {}: {e}", name()));
+            }
         };
-        if !meta.is_file() {
-            return Err(format!("config {} is not a regular file", path.display()));
-        }
-        if meta.len() > MAX_CONFIG_BYTES {
-            return Err(format!("config {} is larger than 1 MiB", path.display()));
-        }
-        let bytes = std::fs::read(path).map_err(|e| format!("config {}: {e}", path.display()))?;
-        Config::parse(&bytes, data_dir).map_err(|e| format!("config {}: {e}", path.display()))
+        Config::parse(&bytes, data_dir).map_err(|e| format!("config {}: {e}", name()))
     }
 
     pub fn parse(bytes: &[u8], data_dir: &Path) -> Result<Config, String> {
