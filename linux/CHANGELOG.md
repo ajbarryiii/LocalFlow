@@ -5,7 +5,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Linux
 releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-26
 
 The first Linux release.
 
@@ -62,6 +62,5 @@ The first Linux release.
   the portal trigger, and the key bind examples.
 - A systemd user unit, a desktop file and key bind examples in `packaging/`
   for installing by hand.
-<!-- Pending: replace "Unreleased" with the tag date (YYYY-MM-DD) and add the
-     link below when linux-v0.1.0 is tagged:
-     [0.1.0]: https://github.com/ajbarryiii/LocalFlow/releases/tag/linux-v0.1.0 -->
+
+[0.1.0]: https://github.com/ajbarryiii/LocalFlow/releases/tag/linux-v0.1.0
