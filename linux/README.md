@@ -235,6 +235,49 @@ sent; never audio or text. Up to 8 watchers can connect (more get
 `error busy`); one that stops reading is disconnected so it cannot delay
 key handling. `watch` exits as soon as whatever reads its output goes away.
 
+### Run as a service
+
+The flake's package (`nix build ./linux`) installs, besides
+`bin/localflowd` and `bin/localflowctl`:
+
+- `share/systemd/user/localflowd.service`, also reachable through
+  `lib/systemd/user/` where NixOS looks: a user unit that runs this
+  package's `localflowd` with the graphical session. Its comments say which
+  environment it needs (see also [The systemd unit](#the-systemd-unit)).
+- `share/applications/com.ajbarryiii.localflow.desktop`: names LocalFlow
+  for `"trigger": "portal"` (see "Desktop portal" under "Dictation key").
+- `share/doc/localflow/examples/`: the key binds for Hyprland, sway, niri
+  and river (see "Dictation key").
+
+On NixOS, with this flake as the input `localflow`:
+
+```nix
+{
+  environment.systemPackages = [ localflow.packages.x86_64-linux.default ];
+  systemd.packages = [ localflow.packages.x86_64-linux.default ];
+  # Starts it in every user's graphical session.
+  systemd.user.services.localflowd.wantedBy = [ "graphical-session.target" ];
+}
+```
+
+`systemd.packages` only makes the unit available; NixOS does not apply its
+`[Install]` section, so `wantedBy` enables it. Avoid
+`systemctl --user enable localflowd` there: the link it makes points into
+`/nix/store` and breaks once that path is garbage collected.
+
+With Home Manager (26.05 or later for `systemd.user.packages`), with `pkg`
+being the same package:
+
+```nix
+{
+  home.packages = [ pkg ];
+  systemd.user.packages = [ pkg ];
+  # Home Manager does not apply [Install] either; this link enables it.
+  xdg.configFile."systemd/user/graphical-session.target.wants/localflowd.service".source =
+    "${pkg}/share/systemd/user/localflowd.service";
+}
+```
+
 ### Waybar indicator
 
 `localflowctl watch --waybar` prints one JSON object per change for a
@@ -375,7 +418,8 @@ value up to 4096 bytes; every other request stays within 256 bytes.
 does, every 200 ms for up to 5 s).
 
 Key binds (see "Dictation key"), a desktop file and a systemd user unit are
-in `packaging/`. None is installed automatically.
+in `packaging/`. The Nix package installs all three (the binds as
+examples); see [Run as a service](#run-as-a-service).
 
 ### Coding agents
 
@@ -587,10 +631,12 @@ is typed through the RemoteDesktop portal instead (see "GNOME and KDE
 Plasma (portal)" under "Text output and desktops"). The portal trigger
 also works on compositors that have the protocol (Hyprland, below).
 
-1. Copy `packaging/com.ajbarryiii.localflow.desktop` to
-   `~/.local/share/applications/`. The daemon registers the app ID
-   `com.ajbarryiii.localflow` (xdg-desktop-portal 1.19 or later), and the
-   desktop names it from this file.
+1. Install `packaging/com.ajbarryiii.localflow.desktop`: the Nix package
+   does, once it is in your profile (`environment.systemPackages` or
+   `home.packages`); otherwise copy it to `~/.local/share/applications/`.
+   The daemon registers the app ID `com.ajbarryiii.localflow`
+   (xdg-desktop-portal 1.19 or later), and the desktop names it from this
+   file.
 2. Set `"trigger": "portal"` and restart `localflowd`. On first start the
    desktop asks you to accept two shortcuts and choose their keys:
    - "Hold to dictate" (`hold-to-talk`): hold to talk and Hold to Prompt;

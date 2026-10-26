@@ -1,6 +1,6 @@
 # Names LocalFlow for the desktop's global shortcuts dialog when the daemon
-# runs with "trigger": "portal" (its app ID is this file's name). Not
-# installed automatically:
+# runs with "trigger": "portal" (its app ID is this file's name). The Nix
+# package installs it in share/applications; without the package, copy it:
 #   cp linux/packaging/com.ajbarryiii.localflow.desktop ~/.local/share/applications/
 # Hidden from app launchers; the daemon runs as a systemd user unit.
 [Desktop Entry]

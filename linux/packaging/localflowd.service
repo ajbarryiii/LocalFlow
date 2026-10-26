@@ -1,6 +1,9 @@
 # LocalFlow dictation daemon, as a systemd user unit.
 #
-# Not installed automatically. To try it:
+# The Nix package installs it with ExecStart set to the package's
+# localflowd; see "Run as a service" in linux/README.md to enable it. To use
+# it without the package, copy it from the source tree and set ExecStart
+# below to where localflowd is installed:
 #   cp linux/packaging/localflowd.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user start localflowd
@@ -20,7 +23,8 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
-# Adjust to where localflowd is installed (a Nix package path in Phase 5).
+# Where localflowd is installed. The Nix package replaces this line with its
+# own path, and its build fails if the line changes.
 ExecStart=%h/.local/bin/localflowd
 Restart=on-failure
 RestartSec=2
