@@ -24,6 +24,7 @@ enum KeyTouchModelTests {
             ("fieldChangeBindsOrEndsFingers", testFieldChangeBindsOrEndsFingers),
             ("fieldChangeDropsHeldCharacters", testFieldChangeDropsHeldCharacters),
             ("swipeThresholdIsHalfALetterPitch", testSwipeThresholdIsHalfALetterPitch),
+            ("swipeThresholdFollowsOnlyTheLettersLayer", testSwipeThresholdFollowsOnlyTheLettersLayer),
             ("dragPastTheThresholdBecomesASwipe", testDragPastTheThresholdBecomesASwipe),
             ("swipeNeedsEveryCondition", testSwipeNeedsEveryCondition),
             ("swipeThresholdBoundary", testSwipeThresholdBoundary),
@@ -413,6 +414,25 @@ extension KeyTouchModelTests {
         _ = landscape.keysChanged(KeyboardLayout.keys(for: .letters, metrics: compact, showsGlobe: true), layer: .letters)
         TestSupport.expect(abs(landscape.swipeThreshold - (compact.letterWidth + compact.keyGap) / 2) < 1e-9,
                            "landscape threshold \(landscape.swipeThreshold)")
+    }
+
+    fileprivate static func testSwipeThresholdFollowsOnlyTheLettersLayer() {
+        // Half the letter pitch on every shipped layout; the other layers keep the letters' threshold.
+        for (metrics, globe) in KeyboardLayoutTests.shippedMetrics {
+            var model = KeyTouchModel()
+            _ = model.keysChanged(KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: globe), layer: .letters)
+            let half = (metrics.letterWidth + metrics.keyGap) / 2
+            TestSupport.expect(abs(model.swipeThreshold - half) < 1e-9, "threshold \(model.swipeThreshold) at \(metrics.width)")
+            let other = KeyboardMetrics(width: metrics.width + 100, height: metrics.height)
+            for layer in [KeyboardLayer.numbers, .symbols] {
+                _ = model.keysChanged(KeyboardLayout.keys(for: layer, metrics: other, showsGlobe: globe), layer: layer)
+                TestSupport.expect(abs(model.swipeThreshold - half) < 1e-9, "\(layer) moved the threshold")
+            }
+        }
+        // Without a letter pitch the threshold stays as it was.
+        var empty = KeyTouchModel()
+        _ = empty.keysChanged([], layer: .letters)
+        TestSupport.expectEqual(empty.swipeThreshold, .infinity)
     }
 
     fileprivate static func testDragPastTheThresholdBecomesASwipe() {
