@@ -9,14 +9,14 @@
 //! place with one rename, so the destination never holds a partial export.
 //! The daemon itself never downloads anything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CString, OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, IsTerminal};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::Duration;
@@ -396,32 +396,75 @@ fn outside_store(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Fails unless `dir` (canonical) and every directory above it are owned
-/// by this user or root and not writable by others, or sticky (like
-/// `/tmp`). Otherwise another user could swap the staging directory or the
-/// destination between the checks and the rename.
-fn trusted(dir: &Path) -> Result<(), Error> {
-    for d in dir.ancestors() {
-        let m = fs::symlink_metadata(d).map_err(io("inspect", d))?;
-        let owner_ok = m.uid() == paths::euid() || m.uid() == 0;
-        let others_write = m.mode() & 0o022 != 0 && m.mode() & libc::S_ISVTX == 0;
-        if !owner_ok || others_write || !m.is_dir() {
-            return Err(Error::Untrusted(d.to_owned()));
-        }
+/// Fails unless `dir` is a directory owned by this user or root and not
+/// writable by others, or sticky (like `/tmp`).
+fn trusted_dir(dir: &Path, m: &fs::Metadata) -> Result<(), Error> {
+    let owner_ok = m.uid() == paths::euid() || m.uid() == 0;
+    let others_write = m.mode() & 0o022 != 0 && m.mode() & libc::S_ISVTX == 0;
+    if !owner_ok || others_write || !m.is_dir() {
+        return Err(Error::Untrusted(dir.to_owned()));
     }
     Ok(())
 }
 
-/// [`trusted`] for every existing directory on the way to `path` as
-/// written, each resolved: a symlink along it is only as safe as the
-/// directory holding it, which resolving `path` alone would skip.
+/// Most symlinks followed on one path (Linux's own limit).
+const MAX_SYMLINKS: usize = 40;
+
+/// Resolves the absolute `path` one component at a time, as the kernel
+/// does, and fails with [`Error::Untrusted`] at the first directory passed
+/// through (symlink targets included) that another user could change:
+/// such a user could swap the staging directory or the destination, or
+/// repoint a symlink, between the checks and the rename. Components that
+/// do not exist yet end the walk (they will be created in a checked one).
 fn trusted_path(path: &Path) -> Result<(), Error> {
-    for p in path.ancestors() {
-        match p.canonicalize() {
-            Ok(c) => trusted(&c)?,
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(io("resolve", p)(e)),
+    fn push_front(rest: &mut VecDeque<OsString>, p: &Path) {
+        for c in p.components().rev() {
+            match c {
+                Component::Normal(n) => rest.push_front(n.to_owned()),
+                Component::ParentDir => rest.push_front("..".into()),
+                Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+            }
         }
+    }
+    let mut rest = VecDeque::new();
+    push_front(&mut rest, path);
+    let root = PathBuf::from("/");
+    let mut at = root.clone();
+    trusted_dir(&at, &fs::symlink_metadata(&at).map_err(io("inspect", &at))?)?;
+    let mut links = 0;
+    while let Some(name) = rest.pop_front() {
+        if name == ".." {
+            at.pop();
+            continue;
+        }
+        let next = at.join(&name);
+        let m = match fs::symlink_metadata(&next) {
+            Ok(m) => m,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io("inspect", &next)(e)),
+        };
+        if m.file_type().is_symlink() {
+            links += 1;
+            if links > MAX_SYMLINKS {
+                return Err(Error::Io(format!("{}: too many symlinks", path.display())));
+            }
+            let target = fs::read_link(&next).map_err(io("read", &next))?;
+            if target.is_absolute() {
+                at = root.clone();
+            }
+            push_front(&mut rest, &target);
+            continue;
+        }
+        if !m.is_dir() {
+            // Only the last component may be something else (a file the
+            // caller replaces).
+            return match rest.is_empty() {
+                true => Ok(()),
+                false => Err(Error::Io(format!("{} is not a directory", next.display()))),
+            };
+        }
+        trusted_dir(&next, &m)?;
+        at = next;
     }
     Ok(())
 }
@@ -563,7 +606,7 @@ pub fn install(
         .map_err(|e| write_error("create", parent, e))?;
     let parent = parent.canonicalize().map_err(io("resolve", parent))?;
     outside_store(&parent)?;
-    trusted(&parent)?;
+    trusted_path(&parent)?;
     let staging = Staging::new(&parent, name)?;
     if existed {
         // Found out before the download, not after.
@@ -1247,6 +1290,22 @@ mod tests {
         assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
         assert!(fake.urls.is_empty());
         assert!(entries(&mine).is_empty());
+        // The same link reached through a symlink of ours.
+        let chain = t.path().join("chain");
+        std::os::unix::fs::symlink(shared.join("link"), &chain).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        let r = install(&pins, &chain.join("model"), false, &mut fake, &cancel);
+        assert_eq!(r, Err(Error::Untrusted(shared.canonicalize().unwrap())));
+        assert!(entries(&mine).is_empty());
+        // A symlink of ours to a directory of ours is fine.
+        let direct = t.path().join("direct");
+        std::os::unix::fs::symlink(&mine, &direct).unwrap();
+        let mut fake = Fake::new(&pins, &files);
+        assert_eq!(
+            install(&pins, &direct.join("model"), false, &mut fake, &cancel),
+            Ok(Outcome::Installed)
+        );
+        assert_holds(&mine.join("model"), &files);
         // A matching export another user could change is not "installed".
         place(&shared.join("export"), &files);
         let ours = t.path().join("ours");
