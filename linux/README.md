@@ -729,7 +729,10 @@ also shared with the Swift app. `lf-text` (the dictionary text rules and
 the BPE tokenizer, with no model code) runs its encoding, validation, key
 and phrase sections, `lf-asr` the bias graph and decision rule, and
 `lf-dictation` (which depends on `lf-text`, not on `lf-asr`) the casing
-and correction sections. The picker tests use fake rofi, fuzzel, wofi and
+and correction sections. Chunked transcription (pause shortening, the 15 s
+windows and how their transcripts are joined) is pinned by
+`testdata/chunking-vectors.json`, run by `lf-chunk` and the Swift app; its
+expected values come from the Swift implementation. The picker tests use fake rofi, fuzzel, wofi and
 tofi scripts that record their arguments, environment, configuration and
 stdin; one also checks that the installed rofi reads the generated
 configuration back (it is skipped when rofi is not on `PATH`). The tray is

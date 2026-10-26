@@ -112,7 +112,7 @@ pub const STAMP_MAX_AGE: Duration = Duration::from_secs(2);
 
 use lf_asr::dictionary::{self as rules, DEFAULT_STRENGTH};
 use lf_dictation::correction::correction_candidates;
-use lf_io_api::{IoError, SAMPLE_RATE};
+use lf_io_api::{AudioSink, IoError, SAMPLE_RATE};
 
 use crate::capture::{Call, CaptureEvent, CapturePort, Done};
 
@@ -163,6 +163,10 @@ enum CheckState {
 /// Where the controller sends recognition jobs.
 pub trait JobSink: Send {
     fn submit(&mut self, job: Job);
+
+    /// Where the capture delivers recording `id`'s audio: to the worker as
+    /// [`JobKind::Audio`] jobs (see [`AudioJobs`]).
+    fn audio_sink(&self, id: u64, cancel: Arc<CancelToken>, limit: usize) -> Box<dyn AudioSink>;
 }
 
 impl JobSink for Sender<Job> {
@@ -170,6 +174,59 @@ impl JobSink for Sender<Job> {
         // If the worker has exited, the daemon is shutting down.
         let _ = self.send(job);
     }
+
+    fn audio_sink(&self, id: u64, cancel: Arc<CancelToken>, limit: usize) -> Box<dyn AudioSink> {
+        let jobs = self.clone();
+        Box::new(AudioJobs::new(id, cancel, limit, move |job| {
+            let _ = jobs.send(job);
+        }))
+    }
+}
+
+/// Hands a recording's audio to the worker, on the capture's thread: each
+/// block becomes a [`JobKind::Audio`] job, so the worker transcribes every
+/// chunk as soon as it is complete. At most `limit` samples are sent (the
+/// longest recording), and nothing once the recording is cancelled.
+pub struct AudioJobs<F> {
+    id: u64,
+    cancel: Arc<CancelToken>,
+    left: usize,
+    submit: F,
+}
+
+impl<F: FnMut(Job) + Send> AudioJobs<F> {
+    pub fn new(id: u64, cancel: Arc<CancelToken>, limit: usize, submit: F) -> Self {
+        AudioJobs {
+            id,
+            cancel,
+            left: limit,
+            submit,
+        }
+    }
+}
+
+impl<F: FnMut(Job) + Send> AudioSink for AudioJobs<F> {
+    fn audio(&mut self, samples: &[f32]) {
+        let n = samples.len().min(self.left);
+        if n == 0 || self.cancel.is_cancelled() {
+            return;
+        }
+        self.left -= n;
+        (self.submit)(Job {
+            id: self.id,
+            cancel: Arc::clone(&self.cancel),
+            kind: JobKind::Audio(Audio::new(samples[..n].to_vec())),
+        });
+    }
+}
+
+/// The job of the recording being captured: begun when it starts, finished
+/// or ended when it stops.
+struct Dictation {
+    id: u64,
+    cancel: Arc<CancelToken>,
+    /// The revision of the dictionary (without project words) at the start.
+    base: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -249,6 +306,8 @@ pub struct Controller {
     waiting: VecDeque<(Request, Responder)>,
     jobs: Box<dyn JobSink>,
     phase: Phase,
+    /// The current recording's job, from `start` until it stops.
+    dictation: Option<Dictation>,
     model_ready: bool,
     next_id: u64,
     limits: Limits,
@@ -354,6 +413,7 @@ impl Controller {
             waiting: VecDeque::new(),
             jobs,
             phase: Phase::Idle,
+            dictation: None,
             model_ready: false,
             next_id: 1,
             limits,
@@ -1173,10 +1233,40 @@ impl Controller {
             prompt,
             tap_eligible: false,
         };
+        // The recording is transcribed while it is captured, with the
+        // dictionary as it is now.
+        let id = self.next_id;
+        self.next_id += 1;
+        let cancel = Arc::new(CancelToken::default());
+        let base = self.dictionary_snapshot().revision;
+        let dictionary = self.transcription_snapshot();
+        self.jobs.submit(Job {
+            id,
+            cancel: Arc::clone(&cancel),
+            kind: JobKind::Begin { dictionary },
+        });
+        let sink = self.jobs.audio_sink(
+            id,
+            Arc::clone(&cancel),
+            Limits::samples(self.limits.max_recording),
+        );
+        self.dictation = Some(Dictation { id, cancel, base });
         // Done when audio flows (seconds, for a sleeping device); see
         // `started`.
-        self.capture.send(self.generation, Call::Start);
+        self.capture.send(self.generation, Call::Start(sink));
         Ok(())
+    }
+
+    /// Drops the current recording's job: its audio and partial transcript.
+    fn end_dictation(&mut self) {
+        if let Some(d) = self.dictation.take() {
+            d.cancel.cancel();
+            self.jobs.submit(Job {
+                id: d.id,
+                cancel: d.cancel,
+                kind: JobKind::End,
+            });
+        }
     }
 
     /// `start` returned. The recording window counts from now, not from
@@ -1197,6 +1287,7 @@ impl Controller {
         if let Err(e) = result {
             // The capture thread already closed the stream.
             self.phase = Phase::Idle;
+            self.end_dictation();
             self.resume_media();
             self.session.reset();
             crate::error!("microphone capture failed to start: {e}");
@@ -1252,11 +1343,12 @@ impl Controller {
         Ok(None)
     }
 
-    /// `stop` returned: discards a recording too short or empty (arming the
-    /// tap it may be), or queues recognition.
+    /// `stop` returned (with how many samples the recording delivered):
+    /// discards a recording too short or empty (arming the tap it may be),
+    /// or has the worker finish its transcription.
     fn stopped(
         &mut self,
-        result: Result<Audio, IoError>,
+        result: Result<usize, IoError>,
         done: Instant,
     ) -> Result<Option<Note>, ErrorCode> {
         let Phase::Stopping {
@@ -1270,9 +1362,10 @@ impl Controller {
         else {
             unreachable!("only called while stopping");
         };
-        let mut audio = match result {
-            Ok(a) => a,
+        let samples = match result {
+            Ok(n) => n,
             Err(e) => {
+                self.end_dictation();
                 self.resume_media();
                 crate::error!("microphone capture failed: {e}");
                 return Err(ErrorCode::Capture);
@@ -1282,10 +1375,10 @@ impl Controller {
             "recording stopped after {:.2?}",
             now.saturating_duration_since(since)
         );
-        let discarded = if audio.is_empty() {
+        let discarded = if samples == 0 {
             crate::info!("recording was empty; discarded");
             Some(Note::Empty)
-        } else if audio.len() < Limits::samples(self.limits.min_recording) {
+        } else if samples < Limits::samples(self.limits.min_recording) {
             crate::info!("recording shorter than the minimum; discarded");
             Some(Note::TooShort)
         } else {
@@ -1302,27 +1395,22 @@ impl Controller {
             self.resume_media();
         }
         if discarded.is_some() {
+            self.end_dictation();
             if tap.is_some() {
                 self.tap = tap;
             }
             return Ok(discarded);
         }
         let now = done;
-        audio.truncate(Limits::samples(self.limits.max_recording));
-        let id = self.next_id;
-        self.next_id += 1;
-        let cancel = Arc::new(CancelToken::default());
+        let Some(Dictation { id, cancel, base }) = self.dictation.take() else {
+            unreachable!("a recording always has its job");
+        };
         self.expire_link(now);
-        let base = self.dictionary_snapshot().revision;
-        let dictionary = self.transcription_snapshot();
+        // Its audio (capped at max_recording by the sink) is all queued.
         self.jobs.submit(Job {
             id,
             cancel: Arc::clone(&cancel),
-            kind: JobKind::Transcribe {
-                audio,
-                prompt,
-                dictionary,
-            },
+            kind: JobKind::Finish { prompt },
         });
         self.phase = Phase::Busy {
             id,
@@ -1347,6 +1435,7 @@ impl Controller {
             | Phase::Stopping { generation, .. } => {
                 // Runs after a call in flight; its late result is dropped.
                 self.capture.send(generation, Call::Cancel);
+                self.end_dictation();
                 // The audio is discarded, so resuming before the stream
                 // has closed cannot reach a dictation.
                 self.resume_media();
@@ -1574,7 +1663,7 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::Inline;
+    use crate::capture::{CallKind, Inline};
     use crate::session::Mode;
     use crate::testing::{FakeCapture, TempDir};
     use std::sync::Mutex;
@@ -1586,11 +1675,97 @@ mod tests {
         fn submit(&mut self, job: Job) {
             self.0.lock().unwrap().push(job);
         }
+
+        fn audio_sink(
+            &self,
+            id: u64,
+            cancel: Arc<CancelToken>,
+            limit: usize,
+        ) -> Box<dyn AudioSink> {
+            let jobs = self.clone();
+            Box::new(AudioJobs::new(id, cancel, limit, move |job| {
+                jobs.0.lock().unwrap().push(job);
+            }))
+        }
+    }
+
+    /// A job's kind, for comparing job sequences.
+    fn kind(k: &JobKind) -> &'static str {
+        match k {
+            JobKind::Begin { .. } => "begin",
+            JobKind::Audio(_) => "audio",
+            JobKind::Finish { .. } => "finish",
+            JobKind::End => "end",
+            JobKind::Retype(_) => "retype",
+            JobKind::Verify(_) => "verify",
+        }
+    }
+
+    /// One recording's jobs, as the worker gets them.
+    struct Dictated {
+        id: u64,
+        dictionary: Arc<Snapshot>,
+        /// Samples of its audio jobs.
+        samples: usize,
+        /// `Some(prompt)` if it finished, `None` if it ended.
+        finish: Option<bool>,
     }
 
     impl Jobs {
         fn take(&self) -> Vec<Job> {
             std::mem::take(&mut *self.0.lock().unwrap())
+        }
+
+        /// The jobs of the last recording queued since the last take:
+        /// `Begin`, its audio, then `Finish` or `End`. Recordings before it
+        /// (taps) must have ended.
+        fn dictation(&self) -> Dictated {
+            let mut earlier = self.take();
+            let last = earlier
+                .iter()
+                .rposition(|j| matches!(j.kind, JobKind::Begin { .. }))
+                .expect("no recording");
+            let jobs = earlier.split_off(last);
+            // Earlier recordings were discarded: each began and ended.
+            for begin in earlier
+                .iter()
+                .filter(|j| matches!(j.kind, JobKind::Begin { .. }))
+            {
+                assert!(
+                    earlier
+                        .iter()
+                        .any(|j| j.id == begin.id && matches!(j.kind, JobKind::End)),
+                    "an earlier recording did not end"
+                );
+            }
+            let kinds: Vec<_> = jobs.iter().map(|j| kind(&j.kind)).collect();
+            let id = jobs[0].id;
+            assert!(jobs.iter().all(|j| j.id == id), "{kinds:?}");
+            let mut d = Dictated {
+                id,
+                dictionary: Arc::default(),
+                samples: 0,
+                finish: None,
+            };
+            let (mut begun, mut over) = (false, false);
+            for job in jobs {
+                assert!(!over, "{kinds:?}");
+                match job.kind {
+                    JobKind::Begin { dictionary } if !begun => {
+                        begun = true;
+                        d.dictionary = dictionary;
+                    }
+                    JobKind::Audio(a) if begun => d.samples += a.len(),
+                    JobKind::Finish { prompt } if begun => {
+                        over = true;
+                        d.finish = Some(prompt);
+                    }
+                    JobKind::End if begun => over = true,
+                    _ => panic!("{kinds:?}"),
+                }
+            }
+            assert!(over, "{kinds:?}");
+            d
         }
     }
 
@@ -1682,16 +1857,12 @@ mod tests {
         assert_eq!(r.c.status().mode, Some(Mode::Hold));
         assert_eq!(r.note(Command::Release), None);
         assert_eq!(r.state(), State::Transcribing);
-        let jobs = r.jobs.take();
-        assert_eq!(jobs.len(), 1);
-        assert!(
-            matches!(&jobs[0].kind, JobKind::Transcribe { audio: s, prompt: false, .. } if s.len() == SECOND)
-        );
-        r.c.handle_worker(WorkerEvent::Typing(jobs[0].id)).unwrap();
+        let d = r.jobs.dictation();
+        assert_eq!((d.samples, d.finish), (SECOND, Some(false)));
+        r.c.handle_worker(WorkerEvent::Typing(d.id)).unwrap();
         assert_eq!(r.state(), State::Typing);
         let typed = r.typed("synthetic");
-        r.c.handle_worker(WorkerEvent::Done(jobs[0].id, typed))
-            .unwrap();
+        r.c.handle_worker(WorkerEvent::Done(d.id, typed)).unwrap();
         assert_eq!(r.state(), State::Idle);
         assert_eq!(r.c.last_output.as_deref(), Some("synthetic"));
     }
@@ -1758,7 +1929,9 @@ mod tests {
         assert!(!r.cap.state().recording);
         // The release that follows a cancelled hold does nothing.
         assert_eq!(r.note(Command::Release), Some(Note::Ignored));
-        assert!(r.jobs.take().is_empty());
+        // Its transcription ended with it.
+        let d = r.jobs.dictation();
+        assert_eq!((d.samples, d.finish), (0, None));
 
         r.note(Command::Toggle);
         assert_eq!(r.note(Command::Cancel), Some(Note::Cancelled));
@@ -1791,6 +1964,46 @@ mod tests {
         assert_eq!(r.state(), State::Idle);
     }
 
+    /// The capture's audio goes to the worker as it arrives, capped at the
+    /// maximum length, and stops once the recording is cancelled.
+    #[test]
+    fn audio_goes_to_the_worker_as_it_is_captured() {
+        let mut r = rig();
+        r.cap.state().samples = Vec::new();
+        r.note(Command::Toggle);
+        r.cap.push(&[0.1; 1600]);
+        r.cap.push(&[0.1; 800]);
+        let jobs = r.jobs.take();
+        let kinds: Vec<_> = jobs.iter().map(|j| kind(&j.kind)).collect();
+        assert_eq!(kinds, ["begin", "audio", "audio"]);
+        let audio: Vec<usize> = jobs
+            .iter()
+            .filter_map(|j| match &j.kind {
+                JobKind::Audio(a) => Some(a.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(audio, [1600, 800]);
+        // Ten seconds at most.
+        r.cap.push(&vec![0.1; SECOND * 10]);
+        let JobKind::Audio(a) = &r.jobs.take()[0].kind else {
+            panic!("not audio");
+        };
+        assert_eq!(a.len(), SECOND * 10 - 2400);
+        r.cap.push(&[0.1; 100]);
+        assert!(r.jobs.take().is_empty(), "past the maximum");
+        assert_eq!(r.note(Command::Cancel), Some(Note::Cancelled));
+        let jobs = r.jobs.take();
+        assert!(matches!(
+            jobs[..],
+            [Job {
+                kind: JobKind::End,
+                ..
+            }]
+        ));
+        assert!(jobs[0].cancel.is_cancelled());
+    }
+
     #[test]
     fn short_and_empty_recordings_are_discarded() {
         let mut r = rig();
@@ -1803,12 +2016,14 @@ mod tests {
         r.note(Command::Toggle);
         assert_eq!(r.note(Command::Toggle), Some(Note::Empty));
         assert_eq!(r.state(), State::Idle);
-        assert!(r.jobs.take().is_empty());
+        // Both transcriptions ended; nothing was finished.
+        let kinds: Vec<_> = r.jobs.take().iter().map(|j| kind(&j.kind)).collect();
+        assert_eq!(kinds, ["begin", "audio", "end", "begin", "end"]);
 
         r.cap.state().samples = vec![0.1; SECOND * 3 / 10];
         r.note(Command::Press);
         assert_eq!(r.note(Command::Release), None);
-        assert_eq!(r.jobs.take().len(), 1);
+        assert_eq!(r.jobs.dictation().finish, Some(false));
     }
 
     #[test]
@@ -1915,10 +2130,9 @@ mod tests {
         r.c.tick(deadline);
         assert_eq!(r.state(), State::Transcribing);
         assert_eq!(r.c.session.active_mode(), None);
-        let job = r.jobs.take().pop().unwrap();
-        assert!(
-            matches!(&job.kind, JobKind::Transcribe { audio: s, prompt: false, .. } if s.len() == SECOND * 10)
-        );
+        // The worker hears only the first max_recording of it.
+        let d = r.jobs.dictation();
+        assert_eq!((d.samples, d.finish), (SECOND * 10, Some(false)));
         // The toggle that would have stopped it now does nothing.
         assert_eq!(r.note(Command::Toggle), Some(Note::Ignored));
     }
@@ -1942,7 +2156,9 @@ mod tests {
         c.handle_command(Command::Press, t);
         c.handle_command(Command::Release, t);
         assert_eq!(c.status().state, State::Transcribing);
-        assert_eq!(jobs.take().len(), 1);
+        // Queued for the worker, which runs them once the model is ready.
+        let d = jobs.dictation();
+        assert_eq!((d.samples, d.finish), (SECOND, Some(false)));
         c.handle_worker(WorkerEvent::ModelReady).unwrap();
         assert!(c.status().model_ready);
         assert!(c.handle_worker(WorkerEvent::Fatal("x".into())).is_err());
@@ -2196,14 +2412,9 @@ mod tests {
         }
     }
 
-    /// The prompt flag of the single queued transcription job.
+    /// The prompt flag of the single finished recording.
     fn job_prompt(r: &Rig) -> bool {
-        let jobs = r.jobs.take();
-        assert_eq!(jobs.len(), 1);
-        match &jobs[0].kind {
-            JobKind::Transcribe { prompt, .. } => *prompt,
-            _ => panic!("not a transcription"),
-        }
+        r.jobs.dictation().finish.expect("not finished")
     }
 
     #[test]
@@ -2222,15 +2433,12 @@ mod tests {
             reply.to_line(),
             "localflow/1 ok state=transcribing tag=prompt model=ready\n"
         );
-        let jobs = r.jobs.take();
-        let JobKind::Transcribe { prompt: true, .. } = jobs[0].kind else {
-            panic!("not a prompt job");
-        };
-        r.c.handle_worker(WorkerEvent::Typing(jobs[0].id)).unwrap();
+        let d = r.jobs.dictation();
+        assert_eq!(d.finish, Some(true), "not a prompt job");
+        r.c.handle_worker(WorkerEvent::Typing(d.id)).unwrap();
         assert!(prompt(&r) && r.state() == State::Typing);
         let typed = r.typed("[dictated] synthetic");
-        r.c.handle_worker(WorkerEvent::Done(jobs[0].id, typed))
-            .unwrap();
+        r.c.handle_worker(WorkerEvent::Done(d.id, typed)).unwrap();
         assert!(!prompt(&r));
         assert_eq!(
             r.cmd(Command::Status).to_line(),
@@ -2895,7 +3103,6 @@ mod tests {
         use crate::protocol::{CorrectionResult, Extra};
         use crate::testing::synthetic_tokenizer;
         use crate::worker::{Retained, Suggestion};
-        use lf_asr::Projection;
 
         pub(super) const TYPED: &str = "we deployed it on cooper netties yesterday";
         pub(super) const EDITED: &str = "we deployed it on Kubernetes yesterday";
@@ -2924,26 +3131,21 @@ mod tests {
             Box::new(Retained {
                 raw: output.into(),
                 output: output.into(),
-                projection: Projection {
-                    data: vec![],
-                    frames: 0,
-                },
+                chunks: Vec::new(),
                 dictionary,
             })
         }
 
-        /// Starts and stops a dictation: its queued job.
-        pub(super) fn record(r: &mut Rig) -> Job {
+        /// Starts and stops a dictation: its jobs.
+        pub(super) fn record(r: &mut Rig) -> Dictated {
             r.note(Command::Toggle);
             r.note(Command::Toggle);
-            r.jobs.take().pop().unwrap()
+            r.jobs.dictation()
         }
 
         /// Finishes `job` as typed `output`; the worker keeps it if `keep`.
-        pub(super) fn finish(r: &mut Rig, job: Job, output: &str, keep: bool) {
-            let JobKind::Transcribe { dictionary, .. } = job.kind else {
-                panic!("not a transcription");
-            };
+        pub(super) fn finish(r: &mut Rig, job: Dictated, output: &str, keep: bool) {
+            let dictionary = job.dictionary;
             r.c.handle_worker(WorkerEvent::Done(
                 job.id,
                 Outcome::Typed {
@@ -3192,13 +3394,10 @@ mod tests {
             let snap = |r: &mut Rig| {
                 r.note(Command::Toggle);
                 r.note(Command::Toggle);
-                let job = r.jobs.take().pop().unwrap();
+                let job = r.jobs.dictation();
                 r.c.handle_worker(WorkerEvent::Done(job.id, Outcome::Nothing))
                     .unwrap();
-                match job.kind {
-                    JobKind::Transcribe { dictionary, .. } => dictionary,
-                    _ => panic!("not a transcription"),
-                }
+                job.dictionary
             };
             let empty = snap(&mut r);
             assert!(empty.dictionary.entries.is_empty());
@@ -3208,6 +3407,23 @@ mod tests {
             assert!(one.revision != empty.revision);
             // Unchanged dictionary, same snapshot.
             assert!(Arc::ptr_eq(&one, &snap(&mut r)));
+        }
+
+        /// A recording is transcribed while it is captured, so it keeps the
+        /// dictionary it started with.
+        #[test]
+        fn a_recording_keeps_the_dictionary_it_started_with() {
+            let dir = TempDir::new("corr-start");
+            let mut r = dict_rig(&dir);
+            r.note(Command::Toggle);
+            dict(&mut r, Command::DictAdd, "NixOS").unwrap();
+            r.note(Command::Toggle);
+            let job = r.jobs.dictation();
+            assert!(job.dictionary.dictionary.entries.is_empty());
+            r.c.handle_worker(WorkerEvent::Done(job.id, Outcome::Nothing))
+                .unwrap();
+            // The next one has the word.
+            assert_eq!(record(&mut r).dictionary.dictionary.entries.len(), 1);
         }
 
         #[test]
@@ -3345,10 +3561,7 @@ mod tests {
             let job = record(r);
             r.c.handle_worker(WorkerEvent::Done(job.id, Outcome::Nothing))
                 .unwrap();
-            match job.kind {
-                JobKind::Transcribe { dictionary, .. } => dictionary,
-                _ => panic!("not a transcription"),
-            }
+            job.dictionary
         }
 
         fn boosted(s: &Snapshot) -> Vec<(String, f32)> {
@@ -3764,11 +3977,11 @@ mod tests {
     /// A capture the test drives by hand: it records the calls, and the
     /// test delivers their results.
     #[derive(Clone, Default)]
-    struct Calls(Arc<Mutex<Vec<(u64, Call)>>>);
+    struct Calls(Arc<Mutex<Vec<(u64, CallKind)>>>);
 
     impl CapturePort for Calls {
         fn send(&mut self, generation: u64, call: Call) {
-            self.0.lock().unwrap().push((generation, call));
+            self.0.lock().unwrap().push((generation, call.kind()));
         }
         fn poll(&mut self) -> Option<CaptureEvent> {
             None
@@ -3782,7 +3995,7 @@ mod tests {
     }
 
     impl Calls {
-        fn take(&self) -> Vec<(u64, Call)> {
+        fn take(&self) -> Vec<(u64, CallKind)> {
             std::mem::take(&mut *self.0.lock().unwrap())
         }
     }
@@ -3820,7 +4033,7 @@ mod tests {
     }
 
     fn short_audio() -> Done {
-        Done::Stopped(Ok(Audio::new(vec![0.1; SECOND / 10])))
+        Done::Stopped(Ok(SECOND / 10))
     }
 
     /// The second press of a double tap that arrives while the tap's
@@ -3833,12 +4046,12 @@ mod tests {
         let press = ask(&mut r, Command::Press, Some(1000), 1005);
         assert!(press.try_recv().is_err(), "waits for the microphone");
         assert_eq!(r.state(), State::Idle);
-        assert_eq!(calls.take(), [(1, Call::Start)]);
+        assert_eq!(calls.take(), [(1, CallKind::Start)]);
         deliver(&mut r, 1, Done::Started(Ok(())), 1010);
         assert_eq!(note_of(press.try_recv().unwrap()), None);
 
         let release = ask(&mut r, Command::Release, Some(1080), 1085);
-        assert_eq!(calls.take(), [(1, Call::Stop)]);
+        assert_eq!(calls.take(), [(1, CallKind::Stop)]);
         let second = ask(&mut r, Command::Press, Some(1200), 1205);
         assert!(second.try_recv().is_err());
         // Stopping reads as still recording.
@@ -3846,7 +4059,7 @@ mod tests {
         assert_eq!(calls.take(), []);
         deliver(&mut r, 1, short_audio(), 1300);
         assert_eq!(note_of(release.try_recv().unwrap()), Some(Note::TooShort));
-        assert_eq!(calls.take(), [(2, Call::Start)]);
+        assert_eq!(calls.take(), [(2, CallKind::Start)]);
         deliver(&mut r, 2, Done::Started(Ok(())), 1310);
         assert_eq!(
             second.try_recv().unwrap().to_line(),
@@ -3866,7 +4079,11 @@ mod tests {
         let again = ask(&mut r, Command::Press, None, 30);
         assert_eq!(
             calls.take(),
-            [(1, Call::Start), (1, Call::Cancel), (2, Call::Start)]
+            [
+                (1, CallKind::Start),
+                (1, CallKind::Cancel),
+                (2, CallKind::Start)
+            ]
         );
         deliver(&mut r, 1, Done::Started(Ok(())), 40);
         assert!(again.try_recv().is_err());
@@ -3875,11 +4092,16 @@ mod tests {
         deliver(&mut r, 1, short_audio(), 60);
         assert_eq!(r.state(), State::Recording);
         let release = ask(&mut r, Command::Release, None, 70);
-        assert_eq!(calls.take(), [(2, Call::Stop)]);
-        let audio = Done::Stopped(Ok(Audio::new(vec![0.1; SECOND])));
-        deliver(&mut r, 2, audio, 80);
+        assert_eq!(calls.take(), [(2, CallKind::Stop)]);
+        deliver(&mut r, 2, Done::Stopped(Ok(SECOND)), 80);
         assert_eq!(note_of(release.try_recv().unwrap()), None);
         assert_eq!(r.state(), State::Transcribing);
-        assert_eq!(r.jobs.take().len(), 1);
+        // The cancelled recording ended; the second one finished.
+        let jobs = r.jobs.take();
+        let kinds: Vec<_> = jobs.iter().map(|j| (j.id, kind(&j.kind))).collect();
+        assert_eq!(
+            kinds,
+            [(1, "begin"), (1, "end"), (2, "begin"), (2, "finish")]
+        );
     }
 }

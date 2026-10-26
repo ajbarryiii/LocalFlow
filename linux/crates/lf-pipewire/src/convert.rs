@@ -43,7 +43,7 @@ impl Converter {
             Some(r) => {
                 // Exact capacity: `downmix` never reallocates it.
                 let mut mono =
-                    crate::wipe::Wiped(Vec::with_capacity(interleaved.len() / self.channels));
+                    lf_io_api::wipe::Wiped(Vec::with_capacity(interleaved.len() / self.channels));
                 downmix(interleaved, self.channels, &mut mono.0);
                 r.push(&mono.0, out);
             }
@@ -205,7 +205,7 @@ impl Resampler {
     }
 
     pub fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        crate::wipe::reserve_wiping(&mut self.hist, input.len());
+        lf_io_api::wipe::reserve_wiping(&mut self.hist, input.len());
         self.hist.extend_from_slice(input);
         self.consumed += input.len() as u64;
         self.drain(out);
@@ -249,7 +249,7 @@ impl Resampler {
         // before input index consumed + half. Every output beyond `total`
         // is produced by this final drain, so trimming the tail of `out`
         // removes exactly those.
-        crate::wipe::reserve_wiping(&mut self.hist, self.half + 1);
+        lf_io_api::wipe::reserve_wiping(&mut self.hist, self.half + 1);
         self.hist.extend(std::iter::repeat_n(0.0, self.half + 1));
         self.drain(out);
         if self.next > total {
@@ -263,7 +263,7 @@ impl Resampler {
 /// The input history is audio; overwrite it before it is freed.
 impl Drop for Resampler {
     fn drop(&mut self) {
-        crate::wipe::wipe(&mut self.hist);
+        lf_io_api::wipe::wipe(&mut self.hist);
     }
 }
 

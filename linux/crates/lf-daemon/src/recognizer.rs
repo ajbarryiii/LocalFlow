@@ -6,36 +6,46 @@ use std::time::Instant;
 
 use lf_asr::dictionary::{self, DictionaryEntry};
 use lf_asr::{BiasGraph, Projection};
+use lf_chunk::{Chunk, Word};
+use lf_io_api::wipe::Wiped;
 
 use crate::config::Precision;
 use crate::dictionary::Snapshot;
 
-/// A transcription, and the projection it was decoded from when asked to
-/// keep it (for checking a later correction).
-pub struct Recognized {
-    pub text: String,
+/// One chunk's words, and the projection they were decoded from when asked
+/// to keep it (for checking a later correction).
+pub struct ChunkResult {
+    pub words: Vec<Word>,
     pub projection: Option<Projection>,
 }
 
 pub trait Recognizer {
-    /// Transcribes 16 kHz mono samples in [-1, 1], boosting the snapshot's
-    /// entries. With `retain`, also returns the projection. Errors must not
-    /// contain audio or transcript content.
-    fn transcribe(
+    /// Transcribes one chunk of a dictation's compacted audio (16 kHz mono in
+    /// [-1, 1]), boosting the snapshot's entries. Word starts count from
+    /// `chunk.start`. With `retain`, also returns the projection. Errors must
+    /// not contain audio or transcript content.
+    fn transcribe_chunk(
         &mut self,
-        samples: &[f32],
+        chunk: &Chunk,
         dictionary: &Snapshot,
         retain: bool,
-    ) -> Result<Recognized, String>;
+    ) -> Result<ChunkResult, String>;
 
-    /// Decodes a retained projection again, boosting the snapshot's entries
-    /// plus `extra`.
-    fn redecode(
+    /// Decodes a retained chunk projection again, boosting the snapshot's
+    /// entries plus `extra`. Word starts count from `start`.
+    fn redecode_chunk(
         &mut self,
         projection: &Projection,
+        start: usize,
         dictionary: &Snapshot,
         extra: &DictionaryEntry,
-    ) -> Result<String, String>;
+    ) -> Result<Vec<Word>, String>;
+
+    /// The joined words of a dictation as the text to type. The default
+    /// keeps them as they are.
+    fn tidy(&self, text: &str) -> String {
+        text.to_owned()
+    }
 }
 
 /// Builds the recognizer on the worker thread (the real one pins that thread
@@ -45,11 +55,22 @@ pub type RecognizerFactory = Box<dyn FnOnce() -> Result<Box<dyn Recognizer>, Str
 /// A snapshot revision with its phrases and bias graph.
 type Prepared = (u64, Vec<(Vec<usize>, f32)>, BiasGraph);
 
+/// What a correction check boosts on top of a snapshot: its revision, the
+/// extra entry's text and its strength's bits.
+type Boost = (u64, String, u32);
+
+/// Chunks shorter than this are padded with silence, as on the Mac: NeMo's
+/// per-feature normalization needs at least two frames.
+const MIN_CHUNK_SAMPLES: usize = 480;
+
 /// The native CPU recognizer for a Parakeet export (ternary or binary).
 pub struct AsrRecognizer {
     transcriber: lf_asr::Transcriber,
     /// The phrases and graph of the last snapshot seen, by revision.
     cache: Option<Prepared>,
+    /// The graph of the last correction check, which re-decodes every chunk
+    /// with it.
+    boosted: Option<(Boost, BiasGraph)>,
 }
 
 impl AsrRecognizer {
@@ -57,6 +78,7 @@ impl AsrRecognizer {
         AsrRecognizer {
             transcriber,
             cache: None,
+            boosted: None,
         }
     }
 
@@ -85,56 +107,109 @@ impl AsrRecognizer {
             .as_ref()
             .filter(|c| !snapshot.dictionary.entries.is_empty() && c.0 == snapshot.revision)
     }
-}
 
-impl Recognizer for AsrRecognizer {
-    fn transcribe(
-        &mut self,
-        samples: &[f32],
-        dictionary: &Snapshot,
-        retain: bool,
-    ) -> Result<Recognized, String> {
-        let projection = self
-            .transcriber
-            .encode_projected(samples)
-            .map_err(|e| e.to_string())?;
-        self.prepare(dictionary)?;
-        let graph = self.cached(dictionary).map(|c| &c.2);
-        let text = self
-            .transcriber
-            .decode_projected(&projection, graph)
-            .map_err(|e| e.to_string())?
-            .text;
-        Ok(Recognized {
-            text,
-            projection: retain.then_some(projection),
-        })
-    }
-
-    fn redecode(
-        &mut self,
+    /// The words of a projection decoded with `graph`, timed from `start`.
+    fn words(
+        &self,
         projection: &Projection,
-        dictionary: &Snapshot,
-        extra: &DictionaryEntry,
-    ) -> Result<String, String> {
-        self.prepare(dictionary)?;
-        let mut phrases = self
-            .cached(dictionary)
-            .map_or_else(Vec::new, |c| c.1.clone());
-        let tokenizer = self.transcriber.tokenizer();
-        // Duplicate sequences keep the larger strength (in the graph).
-        phrases.extend(dictionary::phrases(std::slice::from_ref(extra), tokenizer));
-        let graph =
-            BiasGraph::new(&phrases, tokenizer.len()).map_err(|e| format!("dictionary: {e}"))?;
-        self.transcriber
-            .decode_projected(projection, Some(&graph))
-            .map(|t| t.text)
+        start: usize,
+        graph: Option<&BiasGraph>,
+    ) -> Result<Vec<Word>, String> {
+        let t = self
+            .transcriber
+            .decode_projected(projection, graph)
+            .map_err(|e| e.to_string())?;
+        let emitted: Vec<(usize, usize)> = t
+            .tokens
+            .iter()
+            .copied()
+            .zip(t.token_frames.iter().copied())
+            .collect();
+        lf_chunk::words(&emitted, self.transcriber.tokenizer().pieces(), start)
             .map_err(|e| e.to_string())
     }
 }
 
-/// Length of the silent warm-up transcription run after loading.
-pub const WARM_UP_SECONDS: usize = 30;
+impl Recognizer for AsrRecognizer {
+    fn transcribe_chunk(
+        &mut self,
+        chunk: &Chunk,
+        dictionary: &Snapshot,
+        retain: bool,
+    ) -> Result<ChunkResult, String> {
+        let samples = chunk.samples;
+        if samples.iter().any(|v| !v.is_finite()) {
+            return Err("audio contains invalid samples".into());
+        }
+        // Digital silence: no words, nothing to re-decode, no model time.
+        if samples.iter().all(|&v| v == 0.0) {
+            return Ok(ChunkResult {
+                words: Vec::new(),
+                projection: None,
+            });
+        }
+        let padded;
+        let input = if samples.len() < MIN_CHUNK_SAMPLES {
+            let mut p = Wiped(Vec::with_capacity(MIN_CHUNK_SAMPLES));
+            p.0.extend_from_slice(samples);
+            p.0.resize(MIN_CHUNK_SAMPLES, 0.0);
+            padded = p;
+            &padded.0[..]
+        } else {
+            samples
+        };
+        let projection = self
+            .transcriber
+            .encode_projected(input)
+            .map_err(|e| e.to_string())?;
+        self.prepare(dictionary)?;
+        let graph = self.cached(dictionary).map(|c| &c.2);
+        let words = self.words(&projection, chunk.start, graph)?;
+        Ok(ChunkResult {
+            words,
+            projection: retain.then_some(projection),
+        })
+    }
+
+    fn redecode_chunk(
+        &mut self,
+        projection: &Projection,
+        start: usize,
+        dictionary: &Snapshot,
+        extra: &DictionaryEntry,
+    ) -> Result<Vec<Word>, String> {
+        let boost = (
+            dictionary.revision,
+            extra.text.clone(),
+            extra.strength.to_bits(),
+        );
+        if self.boosted.as_ref().is_none_or(|(b, _)| *b != boost) {
+            self.prepare(dictionary)?;
+            let mut phrases = self
+                .cached(dictionary)
+                .map_or_else(Vec::new, |c| c.1.clone());
+            let tokenizer = self.transcriber.tokenizer();
+            // Duplicate sequences keep the larger strength (in the graph).
+            phrases.extend(dictionary::phrases(std::slice::from_ref(extra), tokenizer));
+            let graph = BiasGraph::new(&phrases, tokenizer.len())
+                .map_err(|e| format!("dictionary: {e}"))?;
+            self.boosted = Some((boost, graph));
+        }
+        let graph = self.boosted.as_ref().map(|(_, g)| g);
+        self.words(projection, start, graph)
+    }
+
+    /// NeMo's spacing: no space before the vocabulary's punctuation.
+    fn tidy(&self, text: &str) -> String {
+        self.transcriber
+            .tokenizer()
+            .strip_space_before_punctuation(text)
+    }
+}
+
+/// Length of the silent warm-up transcription run after loading: one whole
+/// chunk, the longest input the encoder sees.
+pub const WARM_UP_SECONDS: usize = 15;
 
 /// Where to get a model when `export_path` holds none.
 pub const MODEL_HINT: &str = "run `localflowctl fetch-model` to install kea-b \

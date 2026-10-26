@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use lf_io_api::{AudioCapture, SAMPLE_RATE};
+use lf_io_api::{AudioCapture, CollectSink, SAMPLE_RATE};
 use lf_pipewire::{CaptureConfig, Overflow, PipeWireCapture, PresenceMonitor, Recording};
 use pipewire as pw;
 use pw::spa;
@@ -530,8 +530,9 @@ fn tone_fraction(x: &[f32], freq: f64) -> f64 {
     2.0 * power / (x.len() as f64 * energy.max(1e-30))
 }
 
-fn check_tone(name: &str, rec: &Recording, recorded_for: Duration) {
-    let n = rec.samples.len();
+fn check_tone(name: &str, rec: &Recording, samples: &[f32], recorded_for: Duration) {
+    let n = samples.len();
+    assert_eq!(rec.samples, n, "{name}: delivered count");
     assert_eq!(rec.negotiated, Some((SAMPLE_RATE, 1)), "{name}: format");
     assert!(!rec.truncated, "{name}: unexpected truncation");
     let latency = rec.start_latency.expect("first buffer time");
@@ -541,7 +542,7 @@ fn check_tone(name: &str, rec: &Recording, recorded_for: Duration) {
         "{name}: {n} samples, expected about {expected:.0}"
     );
     // Skip the converter's start-up transient.
-    let body = &rec.samples[n.min(1600)..];
+    let body = &samples[n.min(1600)..];
     let r = rms(body);
     let want = TONE_AMP / 2f64.sqrt();
     assert!(
@@ -553,7 +554,7 @@ fn check_tone(name: &str, rec: &Recording, recorded_for: Duration) {
         frac > 0.95,
         "{name}: only {frac:.3} of the power at {TONE_HZ} Hz"
     );
-    assert!(rec.samples.iter().all(|v| (-1.0..=1.0).contains(v)));
+    assert!(samples.iter().all(|v| (-1.0..=1.0).contains(v)));
     println!(
         "ok   {name}: {n} samples ({:.3} s), RMS {r:.4}, {:.1}% at 440 Hz, first buffer after {:.1} ms",
         n as f64 / f64::from(SAMPLE_RATE),
@@ -563,16 +564,17 @@ fn check_tone(name: &str, rec: &Recording, recorded_for: Duration) {
 }
 
 /// Starts a capture while the linker connects the tone; returns the time
-/// `start` took.
-fn linked_start(pw: &PrivatePipeWire, cap: &mut PipeWireCapture) -> Duration {
+/// `start` took and the sink the audio goes to.
+fn linked_start(pw: &PrivatePipeWire, cap: &mut PipeWireCapture) -> (Duration, CollectSink) {
     let linker = Linker::start(pw);
+    let sink = CollectSink::default();
     let t0 = Instant::now();
-    let r = cap.start();
+    let r = cap.start(Box::new(sink.clone()));
     let took = t0.elapsed();
     let linked = linker.finish();
     r.expect("start");
     assert!(linked, "pw-link never succeeded");
-    took
+    (took, sink)
 }
 
 /// Polls `get` until it returns `want`.
@@ -734,7 +736,9 @@ fn main() {
             ..config.clone()
         });
         let t0 = Instant::now();
-        let err = cap.start().expect_err("unlinked stream must not start");
+        let err = cap
+            .start(Box::new(CollectSink::default()))
+            .expect_err("unlinked stream must not start");
         assert!(t0.elapsed() < Duration::from_secs(3));
         assert!(!cap.is_recording());
         assert_eq!(cap.level(), 0.0);
@@ -758,7 +762,9 @@ fn main() {
             ..config.clone()
         });
         let t0 = Instant::now();
-        let err = cap.start().expect_err("missing socket must fail");
+        let err = cap
+            .start(Box::new(CollectSink::default()))
+            .expect_err("missing socket must fail");
         assert!(
             t0.elapsed() < Duration::from_secs(2),
             "took {:?}",
@@ -775,9 +781,13 @@ fn main() {
     let mut first_buffers = Vec::new();
     for cycle in 1..=3 {
         let t0 = Instant::now();
-        start_calls.push(linked_start(&daemon, &mut cap));
+        let (took, sink) = linked_start(&daemon, &mut cap);
+        start_calls.push(took);
         assert!(cap.is_recording());
-        assert!(cap.start().is_err(), "second start must fail");
+        assert!(
+            cap.start(Box::new(CollectSink::default())).is_err(),
+            "second start must fail"
+        );
         let mut max_level = 0f32;
         while t0.elapsed() < Duration::from_millis(1000) {
             std::thread::sleep(Duration::from_millis(20));
@@ -790,7 +800,7 @@ fn main() {
             "level {max_level} for a 0.354 RMS tone"
         );
         assert_eq!(cap.level(), 0.0, "level resets when idle");
-        check_tone(&format!("cycle {cycle}"), &rec, elapsed);
+        check_tone(&format!("cycle {cycle}"), &rec, &sink.take().0, elapsed);
         first_buffers.push(rec.start_latency.unwrap());
     }
     assert!(cap.stop().is_err(), "stop when idle must fail");
@@ -809,22 +819,22 @@ fn main() {
     linked_start(&daemon, &mut cap);
     std::thread::sleep(Duration::from_millis(300));
     let samples = cap.stop().expect("stop");
-    assert!(samples.len() > 1000);
-    println!("ok   AudioCapture::stop: {} samples", samples.len());
+    assert!(samples > 1000);
+    println!("ok   AudioCapture::stop: {samples} samples");
 
     // Truncation at max_duration.
     let mut short = PipeWireCapture::new(CaptureConfig {
         max_duration: Duration::from_millis(250),
         ..config.clone()
     });
-    linked_start(&daemon, &mut short);
+    let (_, sink) = linked_start(&daemon, &mut short);
     std::thread::sleep(Duration::from_millis(700));
     let rec = short.stop_recording().expect("truncating stop");
     assert!(rec.truncated);
-    assert_eq!(rec.samples.len(), 4000);
+    assert_eq!((rec.samples, sink.take().0.len()), (4000, 4000));
     println!(
         "ok   truncate at 0.25 s: {} samples, truncated",
-        rec.samples.len()
+        rec.samples
     );
 
     // Overflow as an error.

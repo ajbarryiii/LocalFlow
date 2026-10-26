@@ -6,16 +6,17 @@
 //! and downmix; [`convert`] is a fallback used only if the server negotiates
 //! another rate or channel count.
 //!
-//! Privacy: samples stay in memory, are returned once by `stop` (or dropped
-//! by `cancel`), and are never written to disk or logged. Errors carry no
-//! audio. The level meter exposes only an RMS value.
+//! Privacy: samples stay in memory: each converted block goes to the
+//! recording's [`AudioSink`] and its buffer is wiped before reuse. Nothing is
+//! written to disk or logged. Errors carry no audio. The level meter exposes
+//! only an RMS value.
 //!
 //! [`AudioCapture::watch_input`] starts a [`PresenceMonitor`] that tracks
 //! whether the configured input exists (see the `presence` module).
 
 pub mod convert;
 mod presence;
-mod wipe;
+use lf_io_api::wipe;
 
 pub use presence::{PresenceMonitor, SOURCE_CLASSES, SourceSet};
 
@@ -28,7 +29,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use lf_io_api::{AudioCapture, IoError, SAMPLE_RATE, sys};
+use lf_io_api::{AudioCapture, AudioSink, IoError, SAMPLE_RATE, sys};
 use pipewire as pw;
 use pw::spa;
 use spa::param::audio::{AudioFormat, AudioInfoRaw};
@@ -90,13 +91,11 @@ impl Default for CaptureConfig {
     }
 }
 
-/// A finished recording with its metadata. The samples are wiped when the
-/// recording is dropped; take them with `std::mem::take` to keep them.
-/// `Debug` prints only the sample count.
-#[derive(Default)]
+/// A finished recording's metadata; its audio went to the sink.
+#[derive(Debug, Default)]
 pub struct Recording {
-    /// 16 kHz mono samples in [-1, 1].
-    pub samples: Vec<f32>,
+    /// 16 kHz mono samples delivered to the sink.
+    pub samples: usize,
     /// True if audio beyond `max_duration` was dropped.
     pub truncated: bool,
     /// Time from `start` being called to the first buffer holding at least
@@ -106,23 +105,6 @@ pub struct Recording {
     /// Rate and channel count PipeWire delivered (16000, 1 unless the
     /// fallback converter was needed).
     pub negotiated: Option<(u32, u32)>,
-}
-
-impl Drop for Recording {
-    fn drop(&mut self) {
-        wipe::wipe(&mut self.samples);
-    }
-}
-
-impl std::fmt::Debug for Recording {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Recording")
-            .field("samples", &format_args!("[{} samples]", self.samples.len()))
-            .field("truncated", &self.truncated)
-            .field("start_latency", &self.start_latency)
-            .field("negotiated", &self.negotiated)
-            .finish()
-    }
 }
 
 /// `AudioCapture` over PipeWire. See the crate docs.
@@ -193,7 +175,7 @@ impl Drop for PipeWireCapture {
 }
 
 impl AudioCapture for PipeWireCapture {
-    fn start(&mut self) -> Result<(), IoError> {
+    fn start(&mut self, sink: Box<dyn AudioSink>) -> Result<(), IoError> {
         if self.active.is_some() {
             return Err(IoError("a recording is already running".into()));
         }
@@ -210,7 +192,7 @@ impl AudioCapture for PipeWireCapture {
         let thread_wake = wake.clone();
         let thread = std::thread::Builder::new()
             .name("lf-pipewire".into())
-            .spawn(move || run(config, thread_wake, ready_tx, level, started))
+            .spawn(move || run(config, thread_wake, ready_tx, level, started, sink))
             .map_err(|e| IoError(format!("cannot spawn capture thread: {e}")))?;
         let active = Active { wake, thread };
         match ready_rx.recv_timeout(self.config.start_timeout) {
@@ -236,9 +218,8 @@ impl AudioCapture for PipeWireCapture {
         }
     }
 
-    fn stop(&mut self) -> Result<Vec<f32>, IoError> {
-        self.stop_recording()
-            .map(|mut rec| std::mem::take(&mut rec.samples))
+    fn stop(&mut self) -> Result<usize, IoError> {
+        self.stop_recording().map(|rec| rec.samples)
     }
 
     fn cancel(&mut self) {
@@ -354,7 +335,10 @@ struct State {
     converter: Option<Converter>,
     negotiated: Option<(u32, u32)>,
     channels: usize,
-    samples: Vec<f32>,
+    /// Gets every converted block; dropped with the state.
+    sink: Option<Box<dyn AudioSink>>,
+    /// Samples delivered to the sink.
+    delivered: usize,
     truncated: bool,
     first_buffer: Option<Instant>,
     error: Option<String>,
@@ -372,6 +356,7 @@ impl State {
         started: Instant,
         level: Arc<AtomicU32>,
         ready: Option<mpsc::Sender<Result<(), String>>>,
+        sink: Option<Box<dyn AudioSink>>,
     ) -> Self {
         Self {
             max_samples: max_samples.max(1),
@@ -382,8 +367,8 @@ impl State {
             converter: None,
             negotiated: None,
             channels: 1,
-            // About 30 s up front; grows as needed up to max_samples.
-            samples: Vec::with_capacity(max_samples.clamp(1, 30 * SAMPLE_RATE as usize)),
+            sink,
+            delivered: 0,
             truncated: false,
             first_buffer: None,
             error: None,
@@ -439,26 +424,27 @@ impl State {
     }
 
     fn append_converted(&mut self) {
-        let block = &self.converted;
+        let block = &mut self.converted;
         if !block.is_empty() {
             let rms = (block.iter().map(|&v| v * v).sum::<f32>() / block.len() as f32).sqrt();
             self.level
                 .store(rms.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
         }
-        let room = self.max_samples - self.samples.len();
+        let room = self.max_samples - self.delivered;
         if block.len() > room {
             self.truncated = true;
         }
         let take = block.len().min(room);
-        let len = self.samples.len();
-        // Grow geometrically, but never past max_samples, so memory stays
-        // bounded by max_duration; the old allocation is wiped, not leaked.
-        let want = (len * 2).max(len + take).min(self.max_samples);
-        wipe::extend_wiping(
-            &mut self.samples,
-            block[..take].iter().map(|v| v.clamp(-1.0, 1.0)),
-            want,
-        );
+        if take == 0 {
+            return;
+        }
+        for v in &mut block[..take] {
+            *v = v.clamp(-1.0, 1.0);
+        }
+        if let Some(sink) = &mut self.sink {
+            sink.audio(&block[..take]);
+        }
+        self.delivered += take;
     }
 
     /// Switches to a newly negotiated format. Returns false (and records an
@@ -498,7 +484,6 @@ impl State {
     fn into_recording(mut self) -> Result<Recording, String> {
         self.flush_converter();
         if let Some(e) = self.error.take() {
-            // `self` is dropped here, which wipes the samples.
             return Err(e);
         }
         if self.truncated && self.overflow == Overflow::Error {
@@ -509,7 +494,7 @@ impl State {
         }
         Ok(Recording {
             start_latency: self.first_buffer.map(|t| t - self.started),
-            samples: std::mem::take(&mut self.samples),
+            samples: self.delivered,
             truncated: self.truncated,
             negotiated: self.negotiated,
         })
@@ -520,7 +505,6 @@ impl State {
 /// capture errors and panics all drop the state.
 impl Drop for State {
     fn drop(&mut self) {
-        wipe::wipe(&mut self.samples);
         wipe::wipe(&mut self.scratch);
         wipe::wipe(&mut self.converted);
     }
@@ -583,7 +567,7 @@ fn decode_chunk(
     }
     // Frames whose bytes lie entirely within the valid region.
     let frames = (size - frame) / stride + 1;
-    crate::wipe::reserve_wiping(out, frames * channels);
+    lf_io_api::wipe::reserve_wiping(out, frames * channels);
     let mut bytes = [0u8; 4];
     for f in 0..frames {
         let base = start + f * stride;
@@ -645,6 +629,7 @@ fn run(
     ready: mpsc::Sender<Result<(), String>>,
     level: Arc<AtomicU32>,
     started: Instant,
+    sink: Box<dyn AudioSink>,
 ) -> Result<Recording, String> {
     let max_samples = (config.max_duration.as_secs_f64() * f64::from(SAMPLE_RATE))
         .min(usize::MAX as f64) as usize;
@@ -654,6 +639,7 @@ fn run(
         started,
         level,
         Some(ready),
+        Some(sink),
     )));
     let fail = |msg: String| {
         state.borrow_mut().fail(msg.clone());
@@ -849,14 +835,17 @@ mod tests {
         out
     }
 
-    fn state(max_samples: usize, overflow: Overflow) -> State {
-        State::new(
+    fn state(max_samples: usize, overflow: Overflow) -> (State, lf_io_api::CollectSink) {
+        let sink = lf_io_api::CollectSink::default();
+        let st = State::new(
             max_samples,
             overflow,
             Instant::now(),
             Arc::new(AtomicU32::new(0)),
             None,
-        )
+            Some(Box::new(sink.clone())),
+        );
+        (st, sink)
     }
 
     #[test]
@@ -918,7 +907,7 @@ mod tests {
 
     #[test]
     fn rejected_format_change_stops_ingesting_without_panicking() {
-        let mut st = state(16_000, Overflow::Truncate);
+        let (mut st, _) = state(16_000, Overflow::Truncate);
         assert!(st.set_format(8_000, 1));
         let tone = le(&[0.25; 100]);
         st.ingest(&tone, 0, tone.len() as u32, 0);
@@ -936,7 +925,7 @@ mod tests {
 
     #[test]
     fn format_change_flushes_the_previous_converter() {
-        let mut st = state(16_000, Overflow::Truncate);
+        let (mut st, sink) = state(16_000, Overflow::Truncate);
         assert!(st.set_format(8_000, 1));
         let tone = le(&[0.25; 400]);
         st.ingest(&tone, 0, tone.len() as u32, 0);
@@ -945,24 +934,24 @@ mod tests {
         st.ingest(&stereo, 0, stereo.len() as u32, 0);
         let rec = st.into_recording().unwrap();
         // 400 samples at 8 kHz -> 800 at 16 kHz, then 2 downmixed frames.
-        assert_eq!(rec.samples.len(), 802);
-        assert_eq!(&rec.samples[800..], &[0.25, 0.25]);
+        let samples = sink.take();
+        assert_eq!((rec.samples, samples.0.len()), (802, 802));
+        assert_eq!(&samples.0[800..], &[0.25, 0.25]);
         assert_eq!(rec.negotiated, Some((16_000, 2)));
     }
 
     #[test]
     fn truncation_and_overflow_policies() {
-        let mut st = state(1000, Overflow::Truncate);
+        let (mut st, sink) = state(1000, Overflow::Truncate);
         st.set_format(16_000, 1);
         let block = le(&[0.1; 600]);
         st.ingest(&block, 0, block.len() as u32, 0);
         st.ingest(&block, 0, block.len() as u32, 0);
-        assert!(st.samples.capacity() <= 1000);
         let rec = st.into_recording().unwrap();
-        assert_eq!(rec.samples.len(), 1000);
+        assert_eq!((rec.samples, sink.take().0.len()), (1000, 1000));
         assert!(rec.truncated);
 
-        let mut st = state(1000, Overflow::Error);
+        let (mut st, _) = state(1000, Overflow::Error);
         st.set_format(16_000, 1);
         st.ingest(&block, 0, block.len() as u32, 0);
         st.ingest(&block, 0, block.len() as u32, 0);
@@ -971,7 +960,7 @@ mod tests {
 
     #[test]
     fn first_buffer_needs_a_whole_frame() {
-        let mut st = state(1000, Overflow::Truncate);
+        let (mut st, _) = state(1000, Overflow::Truncate);
         st.set_format(16_000, 1);
         st.ingest(&[0, 0], 0, 2, 0);
         assert!(st.first_buffer.is_none());

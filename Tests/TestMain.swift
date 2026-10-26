@@ -8,6 +8,7 @@ struct LocalFlowTests {
         ParakeetModelStoreTests.run()
         ParakeetStreamingTests.run()
         ParakeetSilenceCompactorTests.run()
+        ChunkingVectorTests.run()
         PrivacyPermissionTests.run()
         PermissionPanelTests.run()
         LocalDictationTests.run()

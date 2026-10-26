@@ -9,6 +9,7 @@
 //! - Errors carry no audio, transcript or window content.
 
 pub mod sys;
+pub mod wipe;
 
 use std::fmt;
 
@@ -25,17 +26,49 @@ impl fmt::Display for IoError {
 
 impl std::error::Error for IoError {}
 
+/// Receives a recording's audio while it is captured.
+pub trait AudioSink: Send {
+    /// The next samples of the recording, in order: 16 kHz mono f32 in
+    /// [-1, 1], never empty. Called on the capture's own thread, so it must
+    /// not block for long. The slice is the capture's buffer, wiped after the
+    /// call; a sink that keeps samples must wipe its copy too.
+    fn audio(&mut self, samples: &[f32]);
+}
+
+/// Collects everything delivered to it (tests and smoke tools). Clones share
+/// the samples, which are wiped when the last clone is dropped.
+#[derive(Clone, Default)]
+pub struct CollectSink(std::sync::Arc<std::sync::Mutex<wipe::Wiped>>);
+
+impl CollectSink {
+    /// Takes the samples collected so far, still wiped when dropped.
+    pub fn take(&self) -> wipe::Wiped {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *s)
+    }
+}
+
+impl AudioSink for CollectSink {
+    fn audio(&mut self, samples: &[f32]) {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        wipe::push_wiping(&mut s.0, samples);
+    }
+}
+
 /// Microphone capture. One recording at a time.
 pub trait AudioCapture: Send {
-    /// Starts buffering audio from the configured input. Fails if a recording
-    /// is already running or the device cannot be opened.
-    fn start(&mut self) -> Result<(), IoError>;
+    /// Starts capturing from the configured input and delivers the audio to
+    /// `sink` as it arrives, until `stop` or `cancel` returns. Fails if a
+    /// recording is already running or the device cannot be opened; the sink
+    /// is then dropped.
+    fn start(&mut self, sink: Box<dyn AudioSink>) -> Result<(), IoError>;
 
-    /// Stops recording and returns everything captured since `start`, as
-    /// 16 kHz mono f32 samples in [-1, 1].
-    fn stop(&mut self) -> Result<Vec<f32>, IoError>;
+    /// Stops recording: delivers the last samples to the sink, drops it, and
+    /// returns how many samples were delivered since `start`.
+    fn stop(&mut self) -> Result<usize, IoError>;
 
-    /// Stops recording and discards the audio. Idempotent.
+    /// Stops recording and drops the sink. Audio already delivered is the
+    /// receiver's to discard. Idempotent.
     fn cancel(&mut self);
 
     /// Recent input level in [0, 1] for a level indicator; 0 when idle.
