@@ -476,6 +476,9 @@ struct Ahead {
     start: usize,
     samples: Wiped,
     result: ChunkResult,
+    /// Its projection was dropped to stay within [`MAX_RETAINED_BYTES`];
+    /// a dictation still keeping its windows transcribes it again.
+    trimmed: bool,
 }
 
 impl Session {
@@ -504,6 +507,10 @@ impl Session {
         let mut transcribe = |c: &Chunk| windows.transcribe(c, recognizer);
         if let Err(stop) = self.transcription.append(samples, &mut transcribe) {
             self.stopped = Some(stop);
+        }
+        // Speech resumed: the ending transcribed ahead is stale.
+        if self.ahead_at != Some(self.transcription.position()) {
+            self.windows.ahead.clear();
         }
     }
 
@@ -537,34 +544,30 @@ impl Session {
                 samples: &samples.0,
             };
             match recognizer.transcribe_chunk(&chunk, &w.dictionary, w.retained.is_some()) {
-                Ok(result) => {
-                    w.ahead.push(Ahead {
-                        start,
-                        samples,
-                        result,
-                    });
-                    // The windows still to come hold at least the ending's
-                    // audio, so a dictation over the budget now stays over
-                    // it: keep nothing from here on, as `transcribe` would
-                    // at the end.
-                    let ahead: usize = w
-                        .ahead
-                        .iter()
-                        .filter_map(|a| a.result.projection.as_ref())
-                        .map(Projection::bytes)
-                        .sum();
-                    if w.retained.is_some() && w.retained_bytes + ahead > MAX_RETAINED_BYTES {
-                        w.retained = None;
-                        for a in &mut w.ahead {
-                            a.result.projection = None;
-                        }
-                    }
-                }
+                Ok(result) => w.ahead.push(Ahead {
+                    start,
+                    samples,
+                    result,
+                    trimmed: false,
+                }),
                 // `finish` transcribes it again and reports the failure.
                 Err(_) => {
                     w.ahead.clear();
                     return;
                 }
+            }
+        }
+        // Kept and ahead projections together stay within the budget (kept
+        // ones only grow once speech resumes, which clears these).
+        let ahead: usize = w
+            .ahead
+            .iter()
+            .filter_map(|a| a.result.projection.as_ref())
+            .map(Projection::bytes)
+            .sum();
+        if w.retained.is_some() && w.retained_bytes + ahead > MAX_RETAINED_BYTES {
+            for a in &mut w.ahead {
+                a.trimmed |= a.result.projection.take().is_some();
             }
         }
         crate::debug!("transcribed the ending ahead");
@@ -611,7 +614,10 @@ impl Windows {
                     .zip(chunk.samples)
                     .all(|(x, y)| x.to_bits() == y.to_bits())
         };
-        let r = match self.ahead.iter().position(same) {
+        // A trimmed result lacks the projection a kept dictation needs.
+        let keeping = self.retained.is_some();
+        let usable = |a: &Ahead| same(a) && !(a.trimmed && keeping);
+        let r = match self.ahead.iter().position(usable) {
             Some(i) => self.ahead.swap_remove(i).result,
             None => recognizer
                 .transcribe_chunk(chunk, &self.dictionary, self.retained.is_some())
@@ -1774,16 +1780,43 @@ mod tests {
             r.run(jobs);
             assert!(r.session.as_ref().unwrap().windows.retained.is_some());
             r.idle();
+            // The ending ahead keeps no projection; what is kept stays kept.
             let w = &r.session.as_ref().unwrap().windows;
-            assert!(w.retained.is_none(), "over the budget during the pause");
-            assert!(w.ahead.iter().all(|a| a.result.projection.is_none()));
+            assert!(w.retained.is_some());
+            assert!(
+                w.ahead
+                    .iter()
+                    .all(|a| a.trimmed && a.result.projection.is_none())
+            );
             r.run(vec![finish]);
-            assert_eq!(r.chunks().len(), 2, "the ending was reused");
+            // Still keeping windows at the end, so it is transcribed again
+            // (and then the dictation is over the budget).
+            assert_eq!(r.chunks().len(), 3);
             let Outcome::Typed { retained, text, .. } = r.outcome() else {
                 panic!("not typed");
             };
             assert!(retained.is_none());
             assert_eq!(text, "synthetic words");
+        }
+
+        #[test]
+        fn speech_after_the_pause_drops_the_ending_ahead() {
+            let mut r = Rig::new(Some("synthetic words"));
+            // 6 MiB per window: the first one and the ending ahead both fit.
+            r.rec.state().projection_floats = 3 << 19;
+            let mut jobs = super::recording(1, &spoken(20, 1), SECOND, Arc::default());
+            jobs.pop();
+            r.run(jobs);
+            r.idle();
+            let w = &r.session.as_ref().unwrap().windows;
+            assert!(w.ahead.len() == 1 && w.ahead[0].result.projection.is_some());
+            let cancel = Arc::clone(&w.cancel);
+            r.run(vec![Job {
+                id: 1,
+                cancel,
+                kind: JobKind::Audio(Audio::new(speech(1))),
+            }]);
+            assert!(r.session.as_ref().unwrap().windows.ahead.is_empty());
         }
 
         #[test]
