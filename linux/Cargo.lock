@@ -586,6 +586,7 @@ dependencies = [
  "lf-io-api",
  "lf-keyboard",
  "lf-media",
+ "lf-model",
  "lf-pipewire",
  "lf-portal",
  "lf-wayland",

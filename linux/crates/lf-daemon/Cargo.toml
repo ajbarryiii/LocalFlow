@@ -19,6 +19,7 @@ lf-asr.workspace = true
 lf-dbus = { path = "../lf-dbus" }
 lf-dictation = { path = "../lf-dictation" }
 lf-io-api.workspace = true
+lf-model.workspace = true
 lf-keyboard = { path = "../lf-keyboard" }
 lf-media = { path = "../lf-media" }
 lf-pipewire = { path = "../lf-pipewire" }

@@ -23,6 +23,7 @@
             ./Cargo.toml
             ./Cargo.lock
             ./crates
+            ./models.json
             # Shared test vectors, read by the lf-dictation, lf-text and
             # lf-asr tests.
             ./testdata
@@ -61,6 +62,7 @@
             packaging/hyprland.conf packaging/sway.conf packaging/niri.kdl packaging/river-init.sh
         '';
         nativeBuildInputs = [
+          pkgs.makeBinaryWrapper
           pkgs.pkg-config
           pkgs.rustPlatform.bindgenHook
         ];
@@ -69,6 +71,11 @@
           pipewire
           wayland
         ];
+        # `localflowctl fetch-model` downloads with curl. A compiled wrapper,
+        # because key binds run localflowctl on every press and release.
+        postFixup = ''
+          wrapProgram $out/bin/localflowctl --prefix PATH : ${lib.makeBinPath [ pkgs.curl ]}
+        '';
         # The whole workspace's tests run in the sandbox, as in CI. The
         # integration tests that start a private D-Bus session, headless
         # sway or PipeWire are skipped here; they run in the development
@@ -89,41 +96,16 @@
         };
       };
 
-      # The published model exports, pinned to a Hugging Face revision. The
+      # The published model exports, pinned to a Hugging Face revision in
+      # models.json (`localflowctl fetch-model` reads the same pins). The
       # export files' hashes are the ones in each export's manifest.json,
       # which the daemon checks again when it loads the model. Both models
       # are derived from NVIDIA's parakeet-tdt-0.6b-v2 and licensed
-      # CC-BY-4.0 (see LICENSE and NOTICE in the export).
-      tokenizer = {
-        "tokenizer/tokenizer.model" = "5a3a82c48998709f9bc9f5db2924d99a899d20bf82550ca52272da7c7557b0a0";
-        "tokenizer/tokenizer.vocab" = "dbe7ec6bd066c4526080940e1614e6582b9161515e856c2c39a1d49267c88cbc";
-        "tokenizer/vocab.txt" = "70b25deed256d79365a3c290d6191c31cc2315d952faf18d5c3a334f46e4866e";
-      };
-      models = {
-        # 1-bit weights (parakeet-binary-v1): the recommended model.
-        kea-b = {
-          repo = "rajb3/kea-b";
-          rev = "cfb1353488655282683ba699c402ae3b16b6de30";
-          files = tokenizer // {
-            "export.safetensors" = "9873d2f1a53127c673d0201db98cd3ba859ba432f334fef55e9e24fd057b9651";
-            "manifest.json" = "f3737a538da81939aabe04acd5334afd0e3cd4160ec113bd889e771b67991dbd";
-            "LICENSE" = "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411";
-            "NOTICE" = "314119184052a636e9002f69dd36a2077d32d5e487bbe5ba958da9f646ede56a";
-          };
-        };
-        # Ternary weights (parakeet-ternary-v1): slightly lower WER, twice
-        # the weight memory, a little slower.
-        kea-t = {
-          repo = "rajb3/kea-t";
-          rev = "c4a1f10ad23015ea43e8fa0802c30795e0442c4f";
-          files = tokenizer // {
-            "export.safetensors" = "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503";
-            "manifest.json" = "5c8b4bea0393db4072351e07b0d2206079373ca52646efdec4bb30876e0c8c61";
-            "LICENSE" = "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411";
-            "NOTICE" = "a63eeea2b250401da1b54679221d096f9fd188c354817740639c1da4cf4cddc0";
-          };
-        };
-      };
+      # CC-BY-4.0 (see LICENSE and NOTICE in the export). kea-b has 1-bit
+      # weights (parakeet-binary-v1) and is the recommended model; kea-t has
+      # ternary weights (parakeet-ternary-v1): slightly lower WER, twice the
+      # weight memory, a little slower.
+      models = lib.importJSON ./models.json;
 
       # An export directory in the store. Files are copied, not linked: the
       # daemon refuses export files that resolve outside the directory.
