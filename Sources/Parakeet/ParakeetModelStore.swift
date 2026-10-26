@@ -20,6 +20,7 @@ final class ParakeetModelStore: @unchecked Sendable {
     let root: URL
     private static let marker = ".localflow-complete"
     private static let stagingPrefix = ".staging-"
+    private static let lockName = ".lock"
     private let files = FileManager.default
     private let lock = NSLock()
     // Set once a store copy is rejected; the bundle is used until relaunch.
@@ -57,25 +58,44 @@ final class ParakeetModelStore: @unchecked Sendable {
     }
 
     /// `<root>/<SHA-256 of bundle.json>`, complete and untouched if present,
-    /// otherwise installed from `bundle`; other entries under root are removed.
+    /// otherwise installed from `bundle`; other entries under root, except the
+    /// lock file, are removed.
     /// Returns `bundle` on any failure or after a rejection.
     func directory(for bundle: URL) -> URL {
         lock.lock()
         defer { lock.unlock() }
         guard !disabled, let identity = try? identity(of: bundle) else { return bundle }
         let target = root.appendingPathComponent(identity, isDirectory: true)
-        if !isComplete(target, identity: identity) {
-            guard install(bundle, at: target, identity: identity) else { return bundle }
-        }
-        collectGarbage(keeping: identity)
-        return target
+        return exclusively { () -> URL in
+            if !isComplete(target, identity: identity) {
+                guard install(bundle, at: target, identity: identity) else { return bundle }
+            }
+            collectGarbage(keeping: identity)
+            return target
+        } ?? bundle
     }
 
     /// Removes a model directory directly inside root; anything else is ignored.
     func discard(_ directory: URL) {
         guard directory.standardizedFileURL.deletingLastPathComponent().path == root.standardizedFileURL.path,
               !directory.lastPathComponent.hasPrefix(".") else { return }
-        try? files.removeItem(at: directory)
+        _ = exclusively { try? files.removeItem(at: directory) }
+    }
+
+    // Other app processes share root, and a recursive removal is not atomic,
+    // so every check, install, removal and collection runs under an advisory
+    // lock on <root>/.lock; nil if the lock cannot be taken.
+    private func exclusively<T>(_ body: () -> T) -> T? {
+        guard (try? files.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return nil }
+        let descriptor = Darwin.open(root.appendingPathComponent(Self.lockName).path,
+                                     O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { return nil }
+        // Closing the descriptor releases the lock.
+        defer { close(descriptor) }
+        while flock(descriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else { return nil }
+        }
+        return body()
     }
 
     private func identity(of bundle: URL) throws -> String {
@@ -122,7 +142,7 @@ final class ParakeetModelStore: @unchecked Sendable {
     // Removes only root's direct entries; a symbolic link is removed, not followed.
     private func collectGarbage(keeping identity: String) {
         guard let names = try? files.contentsOfDirectory(atPath: root.path) else { return }
-        for name in names where name != identity {
+        for name in names where name != identity && name != Self.lockName {
             try? files.removeItem(at: root.appendingPathComponent(name))
         }
     }

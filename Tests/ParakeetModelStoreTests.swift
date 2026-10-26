@@ -306,8 +306,9 @@ enum ParakeetModelStoreTests {
         ((try? files.attributesOfItem(atPath: url.path))?[.systemFileNumber] as? NSNumber)?.uint64Value
     }
 
+    /// Entries other than the store's lock file, which stays in root by design.
     private static func entries(_ directory: URL) -> [String] {
-        ((try? files.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
+        ((try? files.contentsOfDirectory(atPath: directory.path)) ?? []).filter { $0 != ".lock" }.sorted()
     }
 
     /// Regular files by relative path, ignoring the store's hidden bookkeeping.
