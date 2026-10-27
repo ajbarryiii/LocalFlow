@@ -65,7 +65,7 @@ final class AppleIntelligenceTranscriptPolisher: TranscriptPolisher, @unchecked 
         // the guard); the runner's latency budget bounds it instead.
         let response = try await session.respond(to: "<transcript>\n\(text)\n</transcript>",
                                                  generating: PolishedTranscript.self,
-                                                 options: GenerationOptions(sampling: .greedy))
+                                                 options: GenerationOptions(samplingMode: .greedy))
         return response.content.text
     }
 
