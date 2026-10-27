@@ -63,9 +63,14 @@ final class AppleIntelligenceTranscriptPolisher: TranscriptPolisher, @unchecked 
         // Greedy sampling: the same transcript gets the same answer. No token
         // limit, so an answer is never cut short (a cut answer would still pass
         // the guard); the runner's latency budget bounds it instead.
+        // The compiler version stands in for the SDK: the macOS 27 SDK (Swift 6.4) renamed `sampling:`.
+        #if compiler(>=6.4)
+        let options = GenerationOptions(samplingMode: .greedy)
+        #else
+        let options = GenerationOptions(sampling: .greedy)
+        #endif
         let response = try await session.respond(to: "<transcript>\n\(text)\n</transcript>",
-                                                 generating: PolishedTranscript.self,
-                                                 options: GenerationOptions(samplingMode: .greedy))
+                                                 generating: PolishedTranscript.self, options: options)
         return response.content.text
     }
 
