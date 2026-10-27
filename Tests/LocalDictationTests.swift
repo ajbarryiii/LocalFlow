@@ -25,6 +25,7 @@ enum LocalDictationTests {
         TestSupport.expectEqual(try! JSONDecoder().decode(PipelineHistoryItem.self, from: JSONEncoder().encode(item)).displayTranscript, "Synthetic raw")
         runSpokenDelimiterTests()
         runPromptTagTests()
+        runPolishableTextTests()
     }
 
     private static func runPromptTagTests() {
@@ -158,6 +159,31 @@ enum LocalDictationTests {
         let macroResult = process("Quote hello, end quote.", macros: [quotedMacro])
         TestSupport.expectEqual(macroResult.output, "Synthetic macro payload.")
         TestSupport.expect(macroResult.usedMacro, "Voice macros must take priority over spoken delimiters")
+    }
+
+    /// The optional cleanup pass sees only the spoken text: commands, macros and
+    /// the prompt tag are settled first and survive whatever it returns.
+    private static func runPolishableTextTests() {
+        let tagged = process("Um, rename the the helper, press enter.", promptTag: "[dictated]")
+        TestSupport.expectEqual(tagged.polishableText, "Um, rename the the helper")
+        let polished = tagged.replacingPolishableText(with: "Rename the helper.")
+        TestSupport.expectEqual(polished.output, "[dictated] Rename the helper.")
+        TestSupport.expectEqual(polished.rawTranscript, tagged.rawTranscript)
+        TestSupport.expect(polished.shouldPressEnter && polished.addedPromptTag && !polished.usedMacro,
+                           "Cleanup must keep the press-enter command and the prompt tag")
+        TestSupport.expectEqual(polished.polishableText, "Rename the helper.")
+
+        let formatted = process("Run quote make check end quote")
+        TestSupport.expectEqual(formatted.polishableText, "Run \"make check\"")
+        TestSupport.expectEqual(formatted.replacingPolishableText(with: "Run \"make check\".").output, "Run \"make check\".")
+
+        let macro = process("Blue bird", macros: [VoiceMacro(command: "Blue bird", payload: "Synthetic saved prompt.")],
+                            promptTag: "[dictated]")
+        TestSupport.expectEqual(macro.polishableText, "")
+        TestSupport.expectEqual(macro.replacingPolishableText(with: "Invented.").output, "Synthetic saved prompt.")
+        let enterOnly = process("Press enter.")
+        TestSupport.expectEqual(enterOnly.polishableText, "")
+        TestSupport.expectEqual(enterOnly.replacingPolishableText(with: "Invented."), enterOnly)
     }
 
     /// Spoken numbers are off: SpokenNumberTests covers them, and these cases test the other rules alone.

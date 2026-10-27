@@ -32,6 +32,7 @@ enum SettingsKeysTests {
         pin(SettingsKeys.soundVolume, "sound_volume", 1)
         pin(SettingsKeys.dictationAudioInterruption, "dictation_audio_interruption_enabled", false)
         pin(SettingsKeys.correctionSuggestions, "correction_suggestions_enabled", true)
+        pin(SettingsKeys.appleIntelligenceCleanup, "apple_intelligence_cleanup_enabled", false)
         pin(SettingsKeys.showMenuBarIcon, "show_menu_bar_icon", true)
         pin(SettingsKeys.useCompactOverlay, "use_compact_overlay", true)
         pin(SettingsKeys.overlayDisplayID, "overlay_display_id", 0)
@@ -51,6 +52,8 @@ enum SettingsKeysTests {
         TestSupport.withDefaults { defaults in
             TestSupport.expectEqual(defaults[SettingsKeys.preserveClipboard], true)
             TestSupport.expectEqual(defaults[SettingsKeys.keepDictationInClipboardHistory], false)
+            // The experimental cleanup pass is off until turned on.
+            TestSupport.expectEqual(defaults[SettingsKeys.appleIntelligenceCleanup], false)
             TestSupport.expectEqual(defaults[SettingsKeys.soundVolume], 1)
             TestSupport.expectEqual(defaults[SettingsKeys.promptTag], "[dictated]")
             TestSupport.expectEqual(defaults[SettingsKeys.alertSoundsEnabled], nil)

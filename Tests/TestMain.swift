@@ -21,6 +21,7 @@ struct LocalFlowTests {
         ClipboardTransactionTests.run()
         DoubleTapPromptTests.run()
         DictationCleanupStepsTests.run()
+        TranscriptPolishTests.run()
         SemanticVersionTests.run()
         UpdateSignatureVerifierTests.run()
         UpdateInstallerTests.run()
