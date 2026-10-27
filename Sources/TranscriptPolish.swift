@@ -165,9 +165,10 @@ enum TranscriptPolishAlignment {
 
 /// The deterministic check on the model's output. Deletions, punctuation and
 /// case are free. Any other word change (a substitution or an insertion) must
-/// involve plain words only, so symbols, numbers and dashed words (spoken-number
-/// and delimiter formatting, code, flags) are never rewritten, and is then
-/// accepted only if the dictation's audio supports it (`verified`).
+/// involve plain words only, so symbols, numbers, dashed words and apostrophes
+/// (spoken-number and delimiter formatting, code, flags, contractions) are
+/// never rewritten, and is then accepted only if the dictation's audio
+/// supports it (`verified`).
 enum TranscriptPolishGuard {
     /// A new span is boosted as one dictionary phrase, which holds at most this many words.
     static let maxPhraseWords = 8
@@ -217,9 +218,10 @@ enum TranscriptPolishGuard {
         return true
     }
 
-    /// Letters and apostrophes only: no digit, symbol, dash or inner punctuation.
+    /// Letters only: no digit, symbol, dash or inner punctuation. An inner
+    /// apostrophe counts as punctuation too: audio cannot tell "its" from "it's".
     private static func isPlain(_ word: String) -> Bool {
-        word.allSatisfy { $0.isLetter || $0 == "'" }
+        word.allSatisfy(\.isLetter)
     }
 }
 

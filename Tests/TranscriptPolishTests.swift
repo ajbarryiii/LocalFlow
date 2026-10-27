@@ -29,6 +29,7 @@ enum TranscriptPolishTests {
         testOutcomeNamesAreStable()
         testLatencyLogLineHasNumbersAndOutcomeOnly()
         testMilliseconds()
+        testRewriteEntriesBoostEveryProposalAtTheCheckStrength()
     }
 
     // MARK: Alignment and review
@@ -105,6 +106,7 @@ enum TranscriptPolishTests {
             ("well known", "well-known", "Joining words with a dash"),
             ("well-known", "well known", "Splitting a dashed word"),
             ("use snake case", "Use snake_case.", "Adding a symbol"),
+            ("it is the dogs bone", "It is the dog's bone.", "Adding an apostrophe"),
         ]
         for (input, output, what) in cases {
             TestSupport.expect(review(input, output) == .rejected, "\(what) must be rejected without an audio check")
@@ -127,7 +129,9 @@ enum TranscriptPolishTests {
         TestSupport.expectEqual(review("“quoted” words", "Quoted words."), .deletionsOnly)
         // Respellings are word changes now (contract change), checked against the audio.
         TestSupport.expectEqual(review("café", "cafe"), .needsAudio(phrases: ["cafe"]))
-        TestSupport.expectEqual(review("don't stop", "Dont stop."), .needsAudio(phrases: ["Dont"]))
+        // An apostrophe is inner punctuation: audio cannot tell "dont" from "don't", so it stays protected.
+        TestSupport.expectEqual(review("don't stop", "Dont stop."), .rejected)
+        TestSupport.expectEqual(review("its done", "It's done."), .rejected)
     }
 
     private static func testVerifiedAgainstTheBoostedDecode() {
@@ -377,6 +381,16 @@ enum TranscriptPolishTests {
         TestSupport.expectEqual(DictationLatencyReport.milliseconds(.milliseconds(1_234)), 1_234)
         TestSupport.expectEqual(DictationLatencyReport.milliseconds(.microseconds(2_600)), 3)
         TestSupport.expectEqual(DictationLatencyReport.milliseconds(.seconds(-1)), 0)
+    }
+
+    /// A proposal already in the dictionary is checked at the fixed strength,
+    /// never at the entry's own (stronger) one; other entries keep theirs.
+    private static func testRewriteEntriesBoostEveryProposalAtTheCheckStrength() {
+        let dictionary = [DictionaryEntry(text: "Kubernetes", strength: 8), DictionaryEntry(text: "Zorbly", strength: 1)]
+        let entries = LocalParakeetService.rewriteEntries(dictionary, boosting: ["kubernetes", "Quentar build"], strength: 2)
+        TestSupport.expectEqual(entries, [DictionaryEntry(text: "Zorbly", strength: 1),
+                                          DictionaryEntry(text: "kubernetes", strength: 2),
+                                          DictionaryEntry(text: "Quentar build", strength: 2)])
     }
 
     // MARK: Support

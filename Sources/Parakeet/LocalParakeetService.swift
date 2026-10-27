@@ -275,8 +275,7 @@ final class LocalParakeetService: @unchecked Sendable {
                             continuation.resume(returning: nil)
                             return
                         }
-                        // Duplicate token sequences keep the larger strength (BiasGraph.phrases).
-                        let entries = session.dictionary.entries + phrases.map { DictionaryEntry(text: $0, strength: strength) }
+                        let entries = Self.rewriteEntries(session.dictionary.entries, boosting: phrases, strength: strength)
                         guard let graph = BiasGraph.build(entries: entries, encoder: session.runtime.encoder) else {
                             continuation.resume(returning: nil)
                             return
@@ -289,6 +288,14 @@ final class LocalParakeetService: @unchecked Sendable {
                 }
             }
         } onCancel: { cancellation.cancel() }
+    }
+
+    /// The dictionary for a rewrite check: every proposed phrase at exactly
+    /// `strength`, replacing a dictionary entry with the same key, which could
+    /// otherwise lend the proposal its own (possibly stronger) boost.
+    static func rewriteEntries(_ dictionary: [DictionaryEntry], boosting phrases: [String], strength: Float) -> [DictionaryEntry] {
+        let proposed = Set(phrases.map { DictionaryKey($0) })
+        return dictionary.filter { !proposed.contains($0.key) } + phrases.map { DictionaryEntry(text: $0, strength: strength) }
     }
 
     /// New recording, cancel, setting off or dictionary change: stop any
