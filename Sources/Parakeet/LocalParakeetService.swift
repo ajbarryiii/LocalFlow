@@ -258,6 +258,39 @@ final class LocalParakeetService: @unchecked Sendable {
         } onCancel: { cancellation.cancel() }
     }
 
+    /// The retained dictation `dictationID` re-decoded once with every phrase
+    /// boosted at `strength` on top of its own dictionary, casing restored,
+    /// for the cleanup pass's audio check. Nil when the session is gone or
+    /// expired, or no phrase can be boosted. Cancelling the calling task stops
+    /// the decode. Keeps the session for correction suggestions; writes nothing.
+    func redecodeRetained(dictationID: UInt64, boosting phrases: [String], strength: Float) async throws -> String? {
+        let cancellation = ParakeetCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        try cancellation.check()
+                        guard let session = self.corrections.session(id: dictationID, now: ProcessInfo.processInfo.systemUptime) else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        // Duplicate token sequences keep the larger strength (BiasGraph.phrases).
+                        let entries = session.dictionary.entries + phrases.map { DictionaryEntry(text: $0, strength: strength) }
+                        guard let graph = BiasGraph.build(entries: entries, encoder: session.runtime.encoder) else {
+                            continuation.resume(returning: nil)
+                            return
+                        }
+                        let text = try session.runtime.decode(session.chunks, bias: graph, check: cancellation.check)
+                        continuation.resume(returning: CasingRestorer.apply(text, entries: entries))
+                    } catch {
+                        continuation.resume(throwing: LocalParakeetError.contentFree(error))
+                    }
+                }
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+
     /// New recording, cancel, setting off or dictionary change: stop any
     /// verification between decodes and drop the retained audio.
     func discardCorrectionSession() {

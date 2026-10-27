@@ -173,7 +173,7 @@ struct GeneralSettingsView: View {
             get: { reason == nil && appState.isAppleIntelligenceCleanupEnabled },
             set: { appState.isAppleIntelligenceCleanupEnabled = $0 }))
             .disabled(reason != nil)
-        Text("Removes filler words, false starts, and repeats, applies spoken corrections, and fixes punctuation, on this Mac. If the result adds or changes any word, or takes over \(TranscriptPolishRunner.latencyBudget.components.seconds) seconds, the original is pasted.")
+        Text("Removes filler words, false starts, and repeats, applies spoken corrections, fixes punctuation, and fixes words the speech model misheard, using your dictionary words as hints, on this Mac. A changed word is kept only if your recording supports it; otherwise, or after \(TranscriptPolishRunner.latencyBudget.components.seconds) seconds, the original is pasted.")
             .font(.caption).foregroundStyle(.secondary)
         if let reason {
             Text(reason).font(.caption).foregroundStyle(.orange)

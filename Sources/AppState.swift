@@ -9,6 +9,7 @@ import Carbon
 import os.log
 private let recordingLog = OSLog(subsystem: "com.ajbarryiii.localflow", category: "Recording")
 /// One line per dictation: timings, character counts and outcome names only, never text.
+/// Debug level: captured only while someone streams it, never kept on disk.
 private let latencyLog = OSLog(subsystem: "com.ajbarryiii.localflow", category: "Latency")
 
 enum SettingsTab: String, CaseIterable, Identifiable {
@@ -1261,9 +1262,12 @@ final class AppState: ObservableObject, DictationCleanupActions {
         if isAppleIntelligenceCleanupEnabled { transcriptPolisher.prewarm() }
     }
 
-    /// Audio is retained only while suggestions are on.
+    /// Audio is retained, in memory only, while suggestions are on, and while
+    /// cleanup is on and can run, so its word changes can be checked against it.
     private var retainsAudioForCorrection: Bool {
-        isCorrectionSuggestionsEnabled && !dictionaryLoadFailed && PrivacyPermission.accessibility.isGranted
+        PrivacyPermission.accessibility.isGranted
+            && ((isCorrectionSuggestionsEnabled && !dictionaryLoadFailed)
+                || (isAppleIntelligenceCleanupEnabled && transcriptPolisher.availability == .available))
     }
 
     /// Transcribes the new recording while it is recorded when the model is
@@ -1371,8 +1375,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
         // The app fixed at recording start, whatever is frontmost now (DESIGN §3.6).
         let app = dictationApp
         let dictionary = dictionarySnapshot(for: app)
-        // Audio is retained only while suggestions are on; macros and press-enter
-        // results release it right after processing.
+        // Audio is retained only while suggestions or cleanup are on; it is released
+        // after the paste unless the paste is watched for corrections.
         let retainForCorrection = retainsAudioForCorrection
         let streaming = takeStreamingDictation(dictionary: dictionary, retainForCorrection: retainForCorrection)
         // Any cancel or dictionary edit after this point makes the result ineligible.
@@ -1424,7 +1428,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         // A cancel during that await, then a newer dictation, must not take this result.
                         guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
                         // Commands, macros and the prompt tag are decided here, deterministically;
-                        // the cleanup pass below can only delete words from the spoken text.
+                        // the cleanup pass below only changes the spoken text, and changes words
+                        // only where this dictation's audio supports it.
                         let formatted = LocalDictationCore.process(raw, macros: self.voiceMacros,
                                                                   pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
                                                                   spokenDelimitersEnabled: self.isSpokenDelimitersEnabled,
@@ -1435,9 +1440,10 @@ final class AppState: ObservableObject, DictationCleanupActions {
                             self.debugStatusMessage = "Cleaning up transcript"
                         }
                         let cleanupStartedAt = ContinuousClock.now
-                        let polish = await TranscriptPolishRunner.run(formatted.polishableText,
-                                                                      enabled: self.isAppleIntelligenceCleanupEnabled,
-                                                                      polisher: self.transcriptPolisher)
+                        let polish = await TranscriptPolishRunner.run(
+                            formatted.polishableText, hints: dictionary.entries.map(\.text),
+                            enabled: self.isAppleIntelligenceCleanupEnabled, polisher: self.transcriptPolisher,
+                            verifier: self.rewriteVerifier(dictationID: transcription.dictationID))
                         // Used or not, this dictation's prepared session goes now (unless a
                         // newer dictation, begun after a cancel, prepared its own).
                         if self.transcriptionGeneration == generation { self.transcriptPolisher.discardPreparedSession() }
@@ -1445,6 +1451,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
                             audioSeconds: seconds,
                             asrMilliseconds: DictationLatencyReport.milliseconds(transcribedAt - stoppedAt),
                             cleanupMilliseconds: DictationLatencyReport.milliseconds(ContinuousClock.now - cleanupStartedAt),
+                            firstOutputMilliseconds: polish.timings.firstOutputMilliseconds,
+                            prewarmMilliseconds: polish.timings.prewarmMilliseconds,
+                            verifyMilliseconds: polish.timings.verifyMilliseconds,
                             cleanupOutcome: polish.outcome, inputCharacters: formatted.output.count,
                             outputCharacters: 0, totalMilliseconds: 0)
                         if Task.isCancelled {
@@ -1539,12 +1548,24 @@ final class AppState: ObservableObject, DictationCleanupActions {
         return Double(file.length) / file.fileFormat.sampleRate
     }
 
+    /// The cleanup pass's audio check for one dictation, formatting each
+    /// re-decode exactly as its transcript was. Nil without retained audio.
+    private func rewriteVerifier(dictationID: UInt64?) -> RetainedAudioRewriteVerifier? {
+        guard let dictationID else { return nil }
+        let macros = voiceMacros, pressEnter = isPressEnterVoiceCommandEnabled
+        let delimiters = isSpokenDelimitersEnabled, numbers = isSpokenNumbersEnabled
+        return RetainedAudioRewriteVerifier(dictationID: dictationID) { raw in
+            LocalDictationCore.process(raw, macros: macros, pressEnterEnabled: pressEnter, spokenDelimitersEnabled: delimiters,
+                                       spokenNumbersEnabled: numbers).polishableText
+        }
+    }
+
     /// Completes the report's total and writes its line to the Latency log.
     /// The line holds numbers and outcome names only (DictationLatencyReport).
     private static func logLatency(_ report: DictationLatencyReport, stoppedAt: ContinuousClock.Instant) {
         var report = report
         report.totalMilliseconds = DictationLatencyReport.milliseconds(ContinuousClock.now - stoppedAt)
-        os_log(.default, log: latencyLog, "%{public}@", report.logLine)
+        os_log(.debug, log: latencyLog, "%{public}@", report.logLine)
     }
 
     /// Appended to the run log status when the cleanup pass ran or was meant to.
@@ -1952,5 +1973,21 @@ final class AppState: ObservableObject, DictationCleanupActions {
             }
             self.statusText = "Ready"
         }
+    }
+}
+
+/// The cleanup pass's audio check: the dictation's retained audio re-decoded
+/// once with every proposed span boosted, then formatted like the pass's input.
+private struct RetainedAudioRewriteVerifier: TranscriptRewriteVerifier {
+    /// One decode, so one strength: the dictionary's ×2 preset, strong enough
+    /// to surface a misheard word the audio supports, not to force one in.
+    static let strength: Float = 2
+
+    let dictationID: UInt64
+    let format: @Sendable (String) -> String
+
+    func redecode(boosting phrases: [String]) async throws -> String? {
+        try await LocalParakeetService.shared.redecodeRetained(dictationID: dictationID, boosting: phrases,
+                                                               strength: Self.strength).map(format)
     }
 }

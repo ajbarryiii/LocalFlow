@@ -48,7 +48,8 @@ struct LocalDictationResult: Equatable {
 
 /// Deterministic commands only. Dictated instructions are always text: commands
 /// and macros are decided here, before the optional on-device cleanup pass
-/// (TranscriptPolish), which can only delete words from `polishableText`.
+/// (TranscriptPolish), which only changes `polishableText`, and changes a word
+/// only when the dictation's audio supports it.
 enum LocalDictationCore {
     private static let trailingPressEnter = try! NSRegularExpression(
         pattern: #"(?i)(?:^|[ \t\r\n,;:\-]+)press[ \t\r\n]+enter[\s\p{P}]*$"#
