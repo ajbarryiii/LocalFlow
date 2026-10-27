@@ -158,7 +158,11 @@ struct GeneralSettingsView: View {
             appState.refreshLaunchAtLoginStatus()
             appState.refreshAppleIntelligenceAvailability()
         }
-        .onReceive(permissionRefresh) { _ in refreshPermissions() }
+        .onReceive(permissionRefresh) { _ in
+            refreshPermissions()
+            // The model can finish downloading, or Apple Intelligence be turned on, while this is open.
+            appState.refreshAppleIntelligenceAvailability()
+        }
     }
 
     /// Shown off and disabled while the model is unavailable; the saved choice

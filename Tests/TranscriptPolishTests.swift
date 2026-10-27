@@ -40,6 +40,8 @@ enum TranscriptPolishTests {
         TestSupport.expect(accepts("hello world how are you", "Hello, world. How are you?"),
                            "Punctuation and capitalization fixes must pass")
         TestSupport.expect(accepts("ok so - we're done", "OK, so we're done!"), "A dropped dash must pass")
+        TestSupport.expect(accepts("wait -- what … really", "Wait, what? Really."), "Dropped dash and ellipsis tokens must pass")
+        TestSupport.expect(accepts("it costs -5 today", "It costs -5 today."), "A kept minus sign must pass")
         TestSupport.expect(accepts("Synthetic text stays.", "Synthetic text stays."), "Unchanged text must pass")
         TestSupport.expect(accepts("", ""), "Empty in, empty out must pass")
     }
@@ -55,6 +57,12 @@ enum TranscriptPolishTests {
         TestSupport.expect(!accepts("It grew 23% to $5", "It grew 23 to 5."), "Dropping % or $ must be rejected")
         TestSupport.expect(!accepts("about 1,000 rows", "About 1000 rows."), "Reformatting a number must be rejected")
         TestSupport.expect(!accepts("twenty three", "23"), "Rewriting words as digits must be rejected")
+        // A sign, decimal point or flag in front of a word is part of it, both ways.
+        TestSupport.expect(!accepts("set it to -5 degrees", "Set it to 5 degrees."), "Dropping a minus sign must be rejected")
+        TestSupport.expect(!accepts("set it to 5 degrees", "Set it to -5 degrees."), "Adding a minus sign must be rejected")
+        TestSupport.expect(!accepts("wait .5 seconds", "Wait 5 seconds."), "Dropping a decimal point must be rejected")
+        TestSupport.expect(!accepts("run it with --force", "Run it with force."), "Dropping a flag prefix must be rejected")
+        TestSupport.expect(!accepts("run it with force", "Run it with --force."), "Adding a flag prefix must be rejected")
         TestSupport.expect(!accepts("Run `make check` now", "Run make check now."), "Dropping code marks must be rejected")
         TestSupport.expect(!accepts("Run (the synthetic step) now", "Run the synthetic step now."),
                            "Dropping brackets must be rejected")

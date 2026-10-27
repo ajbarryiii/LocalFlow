@@ -64,10 +64,15 @@ struct TranscriptPolishResult: Equatable, Sendable {
 /// delimiter formatting, and voice-macro text intact, and turns any answer,
 /// obeyed instruction or hallucination into a rejection.
 enum TranscriptPolishGuard {
-    /// Sentence punctuation the model may add, drop or move at a word's edges.
-    /// Symbols that carry meaning ($ % # @ & * / brackets, backticks) and any
-    /// punctuation inside a word (1,000, don't, well-known, 3:30) are part of it.
-    private static let sentencePunctuation = CharacterSet(charactersIn: ".,;:!?…\"'“”„«»‹›-‐‑‒–—―")
+    /// Sentence punctuation the model may add, drop or move: quotes on either
+    /// side of a word, and the rest only after it, so a sign, decimal point or
+    /// flag in front (-5, .5, --force) stays part of the word. Symbols that
+    /// carry meaning ($ % # @ & * / brackets, backticks) and any punctuation
+    /// inside a word (1,000, don't, well-known, 3:30) are part of it too. A
+    /// token of sentence punctuation alone (a dash, an ellipsis) is no word.
+    private static let quotes: Set<Character> = ["\"", "'", "“", "”", "„", "«", "»", "‹", "›"]
+    private static let trailingPunctuation = quotes.union([".", ",", ";", ":", "!", "?", "…",
+                                                           "-", "‐", "‑", "‒", "–", "—", "―"])
 
     static func accepts(input: String, output: String) -> Bool {
         let inputWords = words(in: input), outputWords = words(in: output)
@@ -85,15 +90,17 @@ enum TranscriptPolishGuard {
     }
 
     /// Lowercased, canonically composed words without the sentence punctuation
-    /// at their edges; curly apostrophes read as straight ones.
+    /// around them; curly apostrophes read as straight ones.
     static func words(in text: String) -> [String] {
         text.split(whereSeparator: \.isWhitespace).compactMap { token in
-            let word = String(token).precomposedStringWithCanonicalMapping.lowercased()
+            let normalized = String(token).precomposedStringWithCanonicalMapping.lowercased()
                 .replacingOccurrences(of: "’", with: "'")
                 .replacingOccurrences(of: "‘", with: "'")
                 .replacingOccurrences(of: "ʼ", with: "'")
-                .trimmingCharacters(in: sentencePunctuation)
-            return word.isEmpty ? nil : word
+            guard !normalized.allSatisfy(trailingPunctuation.contains) else { return nil }
+            var word = normalized.drop { quotes.contains($0) }
+            while let last = word.last, trailingPunctuation.contains(last) { word.removeLast() }
+            return word.isEmpty ? nil : String(word)
         }
     }
 }
@@ -140,8 +147,13 @@ enum TranscriptPolishRunner {
     /// stop; the model's task is cancelled and its late answer ignored.
     private static func attempt(_ text: String, polisher: any TranscriptPolisher, budget: Duration) async -> Attempt {
         let race = FirstAttempt()
+        // One fixed deadline, so a late-scheduled timer cannot let a late answer in.
+        let deadline = ContinuousClock.now + budget
         let model = Task {
-            do { race.finish(.answered(try await polisher.polish(text))) } catch is CancellationError {
+            do {
+                let output = try await polisher.polish(text)
+                race.finish(ContinuousClock.now < deadline ? .answered(output) : .timedOut)
+            } catch is CancellationError {
                 race.finish(.cancelled)
             } catch {
                 race.finish(.failed)
@@ -149,7 +161,7 @@ enum TranscriptPolishRunner {
         }
         let timer = Task {
             // A cancelled sleep means the race is already over.
-            guard (try? await Task.sleep(for: budget)) != nil else { return }
+            guard (try? await Task.sleep(until: deadline, clock: .continuous)) != nil else { return }
             race.finish(.timedOut)
         }
         let result = await withTaskCancellationHandler {

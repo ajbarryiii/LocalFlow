@@ -138,7 +138,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private let transcriptPolisher = AppleIntelligenceTranscriptPolisher()
 
     func refreshAppleIntelligenceAvailability() {
-        appleIntelligenceAvailability = transcriptPolisher.availability
+        let availability = transcriptPolisher.availability
+        if availability != appleIntelligenceAvailability { appleIntelligenceAvailability = availability }
     }
 
     @Published var alertSoundsEnabled: Bool {
@@ -1282,6 +1283,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func cancelStreamingDictation() {
         streamingDictation?.session.cancel()
         streamingDictation = nil
+        // The cleanup session prepared for it, too.
+        transcriptPolisher.discardPreparedSession()
     }
 
     /// The session for this transcription, if it began with the same dictionary
@@ -1390,6 +1393,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 guard let self else { streaming?.cancel(); return }
                 guard let fileURL else {
                     streaming?.cancel()
+                    self.transcriptPolisher.discardPreparedSession()
                     DictationCleanupSteps.noAudioRecorded(self)
                     return
                 }
@@ -1434,6 +1438,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         let polish = await TranscriptPolishRunner.run(formatted.polishableText,
                                                                       enabled: self.isAppleIntelligenceCleanupEnabled,
                                                                       polisher: self.transcriptPolisher)
+                        // Used or not, this dictation's prepared session goes now (unless a
+                        // newer dictation, begun after a cancel, prepared its own).
+                        if self.transcriptionGeneration == generation { self.transcriptPolisher.discardPreparedSession() }
                         var latency = DictationLatencyReport(
                             audioSeconds: seconds,
                             asrMilliseconds: DictationLatencyReport.milliseconds(transcribedAt - stoppedAt),
@@ -1441,8 +1448,12 @@ final class AppState: ObservableObject, DictationCleanupActions {
                             cleanupOutcome: polish.outcome, inputCharacters: formatted.output.count,
                             outputCharacters: 0, totalMilliseconds: 0)
                         if Task.isCancelled {
-                            // Escape during cleanup: nothing is pasted, so the cancel ends the line.
-                            if polish.outcome == .cancelled { Self.logLatency(latency, stoppedAt: stoppedAt) }
+                            // Escape during cleanup, even just after the model answered: nothing
+                            // is pasted, so the cancel ends the line.
+                            if ![TranscriptPolishOutcome.off, .skipped, .unavailable].contains(polish.outcome) {
+                                latency.cleanupOutcome = .cancelled
+                                Self.logLatency(latency, stoppedAt: stoppedAt)
+                            }
                             throw CancellationError()
                         }
                         guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
@@ -1501,6 +1512,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         DictationCleanupSteps.transcriptionCancelled(self)
                     } catch {
                         guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
+                        self.transcriptPolisher.discardPreparedSession()
                         let message = self.formattedTranscriptionError(error)
                         self.errorMessage = message
                         DictationCleanupSteps.finishTranscription(self) {
