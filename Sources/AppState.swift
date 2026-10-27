@@ -1574,7 +1574,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         case .off, .skipped: return ""
         case .applied: return "; cleaned up with Apple Intelligence"
         case .unchanged: return "; Apple Intelligence cleanup changed nothing"
-        case .unavailable, .rejectedGuard, .timeout, .error, .cancelled:
+        case .unavailable, .rejectedGuard, .rejectedAudio, .timeout, .error, .cancelled:
             return "; Apple Intelligence cleanup \(outcome.rawValue), original kept"
         }
     }
