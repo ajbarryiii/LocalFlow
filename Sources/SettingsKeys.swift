@@ -121,6 +121,8 @@ enum SettingsKeys {
     static let spokenNumbers = DefaultsKey(name: "spoken_numbers_enabled", defaultValue: true)
     /// On by default; turning it off is remembered.
     static let correctionSuggestions = DefaultsKey(name: "correction_suggestions_enabled", defaultValue: true)
+    /// Experimental on-device cleanup pass (TranscriptPolish); off by default.
+    static let appleIntelligenceCleanup = DefaultsKey(name: "apple_intelligence_cleanup_enabled", defaultValue: false)
 
     // Sounds
     /// Unset: on unless the sound volume is zero.

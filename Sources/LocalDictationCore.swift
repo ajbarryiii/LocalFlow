@@ -8,20 +8,47 @@ struct VoiceMacro: Codable, Identifiable, Equatable {
 
 struct LocalDictationResult: Equatable {
     let rawTranscript: String
-    let output: String
+    private(set) var output: String
     let shouldPressEnter: Bool
     let usedMacro: Bool
     var addedPromptTag = false
+    /// The spoken text in `output`, without the prompt tag: all the optional
+    /// cleanup pass may change. Empty for macros and press-enter alone.
+    private(set) var polishableText: String
+    private let promptTag: String
+
+    init(rawTranscript: String, output: String, shouldPressEnter: Bool, usedMacro: Bool, addedPromptTag: Bool = false,
+         polishableText: String = "", promptTag: String = "") {
+        self.rawTranscript = rawTranscript
+        self.output = output
+        self.shouldPressEnter = shouldPressEnter
+        self.usedMacro = usedMacro
+        self.addedPromptTag = addedPromptTag
+        self.polishableText = polishableText
+        self.promptTag = promptTag
+    }
 
     var status: String {
         var status = usedMacro ? "Local voice macro" : "Local transcription"
         if addedPromptTag { status += "; added prompt tag" }
         return shouldPressEnter ? "\(status); detected press enter command" : status
     }
+
+    /// The same result with its spoken text replaced by the cleanup pass's,
+    /// tagged as before. Commands, macro use and the raw transcript stay as
+    /// detected; a result without spoken text is returned unchanged.
+    func replacingPolishableText(with text: String) -> LocalDictationResult {
+        guard !polishableText.isEmpty else { return self }
+        var result = self
+        result.polishableText = text
+        result.output = promptTag.isEmpty ? text : "\(promptTag) \(text)"
+        return result
+    }
 }
 
-/// Deterministic commands only. Dictated instructions are always text; no model
-/// other than the bundled speech recognizer processes the result.
+/// Deterministic commands only. Dictated instructions are always text: commands
+/// and macros are decided here, before the optional on-device cleanup pass
+/// (TranscriptPolish), which can only delete words from `polishableText`.
 enum LocalDictationCore {
     private static let trailingPressEnter = try! NSRegularExpression(
         pattern: #"(?i)(?:^|[ \t\r\n,;:\-]+)press[ \t\r\n]+enter[\s\p{P}]*$"#
@@ -50,7 +77,8 @@ enum LocalDictationCore {
             ? (promptTag ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""
         return LocalDictationResult(rawTranscript: raw, output: tag.isEmpty ? output : "\(tag) \(output)",
                                     shouldPressEnter: shouldPressEnter, usedMacro: macro != nil,
-                                    addedPromptTag: !tag.isEmpty)
+                                    addedPromptTag: !tag.isEmpty, polishableText: macro == nil ? output : "",
+                                    promptTag: tag)
     }
 
     private static func normalize(_ text: String) -> String {

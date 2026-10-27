@@ -8,6 +8,8 @@ import ApplicationServices
 import Carbon
 import os.log
 private let recordingLog = OSLog(subsystem: "com.ajbarryiii.localflow", category: "Recording")
+/// One line per dictation: timings, character counts and outcome names only, never text.
+private let latencyLog = OSLog(subsystem: "com.ajbarryiii.localflow", category: "Latency")
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
@@ -121,6 +123,22 @@ final class AppState: ObservableObject, DictationCleanupActions {
 
     @Published var isSpokenNumbersEnabled: Bool {
         didSet { UserDefaults.standard[SettingsKeys.spokenNumbers] = isSpokenNumbersEnabled }
+    }
+
+    /// Experimental: tidy each dictation with Apple's on-device model before
+    /// it is pasted (TranscriptPolish). Off by default.
+    @Published var isAppleIntelligenceCleanupEnabled: Bool {
+        didSet {
+            UserDefaults.standard[SettingsKeys.appleIntelligenceCleanup] = isAppleIntelligenceCleanupEnabled
+            if !isAppleIntelligenceCleanupEnabled { transcriptPolisher.discardPreparedSession() }
+        }
+    }
+    /// For Settings, refreshed when it appears; each pass checks again itself.
+    @Published private(set) var appleIntelligenceAvailability: TranscriptPolishAvailability = .unavailable
+    private let transcriptPolisher = AppleIntelligenceTranscriptPolisher()
+
+    func refreshAppleIntelligenceAvailability() {
+        appleIntelligenceAvailability = transcriptPolisher.availability
     }
 
     @Published var alertSoundsEnabled: Bool {
@@ -284,6 +302,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         self.doubleTapPrompt.isEnabled = isDoubleTapPromptEnabled
         self.isSpokenDelimitersEnabled = defaults[SettingsKeys.spokenDelimiters]
         self.isSpokenNumbersEnabled = defaults[SettingsKeys.spokenNumbers]
+        self.isAppleIntelligenceCleanupEnabled = defaults[SettingsKeys.appleIntelligenceCleanup]
         let soundVolume = defaults[SettingsKeys.soundVolume]
         self.alertSoundsEnabled = defaults[SettingsKeys.alertSoundsEnabled] ?? (soundVolume > 0)
         self.soundVolume = soundVolume
@@ -330,6 +349,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
         // Clear any stale recording flag left over from an unclean exit.
         AppState.writeRecordingStateFlag(false)
         prepareLocalTranscriptionIfNeeded()
+        refreshAppleIntelligenceAvailability()
     }
 
     func prepareLocalTranscriptionIfNeeded() {
@@ -1236,6 +1256,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 }
             }
         }
+        // Readies the on-device model while the user speaks, so cleanup answers sooner.
+        if isAppleIntelligenceCleanupEnabled { transcriptPolisher.prewarm() }
     }
 
     /// Audio is retained only while suggestions are on.
@@ -1340,6 +1362,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     private func stopAndTranscribe() {
+        // Latency is measured from here, on a monotonic clock.
+        let stoppedAt = ContinuousClock.now
         let appliedPromptTag = shortcutSessionController.isPromptSession ? promptTag : nil
         // The app fixed at recording start, whatever is frontmost now (DESIGN §3.6).
         let app = dictationApp
@@ -1389,21 +1413,49 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         // Casing restoration runs inside, before LocalDictationCore.
                         let transcription = try await Self.transcribeDictation(
                             fileURL: input, streaming: streaming, dictionary: dictionary, retainForCorrection: retainForCorrection)
+                        let transcribedAt = ContinuousClock.now
                         let raw = transcription.text
                         try Task.checkCancellation()
                         let seconds = await audioSeconds
                         // A cancel during that await, then a newer dictation, must not take this result.
                         guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
-                        let result = LocalDictationCore.process(raw, macros: self.voiceMacros,
-                                                               pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
-                                                               spokenDelimitersEnabled: self.isSpokenDelimitersEnabled,
-                                                               spokenNumbersEnabled: self.isSpokenNumbersEnabled,
-                                                               promptTag: appliedPromptTag)
+                        // Commands, macros and the prompt tag are decided here, deterministically;
+                        // the cleanup pass below can only delete words from the spoken text.
+                        let formatted = LocalDictationCore.process(raw, macros: self.voiceMacros,
+                                                                  pressEnterEnabled: self.isPressEnterVoiceCommandEnabled,
+                                                                  spokenDelimitersEnabled: self.isSpokenDelimitersEnabled,
+                                                                  spokenNumbersEnabled: self.isSpokenNumbersEnabled,
+                                                                  promptTag: appliedPromptTag)
+                        if self.isAppleIntelligenceCleanupEnabled, !formatted.polishableText.isEmpty {
+                            self.statusText = "Cleaning up..."
+                            self.debugStatusMessage = "Cleaning up transcript"
+                        }
+                        let cleanupStartedAt = ContinuousClock.now
+                        let polish = await TranscriptPolishRunner.run(formatted.polishableText,
+                                                                      enabled: self.isAppleIntelligenceCleanupEnabled,
+                                                                      polisher: self.transcriptPolisher)
+                        var latency = DictationLatencyReport(
+                            audioSeconds: seconds,
+                            asrMilliseconds: DictationLatencyReport.milliseconds(transcribedAt - stoppedAt),
+                            cleanupMilliseconds: DictationLatencyReport.milliseconds(ContinuousClock.now - cleanupStartedAt),
+                            cleanupOutcome: polish.outcome, inputCharacters: formatted.output.count,
+                            outputCharacters: 0, totalMilliseconds: 0)
+                        if Task.isCancelled {
+                            // Escape during cleanup: nothing is pasted, so the cancel ends the line.
+                            if polish.outcome == .cancelled { Self.logLatency(latency, stoppedAt: stoppedAt) }
+                            throw CancellationError()
+                        }
+                        guard self.isTranscribing, self.transcriptionGeneration == generation else { return }
+                        let result = polish.outcome == .applied
+                            ? formatted.replacingPolishableText(with: polish.text) : formatted
+                        let status = result.status + Self.statusNote(for: polish.outcome)
+                        latency.outputCharacters = result.output.count
+                        let pastedLatency = latency
                         self.lastRawTranscript = result.rawTranscript
                         self.lastOutputTranscript = result.output
-                        self.lastTranscriptionStatus = result.status
+                        self.lastTranscriptionStatus = status
                         self.recordPipelineHistoryEntry(rawTranscript: result.rawTranscript, transcript: result.output,
-                                                        status: result.status, audioFileName: savedAudio?.fileName)
+                                                        status: status, audioFileName: savedAudio?.fileName)
                         self.lastTranscript = result.output
                         let completionStatus = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
                         let enterStatus = "Pressed Enter"
@@ -1415,6 +1467,7 @@ final class AppState: ObservableObject, DictationCleanupActions {
                                 if let id = transcription.dictationID { LocalParakeetService.shared.releaseCorrectionSession(dictationID: id) }
                                 self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
                                 if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
+                                Self.logLatency(pastedLatency, stoppedAt: stoppedAt)
                             } else {
                                 self.statusText = completionStatus
                                 let pendingRestore = self.writeTranscriptToPasteboard(result.output)
@@ -1423,6 +1476,8 @@ final class AppState: ObservableObject, DictationCleanupActions {
                                                              snapshotRevision: dictionary.revision, app: app,
                                                              watchGeneration: watchGeneration)
                                 ) {
+                                    // Cmd-V has just been posted.
+                                    Self.logLatency(pastedLatency, stoppedAt: stoppedAt)
                                     if result.shouldPressEnter {
                                         self.pressEnterAfterPaste { self.restoreClipboardIfNeeded(pendingRestore) }
                                     } else {
@@ -1470,6 +1525,25 @@ final class AppState: ObservableObject, DictationCleanupActions {
     private nonisolated static func audioDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
         return Double(file.length) / file.fileFormat.sampleRate
+    }
+
+    /// Completes the report's total and writes its line to the Latency log.
+    /// The line holds numbers and outcome names only (DictationLatencyReport).
+    private static func logLatency(_ report: DictationLatencyReport, stoppedAt: ContinuousClock.Instant) {
+        var report = report
+        report.totalMilliseconds = DictationLatencyReport.milliseconds(ContinuousClock.now - stoppedAt)
+        os_log(.default, log: latencyLog, "%{public}@", report.logLine)
+    }
+
+    /// Appended to the run log status when the cleanup pass ran or was meant to.
+    private static func statusNote(for outcome: TranscriptPolishOutcome) -> String {
+        switch outcome {
+        case .off, .skipped: return ""
+        case .applied: return "; cleaned up with Apple Intelligence"
+        case .unchanged: return "; Apple Intelligence cleanup changed nothing"
+        case .unavailable, .rejectedGuard, .timeout, .error, .cancelled:
+            return "; Apple Intelligence cleanup \(outcome.rawValue), original kept"
+        }
     }
 
     private func recordPipelineHistoryEntry(rawTranscript: String, transcript: String, status: String, audioFileName: String?) {

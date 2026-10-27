@@ -26,6 +26,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/SettingsKeys.swift \
 	Sources/SetupFlowCore.swift \
 	Sources/SpokenNumberFormatter.swift \
+	Sources/TranscriptPolish.swift \
 	Sources/Dictionary/BiasGraph.swift \
 	Sources/Dictionary/BPEEncoder.swift \
 	Sources/Dictionary/CasingRestorer.swift \

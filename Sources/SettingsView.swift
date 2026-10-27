@@ -135,6 +135,7 @@ struct GeneralSettingsView: View {
                     Toggle("Write spoken numbers as digits", isOn: $appState.isSpokenNumbersEnabled)
                     Text("‘Twenty three percent’ becomes ‘23%’. Zero to nine stay as words, except in lists, labels, units, and ranges (‘step 3’, ‘5 GB’).")
                         .font(.caption).foregroundStyle(.secondary)
+                    appleIntelligenceCleanupToggle
                 }
                 SettingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionRow(.microphone, granted: micGranted) { _ in
@@ -155,8 +156,24 @@ struct GeneralSettingsView: View {
             refreshPermissions()
             appState.refreshAvailableMicrophones()
             appState.refreshLaunchAtLoginStatus()
+            appState.refreshAppleIntelligenceAvailability()
         }
         .onReceive(permissionRefresh) { _ in refreshPermissions() }
+    }
+
+    /// Shown off and disabled while the model is unavailable; the saved choice
+    /// is kept for when it becomes available.
+    @ViewBuilder private var appleIntelligenceCleanupToggle: some View {
+        let reason = appState.appleIntelligenceAvailability.unavailableReason
+        Toggle("Clean up with Apple Intelligence (experimental)", isOn: Binding(
+            get: { reason == nil && appState.isAppleIntelligenceCleanupEnabled },
+            set: { appState.isAppleIntelligenceCleanupEnabled = $0 }))
+            .disabled(reason != nil)
+        Text("Removes filler words, false starts, and repeats, applies spoken corrections, and fixes punctuation, on this Mac. If the result adds or changes any word, or takes over \(TranscriptPolishRunner.latencyBudget.components.seconds) seconds, the original is pasted.")
+            .font(.caption).foregroundStyle(.secondary)
+        if let reason {
+            Text(reason).font(.caption).foregroundStyle(.orange)
+        }
     }
 
     private func refreshPermissions() {
