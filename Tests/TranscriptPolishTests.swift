@@ -163,17 +163,11 @@ enum TranscriptPolishTests {
 
         // Already cancelled: the model is never called.
         let idle = MockPolisher(.returns("Synthetic."))
-        let cancelled = AsyncBox<TranscriptPolishResult>(), finished = DispatchSemaphore(value: 0)
-        let start = DispatchSemaphore(value: 0)
-        let early = Task.detached {
-            start.wait()
-            cancelled.value = await TranscriptPolishRunner.run("Synthetic words.", enabled: true, polisher: idle)
-            finished.signal()
+        let cancelled = wait {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await TranscriptPolishRunner.run("Synthetic words.", enabled: true, polisher: idle)
         }
-        early.cancel()
-        start.signal()
-        TestSupport.expect(finished.wait(timeout: .now() + 2) == .success, "A cancelled pass must return")
-        TestSupport.expectEqual(cancelled.value?.outcome, .cancelled)
+        TestSupport.expectEqual(cancelled, TranscriptPolishResult(text: "Synthetic words.", outcome: .cancelled))
         TestSupport.expectEqual(idle.calls, 0)
     }
 
