@@ -20,15 +20,18 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private var bar: UIHostingController<DictationBarView>?
     private var menuPanel: UIHostingController<MenuPanelView>?
     private var barHeight: NSLayoutConstraint?
+    private var keyAreaTop: NSLayoutConstraint?
     private var totalHeight: NSLayoutConstraint?
     private var trackpadHaptics: UIImpactFeedbackGenerator?
 
     /// Apple's portrait keys are 216 points tall without the predictive bar; the top row takes the
-    /// predictive bar's place, a little taller for the Start capsule, as on Wispr Flow's keyboard.
-    private var heights: (bar: CGFloat, keys: CGFloat) {
-        traitCollection.verticalSizeClass == .compact
-            ? (CGFloat(KeyboardMetrics.compactBarHeight), CGFloat(KeyboardMetrics.compactHeight))
-            : (CGFloat(KeyboardMetrics.barHeight), CGFloat(KeyboardMetrics.regularHeight))
+    /// predictive bar's place, a little taller for the Start capsule, as on Wispr Flow's keyboard. The bar's
+    /// hosting view also reaches `stopReach` down behind the top row, for Stop's tap area.
+    private var heights: (bar: CGFloat, keys: CGFloat, stopReach: CGFloat) {
+        let compact = traitCollection.verticalSizeClass == .compact
+        return (CGFloat(compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight),
+                CGFloat(compact ? KeyboardMetrics.compactHeight : KeyboardMetrics.regularHeight),
+                CGFloat(KeyboardMetrics.stopReachIntoKeys(compact: compact)))
     }
 
     /// Whether a touch above the key area (in its coordinates) goes to the keys: one in the bar away from its
@@ -36,9 +39,24 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private func keysTakeTouch(above point: CGPoint) -> Bool {
         guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
         let inBar = keyArea.convert(point, to: barView)
-        return KeyboardMetrics.barPointGoesToKeys(x: Double(inBar.x), y: Double(inBar.y), barHeight: Double(barView.bounds.height),
+        return KeyboardMetrics.barPointGoesToKeys(x: Double(inBar.x), y: Double(inBar.y), barHeight: shownBarHeight(barView),
                                                   compact: traitCollection.verticalSizeClass == .compact,
                                                   controls: barControls.rects)
+    }
+
+    /// Whether a touch in the key area (in its coordinates) is the Stop capsule's, through the bar's hosting view
+    /// behind the keys: one in its reach into the top row while dictation is starting or recording
+    /// (ARCHITECTURE.md, "Reach and touch regions"). Only the capsule's frame now counts, never one it left.
+    private func startTakesTouch(in point: CGPoint) -> Bool {
+        guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
+        let inBar = keyArea.convert(point, to: barView)
+        return KeyboardMetrics.keyPointGoesToStart(x: Double(inBar.x), y: Double(point.y), barHeight: shownBarHeight(barView),
+                                                   start: barControls.frame(of: "start"))
+    }
+
+    /// The bar's drawn height: from its top to the key area's.
+    private func shownBarHeight(_ barView: UIView) -> Double {
+        Double(keyArea.convert(CGPoint.zero, to: barView).y)
     }
 
     override func loadView() {
@@ -77,7 +95,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             onAction: { [weak self] in self?.setMenu(visible: false) },
             onCandidate: { [weak self] index in self?.input.chooseSwipeCandidate(at: index) },
             onNeverCorrect: { [weak self] in self?.input.acceptNeverCorrect() }))
-        bar.view.backgroundColor = KeyAreaView.touchableBackground
+        // The bar draws its own touchable background (`DictationBarView`): its hosting view reaches behind the keys.
+        bar.view.backgroundColor = .clear
         bar.safeAreaRegions = []
         bar.view.translatesAutoresizingMaskIntoConstraints = false
         addChild(bar)
@@ -90,7 +109,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         view.addSubview(keyArea)
 
         let heights = self.heights
-        let barHeight = bar.view.heightAnchor.constraint(equalToConstant: heights.bar)
+        let barHeight = bar.view.heightAnchor.constraint(equalToConstant: heights.bar + heights.stopReach)
+        let keyAreaTop = keyArea.topAnchor.constraint(equalTo: view.topAnchor, constant: heights.bar)
         // Just below required, so the system's own height wins while it animates a rotation.
         let totalHeight = view.heightAnchor.constraint(equalToConstant: heights.bar + heights.keys)
         totalHeight.priority = UILayoutPriority(999)
@@ -101,16 +121,19 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             barHeight,
             keyArea.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyArea.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyArea.topAnchor.constraint(equalTo: bar.view.bottomAnchor),
+            keyAreaTop,
             keyArea.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             totalHeight,
         ])
         self.barHeight = barHeight
+        self.keyAreaTop = keyAreaTop
         self.totalHeight = totalHeight
         keyArea.takesTouchAbove = { [weak self] point in self?.keysTakeTouch(above: point) ?? false }
+        keyArea.yieldsTouch = { [weak self] point in self?.startTakesTouch(in: point) ?? false }
         registerForTraitChanges([UITraitVerticalSizeClass.self]) { (controller: KeyboardViewController, _: UITraitCollection) in
             let heights = controller.heights
-            controller.barHeight?.constant = heights.bar
+            controller.barHeight?.constant = heights.bar + heights.stopReach
+            controller.keyAreaTop?.constant = heights.bar
             controller.totalHeight?.constant = heights.bar + heights.keys
         }
     }

@@ -96,6 +96,9 @@ final class KeyAreaView: UIView {
     /// away from the bar's controls (`KeyboardMetrics.barPointGoesToKeys`). Such a touch is an ordinary key
     /// touch, on the top row. Never while the menu is open.
     var takesTouchAbove: (CGPoint) -> Bool = { _ in false }
+    /// Whether the view leaves a touch at this point inside it to the bar's Stop capsule below it, whose tap area
+    /// reaches into the top row while dictation is starting or recording (`KeyboardMetrics.keyPointGoesToStart`).
+    var yieldsTouch: (CGPoint) -> Bool = { _ in false }
     /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
     var spaceTitle = "LocalFlow" {
         didSet { if spaceTitle != oldValue { relabel() } }
@@ -287,7 +290,7 @@ final class KeyAreaView: UIView {
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if bounds.contains(point) { return true }
+        if bounds.contains(point) { return !yieldsTouch(point) }
         return point.y < bounds.minY && point.x >= bounds.minX && point.x <= bounds.maxX && takesTouchAbove(point)
     }
 

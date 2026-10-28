@@ -23,6 +23,9 @@ struct BarControlRegions: Equatable, Sendable {
         current[id] = rect
     }
 
+    /// The control `id`'s frame now, without any it left.
+    func frame(of id: String) -> KeyRect? { current[id] }
+
     /// Every control's frame now, and the frames controls left less than `linger` ago.
     func rects(now: TimeInterval) -> [KeyRect] {
         Array(current.values) + left.values.filter { $0.until > now }.map(\.rect)

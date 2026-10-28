@@ -13,6 +13,7 @@ enum KeyboardLayoutTests {
             ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
             ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
             ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
+            ("startReachesUpAndStopReachesIntoTheTopRow", testStartReachesUpAndStopReachesIntoTheTopRow),
             ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
         ]
     }
@@ -129,11 +130,11 @@ enum KeyboardLayoutTests {
     private static func testReachAboveTheKeysIsTheBarBelowItsControls() {
         // ARCHITECTURE.md, "Dropped taps": the key area takes the strip of the bar below its controls, half the
         // difference of their heights (the controls are centred in the bar).
-        TestSupport.expectEqual(KeyboardMetrics.barHeight, 48)
+        TestSupport.expectEqual(KeyboardMetrics.barHeight, 56)
         TestSupport.expectEqual(KeyboardMetrics.barControlHeight, 38)
         TestSupport.expectEqual(KeyboardMetrics.compactBarHeight, 40)
         TestSupport.expectEqual(KeyboardMetrics.compactBarControlHeight, 32)
-        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: false), 5)
+        TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: false), 9)
         TestSupport.expectEqual(KeyboardMetrics.reachAboveKeys(compact: true), 4)
         // A touch there is the top-row key below it, in every layer, portrait and landscape.
         for (width, height, compact) in [(402.0, KeyboardMetrics.regularHeight, false), (874, KeyboardMetrics.compactHeight, true)] {
@@ -190,26 +191,75 @@ enum KeyboardLayoutTests {
         // to the keys (each control's tap area is exactly its frame, so no point is dead); with no control frames
         // reported yet, only the strip below the controls. Code review replaced a 4 pt slop around each control.
         let bar = KeyboardMetrics.barHeight
-        let menu = KeyRect(x: 8, y: 8, width: 38, height: 38), start = KeyRect(x: 300, y: 8, width: 92, height: 38)
+        let menu = KeyRect(x: 8, y: 9, width: 38, height: 38), start = KeyRect(x: 300, y: 9, width: 92, height: 38)
         func goes(_ x: Double, _ y: Double, compact: Bool = false, _ controls: [KeyRect] = [menu, start]) -> Bool {
             KeyboardMetrics.barPointGoesToKeys(x: x, y: y, barHeight: compact ? KeyboardMetrics.compactBarHeight : bar,
                                                compact: compact, controls: controls)
         }
         // Empty bar space, top to bottom, and the status line's place in the middle.
-        TestSupport.expect(goes(150, 0) && goes(150, 27) && goes(150, bar - 0.5), "empty bar space kept from the keys")
+        TestSupport.expect(goes(150, 0) && goes(150, menu.midY) && goes(150, bar - 0.5), "empty bar space kept from the keys")
         // On a control, its edges included, the bar keeps the touch; just outside, the keys take it.
-        TestSupport.expect(!goes(20, 20), "the menu button")
-        TestSupport.expect(!goes(menu.maxX, 20) && !goes(start.x, start.maxY), "a control's edge")
-        TestSupport.expect(goes(menu.maxX + 0.5, 20), "just right of the menu button")
+        TestSupport.expect(!goes(20, menu.midY), "the menu button")
+        TestSupport.expect(!goes(menu.maxX, menu.midY) && !goes(start.x, start.maxY), "a control's edge")
+        TestSupport.expect(goes(menu.maxX + 0.5, menu.midY), "just right of the menu button")
         TestSupport.expect(goes(350, start.maxY + 0.5), "just below the Start capsule")
         TestSupport.expect(goes(start.x - 0.5, start.y - 0.5), "just outside the Start capsule's corner")
         // Outside the bar, nothing.
         TestSupport.expect(!goes(150, -1) && !goes(150, bar + 1), "outside the bar")
-        // No frames yet: only the strip below the controls (5 pt in portrait, 4 in landscape).
-        TestSupport.expect(goes(150, bar - 4.5, []) && !goes(150, bar - 5.5, []), "portrait strip without frames")
+        // No frames yet: only the strip below the controls (9 pt in portrait, 4 in landscape).
+        TestSupport.expect(goes(150, bar - 8.5, []) && !goes(150, bar - 9.5, []), "portrait strip without frames")
         let compactBar = KeyboardMetrics.compactBarHeight
         TestSupport.expect(goes(150, compactBar - 3.5, compact: true, []) && !goes(150, compactBar - 4.5, compact: true, []),
                            "landscape strip without frames")
+    }
+
+    private static func testStartReachesUpAndStopReachesIntoTheTopRow() {
+        // ARCHITECTURE.md, "Reach and touch regions": the Start capsule's tap area is its frame inset by
+        // `startHitInset` (6 pt) at the sides and bottom, reaching up to the bar's top; while dictation is starting
+        // or recording it also reaches down through the top key row, to halfway into the gap below it.
+        TestSupport.expectEqual(KeyboardMetrics.startHitInset, 6)
+        for (width, height, compact) in [(402.0, KeyboardMetrics.regularHeight, false), (874, KeyboardMetrics.compactHeight, true)] {
+            let bar = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
+            let control = compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight
+            let top = KeyboardMetrics.reachAboveKeys(compact: compact)
+            let capsule = KeyRect(x: width - 100, y: top, width: 92, height: control)
+            let idle = KeyboardMetrics.startTapArea(capsule: capsule, barHeight: bar, compact: compact, capturing: false)
+            let stop = KeyboardMetrics.startTapArea(capsule: capsule, barHeight: bar, compact: compact, capturing: true)
+            TestSupport.expectEqual(idle, KeyRect(x: capsule.x + 6, y: 0, width: 80, height: capsule.maxY - 6))
+            TestSupport.expectEqual(stop, KeyRect(x: capsule.x + 6, y: 0, width: 80,
+                                                  height: bar + KeyboardMetrics.stopReachIntoKeys(compact: compact)))
+
+            // Into the keys only while capturing, and only through the top row: the row below keeps all its keys.
+            let metrics = KeyboardMetrics(width: width, height: height)
+            TestSupport.expectEqual(KeyboardMetrics.stopReachIntoKeys(compact: compact),
+                                    metrics.rowY(0) + metrics.rowHeight + metrics.rowGap / 2)
+            let placed = keys(.letters, width: width, height: height)
+            for key in placed where key.frame.x < stop.maxX && key.frame.maxX > stop.x {
+                let point = (x: min(max(key.frame.midX, stop.x), stop.maxX), y: key.frame.midY)
+                let underStop = KeyboardMetrics.keyPointGoesToStart(x: point.x, y: point.y, barHeight: bar, start: stop)
+                TestSupport.expect(underStop == (key.frame.y == metrics.rowY(0)), "\(key.label) under Stop: \(underStop)")
+                TestSupport.expect(!KeyboardMetrics.keyPointGoesToStart(x: point.x, y: point.y, barHeight: bar, start: idle),
+                                   "\(key.label) under Start")
+            }
+            let below = KeyboardMetrics.stopReachIntoKeys(compact: compact)
+            TestSupport.expect(KeyboardMetrics.keyPointGoesToStart(x: stop.midX, y: below, barHeight: bar, start: stop)
+                               && !KeyboardMetrics.keyPointGoesToStart(x: stop.midX, y: below + 0.5, barHeight: bar, start: stop)
+                               && !KeyboardMetrics.keyPointGoesToStart(x: stop.x - 0.5, y: 1, barHeight: bar, start: stop),
+                               "Stop's edges in the keys")
+            // Points above the key area are the bar's (`barPointGoesToKeys`), never this test's.
+            TestSupport.expect(!KeyboardMetrics.keyPointGoesToStart(x: stop.midX, y: -1, barHeight: bar, start: stop),
+                               "above the key area")
+            TestSupport.expect(!KeyboardMetrics.keyPointGoesToStart(x: stop.midX, y: 1, barHeight: bar, start: nil), "no frame")
+
+            // In the bar: everything above the capsule is Start's; the ring below and beside it is still the keys'.
+            func goes(_ x: Double, _ y: Double, _ area: KeyRect) -> Bool {
+                KeyboardMetrics.barPointGoesToKeys(x: x, y: y, barHeight: bar, compact: compact, controls: [area])
+            }
+            TestSupport.expect(!goes(capsule.midX, 0, idle) && !goes(capsule.midX, top / 2, idle), "above Start")
+            TestSupport.expect(goes(capsule.midX, idle.maxY + 0.5, idle) && goes(capsule.x + 5.5, capsule.midY, idle),
+                               "the ring around Start")
+            TestSupport.expect(!goes(capsule.midX, bar, stop), "below Stop")
+        }
     }
 
     private static func testTheDeleteKeyReachesTowardsM() {

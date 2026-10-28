@@ -46,17 +46,23 @@ final class BarControlFrames {
     /// The controls' frames now, with those a control left while it may still be animating there.
     var rects: [KeyRect] { regions.rects(now: CACurrentMediaTime()) }
 
-    func set(_ id: String, _ frame: CGRect?) {
-        let rect = frame.map { KeyRect(x: Double($0.minX), y: Double($0.minY), width: Double($0.width), height: Double($0.height)) }
+    /// The control `id`'s frame now, without any it left.
+    func frame(of id: String) -> KeyRect? { regions.frame(of: id) }
+
+    func set(_ id: String, _ rect: KeyRect?) {
         regions.set(id, rect, now: CACurrentMediaTime())
     }
 }
 
 private extension View {
-    /// Reports this control's frame in the bar to `controls` while it is shown, inset by `inset` on every side
-    /// for a control whose tap area is smaller than its look.
-    func barControl(_ id: String, in controls: BarControlFrames, inset: CGFloat = 0) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarControlFrames.space)).insetBy(dx: inset, dy: inset) } action: {
+    /// Reports this control's tap area in the bar to `controls` while it is shown: its frame, or `area` of it for
+    /// a control whose tap area differs from its look.
+    func barControl(_ id: String, in controls: BarControlFrames,
+                    area: @escaping @Sendable (KeyRect) -> KeyRect = { $0 }) -> some View {
+        onGeometryChange(for: KeyRect.self) {
+            let frame = $0.frame(in: .named(BarControlFrames.space))
+            return area(KeyRect(x: Double(frame.minX), y: Double(frame.minY), width: Double(frame.width), height: Double(frame.height)))
+        } action: {
             controls.set(id, $0)
         }
             .onDisappear { controls.set(id, nil) }
@@ -90,6 +96,8 @@ struct DictationBarView: View {
         let state = client.state
         // The key area takes the bar away from the controls (`KeyboardMetrics.barPointGoesToKeys`).
         let height = CGFloat(compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight)
+        let barHeight = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
+        let capturing = state.mode.isActiveCapture
         HStack(spacing: 8) {
             Button(action: onMenu) {
                 Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")
@@ -141,11 +149,17 @@ struct DictationBarView: View {
                 .accessibilityIdentifier("lf.cancel")
                 .barControl("cancel", in: controls)
             }
-            StartCapsule(client: client, state: state, height: height, onAction: onAction, onUnavailable: onMenu)
-                .barControl("start", in: controls, inset: StartCapsule.hitInset)
+            StartCapsule(client: client, state: state, height: height, compact: compact, onAction: onAction, onUnavailable: onMenu)
+                .barControl("start", in: controls) {
+                    KeyboardMetrics.startTapArea(capsule: $0, barHeight: barHeight, compact: compact, capturing: capturing)
+                }
         }
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .frame(height: CGFloat(barHeight))
+        // The hosting view also reaches down behind the top row for Stop's tap area; only the bar is drawn.
+        .background(Color(uiColor: KeyAreaView.touchableBackground))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .coordinateSpace(.named(BarControlFrames.space))
         .animation(.easeOut(duration: 0.2), value: state.canUndo)
         .animation(.easeOut(duration: 0.2), value: state.canInsertLast)
@@ -304,13 +318,10 @@ private struct Chip: View {
 /// The primary control: "Start" with a waveform glyph, a red "Stop" with live levels and the elapsed
 /// time while starting or recording, and a spinner while transcribing.
 private struct StartCapsule: View {
-    /// The tap area is the capsule inset this much on every side; the keys take the rest (user decision,
-    /// 2026-10-18: the capsule is never missed, and fast top-row taps land around it). It looks the same.
-    static let hitInset: CGFloat = 6
-
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
+    let compact: Bool
     let onAction: () -> Void
     /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
     let onUnavailable: () -> Void
@@ -328,7 +339,7 @@ private struct StartCapsule: View {
                 .padding(.horizontal, 14)
                 .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
                 .background(Capsule().fill(fill))
-                .contentShape(Rectangle().inset(by: Self.hitInset))
+                .contentShape(StartTapShape(compact: compact, capturing: state.mode.isActiveCapture))
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
@@ -393,6 +404,21 @@ private struct StartCapsule: View {
             return "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
         default: return ""
         }
+    }
+}
+
+/// The capsule's tap area (`KeyboardMetrics.startTapArea`) in its own coordinates; it looks the same. The capsule is
+/// centred in the bar, so its top is `reachAboveKeys` below the bar's.
+private struct StartTapShape: Shape {
+    let compact: Bool
+    let capturing: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let top = KeyboardMetrics.reachAboveKeys(compact: compact)
+        let area = KeyboardMetrics.startTapArea(
+            capsule: KeyRect(x: Double(rect.minX), y: Double(rect.minY) + top, width: Double(rect.width), height: Double(rect.height)),
+            barHeight: compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight, compact: compact, capturing: capturing)
+        return Path(CGRect(x: area.x, y: area.y - top, width: area.width, height: area.height))
     }
 }
 
