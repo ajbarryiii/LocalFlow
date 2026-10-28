@@ -68,7 +68,7 @@ struct KeyboardMetrics: Equatable, Sendable {
     static let compactHeight: Double = 162
 
     /// The dictation bar above the keys, and its controls, centred in it (ARCHITECTURE.md, "Top row").
-    static let barHeight: Double = 48
+    static let barHeight: Double = 56
     static let compactBarHeight: Double = 40
     static let barControlHeight: Double = 38
     static let compactBarControlHeight: Double = 32
@@ -86,6 +86,32 @@ struct KeyboardMetrics: Equatable, Sendable {
         guard y >= 0, y <= barHeight else { return false }
         guard !controls.isEmpty else { return y >= barHeight - reachAboveKeys(compact: compact) }
         return controls.allSatisfy { $0.distanceSquared(toX: x, y: y) > 0 }
+    }
+
+    /// The Start/Stop capsule's tap area is its frame inset this much at the sides and bottom, where the keys take
+    /// the rest (user decision, 2026-10-18: the capsule is never missed, and fast top-row taps land around it).
+    static let startHitInset: Double = 6
+
+    /// How far below the key area's top Stop's tap area reaches while dictation is starting or recording: through
+    /// the top row and half the gap below it.
+    static func stopReachIntoKeys(compact: Bool) -> Double {
+        let metrics = KeyboardMetrics(width: 1, height: compact ? compactHeight : regularHeight)
+        return metrics.rowY(0) + metrics.rowHeight + metrics.rowGap / 2
+    }
+
+    /// The Start/Stop capsule's tap area, in the bar's coordinates, from its frame there: inset by `startHitInset` at
+    /// the sides and bottom and reaching up to the bar's top; while `capturing` (starting or recording), down
+    /// through the top row of keys instead (`stopReachIntoKeys`). ARCHITECTURE.md, "Reach and touch regions".
+    static func startTapArea(capsule: KeyRect, barHeight: Double, compact: Bool, capturing: Bool) -> KeyRect {
+        let bottom = capturing ? barHeight + stopReachIntoKeys(compact: compact) : capsule.maxY - startHitInset
+        return KeyRect(x: capsule.x + startHitInset, y: 0, width: max(capsule.width - 2 * startHitInset, 0), height: max(bottom, 0))
+    }
+
+    /// Whether a touch at (x, y) in the key area's coordinates is the Start capsule's: inside `start`, its tap area
+    /// in the bar's coordinates, which reaches into the keys only while capturing (an edge is the capsule's).
+    static func keyPointGoesToStart(x: Double, y: Double, barHeight: Double, start: KeyRect?) -> Bool {
+        guard y >= 0, let start else { return false }
+        return start.distanceSquared(toX: x, y: y + barHeight) == 0
     }
 
     init(width: Double, height: Double) {

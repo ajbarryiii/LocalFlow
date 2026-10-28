@@ -889,9 +889,13 @@ transcripts or other user data.
   `DictationBarView` (the top row) in a `UIHostingController`, above the UIKit
   `KeyAreaView`, plus a SwiftUI `MenuPanelView` over the key area when the
   menu is open.
-  - Heights (`KeyboardMetrics`): the top row is 48 pt in portrait and 40 pt
+  - Heights (`KeyboardMetrics`): the top row is 56 pt in portrait and 40 pt
     in compact height, with its controls 38 pt and 32 pt tall, centred in
-    it; the key area is 216 pt and 162 pt.
+    it; the key area is 216 pt and 162 pt. The top row's hosting view also
+    reaches `KeyboardMetrics.stopReachIntoKeys(compact:)` down behind the key
+    area, for the Stop capsule's tap area
+    ([Reach and touch regions](#reach-and-touch-regions)); it draws only the
+    top row.
   - Its input view adopts `UIInputViewAudioFeedback`, so key presses play the
     system click, which follows the user's Keyboard Clicks setting.
   - It sets `hasDictationKey = true` in `viewDidAppear`, so iOS drops its own
@@ -1008,7 +1012,7 @@ The views are touchable ("Touchable backgrounds",
 
 - **Reach above the keys.** The key area also takes touches up to
   `KeyboardMetrics.reachAboveKeys(compact:)` above it: the strip of the bar
-  below its controls, (bar height − control height) / 2, 5 pt in portrait and
+  below its controls, (bar height − control height) / 2, 9 pt in portrait and
   4 pt in compact height. Such a touch is an ordinary key touch, and its
   nearest key is in the top row. While the menu panel is open the reach
   is 0.
@@ -1024,9 +1028,20 @@ The views are touchable ("Touchable backgrounds",
   - Each control's tap area is exactly the rectangle it reports
     (`contentShape(Rectangle())`), so every point of the bar is a control's
     or the keys'.
-  - The Start/Stop capsule's tap area, and the frame it reports, is its frame
-    inset by `StartCapsule.hitInset` (6 pt) on every side; it looks the same,
-    and the keys take the ring around it.
+  - The Start/Stop capsule's tap area, and the frame it reports, is
+    `KeyboardMetrics.startTapArea(capsule:barHeight:compact:capturing:)`: its
+    frame inset by `KeyboardMetrics.startHitInset` (6 pt) at the sides and
+    bottom, reaching up to the bar's top. It looks the same, and the keys take
+    the ring beside and below it.
+  - **Stop reaches into the top row.** While dictation is starting or
+    recording, the capsule's tap area instead reaches down through the top
+    row of keys, to half the row gap below it
+    (`KeyboardMetrics.stopReachIntoKeys(compact:)`, 56 pt into the key area
+    in portrait), at the same width. The key area leaves a touch there to
+    the bar (`KeyboardMetrics.keyPointGoesToStart`), judged against the
+    capsule's frame now, never a lingering one; every other row, and the top
+    row beside the capsule, types as before. While the menu panel is open
+    the key area leaves it nothing.
   - Two places inside a control's frame take no tap: the 1 pt dividers
     between candidates, and the Start capsule while it shows the transcribing
     spinner.
@@ -2162,7 +2177,9 @@ merge (AGENTS.md).
   around tapped words.
 - **Touch regions:** fast taps on the top and bottom rows, and taps in the bar
   outside its controls, type without dropped letters; the Start capsule and
-  the chips still take their taps; a quick skid types its key; a low tap
+  the chips still take their taps, Start also from the bar above it, and
+  while dictating Stop also from the top-row keys under it (other keys
+  still type); a quick skid types its key; a low tap
   above the space bar types the bottom row; delete takes taps just right
   of M.
 - **Soft key edges and autocorrect:** the Home switches (applied when the

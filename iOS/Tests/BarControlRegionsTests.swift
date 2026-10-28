@@ -8,6 +8,7 @@ enum BarControlRegionsTests {
             ("currentFramesAreTheControls", testCurrentFramesAreTheControls),
             ("aMovedControlKeepsItsOldFrameForALinger", testAMovedControlKeepsItsOldFrameForALinger),
             ("aGoneControlKeepsItsFrameForALinger", testAGoneControlKeepsItsFrameForALinger),
+            ("aControlsCurrentFrameNeverLingers", testAControlsCurrentFrameNeverLingers),
         ]
     }
 
@@ -49,5 +50,17 @@ enum BarControlRegionsTests {
         // Forgetting a control that was never reported changes nothing.
         regions.set("cancel", nil, now: 4)
         TestSupport.expectEqual(regions.rects(now: 4), [])
+    }
+
+    private static func testAControlsCurrentFrameNeverLingers() {
+        // Stop's reach into the keys follows only where Start is now: a frame it left is not a key point's.
+        var regions = BarControlRegions()
+        TestSupport.expectEqual(regions.frame(of: "start"), nil)
+        regions.set("start", insert, now: 0)
+        regions.set("start", slid, now: 1)
+        TestSupport.expectEqual(regions.frame(of: "start"), slid)
+        regions.set("start", nil, now: 2)
+        TestSupport.expectEqual(regions.frame(of: "start"), nil)
+        TestSupport.expectEqual(regions.rects(now: 2.1), [slid])
     }
 }
