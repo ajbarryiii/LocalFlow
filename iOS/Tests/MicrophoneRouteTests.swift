@@ -22,7 +22,43 @@ enum MicrophoneRouteTests {
             ("newDeviceAfterFailureRetriesExactlyOnce", isolated(testNewDeviceAfterFailureRetriesExactlyOnce)),
             ("changedInputsCountAsExternal", isolated(testChangedInputsCountAsExternal)),
             ("problemsAreContentFree", testProblemsAreContentFree),
+            ("noHeadphonesNoticeWithoutBluetoothHeadphones", testNoHeadphonesNoticeWithoutBluetoothHeadphones),
+            ("bluetoothHeadphonesWithIPhoneMicrophoneSayIPhone", testBluetoothHeadphonesWithIPhoneMicrophoneSayIPhone),
+            ("headphonesMicrophoneSaysHeadphones", testHeadphonesMicrophoneSaysHeadphones),
+            ("headphonesNoticesAreContentFree", testHeadphonesNoticesAreContentFree),
         ]
+    }
+
+    /// No Bluetooth headphones, no capture, or an input that is not yet known: nothing to say. A wired
+    /// headset or USB microphone is not Bluetooth headphones either, even with a Bluetooth output.
+    private static func testNoHeadphonesNoticeWithoutBluetoothHeadphones() {
+        TestSupport.expectEqual(HeadphonesNotice(nil), nil)
+        TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: .builtInMic, bluetoothOutput: false)), nil)
+        TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: nil, bluetoothOutput: false)), nil)
+        TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: nil, bluetoothOutput: true)), nil)
+        for input in [InputPortKind.headset, .usb, .other] {
+            for bluetoothOutput in [false, true] {
+                TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: input, bluetoothOutput: bluetoothOutput)), nil)
+            }
+        }
+    }
+
+    /// "Use iPhone microphone" honored with Bluetooth headphones connected: they play, the iPhone records.
+    private static func testBluetoothHeadphonesWithIPhoneMicrophoneSayIPhone() {
+        TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: .builtInMic, bluetoothOutput: true)), .iPhoneMicrophone)
+    }
+
+    /// The headphones' microphone records: the choice is off, or it could not be honored.
+    private static func testHeadphonesMicrophoneSaysHeadphones() {
+        for bluetoothOutput in [true, false] {
+            TestSupport.expectEqual(HeadphonesNotice(CaptureRoute(input: .bluetooth, bluetoothOutput: bluetoothOutput)),
+                                    .headphonesMicrophone)
+        }
+    }
+
+    private static func testHeadphonesNoticesAreContentFree() {
+        TestSupport.expectEqual(HeadphonesNotice.iPhoneMicrophone.message, "Recording from your iPhone, not your headphones")
+        TestSupport.expectEqual(HeadphonesNotice.headphonesMicrophone.message, "Recording through your headphones")
     }
 
     private static func testOnByDefault() {

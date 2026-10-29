@@ -17,8 +17,9 @@ final class MicrophoneCapture: HostCapture {
     var onMediaServicesReset: (@MainActor () -> Void)?
     /// Every engine start reports what was requested and what iOS granted.
     var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
-    /// The input in use changed or became known; nil once capture stops. Content-free.
-    var onInputChanged: (@MainActor (InputPortKind?) -> Void)?
+    /// The route in use (input, and whether Bluetooth headphones are in it) changed or became known; nil
+    /// once capture stops. Content-free.
+    var onCaptureRouteChanged: (@MainActor (CaptureRoute?) -> Void)?
     /// Whether the built-in microphone choice is in effect changed. Content-free.
     var onRoutingChanged: (@MainActor (MicrophoneRouting) -> Void)?
     /// "Use iPhone microphone": the desired choice, kept apart from the one the session was configured
@@ -123,7 +124,7 @@ final class MicrophoneCapture: HostCapture {
 
     func stop() {
         tearDownEngine()
-        onInputChanged?(nil)
+        onCaptureRouteChanged?(nil)
         router.sessionEnded()
         onRoutingChanged?(router.routing)
         guard activatedSession else { return }
@@ -167,7 +168,7 @@ final class MicrophoneCapture: HostCapture {
         // category options still belong to the old one.
         if router.routeChanged(routeSession, change: change) { scheduleRoutingCheck() }
         AudioSessionTuning.preferMonoInput(on: AVAudioSession.sharedInstance())
-        onInputChanged?(routeSession.currentInput)
+        onCaptureRouteChanged?(routeSession.captureRoute)
         onRoutingChanged?(router.routing)
     }
 
@@ -210,7 +211,7 @@ final class MicrophoneCapture: HostCapture {
             actualIOBufferDuration: session.ioBufferDuration, requestedSampleRate: requested.sampleRate,
             actualSampleRate: session.sampleRate, inputSampleRate: format.sampleRate, inputChannels: Int(format.channelCount),
             tapBufferFrames: Int(tapFrames), inputPort: routeSession.currentInput))
-        onInputChanged?(routeSession.currentInput)
+        onCaptureRouteChanged?(routeSession.captureRoute)
     }
 
     private func tearDownEngine() {
@@ -380,6 +381,13 @@ private final class SystemAudioRouteSession: AudioRouteSession {
     var availableInputs: [InputPortKind] { (session.availableInputs ?? []).map { InputPortKind($0.portType) } }
 
     var currentInput: InputPortKind? { session.currentRoute.inputs.first.map { InputPortKind($0.portType) } }
+
+    /// Any Bluetooth output counts as headphones: A2DP with the iPhone microphone, hands-free or LE with theirs.
+    var captureRoute: CaptureRoute {
+        let bluetooth: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP]
+        return CaptureRoute(input: currentInput,
+                            bluetoothOutput: session.currentRoute.outputs.contains { bluetooth.contains($0.portType) })
+    }
 
     func setCategoryOptions(_ options: Set<MicrophoneRoute.CategoryOption>) throws {
         try session.setCategory(.playAndRecord, mode: .default, options: AVAudioSession.CategoryOptions(options))

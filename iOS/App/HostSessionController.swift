@@ -19,6 +19,9 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var captureConfiguration: CaptureConfiguration?
     /// The input in use while capturing, nil otherwise. Content-free; Home shows `currentInput?.label`.
     @Published private(set) var currentInput: InputPortKind?
+    /// Which microphone records while Bluetooth headphones are connected, nil otherwise. Content-free; the
+    /// bounce's Listening screen shows it.
+    @Published private(set) var headphonesNotice: HeadphonesNotice?
     /// Whether "Use iPhone microphone" is in effect; Home shows `microphoneRouting.problem` when it is not.
     @Published private(set) var microphoneRouting = MicrophoneRouting.systemChoice
     /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
@@ -57,7 +60,8 @@ final class HostSessionController: ObservableObject {
         let relay = CaptureRelay()
         let deliver: @Sendable (CaptureEvent) -> Void = { relay.deliver($0) }
         #if LOCALFLOW_SELFTEST
-        let synthetic = SelfTest.syntheticInput(buffer: buffer, deliver: deliver)
+        let synthetic = SelfTest.syntheticInput(buffer: buffer, deliver: deliver,
+                                                useBuiltInMicrophone: { [preferences] in preferences.useBuiltInMicrophone })
         #else
         let synthetic = SyntheticInputRequest.notRequested
         #endif
@@ -73,14 +77,17 @@ final class HostSessionController: ObservableObject {
             microphone.onFailure = { [weak core] generation in core?.captureFailed(generation: generation) }
             microphone.onMediaServicesReset = { [weak core] in core?.captureMediaServicesReset() }
             microphone.onConfigured = { [weak self] in self?.configured($0) }
-            microphone.onInputChanged = { [weak self] in self?.inputChanged($0) }
+            microphone.onCaptureRouteChanged = { [weak self] in self?.captureRouteChanged($0) }
             microphone.onRoutingChanged = { [weak self] routing in
                 if self?.microphoneRouting != routing { self?.microphoneRouting = routing }
             }
             microphone.router.setDesired(preferences.useBuiltInMicrophone)
         }
         #if LOCALFLOW_SELFTEST
-        (capture as? SyntheticCapture)?.onConfigured = { [weak self] in self?.configured($0) }
+        if let syntheticCapture = capture as? SyntheticCapture {
+            syntheticCapture.onConfigured = { [weak self] in self?.configured($0) }
+            syntheticCapture.onCaptureRouteChanged = { [weak self] in self?.captureRouteChanged($0) }
+        }
         #endif
         transcriber.onStateChange = { [weak core] in core?.modelStateChanged() }
         core.onChange = { [weak self] in self?.refresh() }
@@ -185,8 +192,9 @@ final class HostSessionController: ObservableObject {
             })
     }
 
-    private func inputChanged(_ input: InputPortKind?) {
-        if currentInput != input { currentInput = input }
+    private func captureRouteChanged(_ route: CaptureRoute?) {
+        set(\.currentInput, route?.input)
+        set(\.headphonesNotice, HeadphonesNotice(route))
     }
 
     private func configured(_ configuration: CaptureConfiguration) {

@@ -9,6 +9,15 @@ import Foundation
 /// touched, so the Mac shows no permission prompt. It cannot prove device background behavior.
 @MainActor
 final class SyntheticCapture: HostCapture {
+    /// The headphones the reported route stands in for (`LOCALFLOW_SYNTHETIC_HEADPHONES`).
+    enum Headphones: String {
+        /// Bluetooth headphones with a microphone: the input follows "Use iPhone microphone", as iOS
+        /// routes AirPods (A2DP with the iPhone microphone on, hands-free with it off).
+        case bluetooth
+        /// None connected: the iPhone microphone.
+        case disconnected = "none"
+    }
+
     private(set) var engineGeneration: UInt64 = 0
     private let pipeline: CapturePipeline<SyntheticSource>
     private let feeder: SyntheticFeeder
@@ -16,12 +25,20 @@ final class SyntheticCapture: HostCapture {
     private var activatedSession = false
     private var lastRestartAttempt = Date.distantPast
     private var requested = AudioSessionTuning.Requested()
+    /// Nil: no route is reported.
+    private let headphones: Headphones?
+    private let useBuiltInMicrophone: @MainActor () -> Bool
     /// Every input start reports what was requested and what iOS granted.
     var onConfigured: (@MainActor (CaptureConfiguration) -> Void)?
+    /// The simulated route at every input start and microphone choice change; nil once the input stops.
+    var onCaptureRouteChanged: (@MainActor (CaptureRoute?) -> Void)?
 
-    init(samples: [Float], buffer: DictationSampleBuffer, deliver: @escaping @Sendable (CaptureEvent) -> Void) {
+    init(samples: [Float], buffer: DictationSampleBuffer, deliver: @escaping @Sendable (CaptureEvent) -> Void,
+         headphones: Headphones?, useBuiltInMicrophone: @escaping @MainActor () -> Bool) {
         pipeline = CapturePipeline(buffer: buffer, converter: SyntheticSource(samples: samples), deliver: deliver)
         feeder = SyntheticFeeder(pipeline: pipeline)
+        self.headphones = headphones
+        self.useBuiltInMicrophone = useBuiltInMicrophone
     }
 
     var permission: CapturePermission { .granted }
@@ -66,9 +83,10 @@ final class SyntheticCapture: HostCapture {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    /// The synthetic input has no microphone to choose: nothing to change.
+    /// The synthetic input has no microphone to choose: only the simulated route follows the choice.
     func reconfigure() throws {
         guard activatedSession else { throw SyntheticError.noSession }
+        onCaptureRouteChanged?(route)
     }
 
     var needsReconfiguration: Bool { false }
@@ -93,6 +111,7 @@ final class SyntheticCapture: HostCapture {
             actualIOBufferDuration: session.ioBufferDuration, requestedSampleRate: requested.sampleRate,
             actualSampleRate: session.sampleRate, inputSampleRate: DictationSampleBuffer.sampleRate, inputChannels: 1,
             tapBufferFrames: SyntheticSource.chunk))
+        onCaptureRouteChanged?(route)
     }
 
     private func stopInput() {
@@ -100,6 +119,15 @@ final class SyntheticCapture: HostCapture {
         pipeline.resetClock()
         keepAlive?.stop()
         keepAlive = nil
+        onCaptureRouteChanged?(nil)
+    }
+
+    private var route: CaptureRoute? {
+        switch headphones {
+        case .bluetooth?: return CaptureRoute(input: useBuiltInMicrophone() ? .builtInMic : .bluetooth, bluetoothOutput: true)
+        case .disconnected?: return CaptureRoute(input: .builtInMic, bluetoothOutput: false)
+        case nil: return nil
+        }
     }
 
     private func restartKeepAlive(_ reason: String) {
