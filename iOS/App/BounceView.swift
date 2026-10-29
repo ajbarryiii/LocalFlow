@@ -10,7 +10,7 @@ struct BounceView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Scrolls only when it does not fit (a small iPhone with the preparation card), so the buttons
-            // always stay on screen.
+            // always stay on screen. Anchored at the bottom: the top margin gives way first.
             GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
@@ -40,6 +40,7 @@ struct BounceView: View {
                     .frame(minHeight: proxy.size.height)
                 }
                 .scrollBounceBehavior(.basedOnSize)
+                .defaultScrollAnchor(.bottom)
             }
 
             buttons

@@ -869,8 +869,8 @@ transcripts or other user data.
     flowing), then "Listening — swipe back to your app", with Stop and
     Cancel, and with Bluetooth headphones connected which microphone records
     (see "Microphone choice"). Above the buttons it scrolls when it does not
-    fit (a small iPhone while the model prepares), so the buttons stay on
-    screen. It stays up after the swipe back only while its dictation is in
+    fit (a small iPhone while the model prepares), anchored at the bottom so
+    the top gives way first and the buttons stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
     It is not shown while Try it has the keyboard.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the
