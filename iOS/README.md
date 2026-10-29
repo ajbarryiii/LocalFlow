@@ -136,7 +136,7 @@ keyboard and the Full Access row.
 ### End-to-end without a microphone
 
 ```bash
-make -C iOS e2e-sim PARAKEET_BUNDLE_DIR=/path/to/bundle [E2E_SKIP_ONBOARDING=1] [E2E_SCREEN=home] [E2E_START_SESSION=1]
+make -C iOS e2e-sim PARAKEET_BUNDLE_DIR=/path/to/bundle [E2E_SKIP_ONBOARDING=1] [E2E_SCREEN=home] [E2E_START_SESSION=1] [E2E_HEADPHONES=bluetooth|none]
 make -C iOS e2e-sim-probe [E2E_BACKGROUND=1 | E2E_FROM_BACKGROUND=1]
 make -C iOS e2e-sim-scenarios
 ```
@@ -148,7 +148,10 @@ real-time-paced synthetic source. The Mac microphone is never used, and a
 requested but unusable synthetic source fails closed rather than falling back
 to the real microphone. `E2E_SCREEN` accepts `onboarding`,
 `onboarding-microphone|keyboard|model`, `home`, `tryit`, `keyboard-setup` and
-`diagnostics`. The app's content-free `LocalFlow self-test:` lines go to
+`diagnostics`. `E2E_HEADPHONES` sets the route the synthetic microphone
+reports: `bluetooth` stands in for AirPods, with the input following "Use
+iPhone microphone" as iOS routes them, and `none` for the iPhone microphone
+alone. The app's content-free `LocalFlow self-test:` lines go to
 `build/e2e-simulator/obj/e2e-app.log`.
 
 `e2e-sim-probe` plays the keyboard's side through the App Group files:
@@ -348,6 +351,7 @@ Setup and session:
 - [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
 - [ ] Model readiness: start a session, then Diagnostics → Release model now; the model stays "Not prepared yet" while idle, and the keyboard's idle line reads "Model loads when you dictate". Swipe to another app and tap Start: the bar reads "Listening · preparing model" while preparation runs, and after Stop the Start capsule shows a spinner labelled "Preparing" (also with a swipe candidate strip or the Insert last chip showing) until the transcript inserts (brief on a warm model; long after a cold preparation). Tapping Start right after the session starts shows "Preparing model…" before the tap. Release the model again during a dictation: it is released only after the dictation ends.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
+- [ ] Headphones notice: with AirPods connected and Use iPhone microphone on, the bounce's Listening screen reads "Recording from your iPhone, not your headphones"; with it off, "Recording through your headphones"; with no headphones, no notice. Connecting or disconnecting them while Listening updates it. On an SE-size iPhone while the model prepares, Stop and Cancel stay on screen and the rest scrolls. Simulator verification (synthetic route, `E2E_HEADPHONES`, iPhone 17 Pro and iPhone SE) passed on 2026-10-29; device check pending.
 - [ ] Field binding: dictate into Try it field A, switch to field B mid-request; no auto-insert into B, and the chip appears.
 - [ ] Undo: removes exactly the dictation; disappears after typing, cursor moves, 30 s, or hiding the keyboard.
 - [ ] Kill LocalFlow during recording: the request reports interrupted and never restarts; no result file remains.

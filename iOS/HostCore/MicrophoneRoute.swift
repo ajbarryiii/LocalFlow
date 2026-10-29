@@ -79,6 +79,42 @@ enum MicrophoneRouting: Equatable, Sendable {
     }
 }
 
+/// The route capture uses, content-free: the input kind and whether Bluetooth headphones (an A2DP, LE or
+/// hands-free output) are in it. Reported while capturing, nil otherwise.
+struct CaptureRoute: Equatable, Sendable {
+    var input: InputPortKind?
+    var bluetoothOutput: Bool
+}
+
+/// What the bounce's Listening screen says about the microphone while Bluetooth headphones are connected
+/// (contract: "Microphone choice"), so nobody expects their headphones to hear them when the iPhone does,
+/// or the other way round. Read from the route in use, not the choice, so it holds when the choice could
+/// not be honored. Content-free. Pure.
+enum HeadphonesNotice: Equatable, Sendable {
+    /// Bluetooth headphones play while the iPhone microphone records ("Use iPhone microphone" on).
+    case iPhoneMicrophone
+    /// The headphones' own microphone records (the choice off, or not honored).
+    case headphonesMicrophone
+
+    /// Nil with no Bluetooth headphones, before the input is known, and for any other input (a wired
+    /// headset or a USB microphone).
+    init?(_ route: CaptureRoute?) {
+        guard let route else { return nil }
+        switch route.input {
+        case .bluetooth?: self = .headphonesMicrophone
+        case .builtInMic? where route.bluetoothOutput: self = .iPhoneMicrophone
+        default: return nil
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .iPhoneMicrophone: return "Recording from your iPhone, not your headphones"
+        case .headphonesMicrophone: return "Recording through your headphones"
+        }
+    }
+}
+
 /// One route-change notification, content-free: `AVAudioSessionRouteChangeReasonKey` and the input port
 /// types of `AVAudioSessionRouteChangePreviousRouteKey`.
 struct RouteChange: Equatable, Sendable {

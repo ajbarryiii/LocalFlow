@@ -8,6 +8,8 @@ import Foundation
 ///   model and prints one content-free line, never the transcript, the audio path or error messages,
 ///   then exits. `LOCALFLOW_SELFTEST_EXPECTED` and `LOCALFLOW_SELFTEST_COMPUTE=cpuOnly` refine it.
 /// - `LOCALFLOW_SYNTHETIC_MIC=<path>`: replaces the microphone with that recording (`SyntheticCapture`).
+/// - `LOCALFLOW_SYNTHETIC_HEADPHONES=bluetooth|none`: the route the synthetic microphone reports, with or
+///   without Bluetooth headphones (`SyntheticCapture.Headphones`). Unset, it reports none.
 /// - `LOCALFLOW_SELFTEST_SKIP_ONBOARDING=1`: lands on Home.
 /// - `LOCALFLOW_SELFTEST_SCREEN=<screen>`: opens one screen, for screenshots without taps.
 /// - `LOCALFLOW_SELFTEST_START_SESSION=1`: starts a session once the app is active.
@@ -46,8 +48,8 @@ enum SelfTest {
     /// used fails closed (`.unusable`): the session then fails, and the real microphone is never built.
     /// Prints one content-free line either way.
     @MainActor
-    static func syntheticInput(buffer: DictationSampleBuffer,
-                               deliver: @escaping @Sendable (CaptureEvent) -> Void) -> SyntheticInputRequest {
+    static func syntheticInput(buffer: DictationSampleBuffer, deliver: @escaping @Sendable (CaptureEvent) -> Void,
+                               useBuiltInMicrophone: @escaping @MainActor () -> Bool) -> SyntheticInputRequest {
         guard let path = environment["LOCALFLOW_SYNTHETIC_MIC"] else { return .notRequested }
         var samples: [Float] = []
         do {
@@ -59,10 +61,12 @@ enum SelfTest {
             fflush(stdout)
             return .unusable
         }
-        print(String(format: "LocalFlow self-test: synthetic_mic=loaded audio_s=%.2f",
-                     Double(samples.count) / DictationSampleBuffer.sampleRate))
+        let headphones = environment["LOCALFLOW_SYNTHETIC_HEADPHONES"].flatMap(SyntheticCapture.Headphones.init(rawValue:))
+        print(String(format: "LocalFlow self-test: synthetic_mic=loaded audio_s=%.2f headphones=%@",
+                     Double(samples.count) / DictationSampleBuffer.sampleRate, headphones?.rawValue ?? "unreported"))
         fflush(stdout)
-        return .ready(SyntheticCapture(samples: samples, buffer: buffer, deliver: deliver))
+        return .ready(SyntheticCapture(samples: samples, buffer: buffer, deliver: deliver,
+                                       headphones: headphones, useBuiltInMicrophone: useBuiltInMicrophone))
     }
 
     /// One content-free line per dictation, so end-to-end runs record latency and memory.

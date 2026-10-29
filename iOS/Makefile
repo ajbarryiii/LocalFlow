@@ -560,6 +560,8 @@ E2E_LOG = $(E2E_BUILD_DIR)/obj/e2e-app.log
 E2E_SKIP_ONBOARDING ?=
 E2E_SCREEN ?=
 E2E_START_SESSION ?=
+# bluetooth or none: the route the synthetic microphone reports; empty reports none.
+E2E_HEADPHONES ?=
 # e2e-sim-probe: seconds between recording and finish, the completion timeout,
 # whether to send the app to the background while it records, and whether to
 # also open <scheme>://dictate (the simulator asks "Open in …?", which needs a tap).
@@ -593,6 +595,7 @@ e2e-sim:
 	rm -f "$(E2E_LOG)"; \
 	log="$(E2E_LOG)"; case "$$log" in /*) ;; *) log="$(CURDIR)/$$log" ;; esac; \
 	SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" \
+	SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_HEADPHONES="$(E2E_HEADPHONES)" \
 	SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
 	SIMCTL_CHILD_LOCALFLOW_SELFTEST_SCREEN="$(E2E_SCREEN)" \
 	SIMCTL_CHILD_LOCALFLOW_SELFTEST_START_SESSION="$(E2E_START_SESSION)" \
@@ -623,7 +626,8 @@ E2E_SHELL = udid=$$(xcrun simctl list devices | grep -F "    $(E2E_SIM_DEVICE) (
 		mv "$$dir/.e2e-presence.tmp" "$$dir/presence.json"; }; \
 	field() { plutil -extract "$$1" raw -o - "$$dir/status.json" 2>/dev/null || true; }; \
 	status_of() { if [ "$$(field dictation.requestID)" = "$$1" ]; then echo "$$(field dictation.phase)/$$(field dictation.error)"; else echo none; fi; }; \
-	launch_app() { SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
+	launch_app() { SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_MIC="$(E2E_AUDIO)" SIMCTL_CHILD_LOCALFLOW_SYNTHETIC_HEADPHONES="$(E2E_HEADPHONES)" \
+		SIMCTL_CHILD_LOCALFLOW_SELFTEST_SKIP_ONBOARDING="$(E2E_SKIP_ONBOARDING)" \
 		xcrun simctl launch "$$@" "$$udid" "$(BUNDLE_ID)" >/dev/null; }
 
 # Scripted round trip against an e2e-sim install: a record intent, the app brought

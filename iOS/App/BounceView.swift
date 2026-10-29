@@ -1,34 +1,45 @@
 import SwiftUI
 
 /// Shown when the keyboard opened the app to start a dictation. "Starting…" until input buffers flow
-/// (the dictation is `recording`), then "Listening — swipe back to your app".
+/// (the dictation is `recording`), then "Listening — swipe back to your app", saying which microphone
+/// records while Bluetooth headphones are connected.
 struct BounceView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 56)
-            content
-                .padding(.horizontal, 28)
-                .frame(maxWidth: .infinity)
-                .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                .id(phaseKey)
-            Spacer(minLength: 12)
+            // Scrolls only when it does not fit (a small iPhone with the preparation card), so the buttons
+            // always stay on screen.
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 56)
+                        content
+                            .padding(.horizontal, 28)
+                            .frame(maxWidth: .infinity)
+                            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                            .id(phaseKey)
+                        Spacer(minLength: 12)
 
-            if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt, inProgress {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Preparing the speech model", systemImage: "cpu").font(.subheadline.weight(.semibold))
-                    Text(phase == .transcribing ? "Your dictation will be transcribed as soon as it is ready."
-                         : "Your dictation will be transcribed as soon as it is ready. You can keep talking.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
+                        if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt, inProgress {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Preparing the speech model", systemImage: "cpu").font(.subheadline.weight(.semibold))
+                                Text(phase == .transcribing ? "Your dictation will be transcribed as soon as it is ready."
+                                     : "Your dictation will be transcribed as soon as it is ready. You can keep talking.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
+                            }
+                            .padding(16)
+                            .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+                        }
+                    }
+                    .frame(minHeight: proxy.size.height)
                 }
-                .padding(16)
-                .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
+                .scrollBounceBehavior(.basedOnSize)
             }
 
             buttons
@@ -58,6 +69,9 @@ struct BounceView: View {
                 VStack(spacing: 8) {
                     Text("Listening").font(.largeTitle.bold()).fontDesign(.rounded)
                     subtitle("Swipe back to your app and keep talking.")
+                }
+                if let notice = host.headphonesNotice {
+                    HeadphonesNoticeLabel(notice: notice)
                 }
                 SwipeBackHint()
             }
@@ -137,6 +151,23 @@ struct BounceView: View {
             RadialGradient(colors: [(phase == .recording ? Theme.live : Theme.aurora).opacity(0.16), .clear],
                            center: .top, startRadius: 20, endRadius: 520)
         }
+    }
+}
+
+/// Which microphone hears the user while Bluetooth headphones are connected.
+private struct HeadphonesNoticeLabel: View {
+    var notice: HeadphonesNotice
+
+    var body: some View {
+        Label(notice.message, systemImage: notice == .iPhoneMicrophone ? "iphone" : "headphones")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.glacier)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Theme.glacier.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityIdentifier("bounce.headphones")
     }
 }
 

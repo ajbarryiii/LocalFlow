@@ -709,6 +709,13 @@ synthetic source in self-test builds, a fake in tests.
   - When the built-in microphone cannot be selected, dictation continues with
     the other input and Home shows a content-free note. Home shows the input
     kind in use (iPhone microphone, Bluetooth, headset, USB, other).
+  - With Bluetooth headphones connected (a Bluetooth output in the route),
+    the bounce's Listening screen says which microphone records
+    (`HeadphonesNotice`, pure, tested): "Recording from your iPhone, not your
+    headphones" on the built-in microphone, and "Recording through your
+    headphones" on a Bluetooth input (the choice off, or not honored). It
+    follows the route in use, not the choice, and says nothing without
+    Bluetooth headphones or for a wired headset or USB microphone.
 
 ### Transcription
 
@@ -860,7 +867,10 @@ transcripts or other user data.
     view state only.
   - Bounce screen: "Starting…" until the dictation is `recording` (input is
     flowing), then "Listening — swipe back to your app", with Stop and
-    Cancel. It stays up after the swipe back only while its dictation is in
+    Cancel, and with Bluetooth headphones connected which microphone records
+    (see "Microphone choice"). Above the buttons it scrolls when it does not
+    fit (a small iPhone while the model prepares), so the buttons stay on
+    screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
     It is not shown while Try it has the keyboard.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the
