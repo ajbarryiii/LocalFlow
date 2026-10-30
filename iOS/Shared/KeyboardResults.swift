@@ -15,7 +15,7 @@ struct KeyboardResultLedger: Equatable, Sendable {
     enum Disposition: Equatable, Sendable { case autoInsert, offerManualInsert, ignore }
 
     private(set) var bindings: [UUID: UUID] = [:]
-    /// Requests whose binding a focus change removed. Displaying them again never rebinds them.
+    /// Requests whose binding a focus change or hiding removed. Only `bindFinish` rebinds them.
     private(set) var invalidated: Set<UUID> = []
     private(set) var consumed: Set<UUID> = []
     /// When `prune` first saw each binding or invalidation, and each consumed request.
@@ -31,25 +31,21 @@ struct KeyboardResultLedger: Equatable, Sendable {
     /// never inserted twice within the delivery window.
     static let consumedRetention = DictationProtocol.resultTTL + 2 * DictationProtocol.clockSkewTolerance + 10
 
+    /// Call after writing `record(R)`. Starting R in this field binds it here, so a host auto-finish
+    /// at the maximum duration still lands where recording started. Nothing else this instance only
+    /// displays is ever bound: a new instance in another app never auto-inserts someone else's
+    /// request. Never rebinds an invalidated or consumed request.
+    mutating func bindRecord(requestID: UUID, documentID: UUID?) {
+        guard let documentID, !consumed.contains(requestID), !invalidated.contains(requestID) else { return }
+        bindings[requestID] = documentID
+    }
+
     /// Call after writing `finish(R)`. The user stopped R in this field, so this binding stands
     /// even if a focus change invalidated an earlier one.
     mutating func bindFinish(requestID: UUID, documentID: UUID?) {
         guard let documentID, !consumed.contains(requestID) else { return }
         bindings[requestID] = documentID
         invalidated.remove(requestID)
-    }
-
-    /// Call with every computed mode. An instance displaying R as recording or transcribing (waiting for
-    /// the model included) binds R to the current field, so a host auto-finish or another instance's
-    /// finish still lands here.
-    mutating func noteDisplayed(_ mode: KeyboardMode, intent: StoreRead<KeyboardIntent>, documentID: UUID?) {
-        switch mode {
-        case .recording, .transcribing, .waitingForModel: break
-        default: return
-        }
-        guard let requestID = intent.value?.requestID, let documentID, bindings[requestID] == nil,
-              !invalidated.contains(requestID), !consumed.contains(requestID) else { return }
-        bindings[requestID] = documentID
     }
 
     /// Call whenever `documentIdentifier` may have changed (`textDidChange`, `viewWillAppear`).

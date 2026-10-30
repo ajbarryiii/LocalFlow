@@ -376,20 +376,28 @@ the request belongs to. `KeyboardResultLedger` holds, per keyboard instance
 and in memory only, the bindings (request → `documentIdentifier`), the
 invalidated requests and the consumed requests.
 
-- **Binding.**
+- **Binding.** Only an intent this instance writes in the current field
+  binds a request:
+  - Writing `record(R)` binds R to the current field once the write has
+    succeeded (`bindRecord`).
   - Writing `finish(R)` binds R to the current field, even if a focus change
     had invalidated an earlier binding (`bindFinish`).
-  - An instance displaying R as recording, transcribing or waiting for the
-    model binds R to the current field, unless R is already bound,
-    invalidated or consumed (`noteDisplayed`). So a host auto-finish, or
-    another instance's finish, still lands in the field where the user was
-    dictating. There is no binding at completion.
+  - Displaying a request never binds it, whatever the mode (recording,
+    transcribing, waiting for the model or completed). There is no binding at
+    completion.
   - A nil `documentIdentifier` never binds and never matches.
+
+  So a host auto-finish at the maximum duration still lands in the field
+  where recording started, if the keyboard stayed visible there. A request
+  not bound to the current field when its result arrives is offered only as
+  "Insert last dictation": one stopped on LocalFlow's own screen or by
+  another keyboard instance, one whose binding hiding invalidated (a bounce,
+  or an auto-finish after the keyboard hid), and every request a new keyboard
+  instance (iOS creates one per app) neither started nor finished.
 - **Invalidation.** A different `documentIdentifier` (seen on
   `viewWillAppear`, `textDidChange` or any pass) invalidates every binding to
   another field. Hiding the keyboard invalidates every binding. Only an
-  explicit `finish` rebinds an invalidated request; displaying it again does
-  not.
+  explicit `finish` rebinds an invalidated request.
 - **Auto-insert.** A result is inserted automatically only when its schema is
   current, R is not consumed, the result is fresh within `resultTTL`, and R is
   bound to the current field. At most one result is inserted per pass, oldest
@@ -924,7 +932,9 @@ transcripts or other user data.
     `KeyboardResultInbox` says a read is due
     ([Results](#results-sharedkeyboardresultsswift-textinsertionformatterswift-pure-tested)).
     Without Full Access it neither polls nor writes.
-  - It holds the `KeyboardResultLedger` per instance, in memory.
+  - It holds the `KeyboardResultLedger` per instance, in memory, and binds
+    every request it writes `record` or `finish` for to the current field
+    ([Results](#results-sharedkeyboardresultsswift-textinsertionformatterswift-pure-tested)).
   - **Mic tap.** `ready` or `preparingModel`: write `record(R)` with a new
     ID, then post `.intent`. `hostUnavailable`: write `record(R)` and open
     `<scheme>://dictate` with `HostAppLauncher`, without posting `.intent` (a
@@ -2148,8 +2158,8 @@ app reads only the count. The models are fixed.
 - With the synthetic microphone, Sol through computer use or a person at the
   simulator covers: enabling the keyboard and Full Access, first-run
   onboarding, the bounce and adoption, field binding (Try it field A, then
-  field B mid-request), cancel, the host terminated during recording, and
-  idle expiry.
+  field B mid-request; another app opened mid-request), cancel, the host
+  terminated during recording, and idle expiry.
 - The simulator has no Neural Engine; it runs the encoder on the CPU and
   prepares it on every cold launch (about 72 s and 840 MB), so simulator
   timings say nothing about devices.
@@ -2164,7 +2174,10 @@ merge (AGENTS.md).
   ("Listening" only once audio flows, swipe back, the dictation inserts);
   session keep-alive and idle expiry; field binding (dictate into Try it field
   A, switch to field B mid-request: no auto-insert into B, and the chip
-  appears); kill during recording; a phone-call interruption; a Bluetooth
+  appears; start in one app, open another before the transcript is ready: no
+  auto-insert there, only the chip; let a dictation reach the maximum
+  duration in one field: it lands there); kill during recording; a
+  phone-call interruption; a Bluetooth
   route change; device lock (indicator on the lock screen, a dictation
   cancelled at lock, dictation from another app after unlock without opening
   LocalFlow, a session that idles out while locked, then the first bounce
