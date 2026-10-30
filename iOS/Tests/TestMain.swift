@@ -33,6 +33,7 @@ struct LocalFlowIOSTests {
             ("ModelPreparationBackoff", ModelPreparationBackoffTests.tests),
             ("DictionaryLibrary", DictionaryLibraryTests.tests),
             ("MicrophoneRoute", MicrophoneRouteTests.tests),
+            ("NotificationObservers", NotificationObserversTests.tests),
             ("CursorMotion", CursorMotionTests.tests),
             ("TextNavigator", TextNavigatorTests.tests),
             ("TrackpadSession", TrackpadSessionTests.tests),

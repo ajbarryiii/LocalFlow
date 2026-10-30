@@ -35,31 +35,29 @@ final class MicrophoneCapture: HostCapture {
     /// This object activated the audio session and must deactivate it.
     private var activatedSession = false
     private var requested = AudioSessionTuning.Requested()
-    private var engineObservers: [NSObjectProtocol] = []
-    private var sessionObservers: [NSObjectProtocol] = []
+    /// Removed when the engine is torn down; both sets go when this object is released.
+    private let engineObservers = NotificationObservers()
+    private let sessionObservers = NotificationObservers()
 
     init(buffer: DictationSampleBuffer, deliver: @escaping @Sendable (CaptureEvent) -> Void) {
         self.buffer = buffer
         self.deliver = deliver
-        let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-        sessionObservers = [
-            center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
-                let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
-                guard type == .began else { return }
-                MainActor.assumeIsolated {
-                    guard let self, self.activatedSession else { return }
-                    self.onInterruption?()
-                }
-            },
-            center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.mediaServicesWereReset() }
-            },
-            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
-                let change = RouteChange(note)
-                MainActor.assumeIsolated { self?.routeChanged(change) }
-            },
-        ]
+        sessionObservers.observe(AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
+            guard type == .began else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.activatedSession else { return }
+                self.onInterruption?()
+            }
+        }
+        sessionObservers.observe(AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.mediaServicesWereReset() }
+        }
+        sessionObservers.observe(AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
+            let change = RouteChange(note)
+            MainActor.assumeIsolated { self?.routeChanged(change) }
+        }
     }
 
     var permission: CapturePermission { Self.currentPermission }
@@ -215,8 +213,7 @@ final class MicrophoneCapture: HostCapture {
     }
 
     private func tearDownEngine() {
-        for observer in engineObservers { NotificationCenter.default.removeObserver(observer) }
-        engineObservers = []
+        engineObservers.removeAll()
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -228,22 +225,18 @@ final class MicrophoneCapture: HostCapture {
     /// Every report carries the generation of the engine it was registered for, so one queued before a
     /// restart is ignored afterwards. The session core applies the grace period.
     private func observe(_ engine: AVAudioEngine, generation: UInt64) {
-        let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-        let report: @Sendable (Notification) -> Void = { [weak self] _ in
+        engineObservers.observe(.AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.onFailure?(generation) }
         }
-        engineObservers = [
-            center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main, using: report),
-            center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] _ in
-                // A route change usually brings a configuration change; this catches an engine that
-                // stopped without one.
-                MainActor.assumeIsolated {
-                    guard let self, self.engineGeneration == generation, self.engine?.isRunning == false else { return }
-                    self.onFailure?(generation)
-                }
-            },
-        ]
+        engineObservers.observe(AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] _ in
+            // A route change usually brings a configuration change; this catches an engine that
+            // stopped without one.
+            MainActor.assumeIsolated {
+                guard let self, self.engineGeneration == generation, self.engine?.isRunning == false else { return }
+                self.onFailure?(generation)
+            }
+        }
     }
 
     // Built outside the main actor: the tap runs on an audio thread.
