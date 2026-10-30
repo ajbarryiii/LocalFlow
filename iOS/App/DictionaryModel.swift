@@ -162,6 +162,9 @@ final class StrengthProbeModel: ObservableObject {
                 return
             }
         }
+        // The sheet may have closed (or the app left the screen, or "Try another sentence" replaced
+        // this task) before it ran: never end the session or start the microphone after that.
+        guard !Task.isCancelled, phase == .starting else { return }
         guard UIApplication.shared.applicationState == .active else {
             return fail("Recording stopped because LocalFlow left the screen.")
         }

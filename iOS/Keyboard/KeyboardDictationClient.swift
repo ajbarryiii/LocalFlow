@@ -225,6 +225,9 @@ final class KeyboardDictationClient: ObservableObject {
         let requestID = UUID()
         guard write(KeyboardIntent(requestID: requestID, action: .record, keyboardInstanceID: instanceID,
                                    issuedAt: Date()), to: store) else { return }
+        // Started in this field, so bound to it: a host auto-finish lands here if the keyboard stays
+        // visible in this field.
+        ledger.bindRecord(requestID: requestID, documentID: target?.documentID)
         unlaunchedRequestID = nil
         playHaptic(.press)
         guard openingHost else {
@@ -301,8 +304,8 @@ final class KeyboardDictationClient: ObservableObject {
             status = store.readStatus()
             intent = store.readIntent()
         }
+        // Displaying a request never binds it, so a new instance in another app cannot auto-insert it.
         let mode = KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now)
-        ledger.noteDisplayed(mode, intent: intent, documentID: documentID)
         ledger.prune(now: now, keeping: Set([intent.value?.requestID, shownIntent.value?.requestID].compactMap { $0 }))
         if access == .fullAccess { deliverResults(status: status, documentID: documentID, now: now) }
         shownIntent = intent
