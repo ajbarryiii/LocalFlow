@@ -5,8 +5,8 @@ enum KeyboardResultLedgerTests {
         [
             ("unboundResultIsOfferedManually", testUnboundResultIsOfferedManually),
             ("finishBindsToCurrentField", testFinishBindsToCurrentField),
-            ("displayingBindsForAutoFinish", testDisplayingBindsForAutoFinish),
-            ("onlyRecordingOrTranscribingBinds", testOnlyRecordingOrTranscribingBinds),
+            ("recordBindsForAutoFinish", testRecordBindsForAutoFinish),
+            ("newInstanceNeverAutoInsertsAnotherAppsRequest", testNewInstanceNeverAutoInsertsAnotherAppsRequest),
             ("focusChangeInvalidatesBinding", testFocusChangeInvalidatesBinding),
             ("explicitFinishRebindsAfterInvalidation", testExplicitFinishRebindsAfterInvalidation),
             ("nilDocumentNeverAutoInserts", testNilDocumentNeverAutoInserts),
@@ -83,8 +83,7 @@ enum KeyboardResultLedgerTests {
     private static func testPruneKeepsInFlightAndRecentClaims() {
         withStore { store in
             var ledger = KeyboardResultLedger()
-            ledger.noteDisplayed(.recording(level: 0.2, startedAt: Fixture.now), intent: .value(Fixture.intent(.record)),
-                                 documentID: Fixture.documentA)
+            ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
             ledger.prune(now: Fixture.now, keeping: [Fixture.requestID])
             // The current request is never retired, however long it runs.
             ledger.prune(now: Fixture.now + 10 * KeyboardResultLedger.bindingRetention, keeping: [Fixture.requestID])
@@ -136,29 +135,81 @@ enum KeyboardResultLedgerTests {
         TestSupport.expectEqual(disposition(ledger, Fixture.result(Fixture.otherRequestID)), .offerManualInsert)
     }
 
-    private static func testDisplayingBindsForAutoFinish() {
-        // The host auto-finished at the maximum duration, or another instance wrote the finish.
-        for shown in [KeyboardMode.recording(level: 0.3, startedAt: Fixture.now), .transcribing, .waitingForModel] {
-            var ledger = KeyboardResultLedger()
-            ledger.noteDisplayed(shown, intent: .value(Fixture.intent(.record)), documentID: Fixture.documentA)
-            TestSupport.expectEqual(ledger.bindings, [Fixture.requestID: Fixture.documentA])
-            TestSupport.expectEqual(disposition(ledger), .autoInsert)
+    /// What the keyboard does to its ledger on every pass, whatever mode it displays: notice the field,
+    /// then prune, keeping the request in flight.
+    private static func pass(_ ledger: inout KeyboardResultLedger, documentID: UUID?, now: Date) {
+        ledger.documentChanged(to: documentID)
+        ledger.prune(now: now, keeping: [Fixture.requestID])
+    }
+
+    private static func testRecordBindsForAutoFinish() {
+        // Started in field A and never stopped there: the host auto-finished at the maximum duration.
+        var ledger = KeyboardResultLedger()
+        ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+        TestSupport.expectEqual(ledger.bindings, [Fixture.requestID: Fixture.documentA])
+        for second in stride(from: 0.0, through: DictationProtocol.maxDictationDuration + 5, by: 1) {
+            pass(&ledger, documentID: Fixture.documentA, now: Fixture.now + second)
+        }
+        let autoFinished = Fixture.result(pressEnter: true, createdAt: Fixture.now + DictationProtocol.maxDictationDuration)
+        let at = Fixture.now + DictationProtocol.maxDictationDuration + 6
+        TestSupport.expectEqual(ledger.plan(for: [autoFinished], documentID: Fixture.documentA, now: at),
+                                ResultPlan(autoInsert: [autoFinished], manualInsert: nil))
+        // Another field or hiding before the result arrives: only the chip offers it.
+        var moved = KeyboardResultLedger()
+        moved.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+        pass(&moved, documentID: Fixture.documentB, now: Fixture.now + 1)
+        pass(&moved, documentID: Fixture.documentA, now: Fixture.now + 2)
+        TestSupport.expectEqual(moved.plan(for: [autoFinished], documentID: Fixture.documentA, now: at),
+                                ResultPlan(autoInsert: [], manualInsert: autoFinished))
+        var hidden = KeyboardResultLedger()
+        hidden.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+        hidden.forgetFieldBindings()
+        pass(&hidden, documentID: Fixture.documentA, now: Fixture.now + 1)
+        TestSupport.expectEqual(hidden.plan(for: [autoFinished], documentID: Fixture.documentA, now: at),
+                                ResultPlan(autoInsert: [], manualInsert: autoFinished))
+        // A record write never binds without a field identity, nor rebinds what was invalidated or consumed.
+        var unidentified = KeyboardResultLedger()
+        unidentified.bindRecord(requestID: Fixture.requestID, documentID: nil)
+        TestSupport.expectEqual(unidentified.bindings, [:])
+        moved.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+        TestSupport.expectEqual(moved.bindings, [:])
+        withStore { store in
+            try! store.writeResult(Fixture.result())
+            var claimed = KeyboardResultLedger()
+            TestSupport.expect(claimed.claim(requestID: Fixture.requestID, in: store), "claim")
+            claimed.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+            TestSupport.expectEqual(claimed.bindings, [:])
         }
     }
 
-    private static func testOnlyRecordingOrTranscribingBinds() {
-        let modes: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .starting,
-                                     .error(.tooLong), .ready, .preparingModel, .hostUnavailable]
-        for shown in modes {
-            var ledger = KeyboardResultLedger()
-            ledger.noteDisplayed(shown, intent: .value(Fixture.intent(.record)), documentID: Fixture.documentA)
-            TestSupport.expectEqual(ledger.bindings, [:])
+    /// Security review regression: the user dictates in app A and opens app B before the transcript
+    /// is ready. iOS gives B a new keyboard instance, which shows the request as recording, then
+    /// transcribing or waiting for the model. It must never auto-insert A's transcript (or its
+    /// Return) into B's field; it may only offer it as "Insert last dictation".
+    private static func testNewInstanceNeverAutoInsertsAnotherAppsRequest() {
+        withStore { store in
+            var appA = KeyboardResultLedger()
+            appA.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
+            appA.forgetFieldBindings()   // A's keyboard hides as the user switches apps
+            var appB = KeyboardResultLedger()   // B's new instance
+            // Recording, then transcribing (or waiting for the model), as B's keyboard displays it.
+            for second in 0..<30 {
+                pass(&appB, documentID: Fixture.documentB, now: Fixture.now + Double(second))
+            }
+            TestSupport.expectEqual(appB.bindings, [:])
+            let result = Fixture.result(text: "Synthetic private sentence", pressEnter: true, createdAt: Fixture.now + 30)
+            try! store.writeResult(result)
+            let fresh = store.readResult(requestID: Fixture.requestID).value!
+            for ledger in [appA, appB] {
+                TestSupport.expectEqual(ledger.plan(for: [fresh], documentID: Fixture.documentB, now: Fixture.now + 31),
+                                        ResultPlan(autoInsert: [], manualInsert: fresh))
+            }
+            TestSupport.expectEqual(appB.disposition(of: fresh, documentID: Fixture.documentB, now: Fixture.now + 31),
+                                    .offerManualInsert)
+            // Only the user's tap on the chip claims it.
+            TestSupport.expect(appB.claim(requestID: Fixture.requestID, in: store), "chip claim failed")
+            TestSupport.expectEqual(store.resultRequestIDs(), [])
         }
-        var ledger = KeyboardResultLedger()
-        for read in [StoreRead<KeyboardIntent>.absent, .incompatible, .unreadable] {
-            ledger.noteDisplayed(.transcribing, intent: read, documentID: Fixture.documentA)
-        }
-        TestSupport.expectEqual(ledger.bindings, [:])
     }
 
     private static func testFocusChangeInvalidatesBinding() {
@@ -173,8 +224,9 @@ enum KeyboardResultLedgerTests {
         // Returning to the original field does not restore the binding.
         ledger.documentChanged(to: Fixture.documentA)
         TestSupport.expectEqual(disposition(ledger, documentID: Fixture.documentA), .offerManualInsert)
-        // Still displaying the request in the new field does not rebind it there.
-        ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: Fixture.documentA)
+        // Neither displaying it nor a record write rebinds it; only a finish does.
+        pass(&ledger, documentID: Fixture.documentA, now: Fixture.now)
+        ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
         TestSupport.expectEqual(disposition(ledger, documentID: Fixture.documentA), .offerManualInsert)
     }
 
@@ -186,7 +238,7 @@ enum KeyboardResultLedgerTests {
         ledger.forgetFieldBindings()
         TestSupport.expectEqual(ledger.bindings, [:])
         TestSupport.expectEqual(ledger.invalidated, [Fixture.requestID])
-        ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: Fixture.documentA)
+        pass(&ledger, documentID: Fixture.documentA, now: Fixture.now)   // reappears in the same field
         TestSupport.expectEqual(disposition(ledger), .offerManualInsert)
         // Stopping it again in a field binds it there, as with any invalidation.
         ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentB)
@@ -195,8 +247,7 @@ enum KeyboardResultLedgerTests {
 
     private static func testExplicitFinishRebindsAfterInvalidation() {
         var ledger = KeyboardResultLedger()
-        ledger.noteDisplayed(.recording(level: 0, startedAt: Fixture.now), intent: .value(Fixture.intent(.record)),
-                             documentID: Fixture.documentA)
+        ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
         ledger.documentChanged(to: Fixture.documentB)
         // The user tapped stop while in field B: B is where they want the text.
         ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentB)
@@ -207,7 +258,7 @@ enum KeyboardResultLedgerTests {
     private static func testNilDocumentNeverAutoInserts() {
         var ledger = KeyboardResultLedger()
         ledger.bindFinish(requestID: Fixture.requestID, documentID: nil)
-        ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: nil)
+        ledger.bindRecord(requestID: Fixture.requestID, documentID: nil)
         TestSupport.expectEqual(ledger.bindings, [:])
         TestSupport.expectEqual(disposition(ledger, documentID: nil), .offerManualInsert)
         ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
@@ -250,7 +301,7 @@ enum KeyboardResultLedgerTests {
             TestSupport.expectEqual(disposition(ledger), .ignore)
             TestSupport.expect(!ledger.claim(requestID: Fixture.requestID, in: store), "claimed twice")
             ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
-            ledger.noteDisplayed(.transcribing, intent: .value(Fixture.intent(.finish)), documentID: Fixture.documentA)
+            ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
             TestSupport.expectEqual(ledger.bindings, [:])
         }
     }
@@ -306,15 +357,15 @@ enum KeyboardResultLedgerTests {
             var ledger = KeyboardResultLedger()
             let record = Fixture.intent(.record)
             ledger.documentChanged(to: Fixture.documentA)
-            ledger.noteDisplayed(.recording(level: 0.5, startedAt: Fixture.now), intent: .value(record),
-                                 documentID: Fixture.documentA)
+            try! store.writeIntent(record)
+            ledger.bindRecord(requestID: Fixture.requestID, documentID: Fixture.documentA)
             TestSupport.expect(KeyboardPresenter.mayWrite(.finish, requestID: Fixture.requestID, currentIntent: .value(record)),
                                "guard refused the current request")
             let finish = Fixture.intent(.finish, at: Fixture.now + 3)
             try! store.writeIntent(finish)
             ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
             ledger.documentChanged(to: Fixture.documentB)
-            ledger.noteDisplayed(.transcribing, intent: .value(finish), documentID: Fixture.documentB)
+            pass(&ledger, documentID: Fixture.documentB, now: Fixture.now + 4)   // transcribing, shown in B
             try! store.writeResult(Fixture.result(createdAt: Fixture.now + 4))
 
             let results = store.resultRequestIDs().compactMap { store.readResult(requestID: $0).value }
