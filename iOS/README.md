@@ -37,6 +37,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | app ID; the keyboard is `$(BUNDLE_ID).keyboard` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | shared container for app and keyboard |
 | `URL_SCHEME` | `localflow-dev` | `<scheme>://dictate` |
+| `UNIVERSAL_LINK` | empty | https URL the keyboard opens instead of the scheme (see [Universal link](#universal-link)) |
 | `DISPLAY_NAME` | `LocalFlow Dev` | home screen and keyboard list name |
 | `DEPLOYMENT_TARGET` | `26.0` | the encoder uses the `ios19` Core ML opset |
 | `PARAKEET_BUNDLE_DIR` | empty | model bundle to embed |
@@ -242,17 +243,23 @@ Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
 
 `CHANNEL=appstore` builds the production app: `com.ajbarryiii.localflow.ios`
 (keyboard `.keyboard`), App Group `group.com.ajbarryiii.localflow.ios`, URL
-scheme `localflow`, display name "LocalFlow" and the production icon, into
-`build/appstore/`. It always builds for the device, refuses the self-test
-variant, needs the model, and accepts only App Store distribution profiles.
+scheme `localflow`, universal link
+`https://wildernesslabs.ai/localflow/dictate`, display name "LocalFlow" and
+the production icon, into `build/appstore/`. It always builds for the device,
+refuses the self-test variant, an empty or non-https `UNIVERSAL_LINK`, needs
+the model, and accepts only App Store distribution profiles.
 
 One-time setup in the Apple Developer account, on the Mac:
 
 1. Register the production App IDs and App Group, for example with the
-   signing helper above set to the production identifiers.
+   signing helper above set to the production identifiers, and enable the
+   **Associated Domains** capability on the app's App ID
+   `com.ajbarryiii.localflow.ios` (not the keyboard's).
 2. Create an **Apple Distribution** certificate (Xcode → Settings → Accounts →
    Manage Certificates) and an **App Store** provisioning profile for the app
-   and for the keyboard, each with the App Group.
+   and for the keyboard, each with the App Group. The app's profile must
+   include Associated Domains (`applinks:wildernesslabs.ai`); regenerate it
+   after enabling the capability, or the build stops naming it.
 3. Create the app record in App Store Connect, and an App Store Connect API key
    (Users and Access → Integrations) saved as
    `~/.appstoreconnect/private_keys/AuthKey_<key id>.p8`. The key is a secret:
@@ -283,10 +290,38 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
   - the distribution signature, and unexpired App Store profiles that
     authorize the signing certificate
   - the entitlements: no `get-task-allow`, `beta-reports-active` for
-    TestFlight, the App Group
+    TestFlight, the App Group, and Associated Domains
+    `applinks:wildernesslabs.ai` on the app only, granted by its profile
+  - `LocalFlowUniversalLink` in both Info.plists
   - the `.ipa` layout
 - `appstore-validate` and `appstore-upload` send the `.ipa` to Apple. They run
   `appstore-check` first, and nothing else ever runs them.
+
+### Universal link
+
+Any app can register the `localflow` scheme, and iOS does not define which app
+opens it, so another app could receive the keyboard's bounce and show a fake
+LocalFlow screen. With `UNIVERSAL_LINK` set, the keyboard opens that https URL
+instead, universal-links-only: iOS opens it only in the app verified for the
+domain, never in Safari or another app, and if it cannot, the keyboard shows
+"Open LocalFlow". The app is signed with
+`com.apple.developer.associated-domains` = `["applinks:<host>"]`, and device
+builds check that its profile grants Associated Domains. The keyboard gets no
+new entitlement, and the scheme stays registered for the simulator, e2e and
+dev builds.
+
+- App Store builds always use `https://wildernesslabs.ai/localflow/dictate`.
+- Dev builds leave it empty and bounce with the scheme. To try the universal
+  link on a device, enable Associated Domains on
+  `com.ajbarryiii.localflow.ios.dev`, regenerate its development profile, and
+  build with `UNIVERSAL_LINK=https://wildernesslabs.ai/localflow-dev/dictate`.
+- The association file is
+  `https://wildernesslabs.ai/.well-known/apple-app-site-association`, deployed
+  from the separate `wilderness-labs-site` repository. It maps
+  `/localflow/dictate` to `5X346GR227.com.ajbarryiii.localflow.ios` and
+  `/localflow-dev/dictate` to `5X346GR227.com.ajbarryiii.localflow.ios.dev`.
+  iOS fetches it (through Apple's CDN) when the app is installed; the app has
+  no network code for it. Without it the bounce never opens LocalFlow.
 
 ## Using the keyboard
 
@@ -348,6 +383,7 @@ Setup and session:
 - [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
 - [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Try it, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
+- [ ] Universal-link bounce (TestFlight, or a dev build with `UNIVERSAL_LINK=https://wildernesslabs.ai/localflow-dev/dictate`): Start in another app opens LocalFlow, never Safari, from a cold launch and from the background; the menu's "Open LocalFlow" does too. With the association file unreachable or the app not associated (for example a fresh install before iOS fetches it), the keyboard shows "Open LocalFlow" and nothing else opens. Tapping the link in Notes opens LocalFlow without recording.
 - [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
 - [ ] Model readiness: start a session, then Diagnostics → Release model now; the model stays "Not prepared yet" while idle, and the keyboard's idle line reads "Model loads when you dictate". Swipe to another app and tap Start: the bar reads "Listening · preparing model" while preparation runs, and after Stop the Start capsule shows a spinner labelled "Preparing" (also with a swipe candidate strip or the Insert last chip showing) until the transcript inserts (brief on a warm model; long after a cold preparation). Tapping Start right after the session starts shows "Preparing model…" before the tap. Release the model again during a dictation: it is released only after the dictation ends.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.

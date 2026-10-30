@@ -11,6 +11,7 @@ ifeq ($(CHANNEL),appstore)
 PLATFORM ?= device
 BUNDLE_ID ?= com.ajbarryiii.localflow.ios
 URL_SCHEME ?= localflow
+UNIVERSAL_LINK ?= https://wildernesslabs.ai/localflow/dictate
 DISPLAY_NAME ?= LocalFlow
 ICON_SOURCE ?= Resources/AppIcon-Source.png
 BUILD_DIR ?= build/appstore
@@ -37,6 +38,11 @@ BUNDLE_ID ?= com.ajbarryiii.localflow.ios.dev
 KEYBOARD_BUNDLE_ID = $(BUNDLE_ID).keyboard
 APP_GROUP ?= group.$(BUNDLE_ID)
 URL_SCHEME ?= localflow-dev
+# The https URL the keyboard opens instead of <scheme>://dictate, universal-links-only, so iOS opens
+# only the app verified for its domain. The app is then signed with the Associated Domains
+# entitlement for its host, which its profile must grant. Empty (dev, simulator, self-test and e2e
+# builds) keeps the scheme; https://wildernesslabs.ai/localflow-dev/dictate is the dev device opt-in.
+UNIVERSAL_LINK ?=
 DISPLAY_NAME ?= LocalFlow Dev
 DEPLOYMENT_TARGET ?= 26.0
 PARAKEET_BUNDLE_DIR ?=
@@ -58,6 +64,17 @@ PYTHON ?= python3
 # A value as one single-quoted shell word, spaces and quotes kept (subst does not
 # collapse whitespace): for paths handed to the shell whole, as in clean.
 shell_quote = '$(subst ','\'',$(1))'
+
+# https://<host>/<path> with no user, port, query, fragment or trailing slash. App Store builds
+# need one.
+ifneq ($(strip $(UNIVERSAL_LINK)),)
+ifneq ($(shell printf '%s' $(call shell_quote,$(UNIVERSAL_LINK)) | grep -Ex 'https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(/[A-Za-z0-9._~-]+)+'),$(UNIVERSAL_LINK))
+$(error UNIVERSAL_LINK must be https://<host>/<path>, with no port, query, fragment or trailing slash)
+endif
+else ifeq ($(CHANNEL),appstore)
+$(error CHANNEL=appstore needs UNIVERSAL_LINK, an https URL)
+endif
+UNIVERSAL_LINK_HOST = $(word 2,$(subst /, ,$(UNIVERSAL_LINK)))
 
 ifeq ($(PLATFORM),simulator)
 SDK = iphonesimulator
@@ -174,6 +191,7 @@ info_plist = cp "$(1)" "$(2)" && \
 	$(if $(strip $(BUILD_NUMBER)),plutil -replace CFBundleVersion -string "$(BUILD_NUMBER)" "$(2)" &&) \
 	plutil -replace MinimumOSVersion -string "$(DEPLOYMENT_TARGET)" "$(2)" && \
 	plutil -replace LocalFlowAppGroupIdentifier -string "$(APP_GROUP)" "$(2)" && \
+	$(if $(strip $(UNIVERSAL_LINK)),plutil -replace LocalFlowUniversalLink -string "$(UNIVERSAL_LINK)" "$(2)" &&) \
 	plutil -replace LocalFlowURLScheme -string "$(URL_SCHEME)" "$(2)"
 
 .PHONY: all binaries check typecheck test lint install-sim run-sim smoke-sim clean configuration parakeet-selection swipe-selection signing-requirements FORCE
@@ -183,7 +201,7 @@ all: signing-requirements $(APP_SIGNATURE)
 binaries: $(APP_BINARY) $(KEYBOARD_BINARY)
 
 # Rebuild when identifiers, flags, signing inputs or source lists change.
-CONFIGURATION = $(CHANNEL)|$(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
+CONFIGURATION = $(CHANNEL)|$(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(UNIVERSAL_LINK)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
 configuration:
 	@mkdir -p "$(OBJ_DIR)"
 	@printf '%s\n' "$(CONFIGURATION)" > "$(CONFIG_STAMP).tmp"
@@ -236,14 +254,21 @@ endif
 $(APP_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(BUNDLE_ID)
 $(APP_ENTITLEMENTS): ENTITLED_PROFILE = $(APP_PROFILE)
 $(APP_ENTITLEMENTS): $(wildcard $(APP_PROFILE))
+# Only the app opens the universal link, so only the app claims its domain.
+$(APP_ENTITLEMENTS): ENTITLED_DOMAIN = $(if $(strip $(UNIVERSAL_LINK)),applinks:$(UNIVERSAL_LINK_HOST))
 $(KEYBOARD_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(KEYBOARD_BUNDLE_ID)
 $(KEYBOARD_ENTITLEMENTS): ENTITLED_PROFILE = $(KEYBOARD_PROFILE)
 $(KEYBOARD_ENTITLEMENTS): $(wildcard $(KEYBOARD_PROFILE))
+$(KEYBOARD_ENTITLEMENTS): ENTITLED_DOMAIN =
 
 $(OBJ_DIR)/%.xcent: Config/%.entitlements $(CONFIG_STAMP) Makefile | signing-requirements
 	@mkdir -p "$(@D)"
 	@cp "$<" "$@.tmp"
 	@/usr/libexec/PlistBuddy -c "Set :com.apple.security.application-groups:0 $(APP_GROUP)" "$@.tmp"
+	@if [ -n "$(ENTITLED_DOMAIN)" ]; then \
+		/usr/libexec/PlistBuddy -c "Add :com.apple.developer.associated-domains array" \
+			-c "Add :com.apple.developer.associated-domains:0 string $(ENTITLED_DOMAIN)" "$@.tmp"; \
+	fi
 ifeq ($(PLATFORM),device)
 	@# Signed entitlements must be a subset of the provisioning profile's.
 	@profile="$@.profile.plist"; trap 'rm -f "$$profile"' EXIT; \
@@ -253,6 +278,11 @@ ifeq ($(PLATFORM),device)
 	[ "$$actual" = "$$expected" ] || { echo "$(ENTITLED_PROFILE) is for '$$actual', expected '$$expected'." >&2; exit 1; }; \
 	/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" "$$profile" 2>/dev/null | tr -d ' ' | grep -Fqx "$(APP_GROUP)" || \
 		{ echo "$(ENTITLED_PROFILE) does not grant App Group $(APP_GROUP)." >&2; exit 1; }; \
+	if [ -n "$(ENTITLED_DOMAIN)" ]; then \
+		/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.developer.associated-domains" "$$profile" 2>/dev/null | tr -d ' ' | \
+			grep -Fqx -e "$(ENTITLED_DOMAIN)" -e '*' || \
+			{ echo "$(ENTITLED_PROFILE) does not grant the Associated Domains capability for $(ENTITLED_DOMAIN): enable Associated Domains on the App ID $(ENTITLED_BUNDLE_ID) and regenerate the profile, or build with UNIVERSAL_LINK= (dev only)." >&2; exit 1; }; \
+	fi; \
 	debuggable=$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$$profile" 2>/dev/null || echo false); \
 	/usr/libexec/PlistBuddy -c "Add :application-identifier string $$expected" \
 		-c "Add :com.apple.developer.team-identifier string $(TEAM_ID)" \
@@ -393,7 +423,8 @@ ipa: all
 # ipa, it waits for the package, also under -j.
 appstore-check: $(filter ipa,$(MAKECMDGOALS))
 	@sh scripts/check-appstore-bundle.sh --app "$(APP_BUNDLE)" --ipa "$(IPA)" --bundle-id "$(BUNDLE_ID)" \
-		--app-group "$(APP_GROUP)" --url-scheme "$(URL_SCHEME)" --display-name "$(DISPLAY_NAME)" --team-id "$(TEAM_ID)"
+		--app-group "$(APP_GROUP)" --url-scheme "$(URL_SCHEME)" --universal-link "$(UNIVERSAL_LINK)" \
+		--display-name "$(DISPLAY_NAME)" --team-id "$(TEAM_ID)"
 
 # Apple's own checks, then the upload, with an App Store Connect API key
 # (ASC_KEY_ID, ASC_ISSUER_ID; the .p8 in ~/.appstoreconnect/private_keys). Both
