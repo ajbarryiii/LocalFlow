@@ -148,11 +148,13 @@ final class HostSessionController: ObservableObject {
         core?.captureSettingsChanged()
     }
 
-    /// `<scheme>://dictate` is only a hint. In the foreground it runs one reconciliation pass; before the
-    /// app gets there it does nothing, and the arrival reconciles. It never starts capture by itself:
-    /// only a fresh record intent admitted in the foreground can.
+    /// `<scheme>://dictate` or the universal link is only a hint. In the foreground it runs one
+    /// reconciliation pass; before the app gets there it does nothing, and the arrival reconciles. It
+    /// never starts capture by itself: only a fresh record intent admitted in the foreground can.
     func open(_ url: URL) {
-        guard let configuration, HostURLRoute(url: url, scheme: configuration.urlScheme) != nil else { return }
+        guard let configuration,
+              HostURLRoute(url: url, scheme: configuration.urlScheme, universalLink: configuration.universalLink) != nil
+        else { return }
         core?.reconcile(.urlOpen)
     }
 

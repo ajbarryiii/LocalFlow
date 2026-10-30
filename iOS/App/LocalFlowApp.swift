@@ -70,6 +70,7 @@ private struct RootView: View {
         .fullScreenCover(isPresented: $host.bounceVisible) {
             BounceView(transcriber: host.transcriber).environmentObject(host)
         }
+        // SwiftUI delivers universal links here as URLs, not as `NSUserActivity` (onOpenURL's docs).
         .onOpenURL { host.open($0) }
         .onChange(of: scenePhase, initial: true) {
             guard scenePhase == .active, LaunchOptions.current.startSession, !startedLaunchSession else { return }
@@ -84,7 +85,7 @@ private struct ConfigurationErrorView: View {
         VStack(spacing: 16) {
             HeroSymbol(systemName: "exclamationmark.triangle.fill", tint: AnyShapeStyle(Theme.ember), size: 80)
             Text("This build is misconfigured").font(.title2.bold())
-            Text("Its App Group or URL scheme is missing, so the app and the keyboard cannot talk to each other. Rebuild it with the Makefile.")
+            Text("Its App Group, URL scheme or universal link is missing or invalid, so the app and the keyboard cannot talk to each other. Rebuild it with the Makefile.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
         }

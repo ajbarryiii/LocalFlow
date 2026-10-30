@@ -2,23 +2,26 @@
 # Checks that a built LocalFlow.app (and optionally its .ipa) is what App Store
 # Connect accepts and what ARCHITECTURE.md ("App Store packaging") promises:
 # production identifiers, the compiled icon, privacy manifests, Xcode build
-# metadata, matching versions, distribution signing and no self-test code.
+# metadata, matching versions, distribution signing, the universal link and its
+# Associated Domains entitlement, and no self-test code.
 # It reads only the bundle; it never uploads or contacts Apple.
 #
 # Usage: check-appstore-bundle.sh --app PATH --bundle-id ID --app-group GROUP
-#          --url-scheme SCHEME --display-name NAME --team-id TEAM [--ipa PATH]
+#          --url-scheme SCHEME --universal-link URL --display-name NAME
+#          --team-id TEAM [--ipa PATH]
 # With --ipa, every check runs on the app inside the .ipa, which is what Apple
 # receives; it must hold the same build as --app. Prints every failure and
 # exits 1 if there is any.
 set -u
 
-app= bundle_id= app_group= url_scheme= display_name= team_id= ipa=
+app= bundle_id= app_group= url_scheme= universal_link= display_name= team_id= ipa=
 while [ $# -gt 0 ]; do
     case "$1" in
         --app) app=$2 ;;
         --bundle-id) bundle_id=$2 ;;
         --app-group) app_group=$2 ;;
         --url-scheme) url_scheme=$2 ;;
+        --universal-link) universal_link=$2 ;;
         --display-name) display_name=$2 ;;
         --team-id) team_id=$2 ;;
         --ipa) ipa=$2 ;;
@@ -26,10 +29,17 @@ while [ $# -gt 0 ]; do
     esac
     shift 2 || { echo "Missing value for $1" >&2; exit 2; }
 done
-for required in app bundle_id app_group url_scheme display_name team_id; do
+for required in app bundle_id app_group url_scheme universal_link display_name team_id; do
     eval "value=\$$required"
     [ -n "$value" ] || { echo "Missing --$(echo "$required" | tr _ -)" >&2; exit 2; }
 done
+case "$universal_link" in
+    https://?*/?*) ;;
+    *) echo "--universal-link must be an https URL with a path: $universal_link" >&2; exit 2 ;;
+esac
+# The host the app's Associated Domains entitlement claims (applinks:<host>).
+link_host=${universal_link#https://}
+link_host=${link_host%%/*}
 [ -d "$app" ] || { echo "Not a directory: $app" >&2; exit 2; }
 built=$app
 
@@ -128,6 +138,8 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
         expect_json "$plist" UIRequiredDeviceCapabilities '["arm64"]' "$what"
         expect "$plist" LocalFlowAppGroupIdentifier "$app_group" "$what"
         expect "$plist" LocalFlowURLScheme "$url_scheme" "$what"
+        # The keyboard opens the universal link, never the scheme, which stays for the simulator.
+        expect "$plist" LocalFlowUniversalLink "$universal_link" "$what"
     done
 
     expect_bool "$app_plist" ITSAppUsesNonExemptEncryption false app
@@ -258,6 +270,12 @@ for bundle in "$app" "$appex"; do
             fail "$what entitlements: get-task-allow is present and not the Boolean false (a development signature)"
         fi
         expect_bool "$entitlements" beta-reports-active true "$what entitlements"
+        # Only the app claims the universal link's domain.
+        if [ "$what" = app ]; then
+            expect_json "$entitlements" com\\.apple\\.developer\\.associated-domains "[\"applinks:$link_host\"]" "$what entitlements"
+        elif [ -n "$(kind "$entitlements" com\\.apple\\.developer\\.associated-domains)" ]; then
+            fail "$what entitlements: com.apple.developer.associated-domains is present (only the app claims the domain)"
+        fi
     else
         fail "$what: cannot read its signed entitlements"
     fi
@@ -273,6 +291,16 @@ for bundle in "$app" "$appex"; do
         expect_bool "$profile" Entitlements.beta-reports-active true "$what profile"
         json "$profile" Entitlements.com\\.apple\\.security\\.application-groups | tr -d '[]' | tr ',' '\n' |
             grep -Fqx "\"$app_group\"" || fail "$what profile: it does not grant App Group $app_group"
+        if [ "$what" = app ]; then
+            domains=com\\.apple\\.developer\\.associated-domains
+            case "$(kind "$profile" "Entitlements.$domains")" in
+                string) granted=$(value "$profile" "Entitlements.$domains") ;;
+                array) granted=$(json "$profile" "Entitlements.$domains" | tr -d '[]"' | tr ',' '\n') ;;
+                *) granted= ;;
+            esac
+            printf '%s\n' "$granted" | grep -Fqx -e "applinks:$link_host" -e '*' ||
+                fail "$what profile: it does not grant Associated Domains for applinks:$link_host"
+        fi
         # ISO 8601 UTC strings compare in date order.
         expires=$(value "$profile" ExpirationDate)
         now=$(date -u +%Y-%m-%dT%H:%M:%SZ)

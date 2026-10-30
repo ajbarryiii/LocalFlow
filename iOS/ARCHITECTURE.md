@@ -60,7 +60,10 @@ keyboards entirely. Those fields are out of scope.
 3. **Extensions have no supported API to open their containing app.** The
    keyboard "bounces" to the app by walking the responder chain
    (`HostAppLauncher`). This is experimental; the supported baseline is the
-   user starting a session in the app.
+   user starting a session in the app. Any app can register a custom URL
+   scheme and iOS does not define which one wins, so App Store builds bounce
+   with a universal link instead, which iOS opens only in the app verified
+   for its domain ([Identifiers](#identifiers)).
 4. **iOS gives apps no API to switch back to the previous app.** The user
    returns with the system "◀ App" control or the home-indicator swipe.
 5. **The GPU is unavailable in the background.** On iOS 27, background Neural
@@ -133,12 +136,34 @@ The Makefile injects these into both Info.plists:
 | keyboard bundle ID | `$(BUNDLE_ID).keyboard` | `$(BUNDLE_ID).keyboard` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | `group.$(BUNDLE_ID)` |
 | `URL_SCHEME` | `localflow-dev` | `localflow` |
+| `UNIVERSAL_LINK` | empty | `https://wildernesslabs.ai/localflow/dictate` |
 | `DISPLAY_NAME` | `LocalFlow Dev` | `LocalFlow` |
 
-Both Info.plists carry `LocalFlowAppGroupIdentifier` and `LocalFlowURLScheme`.
+Both Info.plists carry `LocalFlowAppGroupIdentifier` and `LocalFlowURLScheme`,
+and `LocalFlowUniversalLink` when `UNIVERSAL_LINK` is set.
 `LocalFlowConfiguration.main` (Shared) reads them and rejects an empty value,
 an unexpanded `$(VARIABLE)` and an invalid URL scheme, so no Swift file
 hardcodes an identifier.
+
+- **Universal link.** Valid only as https with a host of letters, digits,
+  `-` and `.`, a path other than the root, and no user, password, port,
+  query, fragment, whitespace or `$(`. A present but invalid value fails the
+  whole configuration closed, as a bad scheme does; it never falls back to
+  the scheme. `dictateURL`, what the keyboard opens, is the universal link
+  when one is set, else `<scheme>://dictate`.
+- **Signing.** With `UNIVERSAL_LINK` set, only the app is signed with
+  `com.apple.developer.associated-domains` = `["applinks:<host>"]`; the
+  keyboard gets nothing new. Device builds stop unless the app's profile
+  grants Associated Domains (`*` or that entry). Empty, the bundles have no
+  key and no entitlement.
+- **Channels.** `CHANNEL=appstore` refuses an empty or non-https value. Dev,
+  simulator, self-test and e2e builds leave it empty and bounce with the
+  scheme; `https://wildernesslabs.ai/localflow-dev/dictate` is the dev device
+  opt-in. The scheme stays in `CFBundleURLTypes` in every build.
+- **Association file.** iOS fetches
+  `https://wildernesslabs.ai/.well-known/apple-app-site-association`, deployed
+  from the separate `wilderness-labs-site` repository, itself; the app has no
+  network code for it.
 
 ## Shared store and protocol (Shared/)
 
@@ -767,7 +792,12 @@ synthetic source in self-test builds, a fake in tests.
 ### URL route (HostCore/HostURLRoute.swift; pure, tested)
 
 The host accepts exactly `<scheme>://dictate`: no user, password, port, path
-or fragment; any query is ignored. Opening it brings the app forward and runs
+or fragment; any query is ignored. When the build sets a universal link, it
+also accepts that link: https, the host in any case, exactly its path (a
+trailing slash, a changed case or an escape is another path), no user,
+password, port or fragment, and any query ignored. The scheme stays accepted.
+SwiftUI delivers universal links to `.onOpenURL` as URLs, so both reach
+`HostSessionController.open`. Opening either brings the app forward and runs
 one reconciliation pass. **It never starts a session or the microphone by
 itself.** Only a fresh `record` intent admitted in the foreground, or the
 user's own "Start session" tap, does.
@@ -927,7 +957,7 @@ transcripts or other user data.
   - It holds the `KeyboardResultLedger` per instance, in memory.
   - **Mic tap.** `ready` or `preparingModel`: write `record(R)` with a new
     ID, then post `.intent`. `hostUnavailable`: write `record(R)` and open
-    `<scheme>://dictate` with `HostAppLauncher`, without posting `.intent` (a
+    `dictateURL` with `HostAppLauncher`, without posting `.intent` (a
     background host without a session would reject it before the app reaches
     the foreground); if the launcher fails, show "Open LocalFlow". After an
     error the tap starts the way the host's current state allows.
@@ -940,6 +970,11 @@ transcripts or other user data.
   and calls `open(_:options:completionHandler:)` through the Objective-C
   runtime. It is experimental and an App Review gray area: validate it on
   iOS 26 and 27 devices and call it out in any pull request that touches it.
+  An https URL (the universal link) is opened with
+  `UIApplication.OpenExternalURLOptionsKey.universalLinksOnly` set to true, so
+  iOS opens only the app verified for the domain, never Safari or another
+  app; when iOS reports it did not open, the keyboard shows "Open LocalFlow".
+  With a universal link configured the keyboard never opens the scheme.
 - **`KeyboardInput`** adapts `KeyboardEditor` (KeyboardCore) to the key area,
   the text proxy and timers. **`TrackpadDriver`** runs `TrackpadController`
   on a `CADisplayLink` (60–120 Hz) while a gesture is active and builds the
@@ -2023,8 +2058,9 @@ app reads only the count. The models are fixed.
      and `sh -n` of `scripts/*.sh`.
 - `make PLATFORM=device binaries` compiles and links without signing. Device
   builds need `CODESIGN_IDENTITY`, `TEAM_ID` and two provisioning profiles
-  with the App Group; the build checks each profile's App ID and App Group
-  (README).
+  with the App Group; the build checks each profile's App ID and App Group,
+  and with `UNIVERSAL_LINK` set the app profile's Associated Domains
+  ([Identifiers](#identifiers), README).
 - The app declares the `audio` background mode, is iPhone-only
   (`UIDeviceFamily` 1) and arm64-only. The keyboard is universal (1 and 2),
   because App Review requires every extension to be universal, and requests
@@ -2043,7 +2079,9 @@ app reads only the count. The models are fixed.
   permanent from the first upload.
 - **Signing.** Entitlements come from the profile, plus
   `beta-reports-active` when the profile grants it (TestFlight needs it),
-  signed with an Apple Distribution identity.
+  and, for the app only, `com.apple.developer.associated-domains` =
+  `["applinks:wildernesslabs.ai"]` for the universal link
+  ([Identifiers](#identifiers)), signed with an Apple Distribution identity.
 - **Versions.** `CFBundleShortVersionString` stays in the Info.plist
   templates, the same for app and keyboard. `BUILD_NUMBER` sets
   `CFBundleVersion` for both and must grow with each upload.
@@ -2070,8 +2108,9 @@ app reads only the count. The models are fixed.
   only targets that contact Apple, and no other target runs them.
 - **Not covered here:** the App Store listing, the privacy label, review
   notes on the keyboard opening the app and on the background microphone, and
-  the account steps (App IDs, distribution certificate, profiles, app
-  record).
+  the account steps (App IDs with Associated Domains, distribution
+  certificate, profiles, app record), and the association file on
+  wildernesslabs.ai.
 
 ## Privacy and security invariants (review checklist)
 
@@ -2084,8 +2123,10 @@ app reads only the count. The models are fixed.
 3. There are no network APIs, no telemetry and no logging in any iOS target.
    The only output is the self-test build's content-free `LocalFlow
    self-test:` lines.
-4. URLs and Darwin notifications carry no authority. A URL can never start
-   capture.
+4. URLs and Darwin notifications carry no authority. A URL, the custom scheme
+   or the universal link, can never start capture. The keyboard opens the
+   universal link universal-links-only when the build sets one, so no other
+   app that registers the scheme can receive the bounce.
 5. The keyboard reads `documentContextBeforeInput`,
    `documentContextAfterInput`, `documentIdentifier` and whether text is
    selected in memory only, for spacing, result binding, shift, cursor
@@ -2161,7 +2202,10 @@ README's "Manual tests"; changes touching these areas must record them before
 merge (AGENTS.md).
 
 - **Session and protocol:** onboarding; the bounce on iOS 26 and 27
-  ("Listening" only once audio flows, swipe back, the dictation inserts);
+  ("Listening" only once audio flows, swipe back, the dictation inserts),
+  through the universal link in an App Store or opted-in dev build (it opens
+  LocalFlow, never Safari, and with the association missing the keyboard
+  shows "Open LocalFlow");
   session keep-alive and idle expiry; field binding (dictate into Try it field
   A, switch to field B mid-request: no auto-insert into B, and the chip
   appears); kill during recording; a phone-call interruption; a Bluetooth
