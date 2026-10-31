@@ -17,6 +17,7 @@ TEST_PRODUCTION_SOURCES = \
 	Sources/AppName.swift \
 	Sources/ClipboardTransaction.swift \
 	Sources/DictationStats.swift \
+	Sources/InsertionContextFormatter.swift \
 	Sources/PermissionPanelCore.swift \
 	Sources/PrivacyPermission.swift \
 	Sources/LocalDictationCore.swift \
