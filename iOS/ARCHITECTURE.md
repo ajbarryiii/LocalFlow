@@ -944,6 +944,15 @@ transcripts or other user data.
     area, for the Stop capsule's tap area
     ([Reach and touch regions](#reach-and-touch-regions)); it draws only the
     top row.
+  - **The band above the keyboard.** In most hosts (Messages, Safari,
+    Contacts, Reminders, and LocalFlow itself once the keyboard has been
+    restored after an app switch), iOS 26 draws the host's keyboard backdrop
+    17 pt above the top row: the gap it leaves between the host's input
+    accessory slot and the keyboard, laid out in the host's process. The
+    extension's view, window and safe area are the same with or without it,
+    and a taller view moves the backdrop up by the same amount, so the
+    keyboard can neither detect nor remove the band. Only a first show in a
+    freshly launched LocalFlow lacks it. Measured on iOS 26.4, October 2026.
   - Its input view adopts `UIInputViewAudioFeedback`, so key presses play the
     system click, which follows the user's Keyboard Clicks setting.
   - It sets `hasDictationKey = true` in `viewDidAppear`, so iOS drops its own
