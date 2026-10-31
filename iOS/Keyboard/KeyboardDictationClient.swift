@@ -7,6 +7,7 @@ protocol KeyboardTextTarget: AnyObject {
     var hasFullAccess: Bool { get }
     var documentID: UUID? { get }
     var contextBeforeInput: String? { get }
+    var contextAfterInput: String? { get }
     /// The view haptics attach to; nil before it loads.
     var feedbackView: UIView? { get }
     func insert(_ text: String)
@@ -340,7 +341,7 @@ final class KeyboardDictationClient: ObservableObject {
     private func insert(_ result: DictationResult, context: inout String?) {
         guard let store, let target, ledger.claim(requestID: result.requestID, in: store) else { return }
         // Already ends in "\n" when the result presses Enter, even for an empty transcript.
-        let text = TextInsertionFormatter.text(for: result, contextBefore: context)
+        let text = TextInsertionFormatter.text(for: result, contextBefore: context, contextAfter: target.contextAfterInput)
         guard !text.isEmpty else {
             show(KeyboardMessages.noSpeech)
             return

@@ -129,8 +129,11 @@ DICTIONARY_SOURCES ?= $(call swift_sources,../Sources/Dictionary)
 # silence compactor; the host tests compile all three.
 DICTIONARY_TEST_SOURCES = $(DICTIONARY_SOURCES) ../Sources/Parakeet/LocalParakeetCore.swift ../Sources/Parakeet/ParakeetSilenceCompactor.swift
 DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenNumberFormatter.swift
-APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
-KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(KEYBOARDCORE_SOURCES)
+# Fits a dictation to the text around the cursor, shared with the macOS app; Shared's
+# TextInsertionFormatter uses it, so the app, the keyboard and the host tests compile it.
+INSERTION_CONTEXT_SOURCES ?= ../Sources/InsertionContextFormatter.swift
+APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
+KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(KEYBOARDCORE_SOURCES)
 
 OBJ_DIR = $(BUILD_DIR)/obj
 APP_BUNDLE = $(BUILD_DIR)/LocalFlow.app
@@ -456,7 +459,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 
