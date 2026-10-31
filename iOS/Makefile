@@ -156,7 +156,12 @@ SWIFTC = xcrun --sdk $(SDK) swiftc
 # iOS 26 deprecates the legacy CBLAS declarations the shared decoder calls; the
 # new LAPACK headers keep the same 32-bit signatures.
 ACCELERATE_FLAGS = -Xcc -DACCELERATE_NEW_LAPACK
-SWIFT_COMMON_FLAGS = -swift-version 5 -parse-as-library -target $(TARGET) -sdk "$(SDK_PATH)" $(ACCELERATE_FLAGS) $(SWIFT_FLAGS)
+# Without -j, swiftc compiles one file at a time. (-enable-batch-mode would save a
+# little more, but Swift 6.4 then links temporary objects it never wrote unless
+# given an output file map.)
+SWIFT_JOBS ?= $(shell sysctl -n hw.activecpu)
+SWIFT_PARALLEL_FLAGS = -j$(SWIFT_JOBS)
+SWIFT_COMMON_FLAGS = -swift-version 5 -parse-as-library -target $(TARGET) -sdk "$(SDK_PATH)" $(ACCELERATE_FLAGS) $(SWIFT_PARALLEL_FLAGS) $(SWIFT_FLAGS)
 KEYBOARD_SWIFT_FLAGS = -module-name LocalFlowKeyboard -application-extension
 KEYBOARD_LINK_FLAGS = -Xlinker -e -Xlinker _NSExtensionMain
 
@@ -443,7 +448,7 @@ check: typecheck test lint
 # variant is checked too, so it cannot rot outside its builds.
 typecheck:
 	@set -e; sdk=$$(xcrun --sdk iphonesimulator --show-sdk-path); \
-	flags="-typecheck -warnings-as-errors -swift-version 5 -parse-as-library -target arm64-apple-ios$(DEPLOYMENT_TARGET)-simulator -sdk $$sdk $(ACCELERATE_FLAGS) $(SWIFT_FLAGS)"; \
+	flags="-typecheck -warnings-as-errors -swift-version 5 -parse-as-library -target arm64-apple-ios$(DEPLOYMENT_TARGET)-simulator -sdk $$sdk $(ACCELERATE_FLAGS) $(SWIFT_PARALLEL_FLAGS) $(SWIFT_FLAGS)"; \
 	echo "Type-checking the app"; \
 	xcrun --sdk iphonesimulator swiftc $$flags -module-name LocalFlow $(APP_SOURCES); \
 	echo "Type-checking the app (self-test variant)"; \
@@ -457,7 +462,7 @@ ifeq ($(strip $(TEST_SOURCES)),)
 	@echo "No iOS host tests yet; skipping."
 else
 	@mkdir -p "$(HOST_BUILD_DIR)"
-	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors \
+	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors $(SWIFT_PARALLEL_FLAGS) \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
 		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"

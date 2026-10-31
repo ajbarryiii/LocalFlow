@@ -44,6 +44,7 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `SWIPE_BUNDLE_DIR` | empty | swipe typing bundle to embed in the keyboard (see [Swipe typing bundle](#swipe-typing-bundle)) |
 | `BUILD_DIR` | `build/$(PLATFORM)` | output directory |
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
+| `SWIFT_JOBS` | the Mac's active cores | parallel compiler jobs for every build, type-check and test compile |
 | `BUILD_NUMBER` | empty | `CFBundleVersion` for both bundles; empty keeps the template's `1` |
 | `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
 
