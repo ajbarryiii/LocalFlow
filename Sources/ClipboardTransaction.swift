@@ -92,22 +92,30 @@ enum ClipboardTransaction {
         NSPasteboard.PasteboardType("de.petermaurer.TransientPasteboardType"),
     ]
 
-    /// Append a space when ending with sentence-ending punctuation so the
-    /// next dictation does not jam against the prior period.
-    static func pasteText(for transcript: String) -> String {
-        if let last = transcript.last, ".!?".contains(last) {
-            return transcript + " "
-        }
-        return transcript
+    /// Fits the transcript to the text around the insertion point when it is
+    /// known. Appends a space when ending with sentence-ending punctuation so
+    /// the next dictation does not jam against the prior period, unless text
+    /// follows the insertion point.
+    static func pasteText(for transcript: String, context: InsertionContext? = nil) -> String {
+        guard let context else { return spaced(transcript) }
+        let text = InsertionContextFormatter.text(for: transcript, before: context.before, after: context.after)
+        return context.after?.isEmpty == false ? text : spaced(text)
     }
 
-    /// Writes `pasteText(for: transcript)`. Unless `keepInHistory`, it is
+    private static func spaced(_ text: String) -> String {
+        if let last = text.last, ".!?".contains(last) {
+            return text + " "
+        }
+        return text
+    }
+
+    /// Writes `pasteText(for: transcript, context: context)`. Unless `keepInHistory`, it is
     /// marked so clipboard managers leave it out of their history; it still
     /// pastes normally. With `preserve`, returns what `restore` needs.
-    static func write(_ transcript: String, preserve: Bool, keepInHistory: Bool,
+    static func write(_ transcript: String, context: InsertionContext? = nil, preserve: Bool, keepInHistory: Bool,
                       on pasteboard: PasteboardAccess) -> PendingClipboardRestore? {
         let snapshot = preserve ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
-        let textToWrite = pasteText(for: transcript)
+        let textToWrite = pasteText(for: transcript, context: context)
 
         if keepInHistory {
             // Plain write so clipboard managers record the dictation in history.
