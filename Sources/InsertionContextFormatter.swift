@@ -38,7 +38,7 @@ enum InsertionContextFormatter {
                 // A lone period only: "..." and "?" or "!" are meant.
                 if text.hasSuffix("."), !text.hasSuffix("..") { text = dropping(from: text) { $0 == "." } }
                 if touching { trailing = " " }
-            case .word:
+            case .separate:
                 trailing = " "
             case .other:
                 break
@@ -88,8 +88,9 @@ enum InsertionContextFormatter {
         /// A lowercase word or a number, the same sentence going on;
         /// `touching` when no space separates it.
         case continuation(touching: Bool)
-        /// A capitalized word right after the insertion point.
-        case word
+        /// A capitalized word, or an opening bracket or quote, right after the
+        /// insertion point.
+        case separate
         /// The end of the text or line, or anything else.
         case other
     }
@@ -104,7 +105,7 @@ enum InsertionContextFormatter {
             return .continuation(touching: false)
         }
         if first.isLowercase || first.isNumber { return .continuation(touching: true) }
-        return first.isUppercase ? .word : .other
+        return first.isUppercase || openingCharacters.contains(first) ? .separate : .other
     }
 
     // MARK: - Helpers

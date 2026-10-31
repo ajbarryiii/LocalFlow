@@ -138,14 +138,17 @@ enum InsertionContextTests {
         }
     }
 
-    /// Inserted right against a word, a space separates them; before a
-    /// lowercase word the period goes, before a capital it stays.
+    /// Inserted right against a word or an opening bracket, a space separates
+    /// them; before a lowercase word the period goes, before a capital or a
+    /// bracket it stays.
     private static func testSpaceBeforeATouchingWord() {
         TestSupport.expectEqual(text("Ends here.", after: "and more"), "Ends here ")
         TestSupport.expectEqual(text("Ends here.", after: "42"), "Ends here ")
         TestSupport.expectEqual(text("Ends here.", after: "Next one"), "Ends here. ")
         TestSupport.expectEqual(text("No period", after: "Next"), "No period ")
         TestSupport.expectEqual(text("Middle", before: "Prefix", after: "suffix"), " middle ")
+        TestSupport.expectEqual(text("Done.", after: "(More details.)"), "Done. ")
+        TestSupport.expectEqual(text("See", before: "Prefix ", after: "\u{201C}quoted\u{201D}"), "see ")
     }
 
     private static func testPunctuationOnlyTranscriptIsKept() {
