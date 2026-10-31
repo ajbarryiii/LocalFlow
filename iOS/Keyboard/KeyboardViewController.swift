@@ -356,6 +356,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     var contextBeforeInput: String? { textDocumentProxy.documentContextBeforeInput }
 
+    var contextAfterInput: String? { textDocumentProxy.documentContextAfterInput }
+
     var feedbackView: UIView? { viewIfLoaded }
 
     func insert(_ text: String) {

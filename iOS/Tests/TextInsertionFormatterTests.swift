@@ -11,6 +11,7 @@ enum TextInsertionFormatterTests {
             ("straightQuotesOpenOrClose", testStraightQuotesOpenOrClose),
             ("noSpaceBeforeClosingPunctuation", testNoSpaceBeforeClosingPunctuation),
             ("pressEnterAppendsNewline", testPressEnterAppendsNewline),
+            ("fitsTheTextAroundTheCursor", testFitsTheTextAroundTheCursor),
         ]
     }
 
@@ -20,7 +21,7 @@ enum TextInsertionFormatterTests {
 
     private static func testTrimsTranscript() {
         TestSupport.expectEqual(text("  Synthetic words \n\t", after: nil), "Synthetic words")
-        TestSupport.expectEqual(text("\nSynthetic words", after: "Prefix"), " Synthetic words")
+        TestSupport.expectEqual(text("\nSynthetic words", after: "Prefix."), " Synthetic words")
     }
 
     private static func testEmptyTranscriptInsertsNothing() {
@@ -66,9 +67,24 @@ enum TextInsertionFormatterTests {
     }
 
     private static func testPressEnterAppendsNewline() {
-        TestSupport.expectEqual(text("Synthetic send", after: "Prefix", pressEnter: true), " Synthetic send\n")
+        TestSupport.expectEqual(text("Synthetic send", after: "Prefix.", pressEnter: true), " Synthetic send\n")
         TestSupport.expectEqual(text("Synthetic send", after: nil, pressEnter: true), "Synthetic send\n")
         // "press enter" alone still presses Enter, as on macOS.
         TestSupport.expectEqual(text("", after: "Prefix", pressEnter: true), "\n")
+    }
+
+    /// Placed mid-sentence, a dictation continues it: see InsertionContextTests in the macOS tests
+    /// for the shared rules.
+    private static func testFitsTheTextAroundTheCursor() {
+        func text(_ transcript: String, before: String?, after: String?, pressEnter: Bool = false) -> String {
+            TextInsertionFormatter.text(for: Fixture.result(text: transcript, pressEnter: pressEnter),
+                                        contextBefore: before, contextAfter: after)
+        }
+        TestSupport.expectEqual(text("Which ends like this one.", before: "It ends like this one", after: ". "),
+                                " which ends like this one")
+        TestSupport.expectEqual(text("Middle words.", before: "Start of it", after: " end of it."), " middle words")
+        TestSupport.expectEqual(text("Next one.", before: "Done. ", after: " Later."), "Next one.")
+        TestSupport.expectEqual(text("Next one.", before: nil, after: nil), "Next one.")
+        TestSupport.expectEqual(text("Send it.", before: "Then", after: nil, pressEnter: true), " send it.\n")
     }
 }
