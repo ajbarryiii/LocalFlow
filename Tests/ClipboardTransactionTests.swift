@@ -118,6 +118,7 @@ enum ClipboardTransactionTests {
         TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: "\nMore"), "Next one.")
         TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: " Later."), "Next one.")
         TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: "Later."), "Next one. ")
+        TestSupport.expectEqual(paste("Done.", before: nil, after: "(More details.)"), "Done. ")
 
         let pasteboard = FakePasteboard()
         _ = ClipboardTransaction.write("Which ends.", context: InsertionContext(before: "this one", after: "."),

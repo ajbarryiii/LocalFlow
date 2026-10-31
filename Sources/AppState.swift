@@ -1622,54 +1622,58 @@ final class AppState: ObservableObject, DictationCleanupActions {
     }
 
     /// Writes `transcript` to the clipboard and pastes it once the shortcut is
-    /// released. With `fitsContext`, the text around the insertion point is
-    /// read first (bounded, 0.3 s) and the transcript fitted to it; unknown
-    /// context pastes it as before. `completion` gets what restores the clipboard.
+    /// released. With a correction context (suggestions on), the destination
+    /// field is captured on the watcher's queue first. The capture is bounded
+    /// (0.3 s) so it can never hold the paste back for long. `completion` gets
+    /// what restores the clipboard.
     private func pasteAtCursorWhenShortcutReleased(_ transcript: String, fitsContext: Bool,
                                                    correction: CorrectionPasteContext? = nil,
                                                    completion: @escaping (PendingClipboardRestore?) -> Void) {
         performAfterShortcutReleased { [weak self] in
             guard let self else { return }
-            guard fitsContext else {
-                return self.paste(transcript, context: nil, correction: correction, completion: completion)
+            // A context from before a cancel (new recording, setting off,
+            // dictionary change) is stale: paste plainly, never watch.
+            guard let correction, self.isCorrectionSuggestionsEnabled,
+                  self.correctionWatcher.isCurrent(correction.watchGeneration) else {
+                if let correction { LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID) }
+                self.paste(transcript, fitsContext: fitsContext) { pendingRestore, _ in completion(pendingRestore) }
+                return
             }
-            self.insertionContextProbe.read { [weak self] context in
-                // InsertionContextProbe completes a read on the main queue.
+            self.correctionWatcher.capture(expecting: correction.watchGeneration) { [weak self] capture in
+                // CorrectionWatcher completes a capture on the main queue.
                 MainActor.assumeIsolated {
-                    self?.paste(transcript, context: context, correction: correction, completion: completion)
+                    guard let self else { return }
+                    self.paste(transcript, fitsContext: fitsContext) { pendingRestore, pasted in
+                        if let capture, self.isCorrectionSuggestionsEnabled {
+                            self.correctionApp = (correction.dictationID, correction.app)
+                            self.correctionWatcher.start(capture, pasted: pasted, dictationID: correction.dictationID)
+                        } else {
+                            LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
+                        }
+                        completion(pendingRestore)
+                    }
                 }
             }
         }
     }
 
-    /// With a correction context (suggestions on), the destination field is
-    /// captured on the watcher's queue immediately before Cmd-V is posted. The
-    /// capture is bounded (0.3 s) so it can never hold the paste back for long.
-    private func paste(_ transcript: String, context: InsertionContext?, correction: CorrectionPasteContext?,
-                       completion: @escaping (PendingClipboardRestore?) -> Void) {
-        let pendingRestore = writeTranscriptToPasteboard(transcript, context: context)
-        // A context from before a cancel (new recording, setting off,
-        // dictionary change) is stale: paste plainly, never watch.
-        guard let correction, isCorrectionSuggestionsEnabled, correctionWatcher.isCurrent(correction.watchGeneration) else {
-            if let correction { LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID) }
+    /// With `fitsContext`, reads the text around the insertion point (bounded,
+    /// 0.3 s) and fits the transcript to it; unknown context pastes it as
+    /// before. The read comes last, right before Cmd-V is posted, so the field
+    /// has no time to change in between. `posted` gets what restores the
+    /// clipboard and exactly what was pasted.
+    private func paste(_ transcript: String, fitsContext: Bool,
+                       posted: @escaping (PendingClipboardRestore?, String) -> Void) {
+        let post: (InsertionContext?) -> Void = { [weak self] context in
+            guard let self else { return }
+            let pendingRestore = self.writeTranscriptToPasteboard(transcript, context: context)
             SyntheticKeyboard.paste()
-            completion(pendingRestore)
-            return
+            posted(pendingRestore, ClipboardTransaction.pasteText(for: transcript, context: context))
         }
-        let pasted = ClipboardTransaction.pasteText(for: transcript, context: context)
-        correctionWatcher.capture(expecting: correction.watchGeneration) { [weak self] capture in
-            // CorrectionWatcher completes a capture on the main queue.
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                SyntheticKeyboard.paste()
-                if let capture, self.isCorrectionSuggestionsEnabled {
-                    self.correctionApp = (correction.dictationID, correction.app)
-                    self.correctionWatcher.start(capture, pasted: pasted, dictationID: correction.dictationID)
-                } else {
-                    LocalParakeetService.shared.releaseCorrectionSession(dictationID: correction.dictationID)
-                }
-                completion(pendingRestore)
-            }
+        guard fitsContext else { return post(nil) }
+        insertionContextProbe.read { context in
+            // InsertionContextProbe completes a read on the main queue.
+            MainActor.assumeIsolated { post(context) }
         }
     }
 

@@ -11,6 +11,7 @@ enum InsertionContextProbeTests {
         testReadsOnlyAFewCharacters()
         testNothingWithoutAnEligibleField()
         testFailedReads()
+        testChecksTheFieldBeforeEveryRead()
     }
 
     private static func read(_ reader: FakeTextFieldReader) -> InsertionContext? {
@@ -75,5 +76,22 @@ enum InsertionContextProbeTests {
         let inconsistent = FakeTextFieldReader("Some words")
         inconsistent.selectionLength = 3
         TestSupport.expect(read(inconsistent) == nil, "No context from an inconsistent selection")
+    }
+
+    /// As in the correction watcher: a field that turns secure or loses focus
+    /// during a read yields nothing more.
+    private static func testChecksTheFieldBeforeEveryRead() {
+        let reader = FakeTextFieldReader("Some words")
+        reader.caret = 4
+        TestSupport.expect(read(reader) != nil, "Context is read")
+        TestSupport.expectEqual(reader.uncheckedReads, 0)
+        for change in [{ (r: FakeTextFieldReader) in r.secure = true }, { (r: FakeTextFieldReader) in r.focused = false },
+                       { (r: FakeTextFieldReader) in r.trusted = false }] {
+            let changing = FakeTextFieldReader("Private words")
+            changing.caret = 7
+            changing.onCharacterCount = { change(changing) }
+            TestSupport.expect(read(changing) == nil, "No context once the field changes")
+            TestSupport.expectEqual(changing.rangeReads.count, 0)
+        }
     }
 }

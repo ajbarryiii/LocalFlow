@@ -45,17 +45,28 @@ final class InsertionContextProbe: @unchecked Sendable {
     }
 
     /// The context of another app's focused, editable, non-secure text field,
-    /// or nil when there is none or nothing could be read.
+    /// or nil when there is none or nothing could be read. As in the correction
+    /// watcher, the field is checked before every read and after the last one:
+    /// a field that loses focus or turns secure meanwhile yields nothing.
     static func read(using reader: TextFieldReader) -> InsertionContext? {
-        guard reader.isTrusted(), let target = reader.captureFocusedTextField(), reader.check(target) == .ok,
-              let selection = reader.selectedRange(target), let count = reader.characterCount(target),
+        guard reader.isTrusted(), let target = reader.captureFocusedTextField() else { return nil }
+        func stillEligible() -> Bool { reader.isTrusted() && reader.check(target) == .ok }
+        guard stillEligible(), let selection = reader.selectedRange(target),
+              stillEligible(), let count = reader.characterCount(target),
               selection.location + selection.length <= count else { return nil }
         let start = max(0, selection.location - span)
         let end = selection.location + selection.length
-        let before = selection.location == 0
-            ? "" : reader.string(target, range: TextFieldRange(location: start, length: selection.location - start))
-        let after = end == count ? "" : reader.string(target, range: TextFieldRange(location: end, length: min(span, count - end)))
-        guard before != nil || after != nil else { return nil }
+        var before: String? = ""
+        if selection.location > 0 {
+            guard stillEligible() else { return nil }
+            before = reader.string(target, range: TextFieldRange(location: start, length: selection.location - start))
+        }
+        var after: String? = ""
+        if end < count {
+            guard stillEligible() else { return nil }
+            after = reader.string(target, range: TextFieldRange(location: end, length: min(span, count - end)))
+        }
+        guard stillEligible(), before != nil || after != nil else { return nil }
         return InsertionContext(before: before, after: after)
     }
 }
