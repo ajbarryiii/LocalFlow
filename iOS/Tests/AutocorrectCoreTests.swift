@@ -60,7 +60,8 @@ enum AutocorrectCoreTests {
 
     // MARK: Support
 
-    static let keys = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 390, height: 216), showsGlobe: false)
+    /// The geometry the fixtures were generated for.
+    static let keys = KeyboardLayout.referenceLetterKeys(metrics: KeyboardMetrics(width: 390, height: 216))
     static let touch = TapDecoder.TouchModel.standard
 
     static func centre(_ letter: Character) -> (x: Double, y: Double) {
@@ -869,8 +870,7 @@ enum AutocorrectCoreTests {
     }
 
     static var fixtureKeys: [PlacedKey] {
-        KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: AutocorrectFixtures.width, height: AutocorrectFixtures.height),
-                            showsGlobe: false)
+        KeyboardLayout.referenceLetterKeys(metrics: KeyboardMetrics(width: AutocorrectFixtures.width, height: AutocorrectFixtures.height))
     }
 
     static var fixtureTouch: TapDecoder.TouchModel {

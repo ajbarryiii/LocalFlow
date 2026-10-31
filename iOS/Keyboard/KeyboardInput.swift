@@ -67,6 +67,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
     var onSwipeStripChanged: (() -> Void)?
     /// The offer to never correct a reverted word appeared, changed or went (`neverCorrectOffer`).
     var onNeverCorrectOfferChanged: (() -> Void)?
+    /// An own edit, or a frame while the proxy may only now show one: whether the field has text may have changed
+    /// (`fieldHasText`).
+    var onTextMayHaveChanged: (() -> Void)?
     /// The swipe engine, once loaded (`loadSwipeEngine`); nil keeps swipe typing off.
     private var swipeEngine: SwipeEngine? {
         didSet { updateTouchModes() }
@@ -106,6 +109,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     }
 
     var trackpad: TrackpadController { editor.trackpad }
+
+    /// Whether the field has text: the proxy's word, or text before the caret that the keyboard typed and the proxy
+    /// does not show yet. Read for `enablesReturnKeyAutomatically`; nothing is kept.
+    var fieldHasText: Bool {
+        proxy?.hasText == true || !editor.tapPriorContext(now: now).isEmpty
+    }
 
     private var proxy: UITextDocumentProxy? { controller?.textDocumentProxy }
 
@@ -312,6 +321,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     private func editorStateChanged() {
         keyArea?.apply(layer: editor.typing.layer, shift: editor.typing.shift)
+        onTextMayHaveChanged?()
         scheduleTailExpiry()
         if editor.needsService { scheduleService() }
     }
@@ -323,6 +333,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
             guard let self else { return }
             self.serviceTimer = nil
             self.editor.service(now: self.now)
+            self.onTextMayHaveChanged?()
             if self.editor.needsService { self.scheduleService() }
         }
     }

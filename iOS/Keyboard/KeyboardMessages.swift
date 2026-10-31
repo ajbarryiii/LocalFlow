@@ -37,8 +37,9 @@ enum KeyboardMessages {
         case .transcribing: return "Transcribing…"
         case .waitingForModel, .preparingModel: return preparingModel
         case .error(let code): return text(for: code)
-        case .ready: return "Tap to dictate"
-        case .hostUnavailable: return launcherFailed ? openLocalFlow : "Tap to start LocalFlow"
+        case .ready: return "Ready to dictate"
+        // Describes, never instructs: a tap on the bar's text types the top-row key under it.
+        case .hostUnavailable: return launcherFailed ? openLocalFlow : "Start opens LocalFlow"
         }
     }
 
@@ -80,8 +81,16 @@ enum KeyboardMessages {
         case .active: break
         }
         guard let expiresAt = status.sessionExpiresAt else { return "Session active" }
-        let minutes = max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
-        return "Session active · ends after \(minutes) min idle"
+        return "Session active · " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
+    }
+
+    /// How the bar and the menu name the session's end: it ends after this many idle minutes, not at a fixed time.
+    static func idleTimeout(minutes: Int) -> String {
+        "ends after \(minutes) min idle"
+    }
+
+    private static func minutesLeft(until expiresAt: Date, now: Date) -> Int {
+        max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
     }
 
     /// A small hint about the model or session, only from a live host: a dead host's last status
@@ -99,7 +108,6 @@ enum KeyboardMessages {
         guard status.session == .active else { return nil }
         if status.model == .notPrepared { return modelLoadsWhenDictating }
         guard let expiresAt = status.sessionExpiresAt else { return "Session on" }
-        let minutes = max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
-        return "Session · \(minutes) min left"
+        return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
     }
 }

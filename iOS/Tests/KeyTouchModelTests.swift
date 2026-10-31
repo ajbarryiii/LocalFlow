@@ -49,6 +49,11 @@ enum KeyTouchModelTests {
             ("aDecidedTapShowsAndTypesItsDecision", testADecidedTapShowsAndTypesItsDecision),
             ("aResizeUnderADecidedTapTypesTheTouchedKey", testAResizeUnderADecidedTapTypesTheTouchedKey),
             ("aTapHeldThroughAResizeLosesItsPoint", testATapHeldThroughAResizeLosesItsPoint),
+            ("holdingAKeyOpensItsAlternatesAndSlidingPicks", testHoldingAKeyOpensItsAlternatesAndSlidingPicks),
+            ("alternatesReleasedWithoutMovingTypeTheKey", testAlternatesReleasedWithoutMovingTypeTheKey),
+            ("alternatesNeverDisturbTypingOrSwipes", testAlternatesNeverDisturbTypingOrSwipes),
+            ("alternatesRolloverAndCancel", testAlternatesRolloverAndCancel),
+            ("onlyLettersSwipeOrSoftTapOnTheLettersLayer", testOnlyLettersSwipeOrSoftTapOnTheLettersLayer),
         ]
     }
 
@@ -125,7 +130,8 @@ enum KeyTouchModelTests {
         TestSupport.expectEqual(model.began(2, x: numbers.x, y: numbers.y),
                                 [.keyDown, .type(.character("q")), .type(.layer(.numbers))])
         TestSupport.expectEqual(model.keysChanged(keys(.numbers), layer: .numbers), [])
-        TestSupport.expectEqual(keys(.numbers).count, 30)
+        // 31 since the emoji key joined the bottom row (32 letter-layer keys): still fewer than the letters.
+        TestSupport.expectEqual(keys(.numbers).count, 31)
         TestSupport.expectEqual(model.touches.first { $0.id == 1 }?.action, .character("q"))
         TestSupport.expectEqual(model.touches.first { $0.id == 2 }?.action, .layer(.letters))
         TestSupport.expectEqual(model.ended(1, x: returnKey.x, y: returnKey.y), [])
@@ -1151,5 +1157,183 @@ extension KeyTouchModelTests {
         _ = after.keysChanged(wider, layer: .letters)
         _ = after.began(1, x: d.x, y: d.y)
         TestSupport.expectEqual(after.ended(1, x: d.x, y: d.y), [.tap(.character("d"), x: d.x, y: d.y, field: nil)])
+    }
+
+    // MARK: Press-and-hold alternates
+
+    /// ARCHITECTURE.md, "Press-and-hold alternates": a held key with alternates opens its row when the timer fires; the
+    /// callout gives way to it; sliding picks the cell under the finger; the lift types it.
+    private static func testHoldingAKeyOpensItsAlternatesAndSlidingPicks() {
+        var model = model(swipe: true, softTaps: true)
+        let e = frame(.character("e"))
+        TestSupport.expectEqual(model.began(1, x: e.midX, y: e.midY), [.keyDown])
+        TestSupport.expect(model.wantsAlternates(1), "e wants the alternates timer")
+        TestSupport.expectEqual(model.calloutAction, .character("e"))
+        TestSupport.expect(model.alternatesElapsed(1), "row did not open")
+        let row = model.alternatesTouch!
+        TestSupport.expectEqual(row.alternates, KeyAlternates.options(for: "e"))
+        TestSupport.expectEqual(row.alternateFrames, KeyAlternates.frames(count: row.alternates.count, key: e, width: 402))
+        TestSupport.expect(model.calloutTouch == nil, "the callout stays under the row")
+        // A second firing does nothing; the row is open.
+        TestSupport.expect(!model.alternatesElapsed(1), "opened twice")
+        // Sliding onto the third cell picks it, even far beyond the swipe threshold: an open row never swipes.
+        let third = row.alternateFrames[2]
+        TestSupport.expectEqual(model.moved(1, x: third.midX, y: third.midY), [])
+        TestSupport.expect(!model.isSwipeActive, "the row swiped")
+        TestSupport.expectEqual(model.alternatesTouch?.selectedAlternate, 2)
+        TestSupport.expectEqual(model.ended(1, x: third.midX, y: third.midY), [.type(.character(row.alternates[2]))])
+        TestSupport.expect(model.alternatesTouch == nil && model.touches.isEmpty, "row left open")
+
+        // The lift picks too: a finger last moved over the second cell that lifts over the third types the third.
+        _ = model.began(7, x: e.midX, y: e.midY)
+        _ = model.alternatesElapsed(7)
+        let lifted = model.alternatesTouch!.alternateFrames
+        _ = model.moved(7, x: lifted[1].midX, y: e.midY)
+        TestSupport.expectEqual(model.ended(7, x: lifted[2].midX, y: e.midY), [.type(.character(row.alternates[2]))])
+
+        // Back over the key's own cell types what a tap would.
+        _ = model.began(2, x: e.midX, y: e.midY)
+        _ = model.alternatesElapsed(2)
+        let cells = model.alternatesTouch!.alternateFrames
+        _ = model.moved(2, x: cells[3].midX, y: e.midY)
+        _ = model.moved(2, x: cells[0].midX, y: e.midY)
+        TestSupport.expectEqual(model.ended(2, x: cells[0].midX, y: e.midY), [.tap(.character("e"), x: e.midX, y: e.midY, field: nil)])
+
+        // Keys without alternates never want the timer, nor do function keys.
+        var plain = self.model()
+        let b = center(.character("b"))
+        _ = plain.began(3, x: b.x, y: b.y)
+        TestSupport.expect(!plain.wantsAlternates(3) && !plain.alternatesElapsed(3), "b has alternates")
+        _ = plain.ended(3, x: b.x, y: b.y)
+        for function in [KeyAction.space, .delete, .returnKey, .shift] {
+            let point = center(function)
+            _ = plain.began(4, x: point.x, y: point.y)
+            TestSupport.expect(!plain.wantsAlternates(4) && !plain.alternatesElapsed(4), "\(function) has alternates")
+            _ = plain.cancelled(4)
+        }
+        // A soft tap decided at touch-down uses the key its callout shows: "r" decided as "e" has e's row.
+        var soft = self.model(softTaps: true)
+        let r = center(.character("r"))
+        _ = soft.began(6, x: r.x, y: r.y)
+        TestSupport.expect(!soft.wantsAlternates(6), "r has alternates")
+        soft.decideTap(6, as: .character("e"))
+        TestSupport.expect(soft.wantsAlternates(6) && soft.alternatesElapsed(6), "decided e has no row")
+        TestSupport.expectEqual(soft.alternatesTouch?.alternates, KeyAlternates.options(for: "e"))
+        // Punctuation on the numbers layer has them too.
+        var numbers = self.model(.numbers)
+        let dash = center(.character("-"), .numbers)
+        _ = numbers.began(5, x: dash.x, y: dash.y)
+        TestSupport.expect(numbers.wantsAlternates(5) && numbers.alternatesElapsed(5), "- has no alternates")
+        let dashCells = numbers.alternatesTouch!.alternateFrames
+        _ = numbers.moved(5, x: dashCells[1].midX, y: dashCells[1].midY)
+        TestSupport.expectEqual(numbers.ended(5, x: dashCells[1].midX, y: dashCells[1].midY), [.type(.character("–"))])
+    }
+
+    /// A row released where it opened types what a tap would: the key, or with soft taps its tap with the touch-down
+    /// point, even when the row had to move inside the keyboard so that another cell is under the finger.
+    private static func testAlternatesReleasedWithoutMovingTypeTheKey() {
+        for softTaps in [false, true] {
+            var model = model(softTaps: softTaps)
+            let a = frame(.character("a"))
+            _ = model.began(1, x: a.midX, y: a.midY)
+            TestSupport.expect(model.alternatesElapsed(1), "row did not open")
+            // Under the slop: still the key's own character.
+            TestSupport.expectEqual(model.moved(1, x: a.midX + KeyAlternates.moveSlop - 1, y: a.midY + 3), [])
+            TestSupport.expectEqual(model.alternatesTouch?.selectedAlternate, 0)
+            let expected: KeyTouchModel.Effect = softTaps ? .tap(.character("a"), x: a.midX, y: a.midY, field: nil) : .type(.character("a"))
+            TestSupport.expectEqual(model.ended(1, x: a.midX + KeyAlternates.moveSlop - 1, y: a.midY + 3), [expected])
+        }
+        // On a narrow keyboard the URL field's ".com" row is moved inside the keyboard, so another cell is under the
+        // finger: unmoved, it still types ".com".
+        let narrow = KeyboardMetrics(width: 320, height: KeyboardMetrics.regularHeight)
+        let url = KeyboardLayout.keys(for: .letters, metrics: narrow, showsGlobe: false, field: .url)
+        let dotCom = url.first { $0.action == .character(KeyboardLayout.dotCom) }!.frame
+        var model = KeyTouchModel()
+        _ = model.keysChanged(url, layer: .letters)
+        _ = model.began(1, x: dotCom.midX, y: dotCom.midY)
+        TestSupport.expect(model.alternatesElapsed(1), ".com row did not open")
+        let cells = model.alternatesTouch!.alternateFrames
+        TestSupport.expect(KeyAlternates.index(atX: dotCom.midX, in: cells) != 0, "the row did not move")
+        TestSupport.expectEqual(model.ended(1, x: dotCom.midX, y: dotCom.midY), [.type(.character(KeyboardLayout.dotCom))])
+    }
+
+    /// Typing at speed never sees a row: a key released (or committed by the next finger) before the timer fires types
+    /// at once and the late timer does nothing; a drag that became a swipe before it fired stays a swipe; space, delete
+    /// and the trackpad are untouched.
+    private static func testAlternatesNeverDisturbTypingOrSwipes() {
+        var model = model(swipe: true)
+        let e = center(.character("e")), r = center(.character("r"))
+        _ = model.began(1, x: e.x, y: e.y)
+        TestSupport.expectEqual(model.ended(1, x: e.x, y: e.y), [.type(.character("e"))])
+        TestSupport.expect(!model.alternatesElapsed(1), "a released key opened its row")
+        // Rollover: the first finger committed, so its timer finds nothing to open.
+        _ = model.began(2, x: e.x, y: e.y)
+        TestSupport.expectEqual(model.began(3, x: r.x, y: r.y), [.keyDown, .type(.character("e"))])
+        TestSupport.expect(!model.alternatesElapsed(2), "a committed key opened its row")
+        _ = model.ended(2, x: e.x, y: e.y)
+        _ = model.ended(3, x: r.x, y: r.y)
+        // A swipe started before the timer stays a swipe.
+        _ = model.began(4, x: e.x, y: e.y, t: 0)
+        _ = model.moved(4, x: e.x + 3 * threshold, y: e.y, t: 0.2)
+        TestSupport.expect(model.isSwipeActive, "no swipe")
+        TestSupport.expect(!model.alternatesElapsed(4), "a swipe opened a row")
+        guard case .swipe = model.ended(4, x: e.x + 3 * threshold, y: e.y, t: 0.3).first else {
+            return TestSupport.expect(false, "the swipe was lost")
+        }
+        // The space bar's hold still becomes the trackpad, and a row never opens while it runs.
+        let space = center(.space)
+        _ = model.began(5, x: space.x, y: space.y)
+        TestSupport.expectEqual(model.holdElapsed(5), [.cancelHoldTimer(5), .beginTrackpad])
+        TestSupport.expect(!model.alternatesElapsed(5), "the trackpad opened a row")
+    }
+
+    /// A new finger commits an open row's pick, as rollover commits any held key; a cancelled row types nothing; a
+    /// rebuild under it closes it.
+    private static func testAlternatesRolloverAndCancel() {
+        var model = model()
+        let o = frame(.character("o")), t = center(.character("t"))
+        _ = model.began(1, x: o.midX, y: o.midY)
+        _ = model.alternatesElapsed(1)
+        let cells = model.alternatesTouch!.alternateFrames
+        _ = model.moved(1, x: cells[2].midX, y: cells[2].midY)
+        let picked = model.alternatesTouch!.alternates[2]
+        TestSupport.expectEqual(model.began(2, x: t.x, y: t.y), [.keyDown, .type(.character(picked))])
+        TestSupport.expect(model.alternatesTouch == nil, "row open after rollover")
+        TestSupport.expectEqual(model.ended(1, x: cells[2].midX, y: cells[2].midY), [])
+        _ = model.ended(2, x: t.x, y: t.y)
+
+        _ = model.began(3, x: o.midX, y: o.midY)
+        _ = model.alternatesElapsed(3)
+        _ = model.moved(3, x: cells[2].midX, y: cells[2].midY)
+        TestSupport.expectEqual(model.cancelled(3), [])
+
+        _ = model.began(4, x: o.midX, y: o.midY)
+        _ = model.alternatesElapsed(4)
+        _ = model.moved(4, x: cells[2].midX, y: cells[2].midY)
+        let wider = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 440, height: KeyboardMetrics.regularHeight),
+                                        showsGlobe: false)
+        TestSupport.expectEqual(model.keysChanged(wider, layer: .letters), [])
+        TestSupport.expect(model.alternatesTouch == nil, "row open after a rebuild")
+        TestSupport.expectEqual(model.ended(4, x: cells[2].midX, y: cells[2].midY), [.type(.character("o"))])
+    }
+
+    /// The email field's "@" and "." sit on the letters layer but are not letters: they never swipe and are never soft
+    /// taps (the tap model knows only a to z).
+    private static func testOnlyLettersSwipeOrSoftTapOnTheLettersLayer() {
+        let email = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: false, field: .email)
+        var model = KeyTouchModel()
+        model.swipeEnabled = true
+        model.softTapsEnabled = true
+        _ = model.keysChanged(email, layer: .letters)
+        let at = email.first { $0.action == .character("@") }!.frame
+        _ = model.began(1, x: at.midX, y: at.midY, t: 0)
+        TestSupport.expect(!model.needsTapDecision(1), "@ is a soft tap")
+        _ = model.moved(1, x: at.midX - 4 * threshold, y: at.midY, t: 0.3)
+        TestSupport.expect(!model.isSwipeActive, "@ swiped")
+        TestSupport.expectEqual(model.ended(1, x: at.midX - 4 * threshold, y: at.midY, t: 0.35), [.type(.character("@"))])
+        // A letter in the same layout is both.
+        let k = email.first { $0.action == .character("k") }!.frame
+        _ = model.began(2, x: k.midX, y: k.midY, t: 1)
+        TestSupport.expect(model.needsTapDecision(2), "k is not a soft tap")
     }
 }

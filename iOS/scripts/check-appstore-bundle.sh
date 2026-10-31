@@ -228,7 +228,7 @@ for target in app keyboard; do
     if [ "$target" = app ]; then
         required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
     else
-        required="UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
+        required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
     fi
     for pair in $required; do
         case "$declared " in

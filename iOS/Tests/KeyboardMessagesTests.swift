@@ -8,6 +8,8 @@ enum KeyboardMessagesTests {
             ("hintNeedsALiveHost", testHintNeedsALiveHost),
             ("capsuleNamesTheWaitForTheModel", testCapsuleNamesTheWaitForTheModel),
             ("preparingTitles", testPreparingTitles),
+            ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
+            ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
         ]
     }
 
@@ -27,7 +29,7 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .preparing), now: now), KeyboardMessages.preparingModel)
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .failed), now: now), "Model failed to load")
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .unavailable), now: now), "Model missing")
-        TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .ready), now: now), "Session · 5 min left")
+        TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .ready), now: now), "Session ends after 5 min idle")
         TestSupport.expect(KeyboardMessages.modelLoadsWhenDictating != KeyboardMessages.preparingModel,
                            "a released model claims to be preparing")
     }
@@ -60,5 +62,35 @@ enum KeyboardMessagesTests {
             TestSupport.expectEqual(KeyboardMessages.title(for: mode, launcherFailed: false), KeyboardMessages.preparingModel)
         }
         TestSupport.expectEqual(KeyboardMessages.title(for: .transcribing, launcherFailed: false), "Transcribing…")
+    }
+
+    /// Owner decision 2: a tap on the bar's text types the top-row key under it, so no status line or title says
+    /// "Tap"; it describes. The idle line without a session names what Start does.
+    private static func testStatusTextNeverInvitesATap() {
+        TestSupport.expectEqual(KeyboardMessages.title(for: .hostUnavailable, launcherFailed: false), "Start opens LocalFlow")
+        let modes: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .starting,
+                                     .recording(level: 0, startedAt: Fixture.now), .transcribing, .waitingForModel, .preparingModel,
+                                     .ready, .hostUnavailable, .error(.modelFailed), .error(.sessionInactive)]
+        for mode in modes {
+            for failed in [false, true] {
+                let title = KeyboardMessages.title(for: mode, launcherFailed: failed)
+                TestSupport.expect(!title.lowercased().hasPrefix("tap"), "\(mode) invites a tap: \(title)")
+            }
+        }
+        for model in [HostStatus.Model.notPrepared, .preparing, .failed, .unavailable, .ready] {
+            let hint = KeyboardMessages.hint(for: status(model: model), now: Fixture.now) ?? ""
+            TestSupport.expect(!hint.lowercased().hasPrefix("tap"), "hint invites a tap: \(hint)")
+        }
+    }
+
+    /// The session ends after its idle time, not at a fixed moment: the bar and the menu say so in the same words.
+    private static func testBarAndMenuNameTheIdleTimeoutAlike() {
+        let now = Fixture.now
+        let live = status(model: .ready)
+        let phrase = KeyboardMessages.idleTimeout(minutes: 5)
+        TestSupport.expectEqual(phrase, "ends after 5 min idle")
+        TestSupport.expect(KeyboardMessages.hint(for: live, now: now)?.hasSuffix(phrase) == true, "bar wording differs")
+        TestSupport.expect(KeyboardMessages.sessionSummary(for: live, now: now).hasSuffix(phrase), "menu wording differs")
+        TestSupport.expect(!(KeyboardMessages.hint(for: live, now: now) ?? "").contains("left"), "bar reads as a countdown")
     }
 }

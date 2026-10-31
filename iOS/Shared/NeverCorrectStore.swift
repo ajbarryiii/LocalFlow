@@ -58,7 +58,7 @@ struct NeverCorrectWords: Equatable, Sendable {
 /// The never-correct words on the device, in the App Group container (ARCHITECTURE.md, "Word autocorrect",
 /// Never correct). One JSON file, `{"schema": 1, "words": [...]}`, least recently added first, in a directory
 /// excluded from backup. The keyboard is its only writer, and writes only when the user taps "Never correct"
-/// (autocorrect, and so the prompt, needs Full Access, which the App Group needs too); the app reads its count and
+/// (autocorrect, and so the prompt, needs Full Access, as does writing to the App Group); the app reads its count and
 /// clears it, which removes the file.
 ///
 /// - **Never fails loudly.** A missing, unreadable, oversized or corrupt file, or one of another schema, reads as

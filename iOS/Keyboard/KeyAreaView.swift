@@ -112,6 +112,14 @@ final class KeyAreaView: UIView {
     var returnKeyType = UIReturnKeyType.default {
         didSet { if returnKeyType != oldValue { relabel() } }
     }
+    /// The kind of field: its own keys on the letters layer's bottom row (`KeyboardLayout.keys`).
+    var field = KeyboardField.standard {
+        didSet { if field != oldValue { rebuildKeys() } }
+    }
+    /// Whether Return acts (`ReturnKeyRule`): drawn dimmed, it types nothing.
+    var returnKeyEnabled = true {
+        didSet { if returnKeyEnabled != oldValue { relabel() } }
+    }
 
     private var model = KeyTouchModel()
     private var keyViews: [KeyCapView] = []
@@ -138,6 +146,22 @@ final class KeyAreaView: UIView {
     private let trail = SwipeTrailView()
     /// How many of the running swipe's samples the trace shows; nil while it shows no swipe.
     private var trailSampleCount: Int?
+    /// The open alternates row (`KeyTouchModel.alternatesTouch`) and the timers that open one.
+    private let alternatesView = KeyAlternatesView()
+    private var alternatesTimers: [KeyTouchModel.TouchID: Timer] = [:]
+    /// The emoji press under way, like a held key's: the field it touched down in (or, touched down before any
+    /// identity, the first one identified after), and whether it was dropped (the menu, hiding, another field).
+    private var emojiPress: (emoji: String, field: UUID?, cancelled: Bool)?
+    /// The emoji panel, shown on the emoji layer over the area above its bottom keys.
+    private lazy var emojiPanel: EmojiPanelView = {
+        let panel = EmojiPanelView()
+        panel.onEmojiPressBegan = { [weak self] emoji in self?.emojiPressBegan(emoji) }
+        panel.onEmojiPressCancelled = { [weak self] in self?.emojiPress = nil }
+        panel.onEmoji = { [weak self] emoji in self?.typeEmoji(emoji) }
+        panel.isHidden = true
+        insertSubview(panel, belowSubview: trail)
+        return panel
+    }()
 
     private var placedKeys: [PlacedKey] { model.keys }
 
@@ -158,13 +182,18 @@ final class KeyAreaView: UIView {
         globeButton.accessibilityIdentifier = "lf.globe"
         // Its whole nearest-key region, so no point beside it is dead (ARCHITECTURE.md, "A stricter space bar").
         globeButton.claims = { [weak self] point in
-            guard let self else { return false }
+            guard let self, self.keyLayer != .emoji else { return false }
             let keys = placedKeys
             return KeyboardLayout.nearestKey(toX: Double(point.x), y: Double(point.y), in: keys)
                 .map { keys[$0].action == .nextKeyboard } ?? false
         }
         addSubview(trail)
         addSubview(callout)
+        addSubview(alternatesView)
+        // Bold Text and Increase Contrast redraw the keys.
+        registerForTraitChanges([UITraitLegibilityWeight.self, UITraitAccessibilityContrast.self]) { (view: KeyAreaView, _: UITraitCollection) in
+            view.relabel()
+        }
     }
 
     @available(*, unavailable)
@@ -190,7 +219,7 @@ final class KeyAreaView: UIView {
 
     /// The letters layer at the current size, whichever layer shows: the keys soft taps, autocorrect and swipes are
     /// decided against. Built afresh each time (a few dozen keys), so it always matches the current bounds.
-    var letterKeys: [PlacedKey] { KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: showsGlobe) }
+    var letterKeys: [PlacedKey] { KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: showsGlobe, field: field) }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -201,7 +230,7 @@ final class KeyAreaView: UIView {
     private func rebuildKeys() {
         builtSize = bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
-        let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe)
+        let keys = KeyboardLayout.keys(for: keyLayer, metrics: metrics, showsGlobe: showsGlobe, field: field)
         if let previous = letterGeometry, previous.size != bounds.size || previous.showsGlobe != showsGlobe {
             delegate?.keyAreaChangedLetterGeometry(self)
         }
@@ -227,6 +256,7 @@ final class KeyAreaView: UIView {
         }
         shownPressed = []
         calloutTracker.keysChanged()
+        layoutEmojiPanel()
         relabel()
         perform(effects, timestamp: CACurrentMediaTime())
         refreshPressed()
@@ -235,35 +265,45 @@ final class KeyAreaView: UIView {
 
     private func relabel() {
         let compact = isCompact
-        let letterFont = UIFont.systemFont(ofSize: compact ? 21 : 24, weight: .regular)
-        let symbolFont = UIFont.systemFont(ofSize: compact ? 19 : 22, weight: .regular)
-        let wordFont = UIFont.systemFont(ofSize: compact ? 15 : 16, weight: .regular)
+        // Bold Text makes the captions bold, as on Apple's keyboard.
+        let bold = traitCollection.legibilityWeight == .bold
+        let weight: UIFont.Weight = bold ? .semibold : .regular
+        let letterFont = UIFont.systemFont(ofSize: compact ? 21 : 24, weight: weight)
+        let symbolFont = UIFont.systemFont(ofSize: compact ? 19 : 22, weight: weight)
+        let wordFont = UIFont.systemFont(ofSize: compact ? 15 : 16, weight: weight)
+        let symbolWeight: UIImage.SymbolWeight = bold ? .semibold : .regular
         for (view, key) in zip(keyViews, placedKeys) {
             switch key.action {
             case .character(let character):
-                view.configure(title: displayed(character), symbol: nil, font: keyLayer == .letters ? letterFont : symbolFont,
-                               prominent: false, secondary: false)
+                // The URL field's ".com" is a word, not a character.
+                let font = character.count > 1 ? wordFont : (keyLayer == .letters && key.action.letterIndex != nil ? letterFont : symbolFont)
+                view.configure(title: displayed(character), symbol: nil, font: font, weight: symbolWeight)
             case .shift:
                 let symbol = shift == .capsLock ? "capslock.fill" : (shift == .once ? "shift.fill" : "shift")
-                view.configure(title: nil, symbol: symbol, font: wordFont, prominent: false, secondary: false)
+                view.configure(title: nil, symbol: symbol, font: wordFont, weight: symbolWeight)
             case .delete:
-                view.configure(title: nil, symbol: "delete.left", font: wordFont, prominent: false, secondary: false)
+                view.configure(title: nil, symbol: "delete.left", font: wordFont, weight: symbolWeight)
             case .space:
-                view.configure(title: spaceTitle, symbol: nil, font: wordFont, prominent: false, secondary: true)
+                view.configure(title: spaceTitle, symbol: nil, font: wordFont, weight: symbolWeight, secondary: true)
             case .returnKey:
                 view.configure(title: returnKeyType.keyTitle, symbol: returnKeyType.keyTitle == nil ? "return" : nil,
-                               font: wordFont, prominent: returnKeyType.isProminent, secondary: false)
+                               font: wordFont, weight: symbolWeight, prominent: returnKeyType.isProminent, enabled: returnKeyEnabled)
+            case .layer(.emoji):
+                view.configure(title: nil, symbol: "face.smiling", font: wordFont, weight: symbolWeight)
             case .layer:
-                view.configure(title: key.label, symbol: nil, font: wordFont, prominent: false, secondary: false)
+                view.configure(title: key.label, symbol: nil, font: wordFont, weight: symbolWeight)
             case .nextKeyboard:
-                view.configure(title: nil, symbol: nil, font: wordFont, prominent: false, secondary: false)
+                view.configure(title: nil, symbol: nil, font: wordFont, weight: symbolWeight)
             }
         }
+        emojiPanel.bold = bold
         rebuildAccessibility()
     }
 
+    /// A letter's caption follows the shift; other characters (the email field's "@", ".com") never change.
     private func displayed(_ character: String) -> String {
-        keyLayer == .letters && shift != .off ? character.uppercased() : character
+        keyLayer == .letters && shift != .off && character.count == 1 && character.first?.isLetter == true
+            ? character.uppercased() : character
     }
 
     private func wireGlobe() {
@@ -296,10 +336,12 @@ final class KeyAreaView: UIView {
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         if bounds.contains(point) { return !yieldsTouch(point) }
-        return point.y < bounds.minY && point.x >= bounds.minX && point.x <= bounds.maxX && takesTouchAbove(point)
+        // The emoji panel has no top row for a high tap to reach.
+        return keyLayer != .emoji && point.y < bounds.minY && point.x >= bounds.minX && point.x <= bounds.maxX && takesTouchAbove(point)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if keyLayer == .emoji { commitHeldEmoji() }
         for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             let point = touch.location(in: self)
             let touchID = id(for: touch)
@@ -313,6 +355,8 @@ final class KeyAreaView: UIView {
                let decided = delegate?.keyArea(self, decideTap: action, x: held.startX, y: held.startY, field: held.field) {
                 model.decideTap(touchID, as: decided)
             }
+            // The key the callout shows, decided or not, chooses the alternates.
+            if model.wantsAlternates(touchID) { startAlternatesTimer(touchID) }
         }
         refreshPressed()
     }
@@ -353,6 +397,7 @@ final class KeyAreaView: UIView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            alternatesTimers.removeValue(forKey: id)?.invalidate()
             let point = touch.location(in: self)
             perform(model.ended(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp), timestamp: touch.timestamp)
         }
@@ -362,6 +407,7 @@ final class KeyAreaView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             guard let id = touchIDs.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+            alternatesTimers.removeValue(forKey: id)?.invalidate()
             perform(model.cancelled(id), timestamp: touch.timestamp)
         }
         refreshPressed()
@@ -369,6 +415,9 @@ final class KeyAreaView: UIView {
 
     /// Ends every touch, for example when the keyboard disappears mid-gesture.
     func cancelAllTouches() {
+        emojiPress?.cancelled = true
+        for timer in alternatesTimers.values { timer.invalidate() }
+        alternatesTimers.removeAll()
         perform(model.cancelAll(), timestamp: CACurrentMediaTime())
         touchIDs.removeAll()
         refreshPressed()
@@ -378,6 +427,9 @@ final class KeyAreaView: UIView {
     /// bound to a different identified field end without typing (held characters and a swipe included),
     /// the rest go on.
     func fieldChanged(to field: UUID?) {
+        if let field, let press = emojiPress {
+            if press.field == nil { emojiPress?.field = field } else if press.field != field { emojiPress?.cancelled = true }
+        }
         perform(model.fieldChanged(to: field), timestamp: CACurrentMediaTime())
         refreshPressed()
     }
@@ -388,6 +440,8 @@ final class KeyAreaView: UIView {
             case .keyDown:
                 delegate?.keyAreaTouchedDownKey(self, timestamp: timestamp)
             case .type(let action, let field):
+                // A disabled Return (`returnKeyEnabled`) types nothing.
+                if action == .returnKey, !returnKeyEnabled { continue }
                 delegate?.keyArea(self, typed: action, field: field, timestamp: timestamp)
             case .beginDelete:
                 delegate?.keyAreaBeganDelete(self, timestamp: timestamp)
@@ -414,9 +468,10 @@ final class KeyAreaView: UIView {
         }
     }
 
-    /// Draws pressed keys and the callout from the model, touching only keys that changed.
+    /// Draws pressed keys, the callout and the alternates row from the model, touching only keys that changed.
     private func refreshPressed() {
         refreshTrail()
+        refreshAlternates()
         let pressed = model.pressedActions
         if pressed != shownPressed {
             for (view, key) in zip(keyViews, placedKeys) where pressed.contains(key.action) != shownPressed.contains(key.action) {
@@ -442,6 +497,81 @@ final class KeyAreaView: UIView {
         } else {
             self.callout.hide()
         }
+    }
+
+    // MARK: Alternates
+
+    private func startAlternatesTimer(_ id: KeyTouchModel.TouchID) {
+        alternatesTimers.removeValue(forKey: id)?.invalidate()
+        alternatesTimers[id] = Timer.mainLoop(after: KeyAlternates.holdDelay) { [weak self] _ in
+            guard let self else { return }
+            self.alternatesTimers[id] = nil
+            if self.model.alternatesElapsed(id) {
+                self.refreshPressed()
+                if self.keyHapticsAllowed() { UISelectionFeedbackGenerator(view: self).selectionChanged() }
+            }
+        }
+    }
+
+    /// Shows the open row, its pick highlighted, with each option cased as its key's caption is.
+    private func refreshAlternates() {
+        guard !isBlank, let touch = model.alternatesTouch else {
+            alternatesView.hide()
+            return
+        }
+        alternatesView.show(touch.alternates.map(displayed), cells: touch.alternateFrames.map {
+            CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height)
+        }, selected: touch.selectedAlternate, compact: isCompact)
+    }
+
+    // MARK: Emoji panel
+
+    private func layoutEmojiPanel() {
+        guard keyLayer == .emoji else {
+            if !emojiPanel.isHidden { emojiPanel.isHidden = true }
+            return
+        }
+        let grid = KeyboardLayout.emojiGridFrame(metrics: metrics)
+        let jump = KeyboardLayout.emojiJumpBarFrame(metrics: metrics, showsGlobe: showsGlobe)
+        emojiPanel.frame = bounds
+        emojiPanel.layout(grid: CGRect(x: grid.x, y: grid.y, width: grid.width, height: grid.height),
+                          jumpBar: CGRect(x: jump.x, y: jump.y, width: jump.width, height: jump.height))
+        // Above the keys and the globe (whose wide claims would take the grid), below the callout and trace.
+        insertSubview(emojiPanel, belowSubview: trail)
+        if emojiPanel.isHidden {
+            emojiPanel.reload()
+            emojiPanel.isHidden = false
+        }
+    }
+
+    private func emojiPressBegan(_ emoji: String) {
+        emojiPress = (emoji, currentField(), false)
+    }
+
+    /// An emoji tapped in the panel types like a key, in the field its press is bound to (the editor refuses it in
+    /// another identified one), unless the press was dropped; settlement ends first, with the click and haptic.
+    /// A selection with no press (VoiceOver activates without a touch) types in the field served now.
+    private func typeEmoji(_ emoji: String) {
+        guard let press = emojiPress else { return commitEmoji(emoji, field: currentField()) }
+        emojiPress = nil
+        guard !press.cancelled, press.emoji == emoji else { return }
+        commitEmoji(press.emoji, field: press.field)
+    }
+
+    /// Rollover: a key touched down while an emoji is held types the emoji first, as a held character would; its
+    /// release then types nothing more.
+    private func commitHeldEmoji() {
+        guard let press = emojiPress, !press.cancelled else { return }
+        emojiPress?.cancelled = true
+        commitEmoji(press.emoji, field: press.field)
+    }
+
+    private func commitEmoji(_ emoji: String, field: UUID?) {
+        keyTouchedDown()
+        let now = CACurrentMediaTime()
+        delegate?.keyAreaTouchedDownKey(self, timestamp: now)
+        delegate?.keyArea(self, typed: .character(emoji), field: field ?? currentField(), timestamp: now)
+        emojiPanel.emojiTyped(emoji)
     }
 
     // MARK: Swipe trace
@@ -500,7 +630,10 @@ final class KeyAreaView: UIView {
             }
             self.globeButton.alpha = blank ? 0 : 1
         }
-        if blank { callout.hide() }
+        if blank {
+            callout.hide()
+            alternatesView.hide()
+        }
     }
 
     // MARK: Accessibility
@@ -533,23 +666,26 @@ final class KeyAreaView: UIView {
                 element.accessibilityIdentifier = "lf.space"
             case .returnKey:
                 element.accessibilityLabel = returnKeyType.keyTitle?.capitalized ?? "Return"
+                if !returnKeyEnabled { element.accessibilityTraits.insert(.notEnabled) }
                 element.accessibilityIdentifier = "lf.return"
             case .layer(let layer):
                 switch layer {
                 case .letters: element.accessibilityLabel = "Letters"
                 case .numbers: element.accessibilityLabel = "Numbers"
                 case .symbols: element.accessibilityLabel = "More symbols"
+                case .emoji: element.accessibilityLabel = "Emoji"
                 }
                 element.accessibilityIdentifier = "lf.layer.\(layer)"
             case .nextKeyboard:
                 break
             }
             element.onActivate = { [weak self] in
-                guard let self else { return }
+                guard let self, action != .returnKey || self.returnKeyEnabled else { return }
                 self.delegate?.keyArea(self, typed: action, field: self.currentField(), timestamp: CACurrentMediaTime())
             }
             elements.append(element)
         }
+        if keyLayer == .emoji { elements.insert(emojiPanel, at: 0) }
         accessibilityElements = elements
     }
 }

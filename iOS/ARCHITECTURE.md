@@ -1010,19 +1010,22 @@ every other point of the bar
 ([Reach and touch regions](#reach-and-touch-regions)).
 
 - **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
-  dictation control. While starting or recording it is a red "Stop" capsule
-  with live level bars and the elapsed time, with a small cancel button
+  dictation control. While starting or recording it is a red capsule labelled
+  "Stop", with live level bars and the elapsed time while recording (it fits
+  a 375 pt phone with the menu button and Cancel), with a small cancel button
   (`lf.cancel`) beside it. While transcribing it shows a spinner; while
   waiting for the model, a spinner labelled "Preparing"
   (`KeyboardMessages.capsuleCaption`). The capsule is never replaced by the
   candidate strip, the chips or a notice, so the wait is explained whatever
   holds the middle. When dictation cannot run here (no Full Access,
   configuration, versions), it explains why.
-- **Left:** a menu button (`lf.menu`) that opens a panel over the key area
-  with the session status, "Open LocalFlow", the field's layout and a Switch
-  ([Field profiles](#field-profiles)), the trackpad tip, the field's
-  content-free fingerprint, and details of anything that keeps dictation from
-  working. A tap outside the panel's card, or on the button, closes it.
+- **Left:** a menu button (`lf.menu`) that opens a panel over the key area,
+  dimming the keys, with the session status, "Open LocalFlow", the trackpad
+  tip with the field's text width ("Full width" or "Chat bubble",
+  [Field profiles](#field-profiles)), and details of anything that keeps
+  dictation from working. Its text follows Dynamic Type, and the card scrolls
+  when it does not fit (landscape, the largest sizes). A tap outside the
+  panel's card, or on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
   status (model preparation, errors, notices): "Preparing model…" in
@@ -1030,10 +1033,25 @@ every other point of the bar
   swipe ([Swipe typing](#swipe-typing)) or a commit key
   ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
   The "Never correct" chip after an autocorrect revert replaces both while it
-  shows ([Word autocorrect](#word-autocorrect)).
+  shows ([Word autocorrect](#word-autocorrect)). Neither covers dictation's
+  own UI (`BarMiddleContent`): while a dictation is starting, recording,
+  transcribing or waiting for the model, while a notice is up, or while its
+  Undo chip shows, the middle stays dictation's.
+- The status line describes and never instructs (owner decision: a tap on it
+  types the top-row key under it), e.g. "Start opens LocalFlow" with no
+  session. The bar and the menu name the session's end alike: "ends after N
+  min idle". Bar text grows with Dynamic Type up to what one line of the
+  fixed-height bar holds, and shrinks at most to 85%.
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
+- **Appearance and accessibility.** A field's `keyboardAppearance` `.dark`
+  pins a dark keyboard; anything else follows the system. `.light` is not
+  pinned: Safari's address bar asks for it in dark mode while the host keeps
+  its keyboard backdrop dark, so pinned light keys would sit on dark glass. Bold Text
+  makes key captions and bar text bold; Increase Contrast gives the keys a
+  lighter fill in dark mode and a visible edge; Reduce Motion drops the bar's
+  press shrink and the capsule's spring (key-press highlights stay).
 
 ## Keyboard core (KeyboardCore/)
 
@@ -1046,10 +1064,25 @@ keyboard hides.
 
 ### Layout and keys (KeyboardLayout, KeyTouchModel)
 
-- Three layers: letters (QWERTY with shift and delete), `123` and `#+=`. The
-  bottom row has the layer key, the globe (only when
-  `needsInputModeSwitchKey`, which also handles the input-mode list), space and
-  return. The return key's label follows `returnKeyType`.
+- Three layers: letters (QWERTY with shift and delete), `123` and `#+=`, and
+  the emoji panel ([Emoji panel](#emoji-panel)). The bottom row has the layer
+  key, the globe (only when `needsInputModeSwitchKey`, which also handles the
+  input-mode list), the emoji key (`.layer(.emoji)`), space and return. The
+  return key's label follows `returnKeyType`.
+- **Field keys** (`KeyboardField`, from `keyboardType`; owner decision: small
+  field-specific differences only). Email fields: "@" and "." (letter-key
+  wide) between a narrower space bar and return. URL fields: ".", "/" and
+  ".com" sharing the space bar's room (no space bar, as on Apple's URL
+  keyboard; holding ".com" offers .org, .net, .edu and .us). Web search fields
+  (a browser's address bar): "." beside the space bar. Only the letters
+  layer's bottom row differs; email and URL fields have no emoji key, on any
+  layer. Every other row, the height and the key shapes are the same in every
+  field. "@" and "." there are not letters: they never swipe and are never
+  soft taps.
+- **Return key** (`ReturnKeyRule`): in a field with
+  `enablesReturnKeyAutomatically`, Return is drawn dimmed (and untinted) and
+  types nothing while the field has no text: neither the proxy's `hasText`
+  nor text the keyboard typed that the proxy does not show yet.
 - `KeyTouchModel` tracks every touch: one view, nearest-key hit testing, no
   dead gaps. Keys are tracked by action, never by index; a rebuild (layer,
   shift or size change) remaps held function-key and slide fingers onto the
@@ -1057,7 +1090,50 @@ keyboard hides.
   on.
 - Key callouts show a character from its touch-down while the finger is down;
   a swipe shows none.
-- `IsASCIICapable` is false, because dictation emits non-ASCII text.
+- `IsASCIICapable` is true: the letters layer types ASCII, which is all the
+  flag declares (iOS may then offer the keyboard in fields that ask for an
+  ASCII-capable one). Dictation, alternates and emoji may still insert other
+  text; the flag does not restrict that.
+
+### Press-and-hold alternates (KeyAlternates)
+
+- Holding a key that has alternates for `KeyAlternates.holdDelay` (0.4 s),
+  uncommitted and not a swipe, opens a row above it: the key's own character
+  first, centred over the key, then its alternates (accented letters for a e i
+  o u c n s y z l; dashes, ellipsis, curly quotes, currencies, inverted marks
+  and similar for punctuation; other domains for ".com"), running towards the
+  keyboard's middle and kept inside its sides.
+- Its callout gives way to the row. Sliding sideways picks the cell under the
+  finger once it has moved `KeyAlternates.moveSlop` (6 pt), the lift's own
+  position included; the lift (or a rollover) types the pick. A finger that never moved that far types what a
+  tap would, soft-tap decision included. A cancelled touch types nothing; a
+  rebuild under an open row closes it.
+- Fast typing never sees a row: a key released or committed by the next
+  finger before the timer fires types at once. A drag that becomes a swipe
+  first stays a swipe, and an open row never becomes one. Space (the
+  trackpad), delete repeat and function keys are unchanged.
+
+### Emoji panel
+
+- The emoji key switches the key area to the emoji layer, at the same height:
+  a horizontally scrolling grid above the bottom row (`emojiGridFrame`), the
+  shown category's name over it, and a jump bar between the bottom row's
+  "ABC" key (and the globe) and delete (`emojiJumpBarFrame`). The bottom
+  keys act as on the letters layer; a high tap in the bar does not reach the
+  panel.
+- Recents ("Frequently Used") come first when there are any, then Unicode's
+  categories (`EmojiCatalog`, generated by `scripts/generate-emoji-catalog.py`
+  from emoji-test.txt: fully-qualified emoji without skin-tone variants). There
+  is no search and no skin-tone picker yet.
+- An emoji's press binds to its field like a held key's: adopted when the
+  field is identified, dropped when another identified field becomes current,
+  the menu opens, the keyboard hides or the grid scrolls, and typed first
+  when a key touches down while it is held (rollover).
+- A tap types the emoji like a key and moves it to the front of the recents
+  (`EmojiRecents`: newest first, each once, at most 30, only catalog emoji).
+  The recents live in the keyboard's own `UserDefaults`, which needs no Full
+  Access; nothing else about typing is stored. The grid keeps its order until
+  the panel is shown again.
 
 ### Reach and touch regions
 
@@ -1426,7 +1502,9 @@ widths (`FieldLayoutParameters`):
   with Messages' measured trait signature, in a field not learned as grapheme
   (WebKit), gets Messages, but only in portrait at the measured widths 390,
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
-- **Manual choice.** The menu shows the layout and a Switch. With Full Access
+- **Manual choice.** The menu offers the two as "Full width" and "Chat
+  bubble", after "Hold space to move the cursor. On the wrong line? Try the
+  other text width". With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
   64 entries); without it, it holds for the keyboard instance only. Only the
   keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
@@ -1584,8 +1662,10 @@ centre always types that key.
 - **When.** On while `softKeyEdgesEnabled` is on (default on;
   [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
   bundle has a valid `tap` section whose default model has loaded. The
-  keyboard reads the switch when it appears. Without Full Access it cannot
-  read settings, and soft key edges are off. They are also off in secure
+  keyboard reads the switch when it appears. Without Full Access the keyboard
+  does not read the settings (iOS would let it read the App Group, though
+  not write it; these typing features stay with Full Access by decision), and
+  soft key edges are off. They are also off in secure
   text entry. While they are off, a tap types its nearest key.
 - **Which taps.** Only a character tap on the letters layer by a finger that
   touched down on a letter key (`Role.character`, not a slide). A skid is a
@@ -1720,8 +1800,9 @@ back.
 - **When.** On while `autocorrectEnabled` is on (default on;
   [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
   bundle has a valid `autocorrect` section whose default model has loaded.
-  The keyboard reads the switch when it appears. Without Full Access it
-  cannot read settings, and autocorrect is off. Until the model has loaded,
+  The keyboard reads the switch when it appears. Without Full Access the
+  keyboard does not read the settings (by decision, as for soft key edges),
+  and autocorrect is off. Until the model has loaded,
   words commit as typed.
 - **Commit keys.** Space, Return, or one of `. , ! ? ; :` (from any layer).
 - **The word** is the keyboard's own ("Owned words" below): the run of letters
@@ -2103,8 +2184,8 @@ app reads only the count. The models are fixed.
   it to one opaque 1024-pixel image.
 - **Privacy manifests** (`Config/*-PrivacyInfo.xcprivacy`, one per target):
   no tracking, no tracking domains, no collected data. Required-reason APIs:
-  UserDefaults (`CA92.1` for the app's own preferences, `1C8F.1` for the App
-  Group settings; the keyboard declares only `1C8F.1`), system boot time
+  UserDefaults (`CA92.1` for each target's own preferences, the keyboard's
+  being its emoji recents; `1C8F.1` for the App Group settings), system boot time
   (`35F9.1`, elapsed-time measurement) and file timestamps (`C617.1`,
   expiring the App Group's dictation files and the never-correct store's
   leftover staging files). A new use of a required-reason

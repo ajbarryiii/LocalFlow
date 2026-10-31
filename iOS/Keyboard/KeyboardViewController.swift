@@ -86,6 +86,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             guard let self else { return }
             neverCorrect.show(input.neverCorrectOffer)
         }
+        input.onTextMayHaveChanged = { [weak self] in self?.updateReturnKey() }
         // Swipe typing comes on once its bundle has loaded off the main thread.
         input.loadSwipeEngine()
 
@@ -154,7 +155,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         let settings = fieldSettings
         input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false)
         input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false)
-        // The words never to correct, from the App Group (which `fieldSettings` already needs Full Access for).
+        // The words never to correct, from the App Group (read, like `fieldSettings`, only with Full Access).
         input.configureNeverCorrect(store: settings?.autocorrectEnabled == true
                                     ? LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:)) : nil)
         client.start()
@@ -180,12 +181,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         super.textDidChange(textInput)
         documentDidChange()
         input.hostChanged(textChanged: true)
+        updateReturnKey()
     }
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
         readField()
         input.hostChanged(textChanged: false)
+        updateReturnKey()
     }
 
     override func textWillChange(_ textInput: UITextInput?) {
@@ -197,11 +200,31 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         let proxy = textDocumentProxy
         client.documentChanged(to: proxy.documentIdentifierIfAvailable)
         keyArea.returnKeyType = proxy.returnKeyType ?? .default
-        // A field that asks for a dark keyboard gets one. Otherwise follow the system's appearance,
-        // which also tracks a live switch; pinning `.light` here would not.
+        keyArea.field = Self.field(for: proxy.keyboardType ?? .default)
+        // A field that asks for a dark keyboard gets one. Otherwise follow the system's appearance, which also
+        // tracks a live switch. `.light` is not pinned: Safari's address bar asks for it in dark mode while its
+        // keyboard backdrop stays dark, so pinned light keys would sit on dark glass (simulator, iOS 26.4).
         let style: UIUserInterfaceStyle = proxy.keyboardAppearance == .dark ? .dark : .unspecified
         if overrideUserInterfaceStyle != style { overrideUserInterfaceStyle = style }
+        updateReturnKey()
         readField()
+    }
+
+    /// The field's own keys (`KeyboardField`): email, URL and web search fields; everything else is standard.
+    private static func field(for type: UIKeyboardType) -> KeyboardField {
+        switch type {
+        case .emailAddress: return .email
+        case .URL: return .url
+        case .webSearch: return .webSearch
+        default: return .standard
+        }
+    }
+
+    /// `enablesReturnKeyAutomatically` (`ReturnKeyRule`): Return is disabled while the field has no text.
+    private func updateReturnKey() {
+        let enabled = ReturnKeyRule.isEnabled(enablesAutomatically: textDocumentProxy.enablesReturnKeyAutomatically ?? false,
+                                              hasText: input.fieldHasText)
+        if keyArea.returnKeyEnabled != enabled { keyArea.returnKeyEnabled = enabled }
     }
 
     // MARK: Field layout
@@ -211,8 +234,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private var layoutChoices: [String: FieldLayout] = [:]
 
     /// Remembered choices, the soft-key-edge and autocorrect switches and the trackpad multipliers live in the
-    /// App Group, which needs Full Access. One handle is kept, renewed each time the keyboard appears; its
-    /// values are read from the suite at each use.
+    /// App Group. iOS lets a keyboard without Full Access read it but not write it; LocalFlow reads it only with Full
+    /// Access, so these typing features stay off without it (owner decision). One handle is kept, renewed each time
+    /// the keyboard appears; its values are read from the suite at each use.
     private var fieldSettings: LocalFlowSettings? {
         guard hasFullAccess else { return nil }
         if appGroupSettings == nil, let configuration = LocalFlowConfiguration.main {
@@ -237,7 +261,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private var fieldProfile = FieldProfileTracker()
 
     /// Reads the field's content-free fingerprint (its input traits as raw values, and the unit the
-    /// trackpad learned here) and updates the menu's readout. A reading without a field identity is
+    /// trackpad learned here) and updates the menu's text width. A reading without a field identity is
     /// the proxy's placeholder and is ignored.
     private func readField() {
         let proxy = textDocumentProxy
@@ -255,8 +279,6 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     private func updateLayoutReadout() {
         let layout = fieldProfile.displayedLayout(overrides: layoutOverrides, geometry: fieldGeometry)
         if chrome.layout != layout { chrome.layout = layout }
-        let summary = fieldProfile.fingerprint?.summary ?? ""
-        if chrome.fieldSummary != summary { chrome.fieldSummary = summary }
     }
 
     /// A trackpad gesture starts: the field is read again, and its layout holds until the finger lifts.
@@ -306,7 +328,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         haptics.impactOccurred()
     }
 
-    /// The App Group settings are readable only with Full Access; without it the defaults apply.
+    /// The App Group settings are read only with Full Access (`fieldSettings`); without it the defaults apply.
     private var cursorMultipliers: (sensitivity: Double, acceleration: Double) {
         guard let settings = fieldSettings else { return (1, 1) }
         return (settings.cursorSensitivity, settings.cursorAcceleration)
@@ -319,7 +341,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         settings.recordCursorTouchRate(rate, eventStepScale: scale)
     }
 
-    /// The menu panel covers the key area; a tap outside its card, or on the menu button, closes it.
+    /// The menu panel covers the key area, dimmed so its keys do not look live; a tap outside its card, or on the menu
+    /// button, closes it.
     private func setMenu(visible: Bool) {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
         if visible, menuPanel == nil {
@@ -329,7 +352,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
                 client: client, chrome: chrome,
                 onClose: { [weak self] in self?.setMenu(visible: false) },
                 onToggleLayout: { [weak self] in self?.toggleFieldLayout() }))
-            panel.view.backgroundColor = KeyAreaView.touchableBackground
+            panel.view.backgroundColor = Self.menuDimming
             panel.safeAreaRegions = []
             panel.view.translatesAutoresizingMaskIntoConstraints = false
             addChild(panel)
@@ -348,6 +371,11 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             panel.removeFromParent()
             menuPanel = nil
         }
+    }
+
+    /// Over the keys while the menu is open: dark enough that they read as inactive, and touchable.
+    private static let menuDimming = UIColor {
+        UIColor(white: 0, alpha: $0.userInterfaceStyle == .dark ? 0.5 : 0.25)
     }
 
     // MARK: KeyboardTextTarget

@@ -33,8 +33,8 @@ enum TapCoreTests {
 
     private static func prior() -> TapPrior { TapPrior(model: model(), surpriseWindow: 8) }
 
-    private static let keys = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: TapFixtures.width, height: TapFixtures.height),
-                                                  showsGlobe: false)
+    /// The geometry the fixture was generated for.
+    private static let keys = KeyboardLayout.referenceLetterKeys(metrics: KeyboardMetrics(width: TapFixtures.width, height: TapFixtures.height))
 
     private static func expectClose(_ actual: [Double], _ expected: [Double], tolerance: Double, _ message: String) {
         TestSupport.expect(actual.count == expected.count, "\(message): count")

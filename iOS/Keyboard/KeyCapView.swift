@@ -1,13 +1,22 @@
 import UIKit
 
 /// Key colors after iOS 26's keyboard: every key shares one fill, and action return keys are
-/// tinted. Dynamic, so they follow light and dark mode without re-rendering.
+/// tinted. Dynamic, so they follow light and dark mode, and Increase Contrast, without re-rendering.
 enum KeyPalette {
-    static let fill = UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.42, alpha: 1) : .white }
+    static let fill = UIColor { traits in
+        let high = traits.accessibilityContrast == .high
+        return traits.userInterfaceStyle == .dark ? UIColor(white: high ? 0.50 : 0.42, alpha: 1) : .white
+    }
     static let pressedFill = UIColor {
         $0.userInterfaceStyle == .dark ? UIColor(white: 0.58, alpha: 1) : UIColor(white: 0.80, alpha: 1)
     }
+    /// With Increase Contrast every key gets a visible edge.
+    static let edge = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(white: 0.85, alpha: 0.7) : UIColor(white: 0.25, alpha: 0.6)
+    }
     static let prominentFill = UIColor.systemBlue
+    /// A disabled return key (`ReturnKeyRule`): the plain fill, its caption dimmed.
+    static let disabledAlpha: CGFloat = 0.35
     static let shadow = UIColor(white: 0, alpha: 1).cgColor
     static let cornerRadius: CGFloat = 8.5
 }
@@ -17,6 +26,7 @@ final class KeyCapView: UIView {
     private let label = UILabel()
     private let icon = UIImageView()
     private var isProminent = false
+    private var isEnabled = true
 
     var isPressed = false {
         didSet { if isPressed != oldValue { updateFill() } }
@@ -24,10 +34,7 @@ final class KeyCapView: UIView {
 
     /// Trackpad mode blanks the caps, as on Apple's keyboard.
     var isBlank = false {
-        didSet {
-            label.alpha = isBlank ? 0 : 1
-            icon.alpha = isBlank ? 0 : 1
-        }
+        didSet { updateCaptionAlpha() }
     }
 
     override init(frame: CGRect) {
@@ -48,21 +55,44 @@ final class KeyCapView: UIView {
         addSubview(label)
         addSubview(icon)
         updateFill()
+        registerForTraitChanges([UITraitAccessibilityContrast.self, UITraitUserInterfaceStyle.self]) { (view: KeyCapView, _: UITraitCollection) in
+            view.updateEdge()
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(title: String?, symbol: String?, font: UIFont, prominent: Bool, secondary: Bool) {
+    /// `enabled`: a disabled key keeps the plain fill and dims its caption (a disabled action key is not tinted).
+    func configure(title: String?, symbol: String?, font: UIFont, weight: UIImage.SymbolWeight = .regular,
+                   prominent: Bool = false, secondary: Bool = false, enabled: Bool = true) {
+        let tinted = prominent && enabled
         label.text = title
         label.font = font
-        label.textColor = prominent ? .white : (secondary ? .secondaryLabel : .label)
+        label.textColor = tinted ? .white : (secondary ? .secondaryLabel : .label)
         icon.image = symbol.flatMap {
-            UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular))
+            UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: weight))
         }
-        icon.tintColor = prominent ? .white : .label
-        isProminent = prominent
+        icon.tintColor = tinted ? .white : .label
+        isProminent = tinted
+        isEnabled = enabled
+        updateCaptionAlpha()
         updateFill()
+        updateEdge()
+    }
+
+    /// The caption's opacity, from both states: hidden while blank, dimmed while disabled.
+    private func updateCaptionAlpha() {
+        let alpha = isBlank ? 0 : (isEnabled ? 1 : KeyPalette.disabledAlpha)
+        label.alpha = alpha
+        icon.alpha = alpha
+    }
+
+    /// Increase Contrast: a visible edge on every key (a CGColor, so resolved here).
+    private func updateEdge() {
+        let high = traitCollection.accessibilityContrast == .high
+        layer.borderWidth = high ? 1 : 0
+        layer.borderColor = high ? KeyPalette.edge.resolvedColor(with: traitCollection).cgColor : nil
     }
 
     override func layoutSubviews() {
@@ -150,6 +180,79 @@ final class KeyCalloutView: UIView {
         label.font = .systemFont(ofSize: compact ? 28 : 36, weight: .regular)
         label.text = text
         label.frame = b
+        isHidden = false
+    }
+
+    func hide() {
+        isHidden = true
+    }
+}
+
+/// The press-and-hold alternates row (`KeyTouchModel.alternatesTouch`): one bubble over the held key's cells, the
+/// picked cell highlighted in the tint, as on Apple's keyboard. It takes no touches; the held finger drives it.
+final class KeyAlternatesView: UIView {
+    private let bubble = CAShapeLayer()
+    private let highlight = CALayer()
+    private var labels: [UILabel] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        isHidden = true
+        bubble.shadowColor = KeyPalette.shadow
+        bubble.shadowOpacity = 0.3
+        bubble.shadowRadius = 4
+        bubble.shadowOffset = CGSize(width: 0, height: 1)
+        layer.addSublayer(bubble)
+        highlight.cornerRadius = 7
+        highlight.cornerCurve = .continuous
+        layer.addSublayer(highlight)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    /// `cells` are in the superview's coordinates, one per option, `selected` the picked one.
+    func show(_ options: [String], cells: [CGRect], selected: Int, compact: Bool) {
+        guard let first = cells.first else { return hide() }
+        let union = cells.reduce(first) { $0.union($1) }
+        let outer = union.insetBy(dx: -3, dy: -3)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        frame = outer
+        bubble.frame = bounds
+        let path = UIBezierPath(roundedRect: bounds, cornerRadius: 10).cgPath
+        bubble.path = path
+        bubble.shadowPath = path
+        bubble.fillColor = KeyPalette.fill.resolvedColor(with: traitCollection).cgColor
+        bubble.strokeColor = traitCollection.accessibilityContrast == .high
+            ? KeyPalette.edge.resolvedColor(with: traitCollection).cgColor : nil
+        while labels.count < options.count {
+            let label = UILabel()
+            label.textAlignment = .center
+            label.adjustsFontSizeToFitWidth = true
+            label.minimumScaleFactor = 0.5
+            addSubview(label)
+            labels.append(label)
+        }
+        let weight: UIFont.Weight = traitCollection.legibilityWeight == .bold ? .semibold : .regular
+        let size: CGFloat = compact ? 22 : 26
+        for (index, label) in labels.enumerated() {
+            guard index < options.count else {
+                label.isHidden = true
+                continue
+            }
+            label.isHidden = false
+            label.text = options[index]
+            label.font = .systemFont(ofSize: options[index].count > 1 ? size * 0.65 : size, weight: weight)
+            label.frame = cells[index].offsetBy(dx: -outer.minX, dy: -outer.minY)
+            label.textColor = index == selected ? .white : .label
+        }
+        let picked = cells[min(max(selected, 0), cells.count - 1)].offsetBy(dx: -outer.minX, dy: -outer.minY)
+        highlight.frame = picked.insetBy(dx: 1, dy: 3)
+        highlight.backgroundColor = UIColor.systemBlue.cgColor
+        CATransaction.commit()
         isHidden = false
     }
 

@@ -5,10 +5,8 @@ import UIKit
 @MainActor
 final class KeyboardChrome: ObservableObject {
     @Published var isMenuOpen = false
-    /// The layout profile the trackpad uses in this field, and its content-free fingerprint (the
-    /// short key and the input traits) for the menu's readout.
+    /// The layout profile the trackpad uses in this field, for the menu's text-width choice.
     @Published var layout = FieldLayoutParameters.standard.defaultLayout
-    @Published var fieldSummary = ""
 }
 
 /// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"), published
@@ -71,9 +69,9 @@ private extension View {
 
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
 /// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
-/// candidate strip instead while it shows, and over both a revert's "Never correct" offer unless dictation's
-/// own UI is up), and the Start capsule on the right, which becomes a red
-/// Stop capsule with live level bars while recording. It renders `KeyboardDictationClient.state` and
+/// candidate strip instead while it shows, and over both a revert's "Never correct" offer, unless dictation's
+/// own UI is up: `BarMiddleContent`), and the Start capsule on the right, which becomes a red
+/// "Stop" capsule with live level bars and the elapsed time while recording. It renders `KeyboardDictationClient.state` and
 /// the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
@@ -90,6 +88,7 @@ struct DictationBarView: View {
     /// The "Never correct" offer was tapped.
     var onNeverCorrect: () -> Void
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let compact = verticalSizeClass == .compact
@@ -113,14 +112,16 @@ struct DictationBarView: View {
             .barControl("menu", in: controls)
 
             Group {
-                if let offer = neverCorrect.offer,
-                   NeverCorrectOffer.barShows(offer, dictationInProgress: state.mode.isInProgress, dictationUndoShown: state.canUndo) {
+                let middle = BarMiddleContent.resolve(neverCorrectOffer: neverCorrect.offer != nil, candidates: swipe.strip != nil,
+                                                      dictationInProgress: state.mode.isInProgress, notice: state.notice != nil,
+                                                      dictationUndoShown: state.canUndo && !state.mode.isInProgress)
+                if middle == .neverCorrect, let offer = neverCorrect.offer {
                     NeverCorrectChip(word: offer.typed, height: height - 8) {
                         onAction()
                         onNeverCorrect()
                     }
                     .barControl("neverCorrect", in: controls)
-                } else if let strip = swipe.strip {
+                } else if middle == .candidates, let strip = swipe.strip {
                     CandidateStrip(strip: strip, height: height - 8) { index in
                         onAction()
                         onCandidate(index)
@@ -161,8 +162,9 @@ struct DictationBarView: View {
         .background(Color(uiColor: KeyAreaView.touchableBackground))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .coordinateSpace(.named(BarControlFrames.space))
-        .animation(.easeOut(duration: 0.2), value: state.canUndo)
-        .animation(.easeOut(duration: 0.2), value: state.canInsertLast)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canUndo)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canInsertLast)
+        // The bar's height is fixed: its text grows to what one line holds there.
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 }
@@ -202,7 +204,7 @@ private struct Middle: View {
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.85)
                     .accessibilityIdentifier("lf.notice")
             } else if !(state.canUndo && !state.mode.isInProgress), !(state.canInsertLast && !state.mode.isRecording),
                       let status = statusLine {
@@ -210,7 +212,7 @@ private struct Middle: View {
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(state.mode.needsAttention ? .primary : .secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.85)
                     .accessibilityIdentifier("lf.status")
             }
         }
@@ -325,6 +327,7 @@ private struct StartCapsule: View {
     let onAction: () -> Void
     /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
     let onUnavailable: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button {
@@ -345,7 +348,7 @@ private struct StartCapsule: View {
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
         .allowsHitTesting(!state.mode.isWaitingForTranscript)
         .opacity(state.mode.allowsDictation ? 1 : 0.45)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isActiveCapture)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isActiveCapture)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint(state.mode == .hostUnavailable ? "Opens LocalFlow to start a session" : "")
@@ -355,9 +358,12 @@ private struct StartCapsule: View {
     @ViewBuilder private var content: some View {
         switch state.mode {
         case .recording(_, let startedAt):
-            HStack(spacing: 7) {
-                Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
-                LevelBars(levels: state.levels, height: height * 0.45)
+            // "Stop" in words, as while starting; four level bars and the time beside it fit a 375 pt phone with the
+            // menu button and Cancel.
+            HStack(spacing: 6) {
+                Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
+                Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+                LevelBars(levels: state.levels, height: height * 0.4)
                 Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
@@ -365,9 +371,9 @@ private struct StartCapsule: View {
             }
             .foregroundStyle(.white)
         case .starting:
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 ProgressView().tint(.white).controlSize(.small)
-                Text("Stop").font(.subheadline.weight(.semibold))
+                Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
             .foregroundStyle(.white)
         case .transcribing, .waitingForModel:
@@ -430,9 +436,10 @@ private struct StartTapShape: Shape {
 }
 
 private struct LevelBars: View {
-    static let count = 8
+    static let count = 4
     let levels: [Float]
     let height: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let recent = levels.suffix(Self.count)
@@ -443,18 +450,19 @@ private struct LevelBars: View {
             }
         }
         .frame(height: height)
-        .animation(.linear(duration: 0.1), value: levels)
+        .animation(reduceMotion ? nil : .linear(duration: 0.1), value: levels)
         .accessibilityHidden(true)
     }
 }
 
-/// The menu: session status, "Open LocalFlow", the trackpad tip, and details of anything that keeps
-/// dictation from working. A tap outside the card closes it.
+/// The menu: session status, "Open LocalFlow", the trackpad tip with the field's text width, and details of anything
+/// that keeps dictation from working. A tap outside the card closes it. The card scrolls when it does not fit (landscape,
+/// the largest text sizes); its text follows Dynamic Type.
 struct MenuPanelView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
     var onClose: () -> Void
-    /// Switches this kind of field to the other layout, remembered for its fingerprint.
+    /// Switches this kind of field to the other text width, remembered for it.
     var onToggleLayout: () -> Void
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
@@ -464,64 +472,56 @@ struct MenuPanelView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onClose)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 10) {
-                Label(client.state.sessionSummary, systemImage: "waveform.circle")
-                    .font(.subheadline.weight(.semibold))
-                    .accessibilityIdentifier("lf.menu.session")
-                if let details {
-                    Text(details)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Button {
-                    onClose()
-                    client.openLocalFlow()
-                } label: {
-                    Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
-                        .font(.subheadline.weight(.medium))
-                }
-                .accessibilityIdentifier("lf.menu.open")
-                Button(action: onToggleLayout) {
-                    HStack(spacing: 8) {
-                        Label("Layout: \(chrome.layout.title)", systemImage: "text.alignleft")
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .fixedSize()
-                        Spacer(minLength: 8)
-                        Text("Switch")
-                            .fontWeight(.medium)
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .font(.subheadline)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Layout: \(chrome.layout.title)")
-                .accessibilityHint("Switches this kind of field to \(chrome.layout.other.title)")
-                .accessibilityIdentifier("lf.layoutToggle")
-                Label(KeyboardMessages.trackpadTip, systemImage: "hand.point.up.left")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if !chrome.fieldSummary.isEmpty {
-                    // Debug readout: the field's fingerprint, content-free (a hash and input traits).
-                    Text("Field \(chrome.fieldSummary)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("lf.fieldFingerprint")
-                }
+            ViewThatFits(in: .vertical) {
+                card
+                ScrollView { card }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(maxWidth: 376, alignment: .leading)
             }
-            .padding(14)
-            .frame(maxWidth: 300, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: KeyPalette.fill)))
-            .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
-            .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
         .accessibilityAddTraits(.isModal)
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(client.state.sessionSummary, systemImage: "waveform.circle")
+                .font(.subheadline.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("lf.menu.session")
+            if let details {
+                Text(details)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                onClose()
+                client.openLocalFlow()
+            } label: {
+                Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
+                    .font(.subheadline.weight(.medium))
+            }
+            .accessibilityIdentifier("lf.menu.open")
+            Divider()
+            // The trackpad's text width for this kind of field (ARCHITECTURE.md, "Field profiles"), in words.
+            Label(KeyboardMessages.trackpadTip + ". On the wrong line? Try the other text width:",
+                  systemImage: "hand.point.up.left")
+                .font(.footnote)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Text width", selection: Binding(get: { chrome.layout }, set: { if $0 != chrome.layout { onToggleLayout() } })) {
+                Text("Full width").tag(FieldLayout.fullWidth)
+                Text("Chat bubble").tag(FieldLayout.messages)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Text width for moving the cursor")
+            .accessibilityIdentifier("lf.layoutToggle")
+        }
+        .padding(12)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: KeyPalette.fill)))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+        .padding(8)
     }
 
     /// The full explanation for the states the top row condenses to one line.
@@ -532,18 +532,22 @@ struct MenuPanelView: View {
                 + KeyboardMessages.fullAccessSteps(keyboardName: keyboardName)
         case .configurationError: return KeyboardMessages.configurationErrorDetail
         case .incompatible: return KeyboardMessages.incompatibleDetail
-        case .error, .hostUnavailable: return client.state.title
+        // The top row already says what Start does without a session; an error's line is repeated in full here.
+        case .error: return client.state.title
         default: return nil
         }
     }
 }
 
+/// A press dims the control; it also shrinks it a little, unless Reduce Motion is on.
 private struct PressableStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

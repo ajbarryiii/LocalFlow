@@ -239,7 +239,7 @@ private struct SessionCard: View {
         case .starting:
             return "Getting the microphone ready…"
         case .active:
-            return "Switch to any app, choose the LocalFlow keyboard and tap the microphone."
+            return "Switch to any app, choose the LocalFlow keyboard and tap Start."
         }
     }
 

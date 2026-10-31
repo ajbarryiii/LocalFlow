@@ -51,6 +51,8 @@ struct LocalFlowIOSTests {
             ("KeyTouchModel", KeyTouchModelTests.tests),
             ("CalloutTracker", CalloutTrackerTests.tests),
             ("BarControlRegions", BarControlRegionsTests.tests),
+            ("BarContent", BarContentTests.tests),
+            ("KeyAlternates", KeyAlternatesTests.tests),
             ("LFBinaryFile", LFBinaryFileTests.tests),
             ("SwipeCore", SwipeCoreTests.tests),
             ("TapCore", TapCoreTests.tests),
