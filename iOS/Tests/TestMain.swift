@@ -49,6 +49,7 @@ struct LocalFlowIOSTests {
             ("TouchRate", TouchRateTests.tests),
             ("FieldProfile", FieldProfileTests.tests),
             ("KeyTouchModel", KeyTouchModelTests.tests),
+            ("CalloutTracker", CalloutTrackerTests.tests),
             ("BarControlRegions", BarControlRegionsTests.tests),
             ("LFBinaryFile", LFBinaryFileTests.tests),
             ("SwipeCore", SwipeCoreTests.tests),

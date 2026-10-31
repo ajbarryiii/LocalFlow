@@ -128,7 +128,7 @@ final class KeyAreaView: UIView {
     private var holdTimers: [KeyTouchModel.TouchID: Timer] = [:]
     private var trackpadLast: CGPoint?
     private var shownPressed: Set<KeyAction> = []
-    private var shownCallout: (touch: KeyTouchModel.TouchID, action: KeyAction)?
+    private var calloutTracker = CalloutTracker()
     /// Each held character's callout caption, fixed when its key is first shown (at touch-down, with the
     /// shift it will type with): committing it (or another finger's character) may turn the shift off
     /// while it is still shown. A slide's caption follows its key.
@@ -226,7 +226,7 @@ final class KeyAreaView: UIView {
             globeButton.removeFromSuperview()
         }
         shownPressed = []
-        shownCallout = nil
+        calloutTracker.keysChanged()
         relabel()
         perform(effects, timestamp: CACurrentMediaTime())
         refreshPressed()
@@ -429,10 +429,11 @@ final class KeyAreaView: UIView {
         }
         // A swipe has no callout: the model no longer counts it as a held character.
         let target = isBlank ? nil : model.calloutTouch
-        let callout = target.flatMap { touch in model.shownAction(touch).map { (touch: touch.id, action: $0) } }
-        guard callout?.touch != shownCallout?.touch || callout?.action != shownCallout?.action else { return }
-        shownCallout = callout
-        if let callout, case .character(let character) = callout.action,
+        let wanted = target.flatMap { touch in
+            model.shownAction(touch).map { CalloutTracker.Callout(touch: touch.id, action: $0) }
+        }
+        guard let change = calloutTracker.update(to: wanted) else { return }
+        if case .show(let callout) = change, case .character(let character) = callout.action,
            let index = placedKeys.firstIndex(where: { $0.action == callout.action }), keyViews.indices.contains(index) {
             let title = calloutTitles[callout.touch].flatMap { $0.action == callout.action ? $0.title : nil }
                 ?? displayed(character)
