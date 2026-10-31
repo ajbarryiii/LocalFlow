@@ -6,6 +6,7 @@ import AppKit
 enum ClipboardTransactionTests {
     static func run() {
         testPasteTextSpacing()
+        testPasteTextFitsTheContext()
         testWriteHidesFromClipboardHistory()
         testWriteKeptInClipboardHistory()
         testNothingToRestoreWithoutPreserve()
@@ -102,6 +103,27 @@ enum ClipboardTransactionTests {
         TestSupport.expectEqual(ClipboardTransaction.pasteText(for: "no punctuation"), "no punctuation")
         TestSupport.expectEqual(ClipboardTransaction.pasteText(for: "a list:"), "a list:")
         TestSupport.expectEqual(ClipboardTransaction.pasteText(for: ""), "")
+    }
+
+    private static func testPasteTextFitsTheContext() {
+        func paste(_ transcript: String, before: String?, after: String?) -> String {
+            ClipboardTransaction.pasteText(for: transcript, context: InsertionContext(before: before, after: after))
+        }
+        TestSupport.expectEqual(paste("Which ends like this one.", before: "ends like this one", after: ". "),
+                                " which ends like this one")
+        // At the end of the field the space for the next dictation stays.
+        TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: ""), "Next one. ")
+        TestSupport.expectEqual(paste("Next one.", before: "Done.", after: nil), " Next one. ")
+        // Text that follows already separates it.
+        TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: "\nMore"), "Next one.")
+        TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: " Later."), "Next one.")
+        TestSupport.expectEqual(paste("Next one.", before: "Done. ", after: "Later."), "Next one. ")
+        TestSupport.expectEqual(paste("Done.", before: nil, after: "(More details.)"), "Done. ")
+
+        let pasteboard = FakePasteboard()
+        _ = ClipboardTransaction.write("Which ends.", context: InsertionContext(before: "this one", after: "."),
+                                       preserve: false, keepInHistory: true, on: pasteboard)
+        TestSupport.expectEqual(pasteboard.string(forType: .string), " which ends")
     }
 
     private static func testWriteHidesFromClipboardHistory() {

@@ -20,6 +20,7 @@ struct LocalFlowTests {
         SettingsKeysTests.run()
         ClipboardTransactionTests.run()
         InsertionContextTests.run()
+        InsertionContextProbeTests.run()
         DoubleTapPromptTests.run()
         DictationCleanupStepsTests.run()
         SemanticVersionTests.run()
