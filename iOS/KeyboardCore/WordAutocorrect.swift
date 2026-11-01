@@ -96,6 +96,11 @@ enum WordAutocorrect {
     /// the contraction, as the corrector already corrects "dont".
     static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't", "whats": "what's", "hows": "how's"]
 
+    /// Corrections made at a sentence's start only, whatever the corrector says (round 7, Opus finding 2: "Lets go" stayed
+    /// "Lets"): with no subject before it "lets" can't be the verb, so it is "let's". Within a sentence it is left to the
+    /// corrector and the apostrophe twins ("she lets me"). Only words as unambiguous there: not "its" ("Its battery is low").
+    static let sentenceStartCorrections: [String: String] = ["lets": "let's"]
+
     /// Very common misspellings known for certain, corrected as `fixedCorrections` are: the touch model scores a letter
     /// typed for one far from it ("definately") as almost impossible, so the corrector never offers these. Every
     /// target is a word of the bundle's lexicon and no source is one (checked against bundle b34).
@@ -119,6 +124,12 @@ enum WordAutocorrect {
     /// any.
     static func fixedCorrection(_ word: String) -> String? {
         fixedCorrections[word] ?? commonMisspellings[word] ?? runTogetherWords[word]
+    }
+
+    /// `fixedCorrection`, and at a sentence's start (`context`, normalized, holds no word of the sentence yet) the
+    /// `sentenceStartCorrections`.
+    static func fixedCorrection(_ word: String, context: String) -> String? {
+        fixedCorrection(word) ?? (Autocorrector.sentenceWords(context).isEmpty ? sentenceStartCorrections[word] : nil)
     }
 
     /// English words that keep their accents, by the plain lexicon form: offered beside the plain word, never put in by a
@@ -226,7 +237,7 @@ enum WordAutocorrect {
         let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
         let modelled = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                params: setup.params)
-        let fixed = fixedCorrection(lowered)
+        let fixed = fixedCorrection(lowered, context: context)
         // A vowel rival about as likely as the corrector's choice: the word stays as typed, and both are offered.
         let rival = fixed == nil && !modelled.isEmpty && modelled != lowered
             ? setup.corrector.vowelRival(context: context, word: lowered, correction: modelled, keys: setup.keys) : nil
@@ -313,7 +324,7 @@ enum WordAutocorrect {
         // A vowel rival as likely as the correction: no correction pending; the word as typed, the correction and the rival.
         var held: [String] = []
         if !kept, !contraction {
-            let fixed = fixedCorrection(lowered)
+            let fixed = fixedCorrection(lowered, context: context)
             if let corrected = fixed ?? predicted.correction, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
                 if fixed == nil, let rival = setup.corrector.vowelRival(context: context, word: lowered, correction: corrected,
                                                                          keys: setup.keys) {

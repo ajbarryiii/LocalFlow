@@ -21,6 +21,8 @@ enum NextWordTests {
             ("aTapAppliesOnlyWhereThePredictionsWereMade", testATapAppliesOnlyWhereThePredictionsWereMade),
             ("dictationWinsTheBar", testDictationWinsTheBar),
             ("aTapNeedsTheProxyToShowTheSpace", testATapNeedsTheProxyToShowTheSpace),
+            ("aReturnAfterTextOffersFirstWords", testAReturnAfterTextOffersFirstWords),
+            ("deletingASwipedWordPredictsAgain", testDeletingASwipedWordPredictsAgain),
         ]
     }
 
@@ -379,6 +381,128 @@ enum NextWordTests {
         TestSupport.expectEqual(windowed.strip, plain(["now"]))
         windowed.choose(0)
         TestSupport.expectEqual(windowed.text, long + " now ")
+    }
+
+    /// Round 6 council (Opus finding 3): a Return after text in Messages showed the status line, where Apple's keyboard
+    /// offers its first words. After a Return this keyboard typed right after text, the proxy showing the line break, the
+    /// strip offers the next line's first words as after a sentence's end; not in an empty field, not after a Return that
+    /// follows another, and not where the host took no line break (a field whose Return acts instead).
+    private static func testAReturnAfterTextOffersFirstWords() {
+        let rig = AutocorrectRig("", corrections: [:])
+        rig.autocapitalization = .sentences
+        rig.corrector.following = ["": ["i", "the"]]
+        rig.tap("see")
+        rig.press(.space)
+        rig.tap("you")
+        rig.press(.returnKey)
+        TestSupport.expectEqual(rig.text, "see you\n")
+        TestSupport.expectEqual(rig.corrector.nextWordCalls.last?.context, "")
+        TestSupport.expectEqual(rig.strip, plain(["I", "The"]))
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "see you\nThe ")
+        // After punctuation too.
+        let marked = AutocorrectRig("", corrections: [:])
+        marked.corrector.following = ["": ["i", "the"]]
+        marked.tap("ok")
+        marked.press(.character("!"))
+        marked.press(.returnKey)
+        TestSupport.expectEqual(marked.strip, plain(["I", "the"]))
+        // Not in an empty field, nor after a Return that follows a line break or a space.
+        for setup in [{ (_: AutocorrectRig) in }, { (rig: AutocorrectRig) in
+            rig.tap("ok")
+            rig.press(.returnKey)
+        }, { (rig: AutocorrectRig) in
+            rig.tap("ok")
+            rig.press(.space)
+        }] {
+            let rig = AutocorrectRig("", corrections: [:])
+            rig.corrector.following = ["": ["i", "the"], "ok ": ["i", "the"]]
+            setup(rig)
+            rig.press(.returnKey)
+            TestSupport.expectEqual(rig.strip, nil)
+        }
+        // Sol review (round 7, run 1): a proxy that shows the line break late, with no callback, brings the strip when it
+        // does; one that shows only the line (here the break alone) shows it too, and a tap applies.
+        let late = AutocorrectRig("", corrections: [:])
+        late.corrector.following = ["": ["i", "the"]]
+        late.tap("ok")
+        late.document.lateBefore = .some("ok")
+        late.press(.returnKey)
+        TestSupport.expectEqual(late.strip, nil)
+        late.document.lateBefore = nil
+        late.editor.service(now: late.tick())
+        TestSupport.expectEqual(late.strip, plain(["I", "the"]))
+        let windowed = AutocorrectRig("", corrections: [:])
+        windowed.corrector.following = ["": ["i", "the"]]
+        windowed.tap("ok")
+        windowed.press(.returnKey)
+        windowed.document.lateBefore = .some("\n")
+        windowed.editor.service(now: windowed.tick())
+        TestSupport.expectEqual(windowed.strip, plain(["I", "the"]))
+        windowed.choose(1)
+        windowed.document.lateBefore = nil
+        TestSupport.expectEqual(windowed.text, "ok\nthe ")
+        // Sol review (round 7, run 2): focus moved to an empty field before any callback; the Return goes there, and
+        // the text of the field it left does not count.
+        let moved = AutocorrectRig("", corrections: [:])
+        moved.corrector.following = ["": ["i", "the"]]
+        moved.document.lateBefore = .some(nil)
+        moved.tap("ok")
+        moved.document.lateBefore = nil
+        moved.document.switchField(to: FakeTextHost(text: ""), id: UUID())
+        moved.press(.returnKey)
+        TestSupport.expectEqual(moved.text, "\n")
+        TestSupport.expectEqual(moved.strip, nil)
+        // A field whose host takes no line break (its Return acts instead): nothing.
+        let single = AutocorrectRig("", corrections: [:])
+        single.corrector.following = ["": ["i", "the"], "ok": ["i", "the"]]
+        single.tap("ok")
+        single.document.host.maxLength = 2
+        single.press(.returnKey)
+        TestSupport.expectEqual(single.text, "ok")
+        TestSupport.expectEqual(single.strip, nil)
+        single.editor.service(now: single.tick())
+        TestSupport.expectEqual(single.strip, nil)
+        // Where suggestions are off, nothing either.
+        let off = AutocorrectRig("", corrections: [:])
+        off.field = .email
+        off.corrector.following = ["": ["i", "the"]]
+        off.tap("ok")
+        off.press(.returnKey)
+        TestSupport.expectEqual(off.strip, nil)
+    }
+
+    /// Round 6 council (Opus finding 3): after Delete removed a swiped word the strip fell back to the status line. When
+    /// what is left before the caret is a word and a space, the next words show as they would after that space; otherwise
+    /// nothing.
+    private static func testDeletingASwipedWordPredictsAgain() {
+        let rig = AutocorrectRig("", corrections: [:])
+        rig.corrector.following = ["see ": ["you", "the"]]
+        rig.tap("see")
+        rig.press(.space)
+        rig.swipe(["late", "later"])
+        TestSupport.expectEqual(rig.text, "see late")
+        rig.heldDelete()
+        TestSupport.expectEqual(rig.text, "see ")
+        TestSupport.expectEqual(rig.strip, plain(["you", "the"]))
+        rig.choose(0)
+        TestSupport.expectEqual(rig.text, "see you ")
+        // A swiped word after a word: its own space stays, and the next words follow it. VoiceOver's Delete too.
+        let swiped = AutocorrectRig("", corrections: [:])
+        swiped.corrector.following = ["see ": ["you", "the"]]
+        swiped.tap("see")
+        swiped.swipe(["late"])
+        TestSupport.expectEqual(swiped.text, "see late")
+        swiped.press(.delete)
+        TestSupport.expectEqual(swiped.text, "see ")
+        TestSupport.expectEqual(swiped.strip, plain(["you", "the"]))
+        // A swiped word at the field's start leaves no word and space: nothing.
+        let alone = AutocorrectRig("", corrections: [:])
+        alone.corrector.followingAny = ["you"]
+        alone.swipe(["late"])
+        alone.heldDelete()
+        TestSupport.expectEqual(alone.text, "")
+        TestSupport.expectEqual(alone.strip, nil)
     }
 
     private static func testDictationWinsTheBar() {

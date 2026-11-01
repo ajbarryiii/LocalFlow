@@ -652,12 +652,14 @@ enum AutocorrectEditorTests {
         // Nothing to revert: delete deletes the space.
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "hello")
-        // Deleting back into the word disowns it (round 5): committed again, it is not checked. A space after a
-        // space, or a key after punctuation, has no word.
+        // Deleting back into the word over the keyboard's own space makes it its own again (round 7, Opus finding 1;
+        // round 5 disowned it): committed again, it is checked again. A space after a space, or a key after punctuation,
+        // has no word.
         rig.press(.space)
+        TestSupport.expectEqual(rig.corrector.calls.count, 2)
         rig.press(.space)
         rig.press(.character("."))
-        TestSupport.expectEqual(rig.corrector.calls.count, 1)
+        TestSupport.expectEqual(rig.corrector.calls.count, 2)
     }
 
     private static func testSwipedWordsAreNotCorrected() {

@@ -166,7 +166,15 @@ final class KeyboardEditor {
     }
     /// The keyboard typed a space after a word (Space, or a tapped word's own space), and since then only Shift and layer
     /// keys: the strip may predict the next word.
-    private var predictsNextWord = false
+    private var predictsNextWord = false {
+        didSet { nextWordsAfterBreak = false }
+    }
+    /// The next words follow a Return typed right after text (set after `predictsNextWord`, which clears it): they show
+    /// once the proxy itself shows the line break.
+    private var nextWordsAfterBreak = false
+    /// The next words after a Return wait for the proxy to show the line break (late, with no callback): the next reading
+    /// that does brings them, without another key.
+    private var nextWordsAwaitBreak = false
     /// The word this keyboard was typing when it hid (ARCHITECTURE.md, "Word autocorrect", Owned words), in the slot this
     /// editor shares with the next one in the process: its own again only where it appeared again in that field,
     /// unchanged; dropped on any mismatch and at the first key, swipe, dictation or gesture after appearing.
@@ -205,6 +213,11 @@ final class KeyboardEditor {
     var autocorrect: () -> AutocorrectSetup? = { nil }
     /// The current word's characters with their taps' touch-down points. In memory only; dropped on hiding.
     private(set) var wordTaps = WordTapRecord()
+    /// A digest of the text after the caret when the space after the record's finished word was typed (own typing never
+    /// changes it; an in-process hash, the text itself is not kept): a Delete takes that word back only with the same text
+    /// after the caret, not at another copy of it the host moved the caret to without a report yet. Dropped with the
+    /// finished word.
+    private var finishedWordAfter: Int?
     /// Typed words a Delete put back after their autocorrection, lowercased: never corrected again while this
     /// keyboard instance lives. In memory only; kept across hiding, gone with the instance.
     private(set) var revertedWords: Set<String> = []
@@ -357,6 +370,7 @@ final class KeyboardEditor {
         observeShownSwipeEdits(now: now)
         restoreParkedWord()
         retryTypingSuggestions()
+        retryNextWords()
         return outcome
     }
 
@@ -464,7 +478,11 @@ final class KeyboardEditor {
         case .character, .space, .returnKey, .delete:
             if WordAutocorrect.isCommitKey(action) {
                 commit(action, field: field, at: timestamp, now: now)
-                predictsNextWord = action == .space
+                // A Return typed right after text (not whitespace, not an empty field) predicts the next line's first words,
+                // read in the field the Return went to (`commit` adopts one the proxy serves before its first callback).
+                let afterBreak = action == .returnKey && currentBefore.map(Self.followsTextAndBreak) == true
+                predictsNextWord = action == .space || afterBreak
+                nextWordsAfterBreak = afterBreak
             } else {
                 type(field: field, now: now, point: point) { [self] before in resolve(action, before: before, at: timestamp) }
             }
@@ -532,6 +550,7 @@ final class KeyboardEditor {
         if now >= until { contextWatchUntil = nil }
         observeShownSwipeEdits(now: now)
         retryTypingSuggestions()
+        retryNextWords()
         guard !trackpad.isActive else { return }
         let shift = typing.shift
         applyAutomaticShift()
@@ -565,7 +584,20 @@ final class KeyboardEditor {
         userEdit()
         if edit.deletes > 0 { deleteGraphemes(edit.deletes, now: now, recordEach: recordEachDeletion) }
         for text in edit.texts where !text.isEmpty { insert(text, now: now) }
-        wordTaps.edited(deleted: edit.deletes, inserted: edit.texts.joined(), point: point)
+        // A Delete of the space typed right after the word before: that word is the keyboard's own again only where the proxy
+        // shows exactly it before the caret, and the text after the caret it was finished at (ARCHITECTURE.md, "Word
+        // autocorrect", Owned words, Deletion).
+        let finished = wordTaps.finished
+        if wordTaps.edited(deleted: edit.deletes, inserted: edit.texts.joined(), point: point),
+           !wordTaps.isShown(before: document.contextBefore)
+            || Self.digest(before: nil, after: document.contextAfter) != finishedWordAfter {
+            wordTaps.clear()
+        }
+        if wordTaps.finished == nil {
+            finishedWordAfter = nil
+        } else if wordTaps.finished != finished {
+            finishedWordAfter = Self.digest(before: nil, after: document.contextAfter)
+        }
         contextWatchUntil = now + Self.contextWatch
         updateAutomaticShift()
         return true
@@ -793,6 +825,9 @@ final class KeyboardEditor {
         }
         guard deleted else { return false }
         swipe = nil
+        // What is left may be a word and a space: the next words show as after that space (`refreshNextWords` checks).
+        predictsNextWord = true
+        refreshNextWords()
         return true
     }
 
@@ -901,6 +936,9 @@ final class KeyboardEditor {
         guard reverted else { return false }
         swipe = nil
         wordTaps = pending.correction.record
+        // The field is as the correction left it (`holds`), and own typing never changes the text after the caret: the word
+        // before the typed one may still be taken back.
+        finishedWordAfter = wordTaps.finished == nil ? nil : Self.digest(before: nil, after: document.contextAfter)
         revertedWords.insert(pending.correction.word)
         offerNeverCorrect(pending.correction.word, typed: pending.correction.typed)
         return true
@@ -948,11 +986,13 @@ final class KeyboardEditor {
     /// and a pending revert no longer applies. The reverted words stay.
     private func forgetWord() {
         wordTaps.clear()
+        finishedWordAfter = nil
         typingSuggestions = nil
         typingAnchor = nil
         typingSuggestionsAwaitProxy = false
         nextWords = nil
         predictsNextWord = false
+        nextWordsAwaitBreak = false
         pendingRevert = nil
         neverCorrectOffer = nil
     }
@@ -1058,10 +1098,19 @@ final class KeyboardEditor {
     /// (`swipeShift`), the pronoun I and day names with their capital. Never a single letter alone ("I" read as a stray bar
     /// or a second caret): the status line stays instead.
     private func refreshNextWords() {
+        nextWordsAwaitBreak = false
         guard predictsNextWord, swipe == nil, typingSuggestions == nil, !document.hasSelection,
-              core.documentID == document.documentID, let before = currentBefore, Self.followsWordAndSpace(before),
+              core.documentID == document.documentID, let before = currentBefore,
+              nextWordsAfterBreak || Self.followsWordAndSpace(before),
               let setup = autocorrect(), setup.predictsNextWords else {
             nextWords = nil
+            return
+        }
+        // After a Return, only once the proxy itself shows the line break (perhaps alone, in a window of the line): the host
+        // took it as one (a field whose Return acts takes none) and the field is still the one it went to.
+        guard !nextWordsAfterBreak || document.contextBefore?.last == "\n" else {
+            nextWords = nil
+            nextWordsAwaitBreak = true
             return
         }
         let found = setup.corrector.nextWords(context: TapPrior.normalizeContext(before), limit: SwipeStrip.limit)
@@ -1087,6 +1136,20 @@ final class KeyboardEditor {
         return !previous.isWhitespace
     }
 
+    /// Whether the text before the caret ends with a line break right after something other than whitespace: a Return
+    /// typed after text (round 7).
+    static func followsTextAndBreak(_ before: String) -> Bool {
+        guard before.last == "\n", let previous = before.dropLast().last else { return false }
+        return !previous.isWhitespace
+    }
+
+    /// The next words after a Return waited for the proxy, which now shows the line break: they come. Like the typing
+    /// strip's wait, only at a callback or while the context watch runs after the Return (`service`).
+    private func retryNextWords() {
+        guard nextWordsAwaitBreak, document.contextBefore?.last == "\n" else { return }
+        refreshNextWords()
+    }
+
     /// A tap on a next word: it goes in with one space after it (none before a space already after the caret), the caret
     /// after it, like a tapped suggestion; the strip then predicts the word after it. Only in the field the words were
     /// made for, nothing edited since, the proxy showing the space and the same text before (its window and the editor's
@@ -1103,7 +1166,8 @@ final class KeyboardEditor {
         // The proxy itself must show the space there, nothing edited since: its window of the text before the caret and
         // the editor's (a bounded tail) may each be the longer one. A proxy that lags or lost the space misses the tap.
         guard shown.field == core.documentID, core.documentID == document.documentID, !document.hasSelection,
-              core.generation == shown.generation, let proxyBefore = document.contextBefore, Self.followsWordAndSpace(proxyBefore),
+              core.generation == shown.generation, let proxyBefore = document.contextBefore,
+              Self.followsWordAndSpace(proxyBefore) || proxyBefore.last == "\n",
               proxyBefore.hasSuffix(shown.before) || shown.before.hasSuffix(proxyBefore),
               document.contextAfter == shown.after else { return }
         let chosen = shown.strip.candidates[index]
@@ -1140,7 +1204,8 @@ final class KeyboardEditor {
         guard wordTaps.owned, WordAutocorrect.word(before: wordTaps.text) != nil, let field = core.documentID,
               field == document.documentID, !document.hasSelection, let before = document.contextBefore,
               wordTaps.isShown(before: before) else { return nil }
-        var record = wordTaps
+        // Not the word before it: hiding ends deleting back into that one.
+        var record = WordTapRecord(entries: wordTaps.entries, owned: true, boundary: wordTaps.boundary)
         record.forgetPoints()
         return ParkedWordSlot.Word(record: record, around: Self.digest(before: before, after: document.contextAfter))
     }

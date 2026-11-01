@@ -14,6 +14,7 @@ enum WordChoiceTests {
             ("aWordKeptOverItsTwinOffersIt", testAWordKeptOverItsTwinOffersIt),
             ("apostropheFormsAreOfferedNeverCorrected", testApostropheFormsAreOfferedNeverCorrected),
             ("whatsAndHowsTakeTheirApostrophe", testWhatsAndHowsTakeTheirApostrophe),
+            ("letsAtASentencesStartIsLetUs", testLetsAtASentencesStartIsLetUs),
         ]
     }
 
@@ -277,5 +278,54 @@ enum WordChoiceTests {
             rig.press(.space)
         }
         TestSupport.expectEqual(rig.text, "what's How's ")
+    }
+
+    /// Round 6 council (Opus finding 2): "Lets go" stayed "Lets". At a sentence's start "lets" has no subject, so it is
+    /// "let's": corrected there whatever the corrector says, in the typed word's case, and reverted like any correction.
+    /// Within a sentence ("she lets me") it stays the apostrophe twin it was: kept, with "let's" offered. Only "lets" is in
+    /// the table: "its" is as often the word at a sentence's start ("Its battery is low").
+    private static func testLetsAtASentencesStartIsLetUs() {
+        TestSupport.expectEqual(WordAutocorrect.sentenceStartCorrections, ["lets": "let's"])
+        // The field's start, a sentence's end, and a new line (the keyboard typed the space or Return before the word).
+        for (before, key, typed, committed) in [("", nil, "lets", "let's "), ("", nil, "Lets", "Let's "),
+                                                ("ok.", KeyAction.space, "Lets", "ok. Let's "),
+                                                ("so tired!", .space, "lets", "so tired! let's "),
+                                                ("ok", .returnKey, "LETS", "ok\nLET'S ")] {
+            let rig = AutocorrectRig(before, corrections: [:])
+            if let key { rig.press(key) }
+            rig.tap(typed)
+            rig.press(.space)
+            TestSupport.expectEqual(rig.text, committed)
+            TestSupport.expectEqual(rig.corrector.twinCalls.count, 0)
+        }
+        // While it is typed, the strip marks it beside the quoted word; a Delete right after the space reverts it.
+        let live = AutocorrectRig("", corrections: [:])
+        live.tap("Lets")
+        TestSupport.expectEqual(live.strip, SwipeStrip(candidates: ["Lets", "Let's"], inserted: 1,
+                                                       live: SwipeStrip.Live(quoted: 0, marked: 1)))
+        let reverted = AutocorrectRig.typingASpace(after: "ok.", corrections: [:])
+        reverted.tap("Lets")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "ok. Let's ")
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "ok. Lets")
+        TestSupport.expectEqual(reverted.editor.revertedWords, ["lets"])
+        // Within a sentence: kept, with the twin offered, as before.
+        let within = AutocorrectRig.typingASpace(after: "she", corrections: [:])
+        within.tap("lets")
+        within.press(.space)
+        TestSupport.expectEqual(within.text, "she lets ")
+        TestSupport.expectEqual(within.strip, SwipeStrip(candidates: ["lets", "let's"], inserted: 0))
+        // "its" at a sentence's start is left to the corrector.
+        let its = AutocorrectRig("", corrections: [:])
+        its.tap("Its")
+        its.press(.space)
+        TestSupport.expectEqual(its.text, "Its ")
+        // Off with autocorrect.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("lets")
+        off.press(.space)
+        TestSupport.expectEqual(off.text, "lets ")
     }
 }

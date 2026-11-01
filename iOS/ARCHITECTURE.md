@@ -1136,7 +1136,12 @@ or chip, 3:1 or better; the highlighted candidate's text 4.5:1 on its pill.
   and dot, drawn as a vector, 19 pt and 1.3 times the icon's weight so the W
   reads at that size) beside "Start". **Stop** is coral with ink;
   the wait for a transcript is glacier with ink (`CapsuleStyle`: Start
-  dimmed to 45% where dictation cannot run here).
+  dimmed to 45% where dictation cannot run here). On the light keyboard that
+  capsule's fill is the glacier at 85% of its saturation, the same hue and
+  brightness (#7DEBF9, `BrandPalette.calmGlacier`; round 7, Opus visual: the
+  bright cyan was the loudest thing on the bar while the user waits, louder
+  than Stop), with its deep-glacier edge; ink on it stays far above 4.5:1. The
+  dark keyboard keeps the app's glacier.
 - **The recording wave** (`RidgeWave`) is the mark's line come alive across
   the bar's middle: one corner per input level the keyboard reads (several
   a second), alternately above and below the middle line, each as far from
@@ -1777,7 +1782,10 @@ suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
   change, the trackpad, an outside text change, or hiding.
 - While the strip shows after a swipe, the first deletion (a tap, or a held
   delete's first deletion) removes the whole swiped word, leaving the space
-  before it. Repeats continue as usual.
+  before it. Repeats continue as usual. When what is left before the caret is
+  a word and a space, the next words show as after that space (round 7, Opus
+  finding 3; "Next words" in [Word autocorrect](#word-autocorrect)). The word
+  typed next is not the keyboard's own until its next separator, as before.
 
 **Swipe anchors** (`KeyboardEditor`, `ExpectedDocument`). The edit that put
 the swiped word in (an insertion, or a candidate's replacement) is recorded
@@ -2008,7 +2016,37 @@ make, swipe, dictation, undo, or hiding and showing (except as below).
   would restore. Points are never rebased.
 - **Deletion.** Delete within the word removes its last characters. Deleting
   past the word's start, or any other edit, leaves no word owned until the
-  keyboard's next own separator.
+  keyboard's next own separator, with one exception:
+- **Deleting back into the word just finished** (round 7, Opus finding 1:
+  "ok see you at the " then Delete fell back to the status line, and "them"
+  typed on showed nothing; Apple's keyboard brings the suggestions back as
+  soon as the caret is in the word). A space the keyboard typed right after
+  an owned word holding a letter (the space key, or the space a tapped
+  suggestion, next word or strip choice brings) finishes it, and the record
+  keeps that word (`WordTapRecord.finished`). A Delete of exactly that space,
+  with nothing before it but the keyboard's own letters typed after the space
+  and deleted again, makes the word the record again, with its points and the
+  separator it began after, but only where the proxy then shows exactly that
+  word before the caret (`isShown`) and the same text after the caret as when
+  its space was typed (kept as an in-process digest, never the text, and
+  dropped with the word; own typing never changes it; a caret the host moved
+  after an earlier copy of the word, not reported yet, has other text after
+  it; Sol review, round 7); otherwise nothing is owned. A strip
+  choice that replaces the word and its space at once (another word chosen
+  after a commit key) goes on within it the same way, so the word it puts in
+  is finished by its space in turn. Its strip
+  shows; further Deletes and letters continue it as if it had never been
+  finished, and a commit key corrects it as usual, with every tap's point
+  (the keys have not moved: a layout change forgets the finished word's
+  points too, and hiding forgets the word). Once only: deleting past that
+  word's start leaves nothing owned. Not after another separator (a
+  punctuation mark, Return, a double space's period), a swiped word, or a
+  word the keyboard did not type, and anything that clears the record in
+  between (a caret move, a host edit, dictation, the trackpad, another field,
+  hiding) ends it. Right after an autocorrection a Delete still reverts it,
+  and right after a swiped word it still removes the whole word; a held
+  Delete deletes as before (the strip follows each of its character
+  deletions, as within any owned word).
 - **Hiding** (round 5, Sol finding 2: "Accom", an app switch, and the strip
   never came back). When the keyboard hides while it owns a word being typed
   in an identified field, the proxy showing it before the caret and nothing
@@ -2083,7 +2121,14 @@ or a lexicon form.
   is. On bundle b34 every other apostrophe-less form checked ("dont", "im",
   "youre", "didnt", "isnt", "thats", "theyre", "ive", "youll", "theres",
   "hes", "shes", "wouldve", "arent", "itll", "whos", "heres", ...) is
-  outside the lexicon and corrected by the corrector. Two words typed run together
+  outside the lexicon and corrected by the corrector. At a sentence's start
+  only (the context holds no word of the sentence yet: the field's start, a
+  new line, or after ".", "!" or "?"), "lets" → "let's"
+  (`WordAutocorrect.sentenceStartCorrections`; round 7, Opus finding 2:
+  "Lets go" stayed "Lets"): with no subject before it "lets" can't be the
+  verb. Within a sentence it is left to the corrector and the apostrophe
+  twins below ("she lets me" keeps "lets", "let's" offered). No other word
+  is as unambiguous there: "its" is not ("Its battery is low"). Two words typed run together
   (`WordAutocorrect.runTogetherWords`, round 5, Opus finding 1: "abit" became
   "habit") become the two words, as on Apple's keyboard: "abit" → "a bit",
   "alot" → "a lot", "aswell" → "as well", "atleast" → "at least". The
@@ -2123,11 +2168,12 @@ or a lexicon form.
   against "store") out. The cost, measured on generated typos below: some
   right corrections become a one-tap choice.
 - **Evaluation of corrections** (round 6, `Tests/CorrectionEvaluation.swift`):
-  33 invented messages ending in a vowel slip, a near miss or a word with an
+  36 invented messages ending in a vowel slip, a near miss or a word with an
   apostrophe twin, each with what should happen (corrected to the word meant,
   or kept with it offered), run through the whole commit
-  (`WordAutocorrect.review`) with taps at the key centres. On bundle b34: 33
-  as expected and none changed to a wrong word (27 of the first 30 and three
+  (`WordAutocorrect.review`) with taps at the key centres. On bundle b34: 36
+  as expected and none changed to a wrong word (34 before the sentence-start
+  "lets", round 7; 27 of the first 30 and three
   wrong, "neer" → "never", "lanch" → "launch", "sind" → "find", before vowel
   rivals and the archaic list; "were" at a sentence's start became "we're"
   before apostrophe twins); the test runs with
@@ -2264,7 +2310,8 @@ autocorrect considered:
   "she'll", "shed" → "she'd", "its" → "it's", "lets" → "let's") offer the
   contraction beside the word as the accented forms do, whatever the
   context. Never a correction from this table (the corrector's own
-  apostrophe margin still applies, as below).
+  apostrophe margin still applies, as below; "lets" at a sentence's start is
+  a fixed correction, above).
 - **Apostrophe twins** (`WordCorrecting.keepsWordOverTwin`, round 6, the
   lead: at a sentence's start "Were you there?" went out as "We're you
   there?"). A lexicon word and its twin, the same letters with an apostrophe,
@@ -2347,7 +2394,9 @@ finished, the strip shows up to three words for it
   unchanged: dictation, notices and Undo win (`BarMiddleContent`).
 - **When it updates:** after every key, from the word's record; a commit key
   ends the word (its own strip, if any, follows), as do a caret move, an
-  outside edit, a swipe, dictation, a field change and hiding.
+  outside edit, a swipe, dictation, a field change and hiding. A Delete of
+  the space that finished it brings the word and its strip back ("Deleting
+  back into the word just finished", Owned words).
 - **Fewer, likelier words** (round 3): a form whose odds are less than 1 in
   1000 (`Autocorrector.suggestionRatio`) of the strip's first word (the typed
   word when it is a lexicon word, else the best form) is not offered: "hey"
@@ -2404,7 +2453,18 @@ offers up to three likely next words (`WordCorrecting.nextWords`):
   caret ends with that one space after something other than whitespace. Not
   in an empty field, so the idle bar's status line still shows when the
   keyboard comes up; after a sentence's end it predicts the sentence's first
-  word. The bar's
+  word. Also (round 7, Opus finding 3):
+  - after a Return the keyboard typed right after text (not whitespace),
+    once the proxy itself shows that line break before the caret (perhaps
+    alone, in a window of the line; shown late, with no callback, the strip
+    comes when it is): the host took it as one (a field whose Return sends,
+    goes or moves on takes none) and the field is still the one it went to. The line's first words
+    show, as after a sentence's end. Not after a Return that follows a line
+    break or a space, and not in an empty field. Unlike a commit key's strip,
+    which Return never shows because its choices delete text, a tapped next
+    word only inserts, as a key typed then would;
+  - after Delete removed a swiped word whole, when a word and a space are
+    left before the caret. The bar's
   precedence is unchanged (`BarMiddleContent`): a commit key's strip with a
   choice, a swipe's strip and the strip of a word being typed come first,
   and dictation (starting, recording, transcribing, waiting for the model),

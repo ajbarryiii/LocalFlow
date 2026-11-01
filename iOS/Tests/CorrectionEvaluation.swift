@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a commit key does to vowel slips and near-miss words (ARCHITECTURE.md, "Word autocorrect", Evaluation of
-/// corrections): 33 invented messages, each ending in a mistyped word, with what should happen to it: corrected to the
+/// corrections): 36 invented messages, each ending in a mistyped word, with what should happen to it: corrected to the
 /// word meant, or left as typed with the word meant offered beside it (a correction to it counts too). Every case runs the
 /// whole commit (`WordAutocorrect.review`: fixed corrections, the corrector, vowel rivals, apostrophe twins) with taps at
 /// the key centres.
@@ -57,12 +57,17 @@ enum CorrectionEvaluation {
         ("", "were", .offered("were")),
         ("I think ", "were", .corrected("we're")),
         ("", "ill", .corrected("i'll")),
+        // Round 7: at a sentence's start "lets" has no subject, so it is "let's"; within a sentence it is the verb.
+        ("", "lets", .corrected("let's")),
+        ("Running late. ", "lets", .corrected("let's")),
+        ("She ", "lets", .offered("lets")),
     ]
 
-    /// Bundle b34 (round 6): 33 of the cases as expected and no word changed to another than the one meant. Before vowel
+    /// Bundle b34 (round 7): all 36 cases as expected and no word changed to another than the one meant. Before vowel
     /// rivals and the archaic forms' exclusion, 27 of the first 30, with three wrong ("neer" → "never", "lanch" → "launch",
-    /// "sind" → "find"); before apostrophe twins, "were" at a sentence's start became "we're".
-    static let expectedAtLeast = 33
+    /// "sind" → "find"); before apostrophe twins, "were" at a sentence's start became "we're"; before the sentence-start
+    /// table, "lets" stayed at a sentence's start (34 of 36).
+    static let expectedAtLeast = 36
     static let wrongAtMost = 0
 
     /// What the commit makes of a case: the word put in (nil to leave it) and the strip's words, lowercase.
@@ -104,7 +109,7 @@ enum CorrectionEvaluation {
     }
 
     private static func testVowelSlipsAndNearMissesCommitAsExpected() {
-        TestSupport.expectEqual(cases.count, 33)
+        TestSupport.expectEqual(cases.count, 36)
         for item in cases {
             TestSupport.expect(!item.typed.isEmpty && item.typed == item.typed.lowercased(), "\(item.typed)")
         }

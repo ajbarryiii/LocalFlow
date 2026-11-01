@@ -65,6 +65,7 @@ struct LocalFlowIOSTests {
             ("NextWord", NextWordTests.tests),
             ("WordChoice", WordChoiceTests.tests),
             ("ParkedWord", ParkedWordTests.tests),
+            ("ReopenedWord", ReopenedWordTests.tests),
             ("CompletionEvaluation", CompletionEvaluation.tests),
             ("CorrectionEvaluation", CorrectionEvaluation.tests),
             ("NeverCorrect", NeverCorrectTests.tests),

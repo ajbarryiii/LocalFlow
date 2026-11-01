@@ -23,6 +23,9 @@ struct BrandPalette: Equatable {
     static let coral = RGB(255 / 255, 125 / 255, 94 / 255)
     static let ember = RGB(245 / 255, 198 / 255, 107 / 255)
     static let ink = RGB(4 / 255, 18 / 255, 10 / 255)
+    /// The light keyboard's waiting capsule (round 7, Opus visual): the glacier at 85% of its saturation, the same hue and
+    /// brightness, so it sits calmer than Stop beside the grey keys.
+    static let calmGlacier = RGB(125 / 255, 235 / 255, 249 / 255)
     /// `Theme.gradient`'s leading stop: a hint of glacier in the aurora.
     static let auroraHighlight = RGB(107 / 255, 246 / 255, 200 / 255)
 
@@ -94,7 +97,7 @@ struct BrandPalette: Equatable {
             ember = highContrast ? RGB(122 / 255, 79 / 255, 5 / 255) : RGB(147 / 255, 96 / 255, 10 / 255)
             accent = Fill(top: Self.auroraHighlight, bottom: Self.aurora, ink: Self.ink, edge: aurora)
             stop = Fill(top: Self.coral, bottom: Self.coral, ink: Self.ink, edge: coral)
-            working = Fill(top: Self.glacier, bottom: Self.glacier, ink: Self.ink, edge: glacier)
+            working = Fill(top: Self.calmGlacier, bottom: Self.calmGlacier, ink: Self.ink, edge: glacier)
             keyGlyph = aurora
             pill = keyFill
             pillAlpha = 1

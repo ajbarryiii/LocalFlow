@@ -9,6 +9,7 @@ enum KeyboardLookTests {
             ("brandFillsStandOffTheBackdropOrHaveAnEdge", testBrandFillsStandOffTheBackdropOrHaveAnEdge),
             ("brandGlyphsAndStrokesReachThreeToOne", testBrandGlyphsAndStrokesReachThreeToOne),
             ("lightModeUsesDeeperHues", testLightModeUsesDeeperHues),
+            ("theLightWaitingCapsuleIsCalmer", testTheLightWaitingCapsuleIsCalmer),
             ("highlightedCandidateStaysLegible", testHighlightedCandidateStaysLegible),
             ("swipeTrailRunsFromGlacierToAurora", testSwipeTrailRunsFromGlacierToAurora),
             ("menuLinkIsTheBrandAccent", testMenuLinkIsTheBrandAccent),
@@ -110,6 +111,32 @@ enum KeyboardLookTests {
                            (normal.ember, high.ember)] {
                 TestSupport.expect(ratio(b, high.backdrop) >= ratio(a, normal.backdrop) - 1e-9, "Increase Contrast lowered a stroke")
             }
+        }
+    }
+
+    /// Round 6 council (Opus, visual): on the light keyboard the bright glacier capsule (preparing, transcribing) was the
+    /// loudest thing on the bar while the user waits, louder than Stop, the action before it. There its fill is the glacier
+    /// at about 85% of its saturation, the same hue and brightness; ink on it and its edge keep their contrast (the AA and
+    /// edge tests above). The dark keyboard keeps the app's glacier.
+    private static func testTheLightWaitingCapsuleIsCalmer() {
+        func saturation(_ c: RGB) -> Double {
+            let high = max(c.red, c.green, c.blue), low = min(c.red, c.green, c.blue)
+            return high > 0 ? (high - low) / high : 0
+        }
+        for high in [false, true] {
+            let light = BrandPalette(dark: false, highContrast: high), dark = BrandPalette(dark: true, highContrast: high)
+            TestSupport.expectEqual(dark.working.top, BrandPalette.glacier)
+            TestSupport.expectEqual(dark.working.bottom, BrandPalette.glacier)
+            for fill in [light.working.top, light.working.bottom] {
+                let share = saturation(fill) / saturation(BrandPalette.glacier)
+                TestSupport.expect(share >= 0.8 && share <= 0.9, "light working saturation \(share) of the glacier's")
+                TestSupport.expect(sameHue(fill, BrandPalette.glacier), "light working hue \(hue(fill))")
+                TestSupport.expect(abs(max(fill.red, fill.green, fill.blue) - max(BrandPalette.glacier.red, BrandPalette.glacier.green,
+                                                                                  BrandPalette.glacier.blue)) < 0.01,
+                                   "light working brightness")
+                TestSupport.expect(ratio(light.working.ink, fill) >= 4.5, "ink on the light working fill")
+            }
+            TestSupport.expect(light.working.edge.map { ratio($0, light.backdrop) >= 3 } == true, "light working edge")
         }
     }
 
