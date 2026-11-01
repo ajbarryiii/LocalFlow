@@ -57,6 +57,18 @@ struct WordTapRecord: Equatable, Sendable {
         return before.hasSuffix(String(boundary) + text)
     }
 
+    /// Whether `before` (the proxy's text before the caret) shows the owned word or an earlier state of it: the proxy
+    /// may show the editor's own letters late, never anything else. `isShown` for the word with its last characters
+    /// left out (none to all). False for an unowned record or a missing reading.
+    func mayBeShown(before: String?) -> Bool {
+        guard owned, let before else { return false }
+        let prefix = boundary.map { String($0) } ?? ""
+        return (0 ... entries.count).contains { kept in
+            let shown = prefix + String(entries.prefix(kept).map(\.character))
+            return boundary == nil ? before == shown : before.hasSuffix(shown)
+        }
+    }
+
     /// Unowned and empty.
     mutating func clear() {
         entries = []

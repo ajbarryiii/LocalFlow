@@ -117,6 +117,8 @@ struct KeyTouchModel: Equatable, Sendable {
     var softTapsEnabled = false
     private(set) var keys: [PlacedKey] = []
     private(set) var layer = KeyboardLayer.letters
+    /// The kind of field the keys are for: its "." may have its own alternates (`alternateOptions`).
+    private(set) var field = KeyboardField.standard
     /// Held fingers in press order.
     private(set) var touches: [Touch] = []
     private(set) var trackpadTouch: TouchID?
@@ -355,7 +357,13 @@ struct KeyTouchModel: Equatable, Sendable {
     func wantsAlternates(_ id: TouchID) -> Bool {
         guard let touch = touches.first(where: { $0.id == id }), touch.role == .character, !touch.committed,
               case .character(let character) = shownAction(touch) else { return false }
-        return !KeyAlternates.options(for: character).isEmpty
+        return !alternateOptions(for: character).isEmpty
+    }
+
+    /// The alternates row of a character on the current keys: the field's own only on the letters layer, where its
+    /// keys are (`KeyboardLayout.keys`).
+    func alternateOptions(for character: String) -> [String] {
+        KeyAlternates.options(for: character, field: layer == .letters ? field : .standard)
     }
 
     /// The alternates timer of a character touch fired: opens its row, when it is still held, uncommitted, has
@@ -365,11 +373,11 @@ struct KeyTouchModel: Equatable, Sendable {
         let touch = touches[index]
         guard touch.role == .character, !touch.committed, touch.alternateFrames.isEmpty,
               let shown = shownAction(touch), case .character(let character) = shown else { return false }
-        let options = KeyAlternates.options(for: character)
+        let options = alternateOptions(for: character)
         guard !options.isEmpty, let key = keys.first(where: { $0.action == shown }) ?? keys.first(where: { $0.action == touch.action })
         else { return false }
         touches[index].alternates = options
-        touches[index].alternateFrames = KeyAlternates.frames(count: options.count, key: key.frame, width: areaWidth)
+        touches[index].alternateFrames = KeyAlternates.frames(options: options, key: key.frame, width: areaWidth)
         touches[index].selectedAlternate = 0
         touches[index].alternatesOriginX = touch.x
         touches[index].alternatesMoved = false
@@ -398,9 +406,10 @@ struct KeyTouchModel: Equatable, Sendable {
     /// The keys were rebuilt (a layer or shift change, or a new size). Held slides and layer-key fingers
     /// follow the keys under them; a held character keeps its key; a finger whose function key is gone is
     /// dropped. Letter keys set the swipe threshold.
-    mutating func keysChanged(_ keys: [PlacedKey], layer: KeyboardLayer) -> [Effect] {
+    mutating func keysChanged(_ keys: [PlacedKey], layer: KeyboardLayer, field: KeyboardField = .standard) -> [Effect] {
         self.keys = keys
         self.layer = layer
+        self.field = field
         // Half the letter pitch.
         if layer == .letters, let pitch = KeyboardLayout.letterPitch(in: keys) { swipeThreshold = pitch / 2 }
         var resized = false

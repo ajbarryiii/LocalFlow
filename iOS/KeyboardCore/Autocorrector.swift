@@ -28,7 +28,8 @@ import Foundation
 /// - The best form (ties: higher frequency, then alphabetically first) replaces the word only if it beats
 ///   keep by log(margin): `marginOOV` for a word outside the lexicon; for a lexicon word `marginApostrophe`
 ///   when the best has the typed key, else `marginKnown`.
-/// - Suggestions (the strip after a commit key) rank the same scores without a margin.
+/// - Suggestions (the strip after a commit key) rank the same scores without a margin, for any word, lexicon words
+///   included: the forms other than the word whose odds against keeping it are at least `suggestionFloor`.
 ///
 /// Where the reference raises (taps of the wrong count, a word with characters other than a–z and
 /// apostrophes, invalid parameters, a negative, NaN or infinite `wSpelling`, keys without a letter pitch),
@@ -80,13 +81,18 @@ final class Autocorrector: WordCorrecting {
         guard lowest != .infinity else { return word }
         guard let search = search(typed, points: points, keys: keys, params: p, constants: constants) else { return word }
         let words = Self.sentenceWords(context)
-        var keep = Double(n) * constants.match + Self.pairwiseSum((0 ..< n).map { search.table[$0 * 26 + typed.codes[$0]] })
-        keep += p.lmWeight * (model.logProbs(context: words, words: [known ? word : Self.unknown]).first ?? -.infinity)
-        if !known { keep += p.logOOV }
+        let keep = keepScore(typed, word: word, known: known, search: search, words: words, params: p, constants: constants)
 
         // A model log probability is at most 0, so a channel below keep + the lowest threshold cannot win.
         guard let scored = scoredForms(search, words: words, params: p, bar: p.lmWeight >= 0 ? keep + lowest : nil)
         else { return word }
+        return choice(scored, keep: keep, word: word, typedKey: typed.key, known: known, constants: constants) ?? word
+    }
+
+    /// The best of the scored forms (ties: higher frequency, then the first form) when it beats keeping the word by
+    /// its margin; nil to keep the word.
+    private func choice(_ scored: (ids: [Int], forms: [String], scores: [Double]), keep: Double, word: String, typedKey: String,
+                        known: Bool, constants: Constants) -> String? {
         let (ids, forms, scores) = scored
         var best = -1
         var bestFrequency = 0
@@ -97,38 +103,149 @@ final class Autocorrector: WordCorrecting {
                 bestFrequency = frequency
             }
         }
+        guard best >= 0 else { return nil }
         let threshold: Double
         if !known {
             threshold = constants.thresholdOOV
-        } else if Self.key(of: forms[best]) == typed.key {
+        } else if Self.key(of: forms[best]) == typedKey {
             threshold = constants.thresholdApostrophe
         } else {
             threshold = constants.thresholdKnown
         }
-        guard forms[best] != word, scores[best].isFinite, scores[best] - keep >= threshold else { return word }
+        guard forms[best] != word, scores[best].isFinite, scores[best] - keep >= threshold else { return nil }
         return forms[best]
+    }
+
+    // MARK: Suggestions while typing
+
+    /// The context the completions were last ranked in, and every form's model log probability there
+    /// (`WordModel.logProbs(context:allFormsOf:)`): one read-out per context, not per keystroke. Dropped by
+    /// `forgetContext`.
+    private var completionContext: [String]?
+    private var completionLogProbs: [Double] = []
+
+    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions): `correct`'s result for it, and the
+    /// best `limit` other forms by their odds against keeping it (score minus keep's, as in `alternatives`):
+    /// - completions: the forms starting with the word (a range of ids, `WordLexicon.formRange`), scored as the word
+    ///   typed so far matched exactly, so by the weighted model log probability in the sentence's context alone;
+    /// - typo-tolerant matches: `alternatives` at the suggestion floor (none below `minLength` letters).
+    /// Ties go to the higher frequency, then the first form. The word itself is never one of them.
+    func predictions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params p: AutocorrectParams, limit: Int) -> WordPredictions {
+        guard limit > 0, let typed = Typed(word), !typed.codes.isEmpty else { return WordPredictions(words: [], isWord: false) }
+        let words = Self.sentenceWords(context)
+        let known = lexicon.contains(word)
+        // Keep's model part: completions share its channel, so their odds are their model part minus this.
+        let keepModel = p.lmWeight * (model.logProbs(context: words, words: [known ? word : Self.unknown]).first ?? -.infinity)
+            + (known ? 0 : p.logOOV)
+        var odds: [Int: Double] = [:]
+        var correction: String?
+        let n = typed.codes.count
+        if points.count == typed.bytes.count, n >= p.minLength, let constants = Constants(p),
+           let search = search(typed, points: points, keys: keys, params: p, constants: constants),
+           let scored = scoredForms(search, words: words, params: p, bar: nil) {
+            let keep = keepScore(typed, word: word, known: known, search: search, words: words, params: p, constants: constants)
+            // A typed word the model gives no probability: every match is infinitely better, and they rank by their
+            // scores against keeping's channel alone (as the completions rank against keeping's model part of 0).
+            let reference = keep.isFinite ? keep : keepChannel(typed, search: search, constants: constants)
+            let floor = keep.isFinite ? Self.suggestionFloor : -.infinity
+            // As `correct`: where every margin that could apply is infinite, it keeps the word without looking.
+            let lowest = !known ? constants.thresholdOOV
+                : lexicon.forms(ofKey: typed.key).contains(where: { $0 != word })
+                ? min(constants.thresholdKnown, constants.thresholdApostrophe) : constants.thresholdKnown
+            if lowest != .infinity {
+                correction = choice(scored, keep: keep, word: word, typedKey: typed.key, known: known, constants: constants)
+            }
+            for index in scored.forms.indices where scored.forms[index] != word && scored.scores[index].isFinite {
+                let logOdds = scored.scores[index] - reference
+                if logOdds >= floor { odds[scored.ids[index]] = max(odds[scored.ids[index]] ?? -.infinity, logOdds) }
+            }
+        }
+        if completionContext != words {
+            completionLogProbs = model.logProbs(context: words, allFormsOf: lexicon)
+            completionContext = words
+        }
+        // The best few completions only: the range may hold thousands of forms after one letter.
+        var best: [(id: Int, logOdds: Double)] = []
+        let own = known ? lexicon.formID(of: word) : nil
+        for id in lexicon.formRange(prefix: word) where id != own {
+            let logOdds = p.lmWeight * completionLogProbs[id] - (keepModel.isFinite ? keepModel : 0)
+            guard logOdds.isFinite else { continue }
+            if best.count == limit, let last = best.last, !ranks(logOdds, id, before: last) { continue }
+            best.insert((id, logOdds), at: best.firstIndex { ranks(logOdds, id, before: $0) } ?? best.count)
+            if best.count > limit { best.removeLast() }
+        }
+        for completion in best { odds[completion.id] = max(odds[completion.id] ?? -.infinity, completion.logOdds) }
+        let ranked = odds.sorted { ranks($0.value, $0.key, before: ($1.key, $1.value)) }
+        return WordPredictions(correction: correction, words: ranked.prefix(limit).map { lexicon.form(at: $0.key) }, isWord: known)
+    }
+
+    /// Whether form `id` with `logOdds` ranks before `other`: higher odds, then higher frequency, then the first form
+    /// (ids follow code point order).
+    private func ranks(_ logOdds: Double, _ id: Int, before other: (id: Int, logOdds: Double)) -> Bool {
+        if logOdds != other.logOdds { return logOdds > other.logOdds }
+        let frequency = lexicon.frequency(ofFormAt: id), otherFrequency = lexicon.frequency(ofFormAt: other.id)
+        if frequency != otherFrequency { return frequency > otherFrequency }
+        return id < other.id
     }
 
     func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                      params: AutocorrectParams, limit: Int) -> [String] {
-        guard limit > 0, let typed = Typed(word), points.count == typed.bytes.count, !lexicon.contains(word) else { return [] }
-        let n = typed.codes.count
-        guard n >= params.minLength, n > 0, let constants = Constants(params),
-              let search = search(typed, points: points, keys: keys, params: params, constants: constants),
-              let scored = scoredForms(search, words: Self.sentenceWords(context), params: params, bar: nil)
-        else { return [] }
-        let (ids, forms, scores) = scored
-        let frequencies = ids.map(lexicon.frequency(ofFormAt:))
-        let ranked = forms.indices.filter { scores[$0].isFinite }.sorted {
-            Self.precedes(scores[$0], frequencies[$0], forms[$0], scores[$1], frequencies[$1], forms[$1])
-        }
-        return ranked.prefix(limit).map { forms[$0] }
+        guard limit > 0 else { return [] }
+        return alternatives(context: context, word: word, points: points, keys: keys, params: params,
+                            floor: Self.suggestionFloor).prefix(limit).map(\.form)
     }
 
-    /// Drops the word model's caches of sentence contexts. The corrector itself keeps no context or word
-    /// between calls (only the letters layout it last saw).
+    /// The least posterior odds against keeping the word (natural log) at which a form is suggested: 1 in 10, the
+    /// mirror of the bundle's known-word margin (10). A word typed as meant scores far above every other form and
+    /// gets none; a near miss is suggested although no margin replaces it: "too" → "to" (0.16), "its" → "it's"
+    /// (1.9), "were" → "we're" (0.9) with the bundle's model (ARCHITECTURE.md, "Word autocorrect", Suggestions).
+    static let suggestionFloor = log(0.1)
+
+    /// The lexicon forms other than `word`, ranked as `correct` ranks them (score, then frequency, then the first
+    /// form), with their score minus keeping the word's (the log posterior odds against keeping it), those at least
+    /// `floor`; none where `correct` keeps without looking (invalid inputs, a key shorter than `minLength`).
+    func alternatives(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                      params: AutocorrectParams, floor: Double) -> [(form: String, logOdds: Double)] {
+        guard let typed = Typed(word), points.count == typed.bytes.count else { return [] }
+        let n = typed.codes.count
+        let words = Self.sentenceWords(context)
+        guard n >= params.minLength, n > 0, let constants = Constants(params),
+              let search = search(typed, points: points, keys: keys, params: params, constants: constants)
+        else { return [] }
+        let keep = keepScore(typed, word: word, known: lexicon.contains(word), search: search, words: words, params: params,
+                             constants: constants)
+        guard let scored = scoredForms(search, words: words, params: params, bar: nil) else { return [] }
+        let (ids, forms, scores) = scored
+        let frequencies = ids.map(lexicon.frequency(ofFormAt:))
+        let ranked = forms.indices.filter { forms[$0] != word && scores[$0].isFinite && scores[$0] - keep >= floor }.sorted {
+            Self.precedes(scores[$0], frequencies[$0], forms[$0], scores[$1], frequencies[$1], forms[$1])
+        }
+        return ranked.map { (forms[$0], scores[$0] - keep) }
+    }
+
+    /// Keeping the typed word's channel: every letter matched at its tap.
+    private func keepChannel(_ typed: Typed, search: Search, constants: Constants) -> Double {
+        let n = typed.codes.count
+        return Double(n) * constants.match + Self.pairwiseSum((0 ..< n).map { search.table[$0 * 26 + typed.codes[$0]] })
+    }
+
+    /// Keeping the typed word: every letter matched at its tap, plus the weighted model log probability of the
+    /// word (of "<unk>" plus `logOOV` for a word outside the lexicon).
+    private func keepScore(_ typed: Typed, word: String, known: Bool, search: Search, words: [String], params p: AutocorrectParams,
+                           constants: Constants) -> Double {
+        var keep = keepChannel(typed, search: search, constants: constants)
+        keep += p.lmWeight * (model.logProbs(context: words, words: [known ? word : Self.unknown]).first ?? -.infinity)
+        if !known { keep += p.logOOV }
+        return keep
+    }
+
+    /// Drops the word model's caches of sentence contexts, and the completions' ranking of the last one. Otherwise
+    /// the corrector keeps no context or word between calls (only the letters layout it last saw).
     func forgetContext() {
         model.forgetContext()
+        completionContext = nil
+        completionLogProbs = []
     }
 
     /// The lexicon keys a typed key's corrections are drawn from, sorted (`Corrector.candidates`); empty for

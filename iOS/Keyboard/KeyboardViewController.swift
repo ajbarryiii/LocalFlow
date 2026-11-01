@@ -201,11 +201,10 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         client.documentChanged(to: proxy.documentIdentifierIfAvailable)
         keyArea.returnKeyType = proxy.returnKeyType ?? .default
         keyArea.field = Self.field(for: proxy.keyboardType ?? .default)
-        // A field that asks for a dark keyboard gets one. Otherwise follow the system's appearance, which also
-        // tracks a live switch. `.light` is not pinned: Safari's address bar asks for it in dark mode while its
-        // keyboard backdrop stays dark, so pinned light keys would sit on dark glass (simulator, iOS 26.4).
-        let style: UIUserInterfaceStyle = proxy.keyboardAppearance == .dark ? .dark : .unspecified
-        if overrideUserInterfaceStyle != style { overrideUserInterfaceStyle = style }
+        // The appearance is never pinned from `proxy.keyboardAppearance`: the keyboard's window traits follow the
+        // host's keyboard backdrop, live switches included. The proxy's value is the host's appearance when it last
+        // sent its traits, so a host that missed a switch in the background reports the old one (ARCHITECTURE.md,
+        // "Appearance and accessibility").
         updateReturnKey()
         readField()
     }

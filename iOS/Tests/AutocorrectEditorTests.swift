@@ -18,6 +18,9 @@ enum AutocorrectEditorTests {
             ("correctionKeepsTheTypedCase", testCorrectionKeepsTheTypedCase),
             ("thePronounIIsCapitalized", testThePronounIIsCapitalized),
             ("thePronounIFollowsTheGates", testThePronounIFollowsTheGates),
+            ("chatWordsAreKeptAsTyped", testChatWordsAreKeptAsTyped),
+            ("dayAndMonthNamesTakeACapital", testDayAndMonthNamesTakeACapital),
+            ("cantAndWontTakeTheirApostrophe", testCantAndWontTakeTheirApostrophe),
             ("apostrophesAreKeptAroundTheWord", testApostrophesAreKeptAroundTheWord),
             ("keptWordsAreNotReplaced", testKeptWordsAreNotReplaced),
             ("swipedWordsAreNotCorrected", testSwipedWordsAreNotCorrected),
@@ -292,6 +295,105 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(unowned.text, "i ")
     }
 
+    private static func testChatWordsAreKeptAsTyped() {
+        // Common chat abbreviations and slang stay as typed in any case, without asking the corrector, even one that
+        // would change them (round 1 council: "lol " became "lil").
+        let chat = ["lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
+                    "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
+                    "yep", "nope"]
+        var corrections = Dictionary(uniqueKeysWithValues: chat.map { ($0, "lil") })
+        corrections["teh"] = "the"
+        corrections["dont"] = "don't"
+        let rig = AutocorrectRig("", corrections: corrections)
+        for word in chat {
+            rig.tap(word)
+            rig.press(.space)
+        }
+        rig.tap("Lol")
+        rig.press(.character("!"))
+        rig.press(.space)
+        rig.tap("OMG")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, chat.joined(separator: " ") + " Lol! OMG ")
+        TestSupport.expectEqual(rig.corrector.calls.count, 0)
+        TestSupport.expectEqual(rig.strip, nil)
+        // Real corrections still happen.
+        rig.tap("teh")
+        rig.press(.space)
+        rig.tap("dont")
+        rig.press(.space)
+        TestSupport.expect(rig.text.hasSuffix(" OMG the don't "), "corrections after chat words: \(rig.text)")
+        // A longer word that starts like one is not kept.
+        let longer = AutocorrectRig("", corrections: ["lolz": "lol", "okk": "ok"])
+        longer.tap("lolz")
+        longer.press(.space)
+        longer.tap("okk")
+        longer.press(.space)
+        TestSupport.expectEqual(longer.text, "lol ok ")
+    }
+
+    private static func testDayAndMonthNamesTakeACapital() {
+        // Kept or corrected, a day or month name takes a capital first letter, as the pronoun I does.
+        for name in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february",
+                     "april", "june", "july", "august", "september", "october", "november", "december"] {
+            TestSupport.expectEqual(WordAutocorrect.cased(name, like: name), name.prefix(1).uppercased() + name.dropFirst())
+        }
+        TestSupport.expectEqual(WordAutocorrect.cased("friday", like: "FRIDAY"), "FRIDAY")
+        TestSupport.expectEqual(WordAutocorrect.cased("friday's", like: "fridays"), "Friday's")
+        // "may" and "march" are ordinary words too, and stay as typed.
+        TestSupport.expectEqual(WordAutocorrect.cased("may", like: "may"), "may")
+        TestSupport.expectEqual(WordAutocorrect.cased("march", like: "march"), "march")
+        let rig = AutocorrectRig("", corrections: ["fridya": "friday", "jnue": "june"])
+        for word in ["see", "you", "friday", "or", "fridya", "in", "jnue", "or", "may", "march", "friday's", "Sunday"] {
+            rig.tap(word)
+            rig.press(.space)
+        }
+        TestSupport.expectEqual(rig.text, "see you Friday or Friday in June or may march Friday's Sunday ")
+        // The strip offers the word as typed, and a Delete right after reverts it for the rest of the session.
+        let reverted = AutocorrectRig.typingASpace(after: "on", corrections: [:])
+        reverted.tap("monday")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "on Monday ")
+        TestSupport.expectEqual(reverted.strip, SwipeStrip(candidates: ["monday", "Monday"], inserted: 1))
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "on monday")
+        reverted.press(.space)
+        reverted.tap("monday")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "on monday monday ")
+        // Capitalizing is autocorrect: off with it.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("friday")
+        off.press(.space)
+        TestSupport.expectEqual(off.text, "friday ")
+    }
+
+    private static func testCantAndWontTakeTheirApostrophe() {
+        // As "dont" becomes "don't", "cant" and "wont" become "can't" and "won't", even where the corrector keeps them
+        // (both are words of the lexicon), in the typed word's case.
+        let rig = AutocorrectRig("", corrections: [:])
+        for word in ["cant", "wont", "Cant", "WONT"] {
+            rig.tap(word)
+            rig.press(.space)
+        }
+        TestSupport.expectEqual(rig.text, "can't won't Can't WON'T ")
+        // A Delete right after reverts it, as any correction.
+        let reverted = AutocorrectRig.typingASpace(after: "i", corrections: [:])
+        reverted.tap("cant")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.strip, SwipeStrip(candidates: ["cant", "can't"], inserted: 1))
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "i cant")
+        TestSupport.expectEqual(reverted.editor.revertedWords, ["cant"])
+        // Off with autocorrect.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("wont")
+        off.press(.space)
+        TestSupport.expectEqual(off.text, "wont ")
+    }
+
     private static func testApostrophesAreKeptAroundTheWord() {
         let rig = AutocorrectRig("", corrections: ["cant": "can't", "teh": "the", "dont": "don't"])
         rig.tap("cant")
@@ -348,7 +450,7 @@ enum AutocorrectEditorTests {
         rig.swipe(["tha", "teh"])
         rig.editor.chooseSwipeCandidate(at: 1, now: rig.tick())
         rig.press(.character("."))
-        TestSupport.expectEqual(rig.text, "teh hellp teh.")
+        TestSupport.expectEqual(rig.text, "teh hellp teh. ")
         TestSupport.expectEqual(rig.corrector.calls.count, 0)
         // A tapped letter after a swiped word (with its owed space) is a new, tapped word.
         rig.swipe(["word"])
@@ -1039,22 +1141,22 @@ enum AutocorrectEditorTests {
         let rig = AutocorrectRig.typingASpace(after: "hi", alternatives: ["wrld": ["world", "would"]])
         rig.tap("wrld")
         rig.press(.character(","))
+        // A chosen word ends with one space (round 2), here after the commit key's mark.
         rig.choose(1)
-        TestSupport.expectEqual(rig.text, "hi world,")
-        TestSupport.expectEqual(rig.document.host.caret, 9)
+        TestSupport.expectEqual(rig.text, "hi world, ")
+        TestSupport.expectEqual(rig.document.host.caret, 10)
         TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["wrld", "world", "would"], inserted: 1))
         rig.choose(2)
-        TestSupport.expectEqual(rig.text, "hi would,")
+        TestSupport.expectEqual(rig.text, "hi would, ")
         rig.choose(0)
-        TestSupport.expectEqual(rig.text, "hi wrld,")
+        TestSupport.expectEqual(rig.text, "hi wrld, ")
         // Choosing the word already in the field does nothing.
         let insertions = rig.document.insertions.count
         rig.choose(0)
-        TestSupport.expectEqual(rig.text, "hi wrld,")
+        TestSupport.expectEqual(rig.text, "hi wrld, ")
         TestSupport.expectEqual(rig.document.insertions.count, insertions)
         TestSupport.expect(rig.editor.revertedWords.isEmpty, "a kept word chosen back is not reverted")
         // The next word is still this keyboard's own: corrected at its commit key.
-        rig.press(.space)
         rig.tap("teh")
         rig.press(.space)
         TestSupport.expectEqual(rig.text, "hi wrld, the ")
@@ -1184,8 +1286,11 @@ final class FakeCorrector: WordCorrecting {
 
     var corrections: [String: String]
     var alternatives: [String: [String]]
+    /// The predictions while a word is typed, by the word so far; none for any other.
+    var predicted: [String: WordPredictions] = [:]
     private(set) var calls: [Call] = []
     private(set) var suggestionCalls: [(call: Call, limit: Int)] = []
+    private(set) var predictionCalls: [Call] = []
 
     init(_ corrections: [String: String], alternatives: [String: [String]] = [:]) {
         self.corrections = corrections
@@ -1204,6 +1309,12 @@ final class FakeCorrector: WordCorrecting {
         return Array((alternatives[word] ?? []).prefix(limit))
     }
 
+    func predictions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params: AutocorrectParams, limit: Int) -> WordPredictions {
+        predictionCalls.append(Call(context: context, word: word, points: points, keys: keys, params: params))
+        return predicted[word] ?? WordPredictions(words: [], isWord: false)
+    }
+
     func forgetContext() {}
 }
 
@@ -1220,12 +1331,19 @@ final class AutocorrectRig {
     var enabled = true
     var secure = false
     var autocorrectionDisabled = false
+    var field = KeyboardField.standard
     var autocapitalization: AutocapitalizationMode = .none
     private var time: TimeInterval = 100
 
-    init(_ text: String, corrections: [String: String], alternatives: [String: [String]] = [:], editCallbackDelay: Int? = nil,
-         documentID: UUID? = UUID()) {
-        document = FakeDocument(FakeTextHost(text: text), documentID: documentID)
+    convenience init(_ text: String, corrections: [String: String], alternatives: [String: [String]] = [:],
+                     editCallbackDelay: Int? = nil, documentID: UUID? = UUID()) {
+        self.init(document: FakeDocument(FakeTextHost(text: text), documentID: documentID), corrections: corrections,
+                  alternatives: alternatives, editCallbackDelay: editCallbackDelay)
+    }
+
+    init(document: FakeDocument, corrections: [String: String], alternatives: [String: [String]] = [:],
+         editCallbackDelay: Int? = nil) {
+        self.document = document
         document.editCallbackDelay = editCallbackDelay
         let trackpad = TrackpadController(host: document)
         trackpad.parameters = .flat
@@ -1235,7 +1353,7 @@ final class AutocorrectRig {
         editor.autocorrect = { [unowned self] in
             guard self.enabled else { return nil }
             return AutocorrectSetup(corrector: self.corrector, keys: Self.keys, params: self.params, secureTextEntry: self.secure,
-                                    autocorrectionDisabled: self.autocorrectionDisabled)
+                                    autocorrectionDisabled: self.autocorrectionDisabled, field: self.field)
         }
         editor.reset(numeric: false)
     }

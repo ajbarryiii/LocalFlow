@@ -302,7 +302,7 @@ enum KeyboardPresenterTests {
         TestSupport.expectEqual(mode(other, Fixture.intent(.finish)), .preparingModel)
     }
 
-    /// `isModelPreparing` (the recording line's "preparing model") reads only a live host's status.
+    /// `isModelPreparing` (the recording line's "model loads") reads only a live host's status.
     private static func testModelPreparingOnlyFromALiveHost() {
         let recording = Fixture.dictation(.recording)
         TestSupport.expect(KeyboardPresenter.isModelPreparing(status: .value(status(model: .preparing, dictation: recording)),

@@ -423,7 +423,13 @@ final class FakeDocument: TextDocument, TrackpadHost {
     }
 
     var text: String { host.text }
-    var contextBefore: String? { host.context.before.isEmpty ? nil : host.context.before }
+    /// While set, the proxy still shows this text before the caret (nil inside: none), not the host's: our own edits
+    /// shown late, with no callback, as UIKit was measured to do.
+    var lateBefore: String??
+    var contextBefore: String? {
+        if let lateBefore { return lateBefore }
+        return host.context.before.isEmpty ? nil : host.context.before
+    }
     var contextAfter: String? { host.context.after.isEmpty ? nil : host.context.after }
     var hasSelection: Bool { host.hasSelection }
 

@@ -386,7 +386,7 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 `KeyboardPresenter.isModelPreparing(status:now:)` is true when the status is
 a `.value` of the current schema, the host is alive (as in 4) and
 `status.model` is `preparing`. While recording, the keyboard then reads
-"Listening · preparing model". A dead host's last status never shows
+"Listening · model loads". A dead host's last status never shows
 preparation.
 
 **Stale-writer guard.** Right before writing `finish` or `cancel`, the
@@ -1013,8 +1013,8 @@ transcripts or other user data.
 ### Top row
 
 `DictationBarView` (SwiftUI) renders `KeyboardDictationClient.state`, the
-candidate strip and the "Never correct" offer only, so typing never
-re-renders it. It reports its controls' frames to the key area, which takes
+candidate strip and the "Never correct" offer only, so typing re-renders it
+only when the strip's words change (suggestions while a word is typed). It reports its controls' frames to the key area, which takes
 every other point of the bar
 ([Reach and touch regions](#reach-and-touch-regions)).
 
@@ -1032,9 +1032,15 @@ every other point of the bar
   dimming the keys, with the session status, "Open LocalFlow", the trackpad
   tip with the field's text width ("Full width" or "Chat bubble",
   [Field profiles](#field-profiles)), and details of anything that keeps
-  dictation from working. Its text follows Dynamic Type, and the card scrolls
-  when it does not fit (landscape, the largest sizes). A tap outside the
-  panel's card, or on the button, closes it.
+  dictation from working. The card spans the key area with an 8-point margin
+  on each side; its text follows Dynamic Type and reads at WCAG AA (4.5:1 or
+  better) on it in light and dark mode (`MenuPalette`: a white card in light
+  mode, a dark grey one in dark mode, "Open LocalFlow" in a blue that keeps
+  its contrast). When it does not fit (landscape, the largest sizes) it
+  scrolls inside its rounded corners, and at the accessibility sizes the
+  text-width choice comes before its explanation. The session line is the
+  bar's ("Session ends after 5 min idle"). A tap outside the panel's card, or
+  on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
   status (model preparation, errors, notices): "Preparing model…" in
@@ -1054,10 +1060,14 @@ every other point of the bar
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
-- **Appearance and accessibility.** A field's `keyboardAppearance` `.dark`
-  pins a dark keyboard; anything else follows the system. `.light` is not
-  pinned: Safari's address bar asks for it in dark mode while the host keeps
-  its keyboard backdrop dark, so pinned light keys would sit on dark glass. Bold Text
+- **Appearance and accessibility.** The keyboard follows its window's
+  traits, which iOS keeps with the host's keyboard backdrop: dark in an app
+  that is always dark (LocalFlow) under a light system, and live switches
+  included. `keyboardAppearance` is never pinned. The proxy reports the
+  host's appearance as of its last traits, so a host that missed a switch in
+  the background (LocalFlow in front with the keyboard up, dark to light,
+  back to Messages) still reports `.dark` while its backdrop is light; dark
+  keys pinned from it sat on light glass (simulator, iOS 26.4). Bold Text
   makes key captions and bar text bold; Increase Contrast gives the keys a
   lighter fill in dark mode and a visible edge; Reduce Motion drops the bar's
   press shrink and the capsule's spring (key-press highlights stay).
@@ -1111,12 +1121,20 @@ keyboard hides.
   first, centred over the key, then its alternates (accented letters for a e i
   o u c n s y z l; dashes, ellipsis, curly quotes, currencies, inverted marks
   and similar for punctuation; other domains for ".com"), running towards the
-  keyboard's middle and kept inside its sides.
+  keyboard's middle and kept inside its sides. In a web search field
+  (Safari's address bar) the letters layer's "." offers the domains (".com",
+  ".org", ".net", ".edu", ".us") instead of the ellipsis; a tap still types
+  ".". A row with a domain has cells `KeyAlternates.domainCellWidth` (44 pt)
+  wide, so it starts over its key on a 375-point phone rather than being
+  pushed off it by cells as wide as the ".com" key.
 - Its callout gives way to the row. Sliding sideways picks the cell under the
   finger once it has moved `KeyAlternates.moveSlop` (6 pt), the lift's own
   position included; the lift (or a rollover) types the pick. A finger that never moved that far types what a
   tap would, soft-tap decision included. A cancelled touch types nothing; a
   rebuild under an open row closes it.
+- VoiceOver reaches them as the key's custom actions
+  (`KeyAlternates.accessibilityActions`): one per alternate, in the row's
+  order, named as the key shows it, each typing it as the row would.
 - Fast typing never sees a row: a key released or committed by the next
   finger before the timer fires types at once. A drag that becomes a swipe
   first stays a swipe, and an open row never becomes one. Space (the
@@ -1245,9 +1263,10 @@ The views are touchable ("Touchable backgrounds",
   running swipe.
 - Keys are ignored while the trackpad runs or a swipe that is not a skid is
   in progress ([Swipe typing](#swipe-typing)).
-- The only predictions are soft key edges' and autocorrect's, from fixed
-  models ([Soft key edges](#soft-key-edges),
-  [Word autocorrect](#word-autocorrect)). Nothing is learned from typing.
+- The only predictions are soft key edges' and autocorrect's (its
+  suggestions while typing included), from fixed models
+  ([Soft key edges](#soft-key-edges), [Word autocorrect](#word-autocorrect)).
+  Nothing is learned from typing.
 
 ### Shift, caps lock and spacing (TypingRules)
 
@@ -1512,8 +1531,9 @@ widths (`FieldLayoutParameters`):
   (WebKit), gets Messages, but only in portrait at the measured widths 390,
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
 - **Manual choice.** The menu offers the two as "Full width" and "Chat
-  bubble", after "Hold space to move the cursor. On the wrong line? Try the
-  other text width". With Full Access
+  bubble", after "Hold space to move the cursor. Wrong line? Switch this
+  field to:" (at the accessibility text sizes the choice comes first, then
+  "... Switch this field above."). With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
   64 entries); without it, it holds for the keyboard instance only. Only the
   keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
@@ -1621,13 +1641,24 @@ load through their own `BundleModelLoader`, in parallel.
 
 **Candidate strip.** After a swipe, the middle of the top row shows up to
 three candidates, cased the same way, the inserted word emphasized.
-Autocorrect shows its choices in the same strip after a commit key
-([Word autocorrect](#word-autocorrect)).
+Autocorrect shows its choices in the same strip after a commit key, and its
+suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
 
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
   field (the edit generation). Otherwise the tap does nothing and the strip
   closes.
+- **A tapped word ends with one space** (owner, round 2), the caret after it:
+  a choice after a swipe puts the word in followed by a space, and tapping
+  the swiped word itself adds the space. None is added where a space already
+  follows the caret, so it is never doubled; the caret then stays before that
+  space, and a letter typed next gets a space of its own first, as after a
+  swiped word, so it never joins the chosen word. Punctuation (`. , ! ? ; :`)
+  typed right after a choice's own space goes before it ("word, "), as on
+  Apple's keyboard; Shift and layer keys keep that, any other key ends it.
+  A space a choice adds is a space: the numbers layer goes back to letters,
+  as after the space key.
+  After a choice, Delete deletes the space, then characters, as usual.
 - The strip closes on any other key action, a dictation insert, a field
   change, the trackpad, an outside text change, or hiding.
 - While the strip shows after a swipe, the first deletion (a tap, or a held
@@ -1823,6 +1854,9 @@ back.
   - it holds a character other than a–z, A–Z and apostrophes;
   - it was reverted earlier in this keyboard instance ("Revert" below), or it
     is a never-correct word ("Never correct" below);
+  - it is a common chat abbreviation or slang word
+    (`WordAutocorrect.chatWords`: "lol", "omg", "idk", "ok", "gonna", "yeah",
+    ...), which the lexicon would otherwise turn into words ("lol" → "lil");
   - text is selected (the commit key replaces the selection);
   - the field is secure text entry, or turns autocorrection off
     (`autocorrectionType == .no`, as SwiftUI's `.autocorrectionDisabled()`
@@ -1893,7 +1927,11 @@ or a lexicon form.
   lexicon word, `marginApostrophe` when the best is the same word with
   apostrophes ("cant" → "can't"). An infinite margin never replaces.
 - **Keep.** A result equal to the typed word ignoring case keeps the word,
-  except the pronoun I below.
+  except the pronoun I and the names below.
+- **Fixed corrections.** "cant" → "can't" and "wont" → "won't"
+  (`WordAutocorrect.fixedCorrections`) whatever the corrector says: both are
+  lexicon words the margin keeps, but are almost always typed for the
+  contraction, as "dont" is.
 - **Case.** The result is lowercased, then takes the typed word's case: all
   capitals (two letters or more) → all capitals; a capital first letter →
   capital first letter; otherwise lowercase.
@@ -1905,6 +1943,10 @@ or a lexicon form.
   apostrophe stays curly). It is autocorrect like any other correction: off
   with the switch and in the same fields, revertible, and offered in the
   strip ("i", "I").
+- **Day and month names** (`WordAutocorrect.capitalizedNames`, also with
+  "'s") take a capital first letter the same way, kept or corrected
+  ("friday" → "Friday"). "may" and "march" are left out: they are as often
+  ordinary words.
 
 **Word models** (`WordModel`; reference: `tap/wordlm.py`, `tap/wordlstm.py`).
 All give log P(word | the sentence's previous words) over the lexicon's forms
@@ -1999,22 +2041,82 @@ autocorrect considered:
 - **Its words:** the typed word first, then the correction (if any), then the
   corrector's suggestions, up to three, each in the typed word's case with
   its trailing apostrophes. The word in the field is emphasized.
-- **When:** only when there is a choice: a correction was made, or the word
-  is outside the lexicon and has suggestions. A lexicon word kept as typed
-  shows no strip, so ordinary typing keeps the chips.
-- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms ranked
-  exactly as the correction ranks its candidates (channel + `lmWeight` ×
-  model log probability; ties to the higher frequency, then the first form),
-  with no margin. None for a lexicon word, or where the corrector keeps the
-  word without looking. The best suggestion is the correction whenever there
-  is one.
+- **When:** only when there is a choice: a correction was made, or the
+  corrector has plausible suggestions for the word kept (below the margin
+  that would replace it, above the floor). A word typed as meant has none, so
+  ordinary typing keeps the status line.
+- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms other than
+  the word, ranked exactly as the correction ranks its candidates (channel +
+  `lmWeight` × model log probability; ties to the higher frequency, then the
+  first form), with no margin but a floor: posterior odds of at least 1 in 10
+  against keeping the word (`Autocorrector.suggestionFloor`, the mirror of
+  the bundle's known-word margin of 10), lexicon words included. None where
+  the corrector keeps the word without looking. The best suggestion is the
+  correction whenever there is one. Chosen on the bundle's model with
+  invented sentences and centre taps: about 310 words of ordinary text showed
+  two strips ("our" → "your" 0.12, "we're" → "were" 1.9); near misses pass
+  ("too" → "to" 0.16, "its" → "it's" 1.9, "were" → "we're" 0.9).
 - **A choice** replaces the word and puts the commit key's text back after
-  it, while the commit record holds; otherwise the tap does nothing and the
+  it, then one space if the key's text does not end with one ("the," → "teh,
+  "), while the commit record holds; otherwise the tap does nothing and the
   strip closes. Choosing the typed word over a correction is a revert (it is
   remembered as one); choosing the correction back undoes that. A choice ends
   the pending revert. The next word is still the keyboard's own.
 - **Closing:** any key closes it, as after a swipe. Delete deletes one
   character (or reverts a correction), never the whole word.
+
+**Suggestions while typing** (owner, round 2: as on Apple's prediction bar,
+from the models already shipped). From a word's first letter until it is
+finished, the strip shows up to three words for it
+(`WordAutocorrect.typingStrip`, `WordCorrecting.predictions`):
+
+- **Sources:** completions of the word so far (the forms that start with it,
+  a range of form ids since ids follow code point order:
+  `WordLexicon.formRange`), ranked by the word model in the sentence's
+  context; and the corrector's typo-tolerant matches at the suggestion floor
+  (from `minLength` letters). Both are scored as odds against keeping the
+  word, so they merge on one scale: a completion's channel is the typed
+  letters matched exactly, the same as keeping, so its odds are its weighted
+  model probability against keep's.
+- **Layout:** when a commit key would correct the word (`review`'s rules,
+  "cant" → "can't" and day names' capitals included), the word as typed in
+  quotes (a tap keeps it), the correction emphasized, then the best other.
+  Otherwise the word as typed when it is a lexicon word (or a word kept: a
+  reverted, never-correct or chat word, which never gets a pending
+  correction), then the best others; a typed word that is not a word is left
+  out when something else is offered. Nothing but the typed word: no strip,
+  and the status line shows. Apostrophes after the word so far ("don'") are
+  the middle of a contraction: the completions start with them ("don't"),
+  and no correction is marked. Caps lock (or a field that capitalizes every
+  character) makes one capital letter all capitals.
+- **A tap** replaces the word from its start and ends with one space ("A
+  tapped word ends with one space", [Swipe typing](#swipe-typing)), only
+  while the word is still the keyboard's own and the proxy shows it, as at a
+  commit key, and only in the field it was typed in, with the text after
+  the caret unchanged since the strip first showed for the word (a proxy that
+  switched fields,
+  or a caret moved after another copy of the word, before either was
+  reported, changes nothing); otherwise the strip closes. A strip hidden
+  because the proxy showed something else (our own edit, late) comes back
+  when it shows the word, without another key. The
+  quoted word kept over a pending
+  correction is remembered as a revert would be (and offered to never
+  correct). A tap commits nothing else: no correction runs.
+- **Where:** where autocorrect runs (its switch, Full Access, a loaded model,
+  not secure, not `autocorrectionType == .no`), never in URL or email
+  fields, and only for the keyboard's own word. The bar's precedence is
+  unchanged: dictation, notices and Undo win (`BarMiddleContent`).
+- **When it updates:** after every key, from the word's record; a commit key
+  ends the word (its own strip, if any, follows), as do a caret move, an
+  outside edit, a swipe, dictation, a field change and hiding.
+- **Cost:** the word model reads out every form once per sentence context
+  (`WordModel.logProbs(context:allFormsOf:)`: the LSTM's one read-out, kept by
+  the corrector for the last context only and dropped with
+  `forgetContext`), not per key. Each key then scans the prefix's id range
+  for the best few and runs the corrector's search. Measured in the iPhone
+  17 Pro simulator (iOS 26.4, Messages, 157,373 forms), a whole key press:
+  first letter of a word median 2.5 ms, other keys median 0.5 ms, p95 1.4 ms.
+  Memory: one Double per form for the context (1.3 MB).
 
 **Never correct.** A revert offers to keep the word uncorrected for good, and
 nothing is stored unless the user accepts:
@@ -2122,8 +2224,9 @@ at most once at a time, like the soft key edges model (`ModelLoadSlot`,
 [Soft key edges](#soft-key-edges)).
 A correction runs on the main thread at the commit key.
 
-**Privacy.** The context, the word, its points, the strip's words, the
-reverted words and a "Never correct" offer stay in the instance's memory. They
+**Privacy.** The context (with the corrector's ranking of every form for the
+last one), the word, its points, the strip's words, the reverted words and a
+"Never correct" offer stay in the instance's memory. They
 are dropped when the keyboard hides (the reverted words when the instance
 ends), and are never logged, stored, sent or learned from, with one
 exception: a word the user taps "Never correct" for is stored on this iPhone

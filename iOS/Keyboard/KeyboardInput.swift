@@ -298,10 +298,10 @@ final class KeyboardInput: KeyAreaViewDelegate {
         return AutocorrectSetup(corrector: autocorrect.corrector, keys: keyArea.letterKeys,
                                 params: autocorrect.params,
                                 secureTextEntry: proxy?.isSecureTextEntry == true,
-                                autocorrectionDisabled: proxy?.autocorrectionType == .no)
+                                autocorrectionDisabled: proxy?.autocorrectionType == .no, field: keyArea.field)
     }
 
-    /// The candidate strip after a swipe or an autocorrect commit, nil when closed.
+    /// The candidate strip after a swipe or an autocorrect commit, or while a word is typed; nil when closed.
     var swipeStrip: SwipeStrip? { editor.swipeStrip }
 
     /// A tap on the strip's candidate `index`.

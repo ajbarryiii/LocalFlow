@@ -10,6 +10,7 @@ enum KeyboardMessagesTests {
             ("preparingTitles", testPreparingTitles),
             ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
             ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
+            ("recordingWhileTheModelLoadsFitsASmallPhone", testRecordingWhileTheModelLoadsFitsASmallPhone),
         ]
     }
 
@@ -91,6 +92,17 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(phrase, "ends after 5 min idle")
         TestSupport.expect(KeyboardMessages.hint(for: live, now: now)?.hasSuffix(phrase) == true, "bar wording differs")
         TestSupport.expect(KeyboardMessages.sessionSummary(for: live, now: now).hasSuffix(phrase), "menu wording differs")
+        // Round 1 council: the menu's line was long at the largest text sizes; it is now the bar's own line.
+        TestSupport.expectEqual(KeyboardMessages.sessionSummary(for: live, now: now), "Session ends after 5 min idle")
         TestSupport.expect(!(KeyboardMessages.hint(for: live, now: now) ?? "").contains("left"), "bar reads as a countdown")
+    }
+
+    /// Round 1 council: on a 375-point phone "Listening · preparing model" truncated beside Cancel and the labelled
+    /// Stop capsule, after 22 characters ("Listening · preparing…"). The line still says the model is loading.
+    private static func testRecordingWhileTheModelLoadsFitsASmallPhone() {
+        let line = KeyboardMessages.listeningWhilePreparing
+        TestSupport.expect(line.count <= 23, "\(line) is longer than a 375-point phone shows")
+        TestSupport.expect(line.hasPrefix("Listening"), "\(line) does not say it is listening")
+        TestSupport.expect(line.contains("model"), "\(line) does not say the model is loading")
     }
 }

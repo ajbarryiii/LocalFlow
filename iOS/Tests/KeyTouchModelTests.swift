@@ -51,6 +51,7 @@ enum KeyTouchModelTests {
             ("aTapHeldThroughAResizeLosesItsPoint", testATapHeldThroughAResizeLosesItsPoint),
             ("holdingAKeyOpensItsAlternatesAndSlidingPicks", testHoldingAKeyOpensItsAlternatesAndSlidingPicks),
             ("alternatesReleasedWithoutMovingTypeTheKey", testAlternatesReleasedWithoutMovingTypeTheKey),
+            ("webSearchDotOpensTheDomains", testWebSearchDotOpensTheDomains),
             ("alternatesNeverDisturbTypingOrSwipes", testAlternatesNeverDisturbTypingOrSwipes),
             ("alternatesRolloverAndCancel", testAlternatesRolloverAndCancel),
             ("onlyLettersSwipeOrSoftTapOnTheLettersLayer", testOnlyLettersSwipeOrSoftTapOnTheLettersLayer),
@@ -1172,7 +1173,7 @@ extension KeyTouchModelTests {
         TestSupport.expect(model.alternatesElapsed(1), "row did not open")
         let row = model.alternatesTouch!
         TestSupport.expectEqual(row.alternates, KeyAlternates.options(for: "e"))
-        TestSupport.expectEqual(row.alternateFrames, KeyAlternates.frames(count: row.alternates.count, key: e, width: 402))
+        TestSupport.expectEqual(row.alternateFrames, KeyAlternates.frames(options: row.alternates, key: e, width: 402))
         TestSupport.expect(model.calloutTouch == nil, "the callout stays under the row")
         // A second firing does nothing; the row is open.
         TestSupport.expect(!model.alternatesElapsed(1), "opened twice")
@@ -1229,6 +1230,33 @@ extension KeyTouchModelTests {
         TestSupport.expectEqual(numbers.ended(5, x: dashCells[1].midX, y: dashCells[1].midY), [.type(.character("–"))])
     }
 
+    /// In a web search field (Safari's address bar), holding the letters layer's "." opens the domains; a tap still
+    /// types "." and the numbers layer's "." keeps its ellipsis.
+    private static func testWebSearchDotOpensTheDomains() {
+        let metrics = KeyboardMetrics(width: 402, height: KeyboardMetrics.regularHeight)
+        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: false, field: .webSearch)
+        let dot = keys.first { $0.action == .character(".") }!.frame
+        var model = KeyTouchModel()
+        _ = model.keysChanged(keys, layer: .letters, field: .webSearch)
+        _ = model.began(1, x: dot.midX, y: dot.midY)
+        TestSupport.expect(model.wantsAlternates(1) && model.alternatesElapsed(1), "the domains did not open")
+        let row = model.alternatesTouch!
+        TestSupport.expectEqual(row.alternates, KeyAlternates.options(for: ".", field: .webSearch))
+        TestSupport.expectEqual(row.alternateFrames, KeyAlternates.frames(options: row.alternates, key: dot, width: 402))
+        let com = row.alternateFrames[1]
+        _ = model.moved(1, x: com.midX, y: com.midY)
+        TestSupport.expectEqual(model.ended(1, x: com.midX, y: com.midY), [.type(.character(".com"))])
+        _ = model.began(2, x: dot.midX, y: dot.midY)
+        TestSupport.expectEqual(model.ended(2, x: dot.midX, y: dot.midY), [.type(.character("."))])
+        // The numbers layer's "." in the same field.
+        let numbers = KeyboardLayout.keys(for: .numbers, metrics: metrics, showsGlobe: false, field: .webSearch)
+        let numbersDot = numbers.first { $0.action == .character(".") }!.frame
+        _ = model.keysChanged(numbers, layer: .numbers, field: .webSearch)
+        _ = model.began(3, x: numbersDot.midX, y: numbersDot.midY)
+        TestSupport.expect(model.alternatesElapsed(3), "the numbers layer's . has no row")
+        TestSupport.expectEqual(model.alternatesTouch?.alternates, [".", "…"])
+    }
+
     /// A row released where it opened types what a tap would: the key, or with soft taps its tap with the touch-down
     /// point, even when the row had to move inside the keyboard so that another cell is under the finger.
     private static func testAlternatesReleasedWithoutMovingTypeTheKey() {
@@ -1243,18 +1271,18 @@ extension KeyTouchModelTests {
             let expected: KeyTouchModel.Effect = softTaps ? .tap(.character("a"), x: a.midX, y: a.midY, field: nil) : .type(.character("a"))
             TestSupport.expectEqual(model.ended(1, x: a.midX + KeyAlternates.moveSlop - 1, y: a.midY + 3), [expected])
         }
-        // On a narrow keyboard the URL field's ".com" row is moved inside the keyboard, so another cell is under the
-        // finger: unmoved, it still types ".com".
-        let narrow = KeyboardMetrics(width: 320, height: KeyboardMetrics.regularHeight)
-        let url = KeyboardLayout.keys(for: .letters, metrics: narrow, showsGlobe: false, field: .url)
-        let dotCom = url.first { $0.action == .character(KeyboardLayout.dotCom) }!.frame
+        // A row too long to run inwards from its key is moved inside the keyboard, so another cell is under the finger
+        // (here a wide invented "o" key in a 320-point area): unmoved, it still types the key.
+        let wide = KeyRect(x: 2, y: 100, width: 130, height: 42)
         var model = KeyTouchModel()
-        _ = model.keysChanged(url, layer: .letters)
-        _ = model.began(1, x: dotCom.midX, y: dotCom.midY)
-        TestSupport.expect(model.alternatesElapsed(1), ".com row did not open")
+        _ = model.keysChanged([PlacedKey(action: .character("o"), frame: wide, label: "o"),
+                               PlacedKey(action: .space, frame: KeyRect(x: 140, y: 100, width: 178, height: 42), label: "space")],
+                              layer: .letters)
+        _ = model.began(1, x: wide.midX, y: wide.midY)
+        TestSupport.expect(model.alternatesElapsed(1), "o row did not open")
         let cells = model.alternatesTouch!.alternateFrames
-        TestSupport.expect(KeyAlternates.index(atX: dotCom.midX, in: cells) != 0, "the row did not move")
-        TestSupport.expectEqual(model.ended(1, x: dotCom.midX, y: dotCom.midY), [.type(.character(KeyboardLayout.dotCom))])
+        TestSupport.expect(KeyAlternates.index(atX: wide.midX, in: cells) != 0, "the row did not move")
+        TestSupport.expectEqual(model.ended(1, x: wide.midX, y: wide.midY), [.type(.character("o"))])
     }
 
     /// Typing at speed never sees a row: a key released (or committed by the next finger) before the timer fires types

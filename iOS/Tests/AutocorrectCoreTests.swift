@@ -737,18 +737,24 @@ enum AutocorrectCoreTests {
                      _ points: [(x: Double, y: Double)?]? = nil) -> [String] {
             corrector.suggestions(context: "", word: word, points: points ?? centreTaps(word), keys: keys, params: p, limit: limit)
         }
-        // A margin no correction clears still leaves the candidates, best first; "cat" is beyond the edit limit.
+        // A margin no correction clears still leaves the plausible candidates, best first: those with at least the
+        // floor's odds (1 in 10) against keeping the word ("held" has less); "cat" is beyond the edit limit.
         let never = params { $0.marginOOV = .infinity }
         TestSupport.expectEqual(correct(corrector, "", "helo", nil, never), "helo")
         let all = suggest("helo", 3, never)
-        TestSupport.expectEqual(all.first, "hello")
-        TestSupport.expectEqual(Set(all), ["hello", "help", "held"])
+        TestSupport.expectEqual(all, ["hello", "help"])
         TestSupport.expectEqual(suggest("helo"), all)
         TestSupport.expectEqual(suggest("helo", 1), ["hello"])
         // The best suggestion is the correction whenever there is one.
         TestSupport.expectEqual(correct(corrector, "", "helo"), "hello")
-        // None for a lexicon word, a limit below 1, or inputs `correct` keeps without looking.
+        // None for a lexicon word typed as meant (no form near enough), a limit below 1, or inputs `correct` keeps
+        // without looking.
         TestSupport.expectEqual(suggest("help"), [])
+        // A lexicon word with a near miss gets it, though no margin replaces it: "its" for "it's".
+        let near = make([("its", 150), ("it's", 200), ("it", 230)], ["its": 0.1, "it's": 0.2, "it": 0.3])
+        TestSupport.expectEqual(correct(near, "", "its"), "its")
+        TestSupport.expectEqual(near.suggestions(context: "", word: "its", points: centreTaps("its"), keys: keys, params: .standard,
+                                                 limit: 3), ["it's"])
         TestSupport.expectEqual(suggest("helo", 0), [])
         TestSupport.expectEqual(suggest("helo", 3, params { $0.minLength = 5 }), [])
         TestSupport.expectEqual(suggest("helo", 3, .standard, centreTaps("hel")), [])
@@ -796,13 +802,15 @@ enum AutocorrectCoreTests {
             }
             let limit = Int.random(in: 1 ... 4, using: &random)
             let got = corrector.suggestions(context: "we ", word: typed, points: taps, keys: keys, params: p, limit: limit)
-            guard entries[typed] == nil,
-                  let reference = referenceScores(entries: entries, model: model, p: p, context: "we ", typed: typed, taps: taps,
+            guard let reference = referenceScores(entries: entries, model: model, p: p, context: "we ", typed: typed, taps: taps,
                                                   spelling: tables) else {
                 TestSupport.expect(got.isEmpty, "case \(index) \(typed): \(got)")
                 continue
             }
-            let ranked = reference.scored.filter { $0.0.isFinite }
+            // Lexicon words too, never the word itself, and only forms at least the floor's odds against keeping it.
+            let bar = reference.keep + Autocorrector.suggestionFloor
+            if reference.scored.contains(where: { abs($0.0 - bar) < 1e-6 }) { continue }
+            let ranked = reference.scored.filter { $0.0.isFinite && $0.1 != typed && $0.0 >= bar }
             // Scores this close may rank either way in floating point.
             let shown = min(limit, ranked.count)
             if shown < ranked.count, ranked[shown - 1].0 - ranked[shown].0 < 1e-6 { continue }

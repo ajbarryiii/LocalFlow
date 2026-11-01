@@ -13,15 +13,31 @@ enum KeyAlternates {
     static let gap: Double = 4
     /// The row keeps this far inside the key area's sides.
     static let margin: Double = 2
+    /// The width of a cell in a row with a domain (or any option longer than one character): room for ".com", and
+    /// narrow enough that the row starts over its key on a 375-point phone.
+    static let domainCellWidth: Double = 44
 
-    /// The alternates of a key's character (lowercase for letters), without the character itself; empty for none.
-    static func alternates(for character: String) -> [String] {
-        table[character] ?? []
+    /// The domain endings, as on Apple's keyboard: the URL field's ".com" key and the web search field's "." offer them.
+    static let domains = [KeyboardLayout.dotCom, ".org", ".net", ".edu", ".us"]
+
+    /// The alternates of a key's character (lowercase for letters) in a field, without the character itself; empty for
+    /// none. `field` is the letters layer's field (`.standard` on the other layers): in a web search field (Safari's
+    /// address bar) the "." beside the space bar offers the domains.
+    static func alternates(for character: String, field: KeyboardField = .standard) -> [String] {
+        if field == .webSearch, character == "." { return domains }
+        return table[character] ?? []
+    }
+
+    /// VoiceOver's route to a key's alternates: what its custom actions type, in the row's order, the key's own
+    /// character excluded (activating the key types it). The field's own alternates on the letters layer only, as
+    /// the row shows them (`KeyTouchModel.alternateOptions`).
+    static func accessibilityActions(for character: String, layer: KeyboardLayer, field: KeyboardField) -> [String] {
+        alternates(for: character, field: layer == .letters ? field : .standard)
     }
 
     /// What the row shows for a key: its own character, then its alternates; empty when it has none.
-    static func options(for character: String) -> [String] {
-        let more = alternates(for: character)
+    static func options(for character: String, field: KeyboardField = .standard) -> [String] {
+        let more = alternates(for: character, field: field)
         return more.isEmpty ? [] : [character] + more
     }
 
@@ -48,16 +64,23 @@ enum KeyAlternates {
         "%": ["‰"],
         "/": ["\\"],
         "0": ["°"],
-        KeyboardLayout.dotCom: [".org", ".net", ".edu", ".us"],
+        KeyboardLayout.dotCom: Array(domains.dropFirst()),
     ]
 
+    /// The row's cells for `options` of the key at `key`, in a key area `width` wide: `frames(count:key:width:cell:)`
+    /// with cells as wide as the key, or `domainCellWidth` when an option is longer than one character.
+    static func frames(options: [String], key: KeyRect, width: Double) -> [KeyRect] {
+        frames(count: options.count, key: key, width: width,
+               cell: options.contains { $0.count > 1 } ? domainCellWidth : key.width)
+    }
+
     /// The row's cells for `count` options of the key at `key`, in a key area `width` wide: one row `gap` above the
-    /// key, cells as wide as the key (narrower when they would not fit), the first centred over the key and the rest
-    /// running towards the middle of the keyboard (right from the left half, left from the right half), the whole
-    /// row moved inside the area's sides when it would cross one.
-    static func frames(count: Int, key: KeyRect, width: Double) -> [KeyRect] {
+    /// key, cells `cell` wide (the key's width by default; narrower when they would not fit), the first centred over
+    /// the key and the rest running towards the middle of the keyboard (right from the left half, left from the right
+    /// half), the whole row moved inside the area's sides when it would cross one.
+    static func frames(count: Int, key: KeyRect, width: Double, cell: Double? = nil) -> [KeyRect] {
         guard count > 0 else { return [] }
-        let cell = min(key.width, (width - 2 * margin) / Double(count))
+        let cell = min(cell ?? key.width, (width - 2 * margin) / Double(count))
         let direction: Double = key.midX <= width / 2 ? 1 : -1
         let first = key.midX - cell / 2
         var xs = (0 ..< count).map { first + direction * Double($0) * cell }

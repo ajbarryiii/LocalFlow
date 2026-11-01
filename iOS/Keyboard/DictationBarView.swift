@@ -227,9 +227,10 @@ private struct Middle: View {
     }
 }
 
-/// Up to three candidates side by side (a swipe's, or autocorrect's after a commit key), as on Apple's
-/// predictive bar; the one in the field now is emphasized. A tap replaces the inserted word (the editor
-/// decides whether it still can).
+/// Up to three candidates side by side, as on Apple's predictive bar: a swipe's or autocorrect's after a commit key
+/// (the one in the field now emphasized), or the suggestions while a word is typed (the word as typed in quotes and
+/// the correction a space would make emphasized, while one is pending). A tap replaces the word (the editor decides
+/// whether it still can).
 private struct CandidateStrip: View {
     let strip: SwipeStrip
     let height: CGFloat
@@ -238,6 +239,8 @@ private struct CandidateStrip: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach(Array(strip.candidates.enumerated()), id: \.offset) { index, word in
+                let emphasized = index == strip.emphasized
+                let quoted = index == strip.live?.quoted
                 if index > 0 {
                     Rectangle()
                         .fill(Color.secondary.opacity(0.35))
@@ -247,19 +250,20 @@ private struct CandidateStrip: View {
                 Button {
                     onCandidate(index)
                 } label: {
-                    Text(word)
-                        .font(.subheadline.weight(index == strip.inserted ? .semibold : .regular))
+                    Text(quoted ? "\u{201C}\(word)\u{201D}" : word)
+                        .font(.subheadline.weight(emphasized ? .semibold : .regular))
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 6)
                         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
-                        .background(Capsule().fill(index == strip.inserted ? Color(uiColor: KeyPalette.fill) : .clear))
+                        .background(Capsule().fill(emphasized ? Color(uiColor: KeyPalette.fill) : .clear))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
-                .accessibilityLabel(word)
-                .accessibilityAddTraits(index == strip.inserted ? .isSelected : [])
+                .accessibilityLabel(quoted ? "Keep \(word)" : word)
+                .accessibilityHint(strip.live != nil && emphasized ? "Space puts this in" : "")
+                .accessibilityAddTraits(emphasized ? .isSelected : [])
                 .accessibilityIdentifier("lf.swipe.candidate.\(index)")
             }
         }
@@ -456,15 +460,21 @@ private struct LevelBars: View {
 }
 
 /// The menu: session status, "Open LocalFlow", the trackpad tip with the field's text width, and details of anything
-/// that keeps dictation from working. A tap outside the card closes it. The card scrolls when it does not fit (landscape,
-/// the largest text sizes); its text follows Dynamic Type.
+/// that keeps dictation from working. A tap outside the card closes it. The card spans the key area with the same
+/// margin on each side, and scrolls inside its rounded corners when it does not fit (landscape, the largest text
+/// sizes); its text follows Dynamic Type and reads at 4.5:1 or better (`MenuPalette`).
 struct MenuPanelView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
     var onClose: () -> Void
     /// Switches this kind of field to the other text width, remembered for it.
     var onToggleLayout: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
+
+    private static let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -473,26 +483,45 @@ struct MenuPanelView: View {
                 .onTapGesture(perform: onClose)
                 .accessibilityHidden(true)
             ViewThatFits(in: .vertical) {
-                card
-                ScrollView { card }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .frame(maxWidth: 376, alignment: .leading)
+                card(content)
+                // Too tall: the card keeps its rounded corners and its content scrolls inside them.
+                card(ScrollView { content }.scrollBounceBehavior(.basedOnSize))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityAddTraits(.isModal)
     }
 
-    private var card: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var palette: MenuPalette {
+        MenuPalette(dark: colorScheme == .dark, highContrast: contrast == .increased)
+    }
+
+    private func color(_ rgb: MenuPalette.RGB) -> Color {
+        Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
+
+    private func card<Content: View>(_ content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Self.cardShape.fill(color(palette.card)))
+            .clipShape(Self.cardShape)
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+            .padding(8)
+    }
+
+    private var content: some View {
+        // At the accessibility sizes the menu is a long read: the text-width choice comes before its explanation.
+        let largeText = dynamicTypeSize.isAccessibilitySize
+        return VStack(alignment: .leading, spacing: 8) {
             Label(client.state.sessionSummary, systemImage: "waveform.circle")
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(color(palette.primary))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("lf.menu.session")
             if let details {
                 Text(details)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(color(palette.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Button {
@@ -501,27 +530,30 @@ struct MenuPanelView: View {
             } label: {
                 Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(color(palette.link))
             }
             .accessibilityIdentifier("lf.menu.open")
             Divider()
+            if largeText { layoutPicker }
             // The trackpad's text width for this kind of field (ARCHITECTURE.md, "Field profiles"), in words.
-            Label(KeyboardMessages.trackpadTip + ". On the wrong line? Try the other text width:",
+            Label(KeyboardMessages.trackpadTip + (largeText ? KeyboardMessages.layoutTipAbove : KeyboardMessages.layoutTipBelow),
                   systemImage: "hand.point.up.left")
                 .font(.footnote)
+                .foregroundStyle(color(palette.primary))
                 .fixedSize(horizontal: false, vertical: true)
-            Picker("Text width", selection: Binding(get: { chrome.layout }, set: { if $0 != chrome.layout { onToggleLayout() } })) {
-                Text("Full width").tag(FieldLayout.fullWidth)
-                Text("Chat bubble").tag(FieldLayout.messages)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Text width for moving the cursor")
-            .accessibilityIdentifier("lf.layoutToggle")
+            if !largeText { layoutPicker }
         }
         .padding(12)
-        .frame(maxWidth: 360, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(uiColor: KeyPalette.fill)))
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
-        .padding(8)
+    }
+
+    private var layoutPicker: some View {
+        Picker("Text width", selection: Binding(get: { chrome.layout }, set: { if $0 != chrome.layout { onToggleLayout() } })) {
+            Text("Full width").tag(FieldLayout.fullWidth)
+            Text("Chat bubble").tag(FieldLayout.messages)
+        }
+        .pickerStyle(.segmented)
+        .accessibilityLabel("Text width for moving the cursor")
+        .accessibilityIdentifier("lf.layoutToggle")
     }
 
     /// The full explanation for the states the top row condenses to one line.

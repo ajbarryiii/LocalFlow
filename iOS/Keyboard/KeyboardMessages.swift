@@ -6,8 +6,9 @@ enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
     static let preparingModel = "Preparing model…"
-    /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`).
-    static let listeningWhilePreparing = "Listening · preparing model"
+    /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`). Short enough for a
+    /// 375-point phone beside Cancel and the labelled Stop capsule.
+    static let listeningWhilePreparing = "Listening · model loads"
     /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
     /// presentation"), nothing prepares it now.
     static let modelLoadsWhenDictating = "Model loads when you dictate"
@@ -69,6 +70,10 @@ enum KeyboardMessages {
     }
 
     static let trackpadTip = "Hold space to move the cursor"
+    /// After `trackpadTip`, before the menu's text-width choice; and at the accessibility sizes, where the choice
+    /// comes first.
+    static let layoutTipBelow = ". Wrong line? Switch this field to:"
+    static let layoutTipAbove = ". Wrong line? Switch this field above."
 
     /// The menu panel's session line, only from a live host.
     static func sessionSummary(for status: HostStatus?, now: Date) -> String {
@@ -81,7 +86,8 @@ enum KeyboardMessages {
         case .active: break
         }
         guard let expiresAt = status.sessionExpiresAt else { return "Session active" }
-        return "Session active · " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
+        // The bar's words: short enough for one line at large text sizes.
+        return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
     }
 
     /// How the bar and the menu name the session's end: it ends after this many idle minutes, not at a fixed time.

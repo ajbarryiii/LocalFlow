@@ -236,7 +236,7 @@ final class KeyAreaView: UIView {
         }
         letterGeometry = (bounds.size, showsGlobe)
         // Held fingers follow the new keys before anything is drawn or typed from them.
-        let effects = model.keysChanged(keys, layer: keyLayer)
+        let effects = model.keysChanged(keys, layer: keyLayer, field: field)
         while keyViews.count < keys.count {
             let view = KeyCapView()
             insertSubview(view, belowSubview: trail)
@@ -653,6 +653,16 @@ final class KeyAreaView: UIView {
             case .character(let character):
                 element.accessibilityLabel = displayed(character)
                 element.accessibilityIdentifier = "lf.key.\(character)"
+                // The press-and-hold alternates, each typed as the row would type it.
+                element.accessibilityCustomActions = KeyAlternates.accessibilityActions(for: character, layer: keyLayer, field: field)
+                    .map { alternate in
+                        UIAccessibilityCustomAction(name: displayed(alternate)) { [weak self] _ in
+                            guard let self else { return false }
+                            self.delegate?.keyArea(self, typed: .character(alternate), field: self.currentField(),
+                                                   timestamp: CACurrentMediaTime())
+                            return true
+                        }
+                    }
             case .shift:
                 element.accessibilityLabel = "Shift"
                 element.accessibilityValue = shift == .capsLock ? "Caps lock" : (shift == .once ? "On" : nil)
