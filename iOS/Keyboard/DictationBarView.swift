@@ -230,32 +230,39 @@ private struct Middle: View {
 /// Up to three candidates side by side, as on Apple's predictive bar: a swipe's or autocorrect's after a commit key
 /// (the one in the field now emphasized), or the suggestions while a word is typed (the word as typed in quotes and
 /// the correction a space would make emphasized, while one is pending). A tap replaces the word (the editor decides
-/// whether it still can).
+/// whether it still can). Words that would shrink below `CandidateStripLayout.minimumScale` make room by dropping the
+/// least useful candidate; no divider shows beside the emphasized one's pill.
 private struct CandidateStrip: View {
     let strip: SwipeStrip
     let height: CGFloat
     let onCandidate: (Int) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var width: CGFloat = 0
 
     var body: some View {
+        let fit = CandidateStripLayout.fit(strip, widths: strip.candidates.indices.map(textWidth), available: Double(width))
         HStack(spacing: 0) {
-            ForEach(Array(strip.candidates.enumerated()), id: \.offset) { index, word in
+            ForEach(Array(fit.shown.enumerated()), id: \.element) { position, index in
+                let word = strip.candidates[index]
                 let emphasized = index == strip.emphasized
                 let quoted = index == strip.live?.quoted
-                if index > 0 {
+                if position > 0 {
                     Rectangle()
                         .fill(Color.secondary.opacity(0.35))
-                        .frame(width: 1, height: height * 0.6)
+                        .frame(width: CGFloat(CandidateStripLayout.divider), height: height * 0.6)
+                        .opacity(CandidateStripLayout.showsDivider(between: fit.shown[position - 1], and: index,
+                                                                   emphasized: strip.emphasized) ? 1 : 0)
                         .accessibilityHidden(true)
                 }
                 Button {
                     onCandidate(index)
                 } label: {
-                    Text(quoted ? "\u{201C}\(word)\u{201D}" : word)
+                    Text(label(index))
                         .font(.subheadline.weight(emphasized ? .semibold : .regular))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                        .minimumScaleFactor(CGFloat(fit.minimumScale))
                         .foregroundStyle(.primary)
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, CGFloat(CandidateStripLayout.padding))
                         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
                         .background(Capsule().fill(emphasized ? Color(uiColor: KeyPalette.fill) : .clear))
                         .contentShape(Rectangle())
@@ -267,6 +274,20 @@ private struct CandidateStrip: View {
                 .accessibilityIdentifier("lf.swipe.candidate.\(index)")
             }
         }
+        .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+
+    private func label(_ index: Int) -> String {
+        index == strip.live?.quoted ? "\u{201C}\(strip.candidates[index])\u{201D}" : strip.candidates[index]
+    }
+
+    /// The candidate's width at full size, in the bar's text size.
+    private func textWidth(_ index: Int) -> Double {
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+        let base = UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
+        let font = UIFont.systemFont(ofSize: base.pointSize, weight: index == strip.emphasized ? .semibold : .regular)
+        return Double(ceil((label(index) as NSString).size(withAttributes: [.font: font]).width))
     }
 }
 
@@ -460,7 +481,7 @@ private struct LevelBars: View {
 }
 
 /// The menu: session status, "Open LocalFlow", the trackpad tip with the field's text width, and details of anything
-/// that keeps dictation from working. A tap outside the card closes it. The card spans the key area with the same
+/// that keeps dictation from working (the actions first at the accessibility sizes). A tap outside the card closes it. The card spans the key area with the same
 /// margin on each side, and scrolls inside its rounded corners when it does not fit (landscape, the largest text
 /// sizes); its text follows Dynamic Type and reads at 4.5:1 or better (`MenuPalette`).
 struct MenuPanelView: View {
@@ -510,38 +531,47 @@ struct MenuPanelView: View {
     }
 
     private var content: some View {
-        // At the accessibility sizes the menu is a long read: the text-width choice comes before its explanation.
+        // At the accessibility sizes the menu is a long read: the actions come first (`KeyboardMessages.menuItems`).
         let largeText = dynamicTypeSize.isAccessibilitySize
         return VStack(alignment: .leading, spacing: 8) {
-            Label(client.state.sessionSummary, systemImage: "waveform.circle")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(color(palette.primary))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("lf.menu.session")
-            if let details {
-                Text(details)
-                    .font(.footnote)
-                    .foregroundStyle(color(palette.secondary))
-                    .fixedSize(horizontal: false, vertical: true)
+            ForEach(KeyboardMessages.menuItems(accessibilitySize: largeText), id: \.self) { item in
+                switch item {
+                case .session:
+                    Label(client.state.sessionSummary, systemImage: "waveform.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(color(palette.primary))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("lf.menu.session")
+                case .details:
+                    if let details {
+                        Text(details)
+                            .font(.footnote)
+                            .foregroundStyle(color(palette.secondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                case .open:
+                    Button {
+                        onClose()
+                        client.openLocalFlow()
+                    } label: {
+                        Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(color(palette.link))
+                    }
+                    .accessibilityIdentifier("lf.menu.open")
+                case .divider:
+                    Divider()
+                case .tip:
+                    // The trackpad's text width for this kind of field (ARCHITECTURE.md, "Field profiles"), in words.
+                    Label(KeyboardMessages.trackpadTip + (largeText ? KeyboardMessages.layoutTipAbove : KeyboardMessages.layoutTipBelow),
+                          systemImage: "hand.point.up.left")
+                        .font(.footnote)
+                        .foregroundStyle(color(palette.primary))
+                        .fixedSize(horizontal: false, vertical: true)
+                case .picker:
+                    layoutPicker
+                }
             }
-            Button {
-                onClose()
-                client.openLocalFlow()
-            } label: {
-                Label("Open LocalFlow", systemImage: "arrow.up.forward.app")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(color(palette.link))
-            }
-            .accessibilityIdentifier("lf.menu.open")
-            Divider()
-            if largeText { layoutPicker }
-            // The trackpad's text width for this kind of field (ARCHITECTURE.md, "Field profiles"), in words.
-            Label(KeyboardMessages.trackpadTip + (largeText ? KeyboardMessages.layoutTipAbove : KeyboardMessages.layoutTipBelow),
-                  systemImage: "hand.point.up.left")
-                .font(.footnote)
-                .foregroundStyle(color(palette.primary))
-                .fixedSize(horizontal: false, vertical: true)
-            if !largeText { layoutPicker }
         }
         .padding(12)
     }

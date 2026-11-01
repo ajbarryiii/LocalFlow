@@ -75,6 +75,21 @@ enum KeyboardMessages {
     static let layoutTipBelow = ". Wrong line? Switch this field to:"
     static let layoutTipAbove = ". Wrong line? Switch this field above."
 
+    /// The menu's rows, top to bottom.
+    enum MenuItem: Equatable, Sendable {
+        /// The session line, and the full explanation of a state the top row condenses.
+        case session, details
+        case open, divider
+        /// The trackpad tip and the field's text-width choice.
+        case tip, picker
+    }
+
+    /// The menu's order: the session first; at the accessibility sizes, where the session line alone can fill the
+    /// first screen, the actions first ("Open LocalFlow" and the text width), the tip then pointing above.
+    static func menuItems(accessibilitySize: Bool) -> [MenuItem] {
+        accessibilitySize ? [.open, .picker, .divider, .session, .details, .tip] : [.session, .details, .open, .divider, .tip, .picker]
+    }
+
     /// The menu panel's session line, only from a live host.
     static func sessionSummary(for status: HostStatus?, now: Date) -> String {
         guard let status, status.schema == DictationProtocol.schema,

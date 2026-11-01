@@ -11,6 +11,7 @@ enum KeyboardMessagesTests {
             ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
             ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
             ("recordingWhileTheModelLoadsFitsASmallPhone", testRecordingWhileTheModelLoadsFitsASmallPhone),
+            ("theLargestTextSizesPutTheMenusActionsFirst", testTheLargestTextSizesPutTheMenusActionsFirst),
         ]
     }
 
@@ -104,5 +105,14 @@ enum KeyboardMessagesTests {
         TestSupport.expect(line.count <= 23, "\(line) is longer than a 375-point phone shows")
         TestSupport.expect(line.hasPrefix("Listening"), "\(line) does not say it is listening")
         TestSupport.expect(line.contains("model"), "\(line) does not say the model is loading")
+    }
+
+    /// Round 2 council (Sol finding 1): at the largest text size the menu's first screen was all session status. At the
+    /// accessibility sizes the actions ("Open LocalFlow" and the text width) come first, then the status and the tip
+    /// (which then points above); otherwise the status leads and the width choice follows its tip.
+    private static func testTheLargestTextSizesPutTheMenusActionsFirst() {
+        TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: false), [.session, .details, .open, .divider, .tip, .picker])
+        TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: true), [.open, .picker, .divider, .session, .details, .tip])
+        TestSupport.expect(KeyboardMessages.layoutTipAbove.hasSuffix("above."), "the tip does not point above")
     }
 }

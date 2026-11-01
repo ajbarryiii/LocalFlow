@@ -1037,9 +1037,11 @@ every other point of the bar
   better) on it in light and dark mode (`MenuPalette`: a white card in light
   mode, a dark grey one in dark mode, "Open LocalFlow" in a blue that keeps
   its contrast). When it does not fit (landscape, the largest sizes) it
-  scrolls inside its rounded corners, and at the accessibility sizes the
-  text-width choice comes before its explanation. The session line is the
-  bar's ("Session ends after 5 min idle"). A tap outside the panel's card, or
+  scrolls inside its rounded corners. At the accessibility sizes the actions
+  come first ("Open LocalFlow", then the text-width choice), then the
+  session status and the tip, which points above
+  (`KeyboardMessages.menuItems`), so the first screen is never all status.
+  The session line is the bar's ("Session ends after 5 min idle"). A tap outside the panel's card, or
   on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
@@ -1644,6 +1646,13 @@ three candidates, cased the same way, the inserted word emphasized.
 Autocorrect shows its choices in the same strip after a commit key, and its
 suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
 
+- **Layout** (`CandidateStripLayout`, round 3): equal slots, each word on one
+  line shrunk to no less than 0.8 of its size. When the words do not all fit
+  so, the least useful go (the last that is neither the emphasized nor the
+  quoted word) until the rest fit; only those two may shrink further (to
+  0.6). The 1 pt dividers sit between shown candidates, but none beside the
+  emphasized candidate's pill.
+
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
   field (the edit generation). Otherwise the tap does nothing and the strip
@@ -1931,7 +1940,11 @@ or a lexicon form.
 - **Fixed corrections.** "cant" → "can't" and "wont" → "won't"
   (`WordAutocorrect.fixedCorrections`) whatever the corrector says: both are
   lexicon words the margin keeps, but are almost always typed for the
-  contraction, as "dont" is.
+  contraction, as "dont" is. So are 58 very common misspellings known
+  for certain (`WordAutocorrect.commonMisspellings`: "definately" →
+  "definitely", "recieve" → "receive", "thier" → "their", ...; round 3),
+  which the touch model never reaches because the letter typed is far from
+  the one meant. Every target is a lexicon word and no source is one.
 - **Case.** The result is lowercased, then takes the typed word's case: all
   capitals (two letters or more) → all capitals; a capital first letter →
   capital first letter; otherwise lowercase.
@@ -2109,6 +2122,30 @@ finished, the strip shows up to three words for it
 - **When it updates:** after every key, from the word's record; a commit key
   ends the word (its own strip, if any, follows), as do a caret move, an
   outside edit, a swipe, dictation, a field change and hiding.
+- **Fewer, likelier words** (round 3): a form whose odds are less than 1 in
+  1000 (`Autocorrector.suggestionRatio`) of the strip's first word (the typed
+  word when it is a lexicon word, else the best form) is not offered: "hey"
+  no longer offers "heyday" (1 in 3,300) or "meeti" "meetinghouse" (1 in
+  1,200), while "defi" keeps "defiantly" (1 in 220). On 636 keystrokes of
+  invented messages the strip showed on 565 instead of 601; the ones lost
+  are mostly a finished common word whose completions were all unlikely
+  ("and" → "andy", "bread" → "breadth").
+- **Spelling matches** (`WordCorrecting.spellingMatches`, round 3): the touch
+  model makes a letter typed for one three keys away almost impossible, so
+  "egss" offered "eggs" only in some contexts and "definately" nothing. For
+  a word outside the lexicon, the corrector also lists the lexicon forms
+  within its edit limit (`maxEditsShort` up to `shortLength` letters, else
+  `maxEdits`; an insertion, deletion, substitution or swap of neighbours
+  each), whatever the keys' distance: fewest edits first, then the word
+  model in the context, then frequency. They are suggestions only, never a
+  correction. While typing they join for a word that is no word, not kept,
+  not a contraction's middle, and that nothing offered completes, after the
+  word as typed when nothing else is offered; after a commit key they join
+  any word outside the lexicon. The best always has a slot (the last when
+  the strip is full), never over the typed word or the correction. The
+  search is the corrector's bounded trie walk, and the model probabilities
+  come from the context's completion read-out when it has one: about 0.3 ms
+  a word on an M-series Mac (optimized build, bundle b34).
 - **Cost:** the word model reads out every form once per sentence context
   (`WordModel.logProbs(context:allFormsOf:)`: the LSTM's one read-out, kept by
   the corrector for the last context only and dropped with

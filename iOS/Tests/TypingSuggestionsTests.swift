@@ -36,6 +36,11 @@ enum TypingSuggestionsTests {
             ("aCommitStripChoiceEndsWithOneSpace", testACommitStripChoiceEndsWithOneSpace),
             ("aSwipeStripChoiceEndsWithOneSpace", testASwipeStripChoiceEndsWithOneSpace),
             ("typingSuggestionsAreCandidatesForTheBar", testTypingSuggestionsAreCandidatesForTheBar),
+            ("farLessLikelyFormsAreDropped", testFarLessLikelyFormsAreDropped),
+            ("spellingMatchesIgnoreKeyDistance", testSpellingMatchesIgnoreKeyDistance),
+            ("spellingMatchesStayCheap", testSpellingMatchesStayCheap),
+            ("spellingMatchesFillTheStripForAWordNothingCompletes", testSpellingMatchesFillTheStripForAWordNothingCompletes),
+            ("misspellingsAndTyposStillCorrect", testMisspellingsAndTyposStillCorrect),
         ]
     }
 
@@ -594,6 +599,161 @@ enum TypingSuggestionsTests {
         for (progress, notice, undo) in [(true, false, false), (false, true, false), (false, false, true)] {
             TestSupport.expectEqual(BarMiddleContent.resolve(neverCorrectOffer: false, candidates: candidates, dictationInProgress: progress,
                                                              notice: notice, dictationUndoShown: undo), .dictation)
+        }
+    }
+
+    // MARK: Round 3
+
+    /// Round 2 council (Opus finding 3): "Hey" offered "Heyday" and "Heywood". A form whose odds are less than 1 in
+    /// `Autocorrector.suggestionRatio` (1000) of the strip's first word (the typed word when it is a lexicon word,
+    /// else the best form) is not offered.
+    private static func testFarLessLikelyFormsAreDropped() {
+        TestSupport.expectEqual(Autocorrector.suggestionRatio, 1000)
+        let entries = [("hey", 200), ("heyday", 40), ("heywood", 30), ("meeting", 180), ("meetings", 150), ("meetinghouse", 20),
+                       ("odd", 100), ("odder", 50), ("oddest", 50)]
+        let probs = ["hey": 0.05, "heyday": 0.00002, "heywood": 0.00001, "meeting": 0.02, "meetings": 0.005,
+                     "meetinghouse": 0.00001, "odd": 0.01, "odder": 0.01 / 999, "oddest": 0.01 / 1001]
+        let corrector = Autocorrector(lexicon: AutocorrectCoreTests.lexicon(entries), model: CountingModel(probs),
+                                      touch: AutocorrectCoreTests.touch)
+        // A lexicon word typed whole: its unlikely completions go, and with nothing else to offer there is no strip.
+        TestSupport.expectEqual(predict(corrector, "", "hey").words, [])
+        TestSupport.expectEqual(predict(corrector, "", "hey").isWord, true)
+        let rig = Self.rig(predictions: ["hey": predict(corrector, "", "hey")])
+        rig.tap("Hey")
+        TestSupport.expectEqual(rig.strip, nil)
+        // A word so far that is not a word: against the best form.
+        TestSupport.expectEqual(predict(corrector, "", "meeti").words, ["meeting", "meetings"])
+        // At the boundary: 1 in 999 stays, 1 in 1001 goes.
+        TestSupport.expectEqual(predict(corrector, "", "odd").words, ["odder"])
+        // Ordinary completions are all kept (testCompletionsAreRankedByTheWordModel).
+        TestSupport.expectEqual(predict(Self.corrector().0, "", "hel").words, ["hello", "help", "held"])
+    }
+
+    static let spellingEntries: [(String, Int)] = [
+        ("eggs", 150), ("egos", 60), ("legs", 120), ("definitely", 140), ("defiantly", 60), ("the", 250), ("receive", 130),
+        ("until", 160), ("accommodate", 100), ("don't", 200), ("ego", 90),
+    ]
+    static let spellingProbs: [String: Double] = [
+        "eggs": 0.002, "egos": 0.004, "legs": 0.01, "definitely": 0.01, "defiantly": 0.02, "the": 0.2, "receive": 0.01,
+        "until": 0.02, "accommodate": 0.001, "don't": 0.05, "ego": 0.003,
+    ]
+
+    static func spellingCorrector() -> (Autocorrector, CountingModel) {
+        let model = CountingModel(spellingProbs, byPrevious: ["and": ["eggs": 0.2, "egos": 0.0001, "ego": 0.0001]])
+        return (Autocorrector(lexicon: AutocorrectCoreTests.lexicon(spellingEntries), model: model, touch: AutocorrectCoreTests.touch), model)
+    }
+
+    /// Round 2 council (Opus finding 1): "definately" got no suggestion and "egss" offered "eggs" only in some contexts,
+    /// because the touch model makes a letter three or more keys away almost impossible. Spelling matches
+    /// (`WordCorrecting.spellingMatches`): for a word outside the lexicon, the lexicon forms within the corrector's edit
+    /// limit (an insertion, deletion, substitution or swap of neighbours each), whatever the keys' distance; fewest
+    /// edits first, then the word model in the sentence's context, then frequency.
+    private static func testSpellingMatchesIgnoreKeyDistance() {
+        let (corrector, _) = spellingCorrector()
+        func matches(_ context: String, _ word: String, _ limit: Int = 3, _ params: AutocorrectParams = .standard) -> [String] {
+            corrector.spellingMatches(context: context, word: word, params: params, limit: limit)
+        }
+        // A substitution far from its key: "definitely" first though the model prefers "defiantly", two edits away.
+        TestSupport.expectEqual(matches("", "definately"), ["definitely", "defiantly"])
+        // A doubled letter in the wrong place, the context deciding between one-edit matches; "legs" is two edits away,
+        // beyond a four-letter word's limit (`maxEditsShort`).
+        TestSupport.expectEqual(matches("milk and ", "egss"), ["eggs", "egos"])
+        TestSupport.expectEqual(matches("", "egss"), ["egos", "eggs"])
+        TestSupport.expectEqual(matches("milk and ", "egss", 1), ["eggs"])
+        // A deletion, a swap, two insertions, and the same letters with an apostrophe.
+        TestSupport.expectEqual(matches("", "untill"), ["until"])
+        TestSupport.expectEqual(matches("", "recieve"), ["receive"])
+        TestSupport.expectEqual(matches("", "acomodate"), ["accommodate"])
+        TestSupport.expectEqual(matches("", "dont"), ["don't"])
+        // A longer word gets two edits: "eggs" and "egos" are two from "egsss", "legs" three.
+        TestSupport.expectEqual(matches("", "egsss", 3, AutocorrectCoreTests.params { $0.shortLength = 3 }), ["egos", "eggs"])
+        // None for a lexicon word, a word below `minLength`, a limit below 1, other characters, or nothing near.
+        TestSupport.expectEqual(matches("", "eggs"), [])
+        TestSupport.expectEqual(matches("", "egss", 3, AutocorrectCoreTests.params { $0.minLength = 5 }), [])
+        TestSupport.expectEqual(matches("", "egss", 0), [])
+        TestSupport.expectEqual(matches("", "eg-s"), [])
+        TestSupport.expectEqual(matches("", "zzzzzzz"), [])
+        TestSupport.expectEqual(matches("", "egss", 3, AutocorrectCoreTests.params { $0.maxEditsShort = 0 }), [])
+    }
+
+    /// The search is the corrector's own bounded one, and the word model's read-out for the context is reused: typing
+    /// on in a context asks the model nothing more.
+    private static func testSpellingMatchesStayCheap() {
+        let (corrector, model) = spellingCorrector()
+        _ = predict(corrector, "milk and ", "egs")
+        let calls = model.calls, allFormCalls = model.allFormCalls
+        TestSupport.expectEqual(corrector.spellingMatches(context: "milk and ", word: "egss", params: .standard, limit: 3), ["eggs", "egos"])
+        TestSupport.expectEqual(model.calls, calls)
+        TestSupport.expectEqual(model.allFormCalls, allFormCalls)
+    }
+
+    /// While a word is typed, a word outside the lexicon that no suggestion completes gets its spelling matches: after
+    /// the word as typed when nothing else is offered (they are a guess, and a space keeps the word), and the best always
+    /// has a slot (the last, when the strip is full), never over the quoted word or a pending correction.
+    private static func testSpellingMatchesFillTheStripForAWordNothingCompletes() {
+        let rig = rig(predictions: ["egss": WordPredictions(words: [], isWord: false)])
+        rig.corrector.spelled = ["egss": ["eggs", "egos", "ess"]]
+        rig.tap("egss")
+        TestSupport.expectEqual(rig.strip, live(["egss", "eggs", "egos"]))
+        // Suggested only: a space keeps the word as typed.
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "egss ")
+        let full = Self.rig(predictions: ["egss": WordPredictions(words: ["ego", "less", "mess"], isWord: false)])
+        full.corrector.spelled = ["egss": ["eggs", "egos"]]
+        full.tap("Egss")
+        TestSupport.expectEqual(full.strip, live(["Ego", "Less", "Eggs"]))
+        let pending = Self.rig(predictions: ["teh": WordPredictions(correction: "the", words: ["the", "ten", "tea"], isWord: false)])
+        pending.corrector.spelled = ["teh": ["tech"]]
+        pending.tap("teh")
+        TestSupport.expectEqual(pending.strip, live(["teh", "the", "tech"], quoted: 0, marked: 1))
+        let same = Self.rig(predictions: ["teh": WordPredictions(correction: "the", words: ["the", "ten", "tea"], isWord: false)])
+        same.corrector.spelled = ["teh": ["the", "tech"]]
+        same.tap("teh")
+        TestSupport.expectEqual(same.strip, live(["teh", "the", "ten"], quoted: 0, marked: 1))
+        // Not asked for a lexicon word, a kept (chat) word, a contraction's middle, or a word a suggestion completes.
+        let others = Self.rig(predictions: [
+            "egg": WordPredictions(words: ["eggs"], isWord: true), "defin": WordPredictions(words: ["definitely"], isWord: false),
+        ])
+        others.corrector.spelled = ["egg": ["ego"], "defin": ["define"], "lol": ["lil"], "don'": ["don't"]]
+        func asked(_ word: String) -> Bool { others.corrector.spellingCalls.contains { $0.word == word } }
+        others.tap("egg")
+        TestSupport.expectEqual(others.strip, live(["egg", "eggs"]))
+        TestSupport.expect(!asked("egg"), "asked for a lexicon word")
+        others.press(.space)
+        others.tap("defin")
+        TestSupport.expectEqual(others.strip, live(["definitely"]))
+        TestSupport.expect(!asked("defin"), "asked for a word a suggestion completes")
+        others.press(.space)
+        others.tap("lol")
+        TestSupport.expectEqual(others.strip, nil)
+        TestSupport.expect(!asked("lol"), "asked for a chat word")
+        others.press(.space)
+        others.tap("don")
+        let before = others.corrector.spellingCalls.count
+        others.tap("'")
+        TestSupport.expectEqual(others.strip, nil)
+        TestSupport.expectEqual(others.corrector.spellingCalls.count, before)
+    }
+
+    /// The round 2 corrections still hold with spelling matches and the ratio: "teh" is corrected to "the" while typed
+    /// and at the space, and the chat words are kept.
+    private static func testMisspellingsAndTyposStillCorrect() {
+        let (corrector, _) = corrector()
+        TestSupport.expectEqual(predict(corrector, "", "teh").correction, "the")
+        TestSupport.expectEqual(predict(corrector, "", "teh").words.first, "the")
+        let setup = AutocorrectSetup(corrector: corrector, keys: AutocorrectCoreTests.keys, params: .standard, secureTextEntry: false)
+        func record(_ word: String) -> WordTapRecord {
+            WordTapRecord(entries: zip(word, AutocorrectCoreTests.centreTaps(word)).map {
+                WordTapRecord.Entry(character: $0, point: $1.map { TapPoint(x: $0.x, y: $0.y) })
+            }, owned: true)
+        }
+        let typing = WordAutocorrect.typingStrip(before: "teh", record: record("teh"), reverted: [], setup: setup)
+        TestSupport.expectEqual(typing?.strip.live, SwipeStrip.Live(quoted: 0, marked: 1))
+        TestSupport.expectEqual(typing?.strip.candidates.prefix(2), ["teh", "the"])
+        TestSupport.expectEqual(WordAutocorrect.review(before: "teh", record: record("teh"), reverted: [], setup: setup)?.correction?.replacement,
+                                "the")
+        for word in WordAutocorrect.chatWords {
+            TestSupport.expectEqual(WordAutocorrect.review(before: word, record: record(word), reverted: [], setup: setup), nil)
         }
     }
 }

@@ -17,9 +17,14 @@ protocol WordCorrecting: AnyObject {
     func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                      params: AutocorrectParams, limit: Int) -> [String]
     /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions): what a commit key would make of
-    /// it, and up to `limit` other lexicon forms, best first. `word` is the word so far, as for `correct`.
+    /// it, and up to `limit` other lexicon forms, best first, none far less likely than the first word the strip
+    /// shows. `word` is the word so far, as for `correct`.
     func predictions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                      params: AutocorrectParams, limit: Int) -> WordPredictions
+    /// Spelling matches (ARCHITECTURE.md, "Word autocorrect", Spelling matches): for a word outside the lexicon, up to
+    /// `limit` lexicon forms within the corrector's edit limit of it whatever the keys' distance, lowercase, fewest
+    /// edits first, then by the word model in the context. Suggestions only: nothing corrects from them.
+    func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String]
     /// Drops every cache that holds context or words (the keyboard calls it when it hides). Results after it
     /// are the same as before.
     func forgetContext()

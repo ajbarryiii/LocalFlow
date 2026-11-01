@@ -129,7 +129,8 @@ final class Autocorrector: WordCorrecting {
     /// - completions: the forms starting with the word (a range of ids, `WordLexicon.formRange`), scored as the word
     ///   typed so far matched exactly, so by the weighted model log probability in the sentence's context alone;
     /// - typo-tolerant matches: `alternatives` at the suggestion floor (none below `minLength` letters).
-    /// Ties go to the higher frequency, then the first form. The word itself is never one of them.
+    /// Ties go to the higher frequency, then the first form. The word itself is never one of them, nor a form less
+    /// likely than the strip's first word by more than `suggestionRatio`.
     func predictions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                      params p: AutocorrectParams, limit: Int) -> WordPredictions {
         guard limit > 0, let typed = Typed(word), !typed.codes.isEmpty else { return WordPredictions(words: [], isWord: false) }
@@ -177,7 +178,71 @@ final class Autocorrector: WordCorrecting {
         }
         for completion in best { odds[completion.id] = max(odds[completion.id] ?? -.infinity, completion.logOdds) }
         let ranked = odds.sorted { ranks($0.value, $0.key, before: ($1.key, $1.value)) }
-        return WordPredictions(correction: correction, words: ranked.prefix(limit).map { lexicon.form(at: $0.key) }, isWord: known)
+        // None far less likely than the strip's first word: the typed word when it is a word the model gives a
+        // probability (odds 0 against itself), else the best form.
+        let first = max(known && keepModel.isFinite ? 0 : -.infinity, ranked.first?.value ?? -.infinity)
+        let shown = ranked.prefix(limit).filter { $0.value >= first - log(Self.suggestionRatio) }
+        return WordPredictions(correction: correction, words: shown.map { lexicon.form(at: $0.key) }, isWord: known)
+    }
+
+    /// While a word is typed, the most by which a form offered may be less likely than the strip's first word (its
+    /// odds ratio). Chosen on the bundle's model with invented sentences and centre taps (ARCHITECTURE.md, "Word
+    /// autocorrect", Suggestions): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti" (1 in 1,200)
+    /// but keeps "defiantly" for "defi" (1 in 220).
+    static let suggestionRatio = 1000.0
+
+    // MARK: Spelling matches
+
+    /// For a word outside the lexicon (ARCHITECTURE.md, "Word autocorrect", Spelling matches): the forms of every lexicon
+    /// key within the edit limit of its key (`maxEditsShort` up to `shortLength` letters, else `maxEdits`; optimal
+    /// string alignment, so an insertion, deletion, substitution or swap of neighbours is one edit each), whatever the
+    /// keys' distance, as the touch model would not have them. Fewest edits first, then the word model's log probability
+    /// in the sentence's context (the completions' read-out when it is for this context), then frequency, then the
+    /// first form. None for a lexicon word, a limit below 1, a key shorter than `minLength`, or other characters.
+    func spellingMatches(context: String, word: String, params p: AutocorrectParams, limit: Int) -> [String] {
+        guard limit > 0, let typed = Typed(word), !typed.codes.isEmpty, typed.codes.count >= p.minLength,
+              !lexicon.contains(word) else { return [] }
+        let edits = self.limit(typed.codes.count, p)
+        guard edits >= 0 else { return [] }
+        var ids: [Int] = []
+        var distances: [Int] = []
+        for candidate in lexicon.keys(within: edits, of: typed.codes) {
+            let distance = Self.alignmentDistance(typed.codes, candidate.codes)
+            for id in lexicon.formIDs(ofNode: candidate.node) {
+                ids.append(id)
+                distances.append(distance)
+            }
+        }
+        guard !ids.isEmpty else { return [] }
+        let words = Self.sentenceWords(context)
+        let logProbs = completionContext == words && completionLogProbs.count == lexicon.formCount
+            ? ids.map { completionLogProbs[$0] } : model.logProbs(context: words, words: ids.map(lexicon.form(at:)))
+        guard logProbs.count == ids.count else { return [] }
+        let order = ids.indices.sorted { a, b in
+            if distances[a] != distances[b] { return distances[a] < distances[b] }
+            if logProbs[a] != logProbs[b] { return logProbs[a] > logProbs[b] }
+            let frequency = lexicon.frequency(ofFormAt: ids[a]), other = lexicon.frequency(ofFormAt: ids[b])
+            if frequency != other { return frequency > other }
+            return ids[a] < ids[b]
+        }
+        return order.prefix(limit).map { lexicon.form(at: ids[$0]) }
+    }
+
+    /// The optimal-string-alignment distance between two letter-code strings (as `WordLexicon.keys(within:of:)`).
+    static func alignmentDistance(_ a: [Int], _ b: [Int]) -> Int {
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
+        var rows = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in 0 ... a.count { rows[i][0] = i }
+        for j in 0 ... b.count { rows[0][j] = j }
+        for i in 1 ... a.count {
+            for j in 1 ... b.count {
+                var best = min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] { best = min(best, rows[i - 2][j - 2] + 1) }
+                rows[i][j] = best
+            }
+        }
+        return rows[a.count][b.count]
     }
 
     /// Whether form `id` with `logOdds` ranks before `other`: higher odds, then higher frequency, then the first form

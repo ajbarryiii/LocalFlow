@@ -7,6 +7,8 @@ enum BarContentTests {
             ("dictationIsNeverHiddenByTheStripOrTheOffer", testDictationIsNeverHiddenByTheStripOrTheOffer),
             ("returnKeyFollowsEnablesReturnKeyAutomatically", testReturnKeyFollowsEnablesReturnKeyAutomatically),
             ("emojiRecentsAreNewestFirstAndBounded", testEmojiRecentsAreNewestFirstAndBounded),
+            ("noDividerBesideTheHighlightedCandidate", testNoDividerBesideTheHighlightedCandidate),
+            ("longCandidatesAreDroppedRatherThanShrunk", testLongCandidatesAreDroppedRatherThanShrunk),
         ]
     }
 
@@ -58,5 +60,49 @@ enum BarContentTests {
         TestSupport.expectEqual(Array(stored.emoji.prefix(2)), [all[2], all[3]])
         TestSupport.expectEqual(stored.emoji.count, EmojiRecents.limit)
         TestSupport.expect(!stored.emoji.contains("typed text"), "stored text kept")
+    }
+
+    /// Round 2 council (Opus finding 2): the dividers showed just outside the highlighted pill's rounded ends. A divider
+    /// goes between two shown neighbours only when neither is the emphasized candidate.
+    private static func testNoDividerBesideTheHighlightedCandidate() {
+        func dividers(_ shown: [Int], emphasized: Int?) -> [Bool] {
+            zip(shown, shown.dropFirst()).map { CandidateStripLayout.showsDivider(between: $0, and: $1, emphasized: emphasized) }
+        }
+        TestSupport.expectEqual(dividers([0, 1, 2], emphasized: nil), [true, true])
+        TestSupport.expectEqual(dividers([0, 1, 2], emphasized: 0), [false, true])
+        TestSupport.expectEqual(dividers([0, 1, 2], emphasized: 1), [false, false])
+        TestSupport.expectEqual(dividers([0, 1, 2], emphasized: 2), [true, false])
+        // Between the shown ones, when one was dropped.
+        TestSupport.expectEqual(dividers([0, 2], emphasized: 1), [true])
+        TestSupport.expectEqual(dividers([0, 2], emphasized: 2), [false])
+    }
+
+    /// Round 2 council (Opus finding 2): long words shrank to the 0.6 floor (about 9 pt beside 15 pt neighbours). The
+    /// slots are equal; a word shrinks to at most `minimumScale` (0.8) of its size, and when the words do not all fit so,
+    /// the least useful go: the last that is neither the emphasized nor the quoted word, until the rest fit.
+    private static func testLongCandidatesAreDroppedRatherThanShrunk() {
+        TestSupport.expectEqual(CandidateStripLayout.minimumScale, 0.8)
+        let strip = SwipeStrip(candidates: ["meeting", "meetings", "meetinghouse"], inserted: 0, live: SwipeStrip.Live(quoted: nil, marked: nil))
+        // Three slots of (257 − 2) / 3 = 85 points: 85 − 12 of padding holds 91 points of text at 0.8.
+        func shown(_ strip: SwipeStrip, _ widths: [Double], _ available: Double = 257) -> CandidateStripLayout.Fit {
+            CandidateStripLayout.fit(strip, widths: widths, available: available)
+        }
+        TestSupport.expectEqual(shown(strip, [55, 62, 91]), CandidateStripLayout.Fit(shown: [0, 1, 2], minimumScale: 0.8))
+        TestSupport.expectEqual(shown(strip, [55, 62, 102]).shown, [0, 1])
+        // The least useful goes, not the long one: the third, whatever its length.
+        TestSupport.expectEqual(shown(strip, [55, 102, 40]).shown, [0, 1])
+        // Never the emphasized or the quoted word: a pending correction keeps both.
+        let pending = SwipeStrip(candidates: ["defenately", "definitely", "defiantly"], inserted: 1,
+                                 live: SwipeStrip.Live(quoted: 0, marked: 1))
+        TestSupport.expectEqual(shown(pending, [110, 70, 70]).shown, [0, 1])
+        // After a commit key, the word in the field stays.
+        let committed = SwipeStrip(candidates: ["accommodations", "accommodation", "accommodating"], inserted: 2)
+        TestSupport.expectEqual(shown(committed, [130, 120, 125]).shown, [0, 2])
+        TestSupport.expectEqual(shown(committed, [150, 120, 145]).shown, [2])
+        // What is left shrinks below 0.8 only when it must.
+        TestSupport.expectEqual(shown(committed, [150, 120, 320]), CandidateStripLayout.Fit(shown: [2], minimumScale: 0.6))
+        // Unmeasured (no width yet): everything, as before.
+        TestSupport.expectEqual(shown(strip, [55, 62, 102], 0).shown, [0, 1, 2])
+        TestSupport.expectEqual(shown(strip, [], 257).shown, [0, 1, 2])
     }
 }

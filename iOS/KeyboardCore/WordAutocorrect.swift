@@ -87,6 +87,44 @@ enum WordAutocorrect {
     /// contraction, as the corrector already corrects "dont".
     static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't"]
 
+    /// Very common misspellings known for certain, corrected as `fixedCorrections` are: the touch model scores a letter
+    /// typed for one far from it ("definately") as almost impossible, so the corrector never offers these. Every
+    /// target is a word of the bundle's lexicon and no source is one (checked against bundle b34).
+    static let commonMisspellings: [String: String] = [
+        "accomodate": "accommodate", "acheive": "achieve", "adress": "address", "arguement": "argument",
+        "basicly": "basically", "becuase": "because", "begining": "beginning", "beleive": "believe", "belive": "believe",
+        "buisness": "business", "calender": "calendar", "comming": "coming", "completly": "completely",
+        "concious": "conscious", "definately": "definitely", "diffrent": "different", "dissapoint": "disappoint",
+        "embarass": "embarrass", "enviroment": "environment", "existance": "existence", "experiance": "experience",
+        "familar": "familiar", "finaly": "finally", "foriegn": "foreign", "freind": "friend", "goverment": "government",
+        "happend": "happened", "immediatly": "immediately", "independant": "independent", "knowlege": "knowledge",
+        "libary": "library", "maintainance": "maintenance", "millenium": "millennium", "neccessary": "necessary",
+        "noticable": "noticeable", "occassion": "occasion", "occured": "occurred", "posession": "possession",
+        "prefered": "preferred", "probaly": "probably", "publically": "publicly", "recieve": "receive",
+        "recomend": "recommend", "relevent": "relevant", "religous": "religious", "remeber": "remember", "rythm": "rhythm",
+        "seperate": "separate", "sucess": "success", "suprise": "surprise", "thier": "their", "tommorow": "tomorrow",
+        "tounge": "tongue", "truely": "truly", "untill": "until", "wich": "which", "wierd": "weird", "writting": "writing",
+    ]
+
+    /// The correction made whatever the corrector says (`fixedCorrections`, `commonMisspellings`), if any.
+    static func fixedCorrection(_ word: String) -> String? {
+        fixedCorrections[word] ?? commonMisspellings[word]
+    }
+
+    /// `candidates` with spelling matches (ARCHITECTURE.md, "Word autocorrect", Spelling matches): the best always (in
+    /// the last slot when the strip is full, never over the first `protected`), the others in the slots left.
+    static func adding(spelling matches: [String], to candidates: [String], protected: Int) -> [String] {
+        var out = candidates
+        for (rank, match) in matches.enumerated() where !out.contains(match) {
+            if out.count < SwipeStrip.limit {
+                out.append(match)
+            } else if rank == 0, out.count > protected {
+                out[out.count - 1] = match
+            }
+        }
+        return out
+    }
+
     /// The correction (lowercase) in the typed word's case: all capitals (two letters or more) stays all
     /// capitals, a capital first letter (or a word that always takes one, `takesCapital`) takes a capital first
     /// letter, and anything else is the lexicon form.
@@ -113,8 +151,9 @@ enum WordAutocorrect {
 
     /// What a commit key does with the owned word: its correction, if any, and the strip's words to choose from
     /// after it. The words replace `typed`, each cased as the typed word and followed by its trailing apostrophes:
-    /// the typed word first, then the correction, then the corrector's suggestions, at most `SwipeStrip.limit`
-    /// and only when there is a choice (none for a lexicon word the corrector keeps).
+    /// the typed word first, then the correction, then the corrector's suggestions, with the best spelling match of a
+    /// word outside the lexicon (`adding(spelling:to:protected:)`), at most `SwipeStrip.limit` and only when there is
+    /// a choice (none for a lexicon word the corrector keeps).
     struct Review: Equatable {
         var correction: Correction?
         var typed: String
@@ -145,7 +184,7 @@ enum WordAutocorrect {
         let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
         let modelled = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                params: setup.params)
-        let corrected = fixedCorrections[lowered] ?? modelled
+        let corrected = fixedCorrection(lowered) ?? modelled
         let suggested = setup.corrector.suggestions(context: context, word: lowered, points: points, keys: setup.keys,
                                                     params: setup.params, limit: SwipeStrip.limit)
         let tail = String(entries[found.word.upperBound...].map(\.character))
@@ -164,6 +203,8 @@ enum WordAutocorrect {
         where choices.count < SwipeStrip.limit && !choices.contains(choice) {
             choices.append(choice)
         }
+        let spelled = setup.corrector.spellingMatches(context: context, word: lowered, params: setup.params, limit: SwipeStrip.limit)
+        choices = adding(spelling: spelled.map { cased($0, like: word) + tail }, to: choices, protected: correction == nil ? 1 : 2)
         return Review(correction: correction, typed: typed, choices: choices.count > 1 ? choices : [])
     }
 
@@ -186,6 +227,8 @@ enum WordAutocorrect {
     ///   capitals): the word as typed, quoted (a tap keeps it), the correction, marked, then the best other.
     /// - Otherwise the word as typed when it is a lexicon word (or kept, or nothing else is offered), then the best
     ///   others. Every word takes the typed word's case and trailing apostrophes.
+    /// - A word that is no lexicon word (and not kept) that none of the others completes also gets its spelling matches
+    ///   (`adding(spelling:to:protected:)`), after the word as typed when nothing else is offered.
     static func typingStrip(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
                             allCapitals: Bool = false, setup: AutocorrectSetup?) -> Typing? {
         guard let setup, setup.suggestsWhileTyping, record.owned, let found = word(before: record.text) else { return nil }
@@ -210,7 +253,7 @@ enum WordAutocorrect {
         let kept = reverted.contains(lowered) || neverCorrect.contains(lowered) || chatWords.contains(lowered)
         var correction: String?
         if !kept, !contraction {
-            if let corrected = fixedCorrections[lowered] ?? predicted.correction, corrected.lowercased() != lowered,
+            if let corrected = fixedCorrection(lowered) ?? predicted.correction, corrected.lowercased() != lowered,
                cased(corrected, like: word) != word {
                 correction = (capitals ? corrected.uppercased() : cased(corrected, like: word)) + tail
             } else if takesCapital(lowered), let first = word.first, first.isLowercase {
@@ -218,11 +261,20 @@ enum WordAutocorrect {
             }
         }
         let others = predicted.words.map { (capitals ? $0.uppercased() : cased($0, like: word)) + (contraction ? "" : tail) }
+        // A word that is no word and that nothing offered completes also gets its spelling matches.
+        var spelled: [String] = []
+        if !predicted.isWord, !kept, !contraction, !predicted.words.contains(where: { $0.hasPrefix(prefix) }) {
+            spelled = setup.corrector.spellingMatches(context: context, word: lowered, params: setup.params, limit: SwipeStrip.limit)
+                .map { (capitals ? $0.uppercased() : cased($0, like: word)) + tail }
+        }
         var candidates: [String] = []
-        for choice in (correction.map { [typed, $0] } ?? (predicted.isWord || kept || others.isEmpty ? [typed] : [])) + others
+        // Spelling matches are a guess: they never hide the word as typed, which is what a space keeps.
+        let showsTyped = predicted.isWord || kept || others.isEmpty
+        for choice in (correction.map { [typed, $0] } ?? (showsTyped ? [typed] : [])) + others
         where candidates.count < SwipeStrip.limit && !candidates.contains(choice) {
             candidates.append(choice)
         }
+        candidates = adding(spelling: spelled, to: candidates, protected: correction != nil ? 2 : showsTyped ? 1 : 0)
         guard candidates != [typed], !candidates.isEmpty else { return nil }
         let live = correction == nil ? SwipeStrip.Live(quoted: nil, marked: nil) : SwipeStrip.Live(quoted: 0, marked: 1)
         return Typing(strip: SwipeStrip(candidates: candidates, inserted: live.marked ?? 0, live: live), typed: typed, word: lowered,

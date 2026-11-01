@@ -21,6 +21,9 @@ enum AutocorrectEditorTests {
             ("chatWordsAreKeptAsTyped", testChatWordsAreKeptAsTyped),
             ("dayAndMonthNamesTakeACapital", testDayAndMonthNamesTakeACapital),
             ("cantAndWontTakeTheirApostrophe", testCantAndWontTakeTheirApostrophe),
+            ("commonMisspellingsAreCorrected", testCommonMisspellingsAreCorrected),
+            ("theMisspellingTableIsSmallAndCertain", testTheMisspellingTableIsSmallAndCertain),
+            ("spellingMatchesJoinTheStripAfterTheWord", testSpellingMatchesJoinTheStripAfterTheWord),
             ("apostrophesAreKeptAroundTheWord", testApostrophesAreKeptAroundTheWord),
             ("keptWordsAreNotReplaced", testKeptWordsAreNotReplaced),
             ("swipedWordsAreNotCorrected", testSwipedWordsAreNotCorrected),
@@ -392,6 +395,112 @@ enum AutocorrectEditorTests {
         off.tap("wont")
         off.press(.space)
         TestSupport.expectEqual(off.text, "wont ")
+    }
+
+    /// Round 2 council (Opus finding 1): "definately " stayed as typed. Very common misspellings that are certain are
+    /// corrected whatever the corrector says, as "cant" is, in the typed word's case, and revert like any correction.
+    private static func testCommonMisspellingsAreCorrected() {
+        let rig = AutocorrectRig("", corrections: [:])
+        for word in ["definately", "Seperate", "RECIEVE", "thier", "tommorow", "untill", "wich"] {
+            rig.tap(word)
+            rig.press(.space)
+        }
+        TestSupport.expectEqual(rig.text, "definitely Separate RECEIVE their tomorrow until which ")
+        // While it is typed, the strip marks the correction beside the quoted word.
+        let live = AutocorrectRig("", corrections: [:])
+        live.tap("definately")
+        TestSupport.expectEqual(live.strip, SwipeStrip(candidates: ["definately", "definitely"], inserted: 1,
+                                                       live: SwipeStrip.Live(quoted: 0, marked: 1)))
+        // A Delete right after reverts it, and the word is remembered for the session.
+        let reverted = AutocorrectRig.typingASpace(after: "i", corrections: [:])
+        reverted.tap("definately")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.strip, SwipeStrip(candidates: ["definately", "definitely"], inserted: 1))
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "i definately")
+        TestSupport.expectEqual(reverted.editor.revertedWords, ["definately"])
+        reverted.press(.space)
+        reverted.tap("definately")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "i definately definately ")
+        // Off with autocorrect, and where the field turns autocorrection off.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("thier")
+        off.press(.space)
+        TestSupport.expectEqual(off.text, "thier ")
+        let literal = AutocorrectRig("", corrections: [:])
+        literal.autocorrectionDisabled = true
+        literal.tap("thier")
+        literal.press(.space)
+        TestSupport.expectEqual(literal.text, "thier ")
+        // The corrector still decides everything else: "teh" and the chat words are unchanged.
+        let others = AutocorrectRig("", corrections: ["teh": "the", "lol": "lil"])
+        for word in ["teh", "lol"] {
+            others.tap(word)
+            others.press(.space)
+        }
+        TestSupport.expectEqual(others.text, "the lol ")
+    }
+
+    /// The table holds only misspellings known for certain: a short list (at most about 60), every source a lowercase
+    /// a–z word that is no target, no chat word and no other fixed correction, every target a different word. (Every
+    /// target is a word of the bundle's lexicon and no source is one; ARCHITECTURE.md, "Word autocorrect".)
+    private static func testTheMisspellingTableIsSmallAndCertain() {
+        let table = WordAutocorrect.commonMisspellings
+        TestSupport.expect(!table.isEmpty && table.count <= 60, "\(table.count) entries")
+        let required = [
+            ("definately", "definitely"), ("seperate", "separate"), ("recieve", "receive"), ("untill", "until"), ("wich", "which"),
+            ("occured", "occurred"), ("accomodate", "accommodate"), ("beleive", "believe"), ("tommorow", "tomorrow"),
+            ("wierd", "weird"), ("thier", "their"), ("truely", "truly"), ("goverment", "government"), ("enviroment", "environment"),
+            ("neccessary", "necessary"), ("begining", "beginning"), ("calender", "calendar"), ("existance", "existence"),
+            ("independant", "independent"), ("publically", "publicly"),
+        ]
+        for (source, target) in required { TestSupport.expectEqual(table[source], target) }
+        for (source, target) in table {
+            TestSupport.expect(!source.isEmpty && source.unicodeScalars.allSatisfy { ("a" ... "z").contains($0) }, "source \(source)")
+            TestSupport.expect(target != source && target == target.lowercased(), "target \(target)")
+            TestSupport.expect(table[target] == nil, "\(target) is also a source")
+            TestSupport.expect(!WordAutocorrect.chatWords.contains(source), "\(source) is a chat word")
+            TestSupport.expect(WordAutocorrect.fixedCorrections[source] == nil, "\(source) is already fixed")
+        }
+        TestSupport.expect(table["teh"] == nil, "the corrector decides teh")
+    }
+
+    /// Round 2 council (Opus finding 1): after "egss " the strip offered "eggs" only in some contexts. After a commit key
+    /// a word outside the lexicon also offers its best spelling match (one or two edits, whatever the keys' distance):
+    /// suggested only, never put in by the commit key.
+    private static func testSpellingMatchesJoinTheStripAfterTheWord() {
+        let rig = AutocorrectRig.typingASpace(after: "and", corrections: [:])
+        rig.corrector.spelled = ["egss": ["eggs", "egos"]]
+        rig.tap("egss")
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "and egss ")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["egss", "eggs", "egos"], inserted: 0))
+        TestSupport.expectEqual(rig.corrector.spellingCalls.last?.word, "egss")
+        TestSupport.expectEqual(rig.corrector.spellingCalls.last?.context, "and ")
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "and eggs ")
+        // Suggestions that fill the strip leave the best spelling match the last slot, in the typed word's case.
+        let full = AutocorrectRig("", corrections: [:], alternatives: ["egss": ["ego", "less"]])
+        full.corrector.spelled = ["egss": ["eggs"]]
+        full.tap("Egss")
+        full.press(.space)
+        TestSupport.expectEqual(full.strip, SwipeStrip(candidates: ["Egss", "Ego", "Eggs"], inserted: 0))
+        // Never over the correction; one already offered is not repeated.
+        let corrected = AutocorrectRig("", corrections: ["teh": "the"], alternatives: ["teh": ["ten", "tea"]])
+        corrected.corrector.spelled = ["teh": ["the", "tech"]]
+        corrected.tap("teh")
+        corrected.press(.space)
+        TestSupport.expectEqual(corrected.text, "the ")
+        TestSupport.expectEqual(corrected.strip, SwipeStrip(candidates: ["teh", "the", "ten"], inserted: 1))
+        // A chat word is still kept without asking.
+        let chat = AutocorrectRig("", corrections: [:])
+        chat.corrector.spelled = ["lol": ["lil"]]
+        chat.tap("lol")
+        chat.press(.space)
+        TestSupport.expectEqual(chat.strip, nil)
+        TestSupport.expect(!chat.corrector.spellingCalls.contains { $0.word == "lol" }, "a chat word was matched")
     }
 
     private static func testApostrophesAreKeptAroundTheWord() {
@@ -1291,6 +1400,9 @@ final class FakeCorrector: WordCorrecting {
     private(set) var calls: [Call] = []
     private(set) var suggestionCalls: [(call: Call, limit: Int)] = []
     private(set) var predictionCalls: [Call] = []
+    /// The spelling matches, by word; none for any other.
+    var spelled: [String: [String]] = [:]
+    private(set) var spellingCalls: [(context: String, word: String, limit: Int)] = []
 
     init(_ corrections: [String: String], alternatives: [String: [String]] = [:]) {
         self.corrections = corrections
@@ -1313,6 +1425,11 @@ final class FakeCorrector: WordCorrecting {
                      params: AutocorrectParams, limit: Int) -> WordPredictions {
         predictionCalls.append(Call(context: context, word: word, points: points, keys: keys, params: params))
         return predicted[word] ?? WordPredictions(words: [], isWord: false)
+    }
+
+    func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String] {
+        spellingCalls.append((context, word, limit))
+        return Array((spelled[word] ?? []).prefix(limit))
     }
 
     func forgetContext() {}
