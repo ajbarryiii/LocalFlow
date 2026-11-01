@@ -76,11 +76,12 @@ enum WordAutocorrect {
     }
 
     /// Common chat abbreviations and slang, kept as typed without asking the corrector, as the user's never-correct
-    /// words are: the corrector's lexicon would turn some of them into words ("lol" into "lil").
+    /// words are: the corrector's lexicon would turn some of them into words ("lol" into "lil", "ur" into "our",
+    /// "alot" into "almost").
     static let chatWords: Set<String> = [
         "lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
         "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
-        "yep", "nope",
+        "yep", "nope", "ur", "alot",
     ]
 
     /// Corrections made whatever the corrector says: lexicon words ("cant", "wont") almost always typed for the

@@ -1865,7 +1865,8 @@ back.
     is a never-correct word ("Never correct" below);
   - it is a common chat abbreviation or slang word
     (`WordAutocorrect.chatWords`: "lol", "omg", "idk", "ok", "gonna", "yeah",
-    ...), which the lexicon would otherwise turn into words ("lol" → "lil");
+    "ur", "alot", ...), which the lexicon would otherwise turn into words
+    ("lol" → "lil", "ur" → "our", "alot" → "almost");
   - text is selected (the commit key replaces the selection);
   - the field is secure text entry, or turns autocorrection off
     (`autocorrectionType == .no`, as SwiftUI's `.autocorrectionDisabled()`

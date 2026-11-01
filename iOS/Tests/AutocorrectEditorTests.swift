@@ -300,10 +300,10 @@ enum AutocorrectEditorTests {
 
     private static func testChatWordsAreKeptAsTyped() {
         // Common chat abbreviations and slang stay as typed in any case, without asking the corrector, even one that
-        // would change them (round 1 council: "lol " became "lil").
+        // would change them (round 1 council: "lol " became "lil"; round 3: "ur" became "our", "alot" "almost").
         let chat = ["lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
                     "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
-                    "yep", "nope"]
+                    "yep", "nope", "ur", "alot"]
         var corrections = Dictionary(uniqueKeysWithValues: chat.map { ($0, "lil") })
         corrections["teh"] = "the"
         corrections["dont"] = "don't"
