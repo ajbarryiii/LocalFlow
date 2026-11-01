@@ -1055,7 +1055,8 @@ final class KeyboardEditor {
     /// After every key and tapped word: the next words, while the keyboard's own space after a word is the last thing it
     /// typed (Shift and layer keys aside), where autocorrect predicts (`AutocorrectSetup.predictsNextWords`), no other
     /// strip shows, nothing is selected and the field is the one the editor knows. Cased as a letter typed there would be
-    /// (`swipeShift`), the pronoun I and day names with their capital.
+    /// (`swipeShift`), the pronoun I and day names with their capital. Never a single letter alone ("I" read as a stray bar
+    /// or a second caret): the status line stays instead.
     private func refreshNextWords() {
         guard predictsNextWord, swipe == nil, typingSuggestions == nil, !document.hasSelection,
               core.documentID == document.documentID, let before = currentBefore, Self.followsWordAndSpace(before),
@@ -1071,7 +1072,7 @@ final class KeyboardEditor {
             let candidate = Self.swipeCased(named, shift: shift)
             if cased.count < SwipeStrip.limit, !cased.contains(candidate) { cased.append(candidate) }
         }
-        guard !cased.isEmpty else {
+        guard !cased.isEmpty, cased.count > 1 || cased[0].count > 1 else {
             nextWords = nil
             return
         }

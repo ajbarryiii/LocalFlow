@@ -13,6 +13,7 @@ enum KeyboardMessagesTests {
             ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
             ("recordingWhileTheModelLoadsFitsASmallPhone", testRecordingWhileTheModelLoadsFitsASmallPhone),
             ("theLargestTextSizesPutTheMenusActionsFirst", testTheLargestTextSizesPutTheMenusActionsFirst),
+            ("theWidthTipSaysWhatLandsOnTheWrongLine", testTheWidthTipSaysWhatLandsOnTheWrongLine),
         ]
     }
 
@@ -141,5 +142,17 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: false), [.session, .details, .open, .divider, .tip, .picker])
         TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: true), [.open, .picker, .divider, .session, .details, .tip])
         TestSupport.expect(KeyboardMessages.layoutTipAbove.hasSuffix("above."), "the tip does not point above")
+    }
+
+    /// Round 6 council (Opus finding 7): "Wrong line? Switch this field to:" did not say what lands on the wrong line. The
+    /// tip names it (the cursor the trackpad moves), says when to switch, and still ends at the choice it points to.
+    private static func testTheWidthTipSaysWhatLandsOnTheWrongLine() {
+        for (tip, end) in [(KeyboardMessages.layoutTipBelow, ":"), (KeyboardMessages.layoutTipAbove, "above.")] {
+            let line = KeyboardMessages.trackpadTip + tip
+            TestSupport.expect(line.hasPrefix("Hold space to move the cursor. "), "\(line)")
+            TestSupport.expect(line.contains("If it lands on the wrong line, switch this field"), "\(line)")
+            TestSupport.expect(line.hasSuffix(end), "\(line)")
+            TestSupport.expect(line.count <= 90, "\(line) is long")
+        }
     }
 }

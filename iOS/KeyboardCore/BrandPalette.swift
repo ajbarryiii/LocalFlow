@@ -44,9 +44,15 @@ struct BrandPalette: Equatable {
     var link: RGB
     /// Primary text: the candidates.
     var text: RGB
-    /// The candidate Space would put in: `pill` at `pillAlpha` over the backdrop.
+    /// The candidate Space would put in: `pill` at `pillAlpha` over the backdrop, edged in `pillEdge` at `pillEdgeAlpha`. A
+    /// soft aurora tint on the dark keyboard; on the light one the keys' white fill, so it never reads as a second Start.
     var pill: RGB
     var pillAlpha: Double
+    var pillEdge: RGB
+    var pillEdgeAlpha: Double
+    /// The status line's ink (the idle line, the recording's caption) where the system's secondary text is too faint on
+    /// the backdrop: the light keyboard, where it is the menu's secondary ink. Nil keeps the system's secondary text.
+    var statusInk: RGB?
     /// The width of a fill's edge, in points: a hairline that only sets the bright fill off the light backdrop (the fill
     /// carries the colour), a full point with Increase Contrast.
     var edgeWidth: Double
@@ -74,6 +80,8 @@ struct BrandPalette: Equatable {
             keyGlyph = Self.aurora
             pill = Self.aurora
             pillAlpha = 0.2
+            pillEdgeAlpha = 0.45
+            statusInk = nil
             trailAlpha = 0.7
             edgeWidth = 1
         } else {
@@ -88,12 +96,15 @@ struct BrandPalette: Equatable {
             stop = Fill(top: Self.coral, bottom: Self.coral, ink: Self.ink, edge: coral)
             working = Fill(top: Self.glacier, bottom: Self.glacier, ink: Self.ink, edge: glacier)
             keyGlyph = aurora
-            pill = Self.aurora
-            pillAlpha = 0.38
+            pill = keyFill
+            pillAlpha = 1
+            pillEdgeAlpha = 0.5
+            statusInk = MenuPalette.secondary(dark: false, highContrast: highContrast)
             trailAlpha = 0.85
             edgeWidth = highContrast ? 1 : 0.5
         }
         link = aurora
+        pillEdge = aurora
     }
 
     /// `color` at `alpha` over `backdrop`, in sRGB components (as the screen composites it).

@@ -8,6 +8,7 @@ enum MenuPaletteTests {
             ("contrastIsWCAGsRatio", testContrastIsWCAGsRatio),
             ("everyMenuTextReadsAtAA", testEveryMenuTextReadsAtAA),
             ("menuCardLeavesNoKeyPeekingOut", testMenuCardLeavesNoKeyPeekingOut),
+            ("shortContentFillsTheMenuCard", testShortContentFillsTheMenuCard),
         ]
     }
 
@@ -84,5 +85,27 @@ enum MenuPaletteTests {
             TestSupport.expectEqual(MenuCover.card(metrics: metrics, contentHeight: threeRows + 1), tall)
         }
         TestSupport.expect(MenuCover.dimmedAlpha > 0.2 && MenuCover.dimmedAlpha < 0.6, "dimmed alpha \(MenuCover.dimmedAlpha)")
+    }
+
+    /// Round 6 council (Opus finding 7): at the default text size the card, which covers whole rows of keys, left about 45
+    /// points of empty card under the width choice. Content shorter than the card spreads to fill it: the space left over goes
+    /// half above and half below the divider between the session and the tip, so the card's two parts sit at its top and
+    /// bottom. Content that fills the card or scrolls in it gets none.
+    private static func testShortContentFillsTheMenuCard() {
+        for (width, height) in [(402.0, KeyboardMetrics.regularHeight), (375, KeyboardMetrics.regularHeight),
+                                (874, KeyboardMetrics.compactHeight)] {
+            let metrics = KeyboardMetrics(width: width, height: height)
+            for content in [80.0, 117, 140] {
+                let card = MenuCover.card(metrics: metrics, contentHeight: content)
+                let space = MenuCover.dividerSpace(card: card, contentHeight: content)
+                TestSupport.expect(space >= 0, "negative space at \(width)")
+                if content <= card.height {
+                    TestSupport.expect(abs(content + 2 * space - card.height) < 1e-9, "content and space miss the card at \(width)")
+                }
+            }
+            let tall = MenuCover.card(metrics: metrics, contentHeight: 1_000)
+            TestSupport.expectEqual(MenuCover.dividerSpace(card: tall, contentHeight: 1_000), 0)
+            TestSupport.expectEqual(MenuCover.dividerSpace(card: tall, contentHeight: tall.height), 0)
+        }
     }
 }

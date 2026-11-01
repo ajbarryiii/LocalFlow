@@ -9,8 +9,10 @@ enum NextWordTests {
         [
             ("theLikeliestWordsInTheContext", testTheLikeliestWordsInTheContext),
             ("unlikelyAndJunkWordsAreNotOffered", testUnlikelyAndJunkWordsAreNotOffered),
+            ("aSentenceStartOffersItsLikelyFirstWords", testASentenceStartOffersItsLikelyFirstWords),
             ("oneReadOutServesTheNextWordAndItsCompletions", testOneReadOutServesTheNextWordAndItsCompletions),
             ("predictionsFollowAFinishedWordAndASpace", testPredictionsFollowAFinishedWordAndASpace),
+            ("aLoneLetterIsNoStrip", testALoneLetterIsNoStrip),
             ("aTappedPredictionGoesInWithOneSpaceAndChains", testATappedPredictionGoesInWithOneSpaceAndChains),
             ("predictionsAreCasedAsTypingWouldCaseThem", testPredictionsAreCasedAsTypingWouldCaseThem),
             ("noPredictionsWhereSuggestionsAreOff", testNoPredictionsWhereSuggestionsAreOff),
@@ -69,6 +71,24 @@ enum NextWordTests {
         TestSupport.expectEqual(corrector.nextWords(context: "i can't ", limit: 3), ["think"])
     }
 
+    /// Round 6 council (Opus finding 1): after a sentence's end the model spreads its probability over many first words, so
+    /// only "I" passed the floor and the strip showed it alone. There the floor is lower (`sentenceStartFloor`): the likely
+    /// first words show, best first. Within a sentence the floor is unchanged.
+    private static func testASentenceStartOffersItsLikelyFirstWords() {
+        let starters: [String: Double] = ["i": 0.11, "i'm": 0.022, "the": 0.015, "my": 0.014, "you": 0.012, "soon": 0.004]
+        let model = TypingSuggestionsTests.CountingModel(starters, byPrevious: ["hmm": ["i": 0.02, "the": 0.015]])
+        let corrector = Autocorrector(lexicon: AutocorrectCoreTests.lexicon(entries + [("i'm", 230)]), model: model,
+                                      touch: AutocorrectCoreTests.touch)
+        TestSupport.expect(Autocorrector.sentenceStartFloor < Autocorrector.nextWordFloor, "sentence start floor")
+        TestSupport.expect(Autocorrector.sentenceStartFloor >= 0.005, "sentence start floor \(Autocorrector.sentenceStartFloor)")
+        // After a sentence's end, and in a field whose text holds no word yet: the same first words.
+        TestSupport.expectEqual(corrector.nextWords(context: "see you then. ", limit: 3), ["i", "i'm", "the"])
+        TestSupport.expectEqual(corrector.nextWords(context: "see you then. ", limit: 5), ["i", "i'm", "the", "my", "you"])
+        TestSupport.expectEqual(corrector.nextWords(context: "", limit: 5), ["i", "i'm", "the", "my", "you"])
+        // Within a sentence the floor is unchanged: nothing reaches it after "hmm".
+        TestSupport.expectEqual(corrector.nextWords(context: "hmm ", limit: 3), [])
+    }
+
     private static func testOneReadOutServesTheNextWordAndItsCompletions() {
         // The word model reads out every form once for a context: the next words after the space, then the completions
         // of the word typed there, share it.
@@ -104,7 +124,7 @@ enum NextWordTests {
         rig.press(.space)
         TestSupport.expectEqual(rig.strip, nil)
         // After punctuation and a space, and after a sentence's end: the corrector is asked for the whole line.
-        rig.corrector.following = ["see hmm hi# ": ["there"], "see hmm hi# ok. ": ["i"]]
+        rig.corrector.following = ["see hmm hi# ": ["there"], "see hmm hi# ok. ": ["i", "the"]]
         rig.tap("hi")
         rig.press(.character(","))
         rig.press(.space)
@@ -112,7 +132,7 @@ enum NextWordTests {
         rig.tap("ok")
         rig.press(.character("."))
         rig.press(.space)
-        TestSupport.expectEqual(rig.strip, plain(["I"]))
+        TestSupport.expectEqual(rig.strip, plain(["I", "the"]))
         // Not in an empty field, nor after a space typed at the field's start or after another space.
         let empty = AutocorrectRig("", corrections: [:])
         empty.corrector.following = ["": ["i"], " ": ["i"]]
@@ -123,6 +143,30 @@ enum NextWordTests {
         spaced.corrector.following = ["so ": ["much"]]
         spaced.press(.space)
         TestSupport.expectEqual(spaced.strip, nil)
+    }
+
+    /// Round 6 council (Opus finding 1): a lone "I" in the middle of the bar read as a stray divider or a second caret, and
+    /// made the whole middle one "I" button. A strip whose only word is a single letter does not show: the status line
+    /// stays. Two words, or one longer word, show as before.
+    private static func testALoneLetterIsNoStrip() {
+        for (context, words, shown) in [("ok. ", ["i"], nil), ("ok. ", ["a"], nil), ("ok. ", ["i", "the"], plain(["I", "the"])),
+                                        ("ok. ", ["i", "a"], plain(["I", "a"])), ("ok. ", ["way"], plain(["way"]))] as
+                [(String, [String], SwipeStrip?)] {
+            let rig = AutocorrectRig("", corrections: [:])
+            rig.corrector.following = [context: words]
+            rig.tap("ok")
+            rig.press(.character("."))
+            rig.press(.space)
+            TestSupport.expectEqual(rig.strip, shown)
+        }
+        // A tapped word whose next words are a lone letter: no strip after it either.
+        let rig = AutocorrectRig("", corrections: [:])
+        rig.corrector.following = ["see ": ["you", "the"], "see you ": ["a"]]
+        rig.tap("see")
+        rig.press(.space)
+        rig.choose(0)
+        TestSupport.expectEqual(rig.text, "see you ")
+        TestSupport.expectEqual(rig.strip, nil)
     }
 
     private static func testATappedPredictionGoesInWithOneSpaceAndChains() {

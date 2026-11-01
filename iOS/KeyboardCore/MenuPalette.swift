@@ -37,17 +37,23 @@ struct MenuPalette: Equatable {
         if dark {
             card = RGB(0.173, 0.173, 0.180)
             primary = RGB(1, 1, 1)
-            secondary = highContrast ? RGB(0.84, 0.84, 0.86) : RGB(0.68, 0.68, 0.70)
+            secondary = Self.secondary(dark: true, highContrast: highContrast)
             track = RGB(0.235, 0.235, 0.245)
             selectedSegment = highContrast ? RGB(0.36, 0.36, 0.37) : RGB(0.42, 0.42, 0.43)
         } else {
             card = RGB(1, 1, 1)
             primary = RGB(0, 0, 0)
-            secondary = highContrast ? RGB(0.28, 0.28, 0.29) : RGB(0.39, 0.39, 0.40)
+            secondary = Self.secondary(dark: false, highContrast: highContrast)
             track = highContrast ? RGB(0.86, 0.86, 0.88) : RGB(0.92, 0.92, 0.93)
             selectedSegment = RGB(1, 1, 1)
         }
         link = BrandPalette(dark: dark, highContrast: highContrast).link
+    }
+
+    /// The secondary text's ink, which the light keyboard's status line shares (`BrandPalette.statusInk`).
+    static func secondary(dark: Bool, highContrast: Bool) -> RGB {
+        if dark { return highContrast ? RGB(0.84, 0.84, 0.86) : RGB(0.68, 0.68, 0.70) }
+        return highContrast ? RGB(0.28, 0.28, 0.29) : RGB(0.39, 0.39, 0.40)
     }
 
     /// WCAG contrast ratio, 1 to 21.

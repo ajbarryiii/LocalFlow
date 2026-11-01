@@ -80,8 +80,8 @@ enum KeyboardMessages {
     static let trackpadTip = "Hold space to move the cursor"
     /// After `trackpadTip`, before the menu's text-width choice; and at the accessibility sizes, where the choice
     /// comes first.
-    static let layoutTipBelow = ". Wrong line? Switch this field to:"
-    static let layoutTipAbove = ". Wrong line? Switch this field above."
+    static let layoutTipBelow = ". If it lands on the wrong line, switch this field to:"
+    static let layoutTipAbove = ". If it lands on the wrong line, switch this field above."
 
     /// The menu's rows, top to bottom.
     enum MenuItem: Equatable, Sendable {

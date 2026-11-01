@@ -23,4 +23,11 @@ enum MenuCover {
         let fourRows = m.rowY(3) + m.rowHeight + overhang - y
         return KeyRect(x: x, y: y, width: max(m.width - 2 * x, 0), height: contentHeight <= threeRows ? threeRows : fourRows)
     }
+
+    /// The space added above and below the card's divider for content `contentHeight` points tall (its natural height): half
+    /// of what the card has left over each, so short content fills the card, its parts at the top and the bottom; none for
+    /// content that fills the card or scrolls in it.
+    static func dividerSpace(card: KeyRect, contentHeight: Double) -> Double {
+        max(card.height - contentHeight, 0) / 2
+    }
 }

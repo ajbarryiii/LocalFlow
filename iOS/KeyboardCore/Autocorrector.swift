@@ -30,6 +30,8 @@ import Foundation
 ///   when the best has the typed key, else `marginKnown`.
 /// - Suggestions (the strip after a commit key) rank the same scores without a margin, for any word, lexicon words
 ///   included: the forms other than the word whose odds against keeping it are at least `suggestionFloor`.
+/// - Archaic forms (`archaicForms`: "ne'er", "o'er", ...) are never a candidate, a completion, a spelling match or a next
+///   word (the reference has no such list).
 ///
 /// Where the reference raises (taps of the wrong count, a word with characters other than a–z and
 /// apostrophes, invalid parameters, a negative, NaN or infinite `wSpelling`, keys without a letter pitch),
@@ -166,7 +168,7 @@ final class Autocorrector: WordCorrecting {
         // The best few completions only: the range may hold thousands of forms after one letter.
         var best: [(id: Int, logOdds: Double)] = []
         let own = known ? lexicon.formID(of: word) : nil
-        for id in lexicon.formRange(prefix: word) where id != own {
+        for id in lexicon.formRange(prefix: word) where id != own && !archaicIDs.contains(id) {
             let logOdds = p.lmWeight * completionLogProbs[id] - (keepModel.isFinite ? keepModel : 0)
             guard logOdds.isFinite else { continue }
             if best.count == limit, let last = best.last, !ranks(logOdds, id, before: last) { continue }
@@ -192,18 +194,18 @@ final class Autocorrector: WordCorrecting {
 
     /// After a finished word and a space (ARCHITECTURE.md, "Word autocorrect", Next words): the forms the word model finds
     /// likeliest next in the sentence, from the completions' read-out of the context (`completionLogProbs`; the word typed
-    /// next is ranked from the same one). Only forms of probability at least `nextWordFloor` and within `nextWordRatio` of
-    /// the best; no single letter but "a" and "i", never the sentence's last word again, one form per key (the likelier;
-    /// a fixed correction's target for its source, "cant" as "can't"; the last word is compared by its letters). Best
-    /// first, ties as `ranks`.
+    /// next is ranked from the same one). Only forms of probability at least `nextWordFloor` (`sentenceStartFloor` at a
+    /// sentence's start, before its first word) and within `nextWordRatio` of the best; no single letter but "a" and "i",
+    /// no archaic form, never the sentence's last word again, one form per key (the likelier; a fixed correction's target
+    /// for its source, "cant" as "can't"; the last word is compared by its letters). Best first, ties as `ranks`.
     func nextWords(context: String, limit: Int) -> [String] {
         guard limit > 0 else { return [] }
         let words = Self.sentenceWords(context)
         readOut(words)
-        let floor = log(Self.nextWordFloor)
+        let floor = log(words.isEmpty ? Self.sentenceStartFloor : Self.nextWordFloor)
         var likely: [(id: Int, logOdds: Double)] = []
         // At most 1 / floor forms pass the floor, so only those are looked at by name.
-        for id in completionLogProbs.indices where completionLogProbs[id] >= floor {
+        for id in completionLogProbs.indices where completionLogProbs[id] >= floor && !archaicIDs.contains(id) {
             likely.append((id, completionLogProbs[id]))
         }
         likely.sort { ranks($0.logOdds, $0.id, before: $1) }
@@ -221,9 +223,12 @@ final class Autocorrector: WordCorrecting {
     }
 
     /// The least probability of a next word offered: 1 in 40. Chosen on the bundle's model with invented messages
-    /// (ARCHITECTURE.md, "Word autocorrect", Next words): "Hi, " keeps "there" (0.036) but not "to" (0.020); after a
-    /// sentence's end only "I" (0.11) passes.
+    /// (ARCHITECTURE.md, "Word autocorrect", Next words): "Hi, " keeps "there" (0.036) but not "to" (0.020).
     static let nextWordFloor = 0.025
+    /// The same at a sentence's start, where the model spreads its probability over many first words: 1 in 100. With
+    /// `nextWordFloor` only "I" (0.11) passed there; with this the bundle's model offers "I", "I'm" (0.022) and "My"
+    /// (0.015), and leaves "So" (0.010) out.
+    static let sentenceStartFloor = 0.01
     /// The most by which a next word offered may be less likely than the best: "on my " offers "way" (0.72) alone, not
     /// "phone" (0.026); "thanks so much " offers "for" (0.39) and "to" (0.027).
     static let nextWordRatio = 20.0
@@ -234,6 +239,86 @@ final class Autocorrector: WordCorrecting {
         completionLogProbs = model.logProbs(context: words, allFormsOf: lexicon)
         completionContext = words
     }
+
+    // MARK: Archaic forms
+
+    /// Archaic poetic contractions (ARCHITECTURE.md, "Word autocorrect", Archaic forms): lexicon forms never offered or
+    /// put in, however likely the model finds them ("neer" offered "ne'er"). As the lexicon stores them: no leading
+    /// apostrophe, so "'twas" is "twas".
+    static let archaicForms: Set<String> = [
+        "ne'er", "e'er", "o'er", "e'en", "howe'er", "where'er", "whate'er", "whene'er", "whoe'er", "tis", "twas", "twere",
+    ]
+
+    /// The lexicon's ids of `archaicForms`.
+    private lazy var archaicIDs: Set<Int> = Set(Self.archaicForms.compactMap(lexicon.formID(of:)))
+
+    // MARK: Vowel rivals
+
+    /// For a word outside the lexicon that a commit would correct to `correction` (ARCHITECTURE.md, "Word autocorrect",
+    /// Vowel rivals): the likeliest lexicon form that differs from the word by one vowel typed for another vowel on a key
+    /// not beside it in `keys` (the touch model scores such a key as a far miss, yet people misspell vowels: "neer" for
+    /// "near" lost to "never"), with another key than the correction's, when the word model finds it at least
+    /// `vowelRivalRatio` as likely as the correction given the sentence's words. Ties go to the higher frequency, then the
+    /// first form. Nil for a lexicon word, one shorter than `vowelRivalLength` letters, other characters, keys without a
+    /// letters layout, or no such form.
+    func vowelRival(context: String, word: String, correction: String, keys: [PlacedKey]) -> String? {
+        guard let typed = Typed(word), typed.codes.count >= Self.vowelRivalLength, !lexicon.contains(word),
+              let layout = layout(for: keys) else { return nil }
+        let correctionKey = Self.key(of: correction)
+        var ids: [Int] = []
+        var codes = typed.codes
+        for (index, typedCode) in typed.codes.enumerated() where Self.vowels.contains(typedCode) {
+            for vowel in Self.vowels where vowel != typedCode && !layout.slip[typedCode].contains(where: { $0.letter == vowel }) {
+                codes[index] = vowel
+                let key = String(decoding: codes.map { UInt8(ascii: "a") + UInt8($0) }, as: UTF8.self)
+                if key != correctionKey, let node = lexicon.node(ofKey: key) {
+                    ids += lexicon.formIDs(ofNode: node).filter { !archaicIDs.contains($0) }
+                }
+            }
+            codes[index] = typedCode
+        }
+        guard !ids.isEmpty else { return nil }
+        let words = Self.sentenceWords(context)
+        let logProbs = model.logProbs(context: words, words: [correction] + ids.map(lexicon.form(at:)))
+        guard logProbs.count == ids.count + 1, logProbs[0].isFinite else { return nil }
+        var best: (id: Int, logOdds: Double)?
+        for (index, id) in ids.enumerated() where logProbs[index + 1].isFinite {
+            let candidate = (id: id, logOdds: logProbs[index + 1])
+            if best.map({ ranks(candidate.logOdds, candidate.id, before: $0) }) ?? true { best = candidate }
+        }
+        guard let best, best.logOdds - logProbs[0] >= log(Self.vowelRivalRatio) else { return nil }
+        return lexicon.form(at: best.id)
+    }
+
+    /// The fewest letters a word with a vowel rival has: shorter words have too many forms one vowel away.
+    static let vowelRivalLength = 4
+    /// The least probability of a vowel rival against the correction's: 1 in 8. Chosen on bundle b34 with invented
+    /// messages (ARCHITECTURE.md, "Word autocorrect", Evaluation of corrections): "best pizza neer" keeps "near" (1 in 3.5
+    /// against "never"; 1 in 7 after "thx so much ill best pizza", 1 in 5 after "best coffee"), while "I'm at the stor"
+    /// leaves "star" (1 in 28 against "store") out.
+    static let vowelRivalRatio = 0.125
+
+    /// The letter codes of a, e, i, o and u.
+    private static let vowels = [0, 4, 8, 14, 20]
+
+    // MARK: Apostrophe twins
+
+    /// For a lexicon word that a commit would correct to its apostrophe twin, the same letters with an apostrophe
+    /// (ARCHITECTURE.md, "Word autocorrect", Apostrophe twins): whether the word model finds the twin less than `twinRatio`
+    /// times as likely as the word given the sentence's words, so the word stays as typed. False for a word outside the
+    /// lexicon, another correction, or a model without both.
+    func keepsWordOverTwin(context: String, word: String, correction: String) -> Bool {
+        guard correction != word, lexicon.contains(word), Self.key(of: correction) == Self.key(of: word) else { return false }
+        let logProbs = model.logProbs(context: Self.sentenceWords(context), words: [word, correction])
+        guard logProbs.count == 2, logProbs[0].isFinite, logProbs[1].isFinite else { return false }
+        return logProbs[1] - logProbs[0] < log(Self.twinRatio)
+    }
+
+    /// How many times as likely as a lexicon word its apostrophe twin must be to replace it: 6. Chosen on bundle b34: at a
+    /// sentence's start, before the next word tells them apart, "we're" is 4.7 times "were" ("Were you there?" is kept),
+    /// while "I'll" is 7 times "ill", "I'd" 10 times "id" and "she'll" 12 times "shell"; after "Yes", "I hope" or "I think"
+    /// "we're" is 22 to 58 times "were".
+    static let twinRatio = 6.0
 
     // MARK: Spelling matches
 
@@ -252,7 +337,7 @@ final class Autocorrector: WordCorrecting {
         var distances: [Int] = []
         for candidate in lexicon.keys(within: edits, of: typed.codes) {
             let distance = Self.alignmentDistance(typed.codes, candidate.codes)
-            for id in lexicon.formIDs(ofNode: candidate.node) {
+            for id in lexicon.formIDs(ofNode: candidate.node) where !archaicIDs.contains(id) {
                 ids.append(id)
                 distances.append(distance)
             }
@@ -435,7 +520,7 @@ final class Autocorrector: WordCorrecting {
             let score = search.channel.score(candidate.codes)
             guard score.isFinite else { continue }
             if let bar, !(score >= bar - 1e-9 * (1 + abs(bar))) { continue }
-            for id in lexicon.formIDs(ofNode: candidate.node) {
+            for id in lexicon.formIDs(ofNode: candidate.node) where !archaicIDs.contains(id) {
                 ids.append(id)
                 scores.append(score)
             }

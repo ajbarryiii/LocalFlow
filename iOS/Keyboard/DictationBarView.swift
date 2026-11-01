@@ -261,7 +261,7 @@ private struct Middle: View {
                     }
                     Text(line)
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(attention ? .primary : .secondary)
+                        .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
                         .lineLimit(1)
                         // Beside the dot the session line may shrink a little further, so at the largest bar text on
                         // a 375-point phone it still shows whole (never below the default size there).
@@ -274,10 +274,16 @@ private struct Middle: View {
         }
     }
 
+    /// The status line's ink: the palette's where the system's secondary text is too faint (the light keyboard).
+    private var statusInk: AnyShapeStyle {
+        BrandPalette(colorScheme: colorScheme, contrast: contrast).statusInk.map { AnyShapeStyle(Color($0)) }
+            ?? AnyShapeStyle(.secondary)
+    }
+
     private func waveCaption(_ caption: String) -> some View {
         Text(caption)
             .font(.footnote.weight(.medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(statusInk)
             .lineLimit(1)
             .fixedSize()
             .accessibilityIdentifier("lf.status")
@@ -415,12 +421,13 @@ private struct CandidateStrip: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 
-    /// The candidate Space would put in sits on a soft aurora pill (`BrandPalette.pill`).
+    /// The candidate Space would put in sits on a pill (`BrandPalette.pill`): a soft aurora tint on the dark keyboard, the
+    /// keys' white on the light one, with a thin aurora edge.
     private var pill: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         return Capsule()
             .fill(Color(palette.pill).opacity(palette.pillAlpha))
-            .overlay(Capsule().strokeBorder(Color(palette.aurora).opacity(colorScheme == .dark ? 0.45 : 0.3), lineWidth: 0.75))
+            .overlay(Capsule().strokeBorder(Color(palette.pillEdge).opacity(palette.pillEdgeAlpha), lineWidth: 0.75))
     }
 
     private func label(_ index: Int) -> String {
@@ -653,22 +660,32 @@ struct MenuPanelView: View {
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
     private static let cardShape = RoundedRectangle(cornerRadius: CGFloat(MenuCover.cornerRadius), style: .continuous)
-    /// The content's own height, which picks the card's (`MenuCover.card`).
-    @State private var contentHeight: CGFloat = 0
+    /// The content's parts above and below the divider, whose heights (without the space that spreads them) pick the card's
+    /// (`MenuCover.card`).
+    @State private var headHeight: CGFloat = 0
+    @State private var tailHeight: CGFloat = 0
+    private static let padding: CGFloat = 12
+    private static let spacing: CGFloat = 8
+
+    /// The content's own height: both parts, the divider with its spacing, and the padding.
+    private var contentHeight: Double {
+        let parts: CGFloat = headHeight + tailHeight
+        let around: CGFloat = 1 + 2 * Self.spacing + 2 * Self.padding
+        return Double(parts + around)
+    }
 
     var body: some View {
         GeometryReader { geometry in
             let frame = MenuCover.card(metrics: KeyboardMetrics(width: Double(geometry.size.width), height: Double(geometry.size.height)),
-                                       contentHeight: Double(contentHeight))
+                                       contentHeight: contentHeight)
             ZStack(alignment: .topLeading) {
                 Color.black.opacity(0.001)
                     .contentShape(Rectangle())
                     .onTapGesture(perform: onClose)
                     .accessibilityHidden(true)
                 ScrollView {
-                    content
+                    content(spread: CGFloat(MenuCover.dividerSpace(card: frame, contentHeight: contentHeight)))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .frame(width: CGFloat(frame.width), height: CGFloat(frame.height), alignment: .top)
@@ -689,11 +706,27 @@ struct MenuPanelView: View {
         Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 
-    private var content: some View {
+    /// The menu's items in two parts, above and below the divider, `spread` added on each side of it so short content
+    /// fills the card (`MenuCover.dividerSpace`).
+    private func content(spread: CGFloat) -> some View {
         // At the accessibility sizes the menu is a long read: the actions come first (`KeyboardMessages.menuItems`).
+        let items = KeyboardMessages.menuItems(accessibilitySize: dynamicTypeSize.isAccessibilitySize)
+        let divider = items.firstIndex(of: .divider) ?? items.count
+        return VStack(alignment: .leading, spacing: 0) {
+            part(Array(items[..<divider]))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headHeight = $0 }
+            Divider()
+                .padding(.vertical, Self.spacing + spread)
+            part(Array(items[min(divider + 1, items.count)...]))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { tailHeight = $0 }
+        }
+        .padding(Self.padding)
+    }
+
+    private func part(_ items: [KeyboardMessages.MenuItem]) -> some View {
         let largeText = dynamicTypeSize.isAccessibilitySize
-        return VStack(alignment: .leading, spacing: 8) {
-            ForEach(KeyboardMessages.menuItems(accessibilitySize: largeText), id: \.self) { item in
+        return VStack(alignment: .leading, spacing: Self.spacing) {
+            ForEach(items, id: \.self) { item in
                 switch item {
                 case .session:
                     Label {
@@ -736,7 +769,6 @@ struct MenuPanelView: View {
                 }
             }
         }
-        .padding(12)
     }
 
     /// The field's text width, as two segments whose text follows Dynamic Type like the rest of the card (a segmented

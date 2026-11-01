@@ -21,6 +21,7 @@ enum KeyboardLookTests {
             ("barStatusShowsTheWaveWhileRecording", testBarStatusShowsTheWaveWhileRecording),
             ("capsuleHoldsItsWidthUntilTheTranscript", testCapsuleHoldsItsWidthUntilTheTranscript),
             ("idleLineShowsReadinessWithADot", testIdleLineShowsReadinessWithADot),
+            ("statusLineReadsAtAAOnTheBackdrop", testStatusLineReadsAtAAOnTheBackdrop),
             ("loadingCaptionHasAShortForm", testLoadingCaptionHasAShortForm),
         ]
     }
@@ -130,21 +131,66 @@ enum KeyboardLookTests {
         return min(d, 360 - d) <= 20
     }
 
-    /// The candidate Space puts in sits on a soft aurora pill: tinted, yet its text reads at 4.5:1 on the pill over the
-    /// backdrop; the pill is visibly tinted, not grey.
+    /// The candidate Space puts in sits on a pill whose text reads at 4.5:1 on it over the backdrop, with an aurora edge.
+    /// On the dark keyboard it is a soft aurora tint, visibly green, not grey. Round 6 council (Opus finding 3): on the light
+    /// keyboard the mint pill with its green edge, beside the mint Start with its green edge, read as a second main button.
+    /// There it is the keys' white fill with a thin deep-aurora edge: a choice, untinted, nothing like Start's fill.
     private static func testHighlightedCandidateStaysLegible() {
         variants { palette, name in
-            TestSupport.expect(palette.pillAlpha > 0 && palette.pillAlpha < 1, "pill alpha \(palette.pillAlpha)")
+            TestSupport.expect(palette.pillAlpha > 0 && palette.pillAlpha <= 1, "pill alpha \(palette.pillAlpha)")
             let pill = BrandPalette.blend(palette.pill, alpha: palette.pillAlpha, over: palette.backdrop)
             let value = ratio(palette.text, pill)
             TestSupport.expect(value >= 4.5, "candidate on the pill, \(name): \(value)")
-            TestSupport.expect(pill.green > pill.red + 0.04, "pill is not tinted green, \(name): \(pill)")
+            TestSupport.expect(palette.pillEdgeAlpha > 0 && palette.pillEdgeAlpha < 1, "pill edge alpha, \(name)")
+            TestSupport.expectEqual(palette.pillEdge, palette.aurora)
+        }
+        for high in [false, true] {
+            let dark = BrandPalette(dark: true, highContrast: high), light = BrandPalette(dark: false, highContrast: high)
+            // Dark: as before, a fifth of aurora with its edge.
+            TestSupport.expectEqual(dark.pill, BrandPalette.aurora)
+            TestSupport.expectEqual(dark.pillAlpha, 0.2)
+            let tinted = BrandPalette.blend(dark.pill, alpha: dark.pillAlpha, over: dark.backdrop)
+            TestSupport.expect(tinted.green > tinted.red + 0.04, "dark pill is not tinted green: \(tinted)")
+            // Light: the key fill, opaque, so no hint of Start's mint; set off the backdrop as a key is, and by its edge.
+            TestSupport.expectEqual(light.pill, light.keyFill)
+            TestSupport.expectEqual(light.pillAlpha, 1)
+            TestSupport.expect(hue(light.pill) == -1, "light pill is tinted")
+            TestSupport.expect(light.pill != light.accent.top && light.pill != light.accent.bottom, "light pill is Start's fill")
+            let edge = BrandPalette.blend(light.pillEdge, alpha: light.pillEdgeAlpha, over: light.pill)
+            TestSupport.expect(ratio(edge, light.backdrop) >= 1.5, "light pill edge is invisible: \(ratio(edge, light.backdrop))")
         }
         // `blend`: alpha 0 is the backdrop, 1 the colour.
         let a = RGB(1, 0, 0), b = RGB(0, 0, 1)
         TestSupport.expectEqual(BrandPalette.blend(a, alpha: 0, over: b), b)
         TestSupport.expectEqual(BrandPalette.blend(a, alpha: 1, over: b), a)
         TestSupport.expectEqual(BrandPalette.blend(a, alpha: 0.5, over: b), RGB(0.5, 0, 0.5))
+    }
+
+    /// Round 6 council (Opus finding 4): the light keyboard's idle line ("Session ends after 5 min idle") measured about
+    /// 3.1:1 (#7E7F85 on #E1E3E7): the system's secondary text is too faint on the light backdrop. There the status line
+    /// takes `statusInk`, the menu's secondary ink, which reads at 4.5:1 or better on the palette's backdrop and on the one
+    /// measured in round 5, deeper with Increase Contrast. It stays a grey well below the candidates' black, so it reads as
+    /// information, not a word to tap (a tap there types the nearest top-row key). The dark keyboard keeps the system's
+    /// secondary text (about 6:1).
+    private static func testStatusLineReadsAtAAOnTheBackdrop() {
+        let measured = RGB(225 / 255, 227 / 255, 231 / 255)
+        for high in [false, true] {
+            let light = BrandPalette(dark: false, highContrast: high)
+            guard let ink = light.statusInk else {
+                TestSupport.expect(false, "no light status ink")
+                continue
+            }
+            for backdrop in [light.backdrop, measured] {
+                let value = ratio(ink, backdrop)
+                TestSupport.expect(value >= 4.5, "status line on \(backdrop), high \(high): \(value)")
+            }
+            TestSupport.expect(hue(ink) == -1 || abs(ink.red - ink.blue) < 0.03, "status ink is not a grey: \(ink)")
+            TestSupport.expect(ratio(ink, light.backdrop) < ratio(light.text, light.backdrop) / 2, "status ink is as dark as text")
+            TestSupport.expectEqual(ink, MenuPalette(dark: false, highContrast: high).secondary)
+            TestSupport.expectEqual(BrandPalette(dark: true, highContrast: high).statusInk, nil)
+        }
+        let normal = BrandPalette(dark: false, highContrast: false).statusInk!, high = BrandPalette(dark: false, highContrast: true).statusInk!
+        TestSupport.expect(ratio(high, measured) > ratio(normal, measured), "Increase Contrast does not deepen the status line")
     }
 
     /// Glacier at the tail, aurora at the finger, in between by the point's position along the trail; at the finger the

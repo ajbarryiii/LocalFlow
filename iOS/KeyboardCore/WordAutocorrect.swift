@@ -92,9 +92,9 @@ enum WordAutocorrect {
     /// (it would make "abit" "habit" and "alot" "almost"). No source is a lexicon word; the targets are two of them.
     static let runTogetherWords: [String: String] = ["abit": "a bit", "alot": "a lot", "aswell": "as well", "atleast": "at least"]
 
-    /// Corrections made whatever the corrector says: lexicon words ("cant", "wont") almost always typed for the
-    /// contraction, as the corrector already corrects "dont".
-    static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't"]
+    /// Corrections made whatever the corrector says: lexicon words ("cant", "wont", "whats", "hows") almost always typed for
+    /// the contraction, as the corrector already corrects "dont".
+    static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't", "whats": "what's", "hows": "how's"]
 
     /// Very common misspellings known for certain, corrected as `fixedCorrections` are: the touch model scores a letter
     /// typed for one far from it ("definately") as almost impossible, so the corrector never offers these. Every
@@ -132,6 +132,19 @@ enum WordAutocorrect {
         "naivete": "naïveté", "flambe": "flambé", "consomme": "consommé", "creche": "crèche",
         "deja": "déjà", "risque": "risqué", "matinee": "matinée", "eclair": "éclair", "melee": "mêlée",
     ]
+
+    /// Real words commonly typed for a contraction, by the word: the contraction is offered beside the word, never put in by
+    /// a commit key (ARCHITECTURE.md, "Word autocorrect", Apostrophe forms). Each is the word with an apostrophe.
+    static let apostropheForms: [String: String] = [
+        "ill": "i'll", "id": "i'd", "well": "we'll", "were": "we're", "wed": "we'd", "hell": "he'll", "shell": "she'll",
+        "shed": "she'd", "its": "it's", "lets": "let's",
+    ]
+
+    /// The forms offered beside a word as the corrector sees it, never put in (its accented form, `accentedForms`, and its
+    /// apostrophe form, `apostropheForms`), in the typed word's case and with its trailing apostrophes.
+    static func offered(_ lowered: String, typed word: String, tail: String) -> [String] {
+        [accented(lowered, typed: word, tail: tail), apostropheForms[lowered].map { cased($0, like: word) + tail }].compactMap { $0 }
+    }
 
     /// The accented form offered for a word as the corrector sees it, in the typed word's case and with its trailing
     /// apostrophes; nil for a word without one.
@@ -179,8 +192,9 @@ enum WordAutocorrect {
 
     /// What a commit key does with the owned word: its correction, if any, and the strip's words to choose from
     /// after it. The words replace `typed`, each cased as the typed word and followed by its trailing apostrophes:
-    /// the typed word first, then the correction, then the corrector's suggestions, with the best spelling match of a
-    /// word outside the lexicon (`adding(spelling:to:protected:)`) and the word's accented form (`accentedForms`), at most
+    /// the typed word first, then the correction (or, for a word kept for a vowel rival, the corrector's choice and the
+    /// rival), then the corrector's suggestions, with the best spelling match of a word outside the lexicon
+    /// (`adding(spelling:to:protected:)`) and the word's accented and apostrophe forms (`offered`), at most
     /// `SwipeStrip.limit` and only when there is a choice (none for a lexicon word the corrector keeps).
     struct Review: Equatable {
         var correction: Correction?
@@ -212,7 +226,14 @@ enum WordAutocorrect {
         let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
         let modelled = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
                                                params: setup.params)
-        let corrected = fixedCorrection(lowered) ?? modelled
+        let fixed = fixedCorrection(lowered)
+        // A vowel rival about as likely as the corrector's choice: the word stays as typed, and both are offered.
+        let rival = fixed == nil && !modelled.isEmpty && modelled != lowered
+            ? setup.corrector.vowelRival(context: context, word: lowered, correction: modelled, keys: setup.keys) : nil
+        // An apostrophe twin too little likelier than the word: the word stays as typed, and the twin is offered.
+        let twin = fixed == nil && rival == nil && !modelled.isEmpty && modelled != lowered
+            && setup.corrector.keepsWordOverTwin(context: context, word: lowered, correction: modelled)
+        let corrected = fixed ?? (rival == nil && !twin ? modelled : lowered)
         let suggested = setup.corrector.suggestions(context: context, word: lowered, points: points, keys: setup.keys,
                                                     params: setup.params, limit: SwipeStrip.limit)
         let tail = String(entries[found.word.upperBound...].map(\.character))
@@ -227,15 +248,17 @@ enum WordAutocorrect {
                                     record: record)
         }
         var choices = [typed]
-        for choice in (correction.map { [$0.replacement] } ?? []) + suggested.map({ cased($0, like: word) + tail })
+        let held = (rival.map { [modelled, $0] } ?? (twin ? [modelled] : [])).map { cased($0, like: word) + tail }
+        for choice in (correction.map { [$0.replacement] } ?? []) + held + suggested.map({ cased($0, like: word) + tail })
         where choices.count < SwipeStrip.limit && !choices.contains(choice) {
             choices.append(choice)
         }
+        let protected = correction != nil ? 2 : 1 + held.count
         let spelled = setup.corrector.spellingMatches(context: context, word: lowered, params: setup.params, limit: SwipeStrip.limit)
-        choices = adding(spelling: spelled.map { cased($0, like: word) + tail }, to: choices, protected: correction == nil ? 1 : 2)
-        // The accented form, beside the word as typed: a choice, never a correction.
-        if let accent = accented(lowered, typed: word, tail: tail) {
-            choices = adding(spelling: [accent], to: choices, protected: correction == nil ? 1 : 2)
+        choices = adding(spelling: spelled.map { cased($0, like: word) + tail }, to: choices, protected: protected)
+        // The accented and apostrophe forms, beside the word as typed: choices, never a correction.
+        for form in offered(lowered, typed: word, tail: tail) {
+            choices = adding(spelling: [form], to: choices, protected: protected)
         }
         return Review(correction: correction, typed: typed, choices: choices.count > 1 ? choices : [])
     }
@@ -256,12 +279,13 @@ enum WordAutocorrect {
     /// it keeps: a reverted, never-correct or chat word still gets suggestions, without a pending correction), in URL
     /// and email fields, and when there is nothing to offer but the word as typed.
     /// - A pending correction (what a commit key would do, `review`'s rules included: "cant" → "can't", day names'
-    ///   capitals): the word as typed, quoted (a tap keeps it), the correction, marked, then the best other.
+    ///   capitals): the word as typed, quoted (a tap keeps it), the correction, marked, then the best other. A correction
+    ///   with a vowel rival (`WordCorrecting.vowelRival`) is none: the word as typed, the correction and the rival.
     /// - Otherwise the word as typed when it is a lexicon word (or kept, or nothing else is offered), then the best
     ///   others. Every word takes the typed word's case and trailing apostrophes.
     /// - A word that is no lexicon word (and not kept) that none of the others completes also gets its spelling matches
     ///   (`adding(spelling:to:protected:)`), after the word as typed when nothing else is offered; a word with an accented
-    ///   form (`accentedForms`) gets that the same way.
+    ///   or apostrophe form (`offered`) gets that the same way.
     static func typingStrip(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
                             allCapitals: Bool = false, setup: AutocorrectSetup?) -> Typing? {
         guard let setup, setup.suggestsWhileTyping, record.owned, let found = word(before: record.text) else { return nil }
@@ -284,11 +308,21 @@ enum WordAutocorrect {
         // Caps lock (`allCapitals`): a word typed in capitals so far, one letter included, is all capitals.
         let capitals = allCapitals && !word.isEmpty && word.filter(\.isLetter).allSatisfy(\.isUppercase)
         let kept = reverted.contains(lowered) || neverCorrect.contains(lowered) || chatWords.contains(lowered)
+        func shown(_ form: String) -> String { (capitals ? form.uppercased() : cased(form, like: word)) + tail }
         var correction: String?
+        // A vowel rival as likely as the correction: no correction pending; the word as typed, the correction and the rival.
+        var held: [String] = []
         if !kept, !contraction {
-            if let corrected = fixedCorrection(lowered) ?? predicted.correction, corrected.lowercased() != lowered,
-               cased(corrected, like: word) != word {
-                correction = (capitals ? corrected.uppercased() : cased(corrected, like: word)) + tail
+            let fixed = fixedCorrection(lowered)
+            if let corrected = fixed ?? predicted.correction, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
+                if fixed == nil, let rival = setup.corrector.vowelRival(context: context, word: lowered, correction: corrected,
+                                                                         keys: setup.keys) {
+                    held = [shown(corrected), shown(rival)]
+                } else if fixed == nil, setup.corrector.keepsWordOverTwin(context: context, word: lowered, correction: corrected) {
+                    held = [shown(corrected)]
+                } else {
+                    correction = shown(corrected)
+                }
             } else if takesCapital(lowered), let first = word.first, first.isLowercase {
                 correction = first.uppercased() + word.dropFirst() + tail
             }
@@ -302,15 +336,17 @@ enum WordAutocorrect {
         }
         var candidates: [String] = []
         // Spelling matches are a guess: they never hide the word as typed, which is what a space keeps.
-        let showsTyped = predicted.isWord || kept || others.isEmpty
-        for choice in (correction.map { [typed, $0] } ?? (showsTyped ? [typed] : [])) + others
+        let showsTyped = predicted.isWord || kept || others.isEmpty || !held.isEmpty
+        for choice in (correction.map { [typed, $0] } ?? (showsTyped ? [typed] : [])) + held + others
         where candidates.count < SwipeStrip.limit && !candidates.contains(choice) {
             candidates.append(choice)
         }
-        candidates = adding(spelling: spelled, to: candidates, protected: correction != nil ? 2 : showsTyped ? 1 : 0)
-        if !contraction, let accent = accented(lowered, typed: word, tail: tail) {
-            candidates = adding(spelling: [capitals ? accent.uppercased() : accent], to: candidates,
-                                protected: correction != nil ? 2 : showsTyped ? 1 : 0)
+        let protected = correction != nil ? 2 : !held.isEmpty ? 1 + held.count : showsTyped ? 1 : 0
+        candidates = adding(spelling: spelled, to: candidates, protected: protected)
+        if !contraction {
+            for form in offered(lowered, typed: word, tail: tail) {
+                candidates = adding(spelling: [capitals ? form.uppercased() : form], to: candidates, protected: protected)
+            }
         }
         guard candidates != [typed], !candidates.isEmpty else { return nil }
         let live = correction == nil ? SwipeStrip.Live(quoted: nil, marked: nil) : SwipeStrip.Live(quoted: 0, marked: 1)

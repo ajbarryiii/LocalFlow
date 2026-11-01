@@ -1532,6 +1532,12 @@ final class FakeCorrector: WordCorrecting {
     var followingAny: [String] = []
     private(set) var nextWordCalls: [(context: String, limit: Int)] = []
     private(set) var spellingCalls: [(context: String, word: String, limit: Int)] = []
+    /// The vowel rivals, by word; none for any other.
+    var rivals: [String: String] = [:]
+    private(set) var rivalCalls: [(context: String, word: String, correction: String)] = []
+    /// The words kept over their apostrophe twin; every other is corrected as the corrections say.
+    var keptOverTwin: Set<String> = []
+    private(set) var twinCalls: [(context: String, word: String, correction: String)] = []
 
     init(_ corrections: [String: String], alternatives: [String: [String]] = [:]) {
         self.corrections = corrections
@@ -1559,6 +1565,16 @@ final class FakeCorrector: WordCorrecting {
     func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String] {
         spellingCalls.append((context, word, limit))
         return Array((spelled[word] ?? []).prefix(limit))
+    }
+
+    func vowelRival(context: String, word: String, correction: String, keys: [PlacedKey]) -> String? {
+        rivalCalls.append((context, word, correction))
+        return rivals[word]
+    }
+
+    func keepsWordOverTwin(context: String, word: String, correction: String) -> Bool {
+        twinCalls.append((context, word, correction))
+        return keptOverTwin.contains(word)
     }
 
     func nextWords(context: String, limit: Int) -> [String] {

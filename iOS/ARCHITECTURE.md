@@ -1047,7 +1047,14 @@ every other point of the bar
   iOS draws above it). The card lies over the keys with none peeking out: it
   reaches 2 pt past their outer edges, its corners rounded to the keys' own
   radius plus that, over the three rows above the bottom row when its
-  content fits there, otherwise over all four. Its text follows Dynamic Type,
+  content fits there, otherwise over all four. Content shorter than the card
+  spreads to fill it (`MenuCover.dividerSpace`, round 6, Opus finding 7: about
+  45 pt of empty card under the width choice at the default size): the space
+  left over goes half above and half below the divider, so the session part
+  sits at the card's top and the tip with its choice at its bottom. The tip
+  reads "Hold space to move the cursor. If it lands on the wrong line,
+  switch this field to:" (round 6: "Wrong line?" did not say what lands
+  there). Its text follows Dynamic Type,
   the text-width choice included (two segments, stacked when they do not fit
   side by side), and reads at WCAG AA (4.5:1 or
   better) in light and dark mode (`MenuPalette`: a white card in light
@@ -1084,7 +1091,11 @@ every other point of the bar
   Undo chip shows, the middle stays dictation's.
 - The status line describes and never instructs (owner decision: a tap on it
   types the top-row key under it), e.g. "Start opens LocalFlow" with no
-  session. The bar and the menu name the session's end alike: "ends after N
+  session. Its ink is the system's secondary text in dark mode (about 6:1);
+  on the light keyboard, where that measured 3.1:1 (#7E7F85 on #E1E3E7,
+  round 6, Opus finding 4), it is the menu's secondary grey
+  (`BrandPalette.statusInk`), 4.6:1 or better on the backdrop, deeper with
+  Increase Contrast, and well short of the candidates' black. The bar and the menu name the session's end alike: "ends after N
   min idle". Bar text grows with Dynamic Type up to what one line of the
   fixed-height bar holds, and shrinks at most to 85% (80% for the session
   line beside its dot).
@@ -1140,8 +1151,12 @@ or chip, 3:1 or better; the highlighted candidate's text 4.5:1 on its pill.
   **Caps lock** is the same accent key, so a locked shift is unmistakable;
   shift once shows only the filled arrow. The press-and-hold alternates
   highlight their pick in the accent.
-- **The highlighted candidate** (the one Space puts in) sits on a soft aurora
-  pill with a hairline aurora edge; the others stay plain.
+- **The highlighted candidate** (the one Space puts in) sits on a pill with
+  a hairline aurora edge; the others stay plain. On the dark keyboard the pill
+  is a soft aurora tint (20%). On the light one it is the keys' white fill
+  with a thin deep-aurora edge (round 6, Opus finding 3: the mint pill with
+  its green edge, beside the mint Start with its green edge, read as a
+  second main button), so only Start carries the mint.
 - **Chips** (Undo, "Insert last", "Never correct") are key-coloured capsules
   with the keys' shadow and their symbol in the accent; the emoji jump bar's
   shown category is the accent.
@@ -1237,7 +1252,11 @@ keyboard hides.
   is no search and no skin-tone picker yet. No category name is shown: the
   gap between sections and the jump bar's symbol in the accent mark them, and
   the grid takes the height, four rows of 41 pt cells in portrait and three
-  of 40 pt in landscape.
+  of 40 pt in landscape. An emoji is drawn at 0.74 of its cell; text wider
+  than the cell (a sequence the system font draws as two glyphs) shrinks to
+  fit it, to 70% at the least, rather than being clipped. The half-drawn 🫡
+  (round 6, Opus finding 6) is the iOS 26.4 simulator's emoji font: Messages'
+  own text field draws it cut at the same place, so no cell layout fixes it.
 - An emoji's press binds to its field like a held key's: adopted when the
   field is identified, dropped when another identified field becomes current,
   the menu opens, the keyboard hides or the grid scrolls, and typed first
@@ -1617,9 +1636,9 @@ widths (`FieldLayoutParameters`):
   (WebKit), gets Messages, but only in portrait at the measured widths 390,
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
 - **Manual choice.** The menu offers the two as "Full width" and "Chat
-  bubble", after "Hold space to move the cursor. Wrong line? Switch this
-  field to:" (at the accessibility text sizes the choice comes first, then
-  "... Switch this field above."). With Full Access
+  bubble", after "Hold space to move the cursor. If it lands on the wrong
+  line, switch this field to:" (at the accessibility text sizes the choice
+  comes first, then "... switch this field above."). With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
   64 entries); without it, it holds for the keyboard instance only. Only the
   keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
@@ -1737,7 +1756,7 @@ suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
   than "yesterday"). When the words do not all fit at 0.8, the least useful go
   (the last that is neither the emphasized nor the quoted word) until the
   rest fit; only those two may shrink further (to 0.6). The 1 pt dividers sit between shown candidates, but none beside the
-  emphasized candidate's aurora pill ([Keyboard look](#keyboard-look)).
+  emphasized candidate's pill ([Keyboard look](#keyboard-look)).
 
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
@@ -2057,10 +2076,14 @@ or a lexicon form.
   apostrophes ("cant" → "can't"). An infinite margin never replaces.
 - **Keep.** A result equal to the typed word ignoring case keeps the word,
   except the pronoun I and the names below.
-- **Fixed corrections.** "cant" → "can't" and "wont" → "won't"
-  (`WordAutocorrect.fixedCorrections`) whatever the corrector says: both are
-  lexicon words the margin keeps, but are almost always typed for the
-  contraction, as "dont" is. Two words typed run together
+- **Fixed corrections.** "cant" → "can't", "wont" → "won't", "whats" →
+  "what's" and "hows" → "how's" (`WordAutocorrect.fixedCorrections`; the
+  last two round 6) whatever the corrector says: all are lexicon words the
+  margin keeps, but are almost always typed for the contraction, as "dont"
+  is. On bundle b34 every other apostrophe-less form checked ("dont", "im",
+  "youre", "didnt", "isnt", "thats", "theyre", "ive", "youll", "theres",
+  "hes", "shes", "wouldve", "arent", "itll", "whos", "heres", ...) is
+  outside the lexicon and corrected by the corrector. Two words typed run together
   (`WordAutocorrect.runTogetherWords`, round 5, Opus finding 1: "abit" became
   "habit") become the two words, as on Apple's keyboard: "abit" → "a bit",
   "alot" → "a lot", "aswell" → "as well", "atleast" → "at least". The
@@ -2071,6 +2094,54 @@ or a lexicon form.
   "definitely", "recieve" → "receive", "thier" → "their", ...; round 3),
   which the touch model never reaches because the letter typed is far from
   the one meant. Every target is a lexicon word and no source is one.
+- **Archaic forms** (`Autocorrector.archaicForms`, round 6, Opus finding 2:
+  "neer" offered "ne'er"): twelve poetic contractions ("ne'er", "e'er",
+  "o'er", "e'en", "howe'er", "where'er", "whate'er", "whene'er", "whoe'er",
+  "tis", "twas", "twere"; the lexicon drops a leading apostrophe) are never a
+  candidate, a suggestion, a completion, a spelling match or a next word,
+  however likely the model finds them. A word typed as one is kept as typed.
+  The reference has no such list; the generated fixtures hold none of them.
+- **Vowel rivals** (`WordCorrecting.vowelRival`, round 6, Opus finding 2:
+  "best pizza neer" became "never", and "near" was not offered). The touch
+  model scores a vowel typed for one far from its key as a far miss, yet
+  people misspell vowels, so "near" lost to "never" (an omitted "v") on touch
+  alone. For a word outside the lexicon of at least four letters
+  (`vowelRivalLength`) that the corrector would replace, a vowel rival is a
+  lexicon form, of another key than the correction's and not archaic, that
+  differs from the word by one vowel (a, e, i, o, u) typed for another vowel
+  on a key not beside it in the letters layout (so "i" for "o" or "u" is a
+  slip the touch model already weighs), and that the word model finds at
+  least 1 in 8 as likely as the correction given the sentence's words
+  (`vowelRivalRatio`); the likeliest. With one, the commit keeps the word as
+  typed and offers the correction and the rival after it ("neer" →
+  `neer / never / near`); while it is typed no correction is pending and the
+  strip shows the same three. Fixed corrections never ask. On bundle b34 the
+  ratios that set it: "best pizza neer" "near" against "never" 1 in 3.5
+  (1 in 7 after "thx so much ill best pizza", 1 in 5 after "best coffee",
+  both missed at 1 in 4 on the simulator), "Let's get lanch" "lunch" against "launch" 173 to 1, "Can you sind" "send"
+  against "find" 1 in 1.5, while "I'm at the stor" leaves "star" (1 in 28
+  against "store") out. The cost, measured on generated typos below: some
+  right corrections become a one-tap choice.
+- **Evaluation of corrections** (round 6, `Tests/CorrectionEvaluation.swift`):
+  33 invented messages ending in a vowel slip, a near miss or a word with an
+  apostrophe twin, each with what should happen (corrected to the word meant,
+  or kept with it offered), run through the whole commit
+  (`WordAutocorrect.review`) with taps at the key centres. On bundle b34: 33
+  as expected and none changed to a wrong word (27 of the first 30 and three
+  wrong, "neer" → "never", "lanch" → "launch", "sind" → "find", before vowel
+  rivals and the archaic list; "were" at a sentence's start became "we're"
+  before apostrophe twins); the test runs with
+  `LF_AUTOCORRECT_BUNDLE=<bundle>` and guards those counts. The completion
+  evaluation (57 and 70) and the 58 common misspellings are unchanged. A
+  sweep of generated typos of the lexicon's 317 commonest words of four
+  letters or more (every seventh, four invented contexts, centre taps):
+  neighbour-key slips 440 of 1,056 corrected right before, 429 after (11
+  kept with the right word offered first), wrong corrections 54 → 49;
+  omitted letters 156 of 212 → 145 (11 kept), wrong 28 → 27; far vowels
+  wrong 37 of 370 → 17 (20 now kept with the word meant offered), right 39
+  → 37. Of the 50 words kept, the correction was meant in 24, the rival in
+  20, neither in 6, about evenly at every ratio tried (1 in 8 to 1 to 1): the
+  rule trades silent meaning changes for one-tap choices, not accuracy.
 - **Case.** The result is lowercased, then takes the typed word's case: all
   capitals (two letters or more) → all capitals; a capital first letter →
   capital first letter; otherwise lowercase.
@@ -2186,6 +2257,29 @@ autocorrect considered:
   word, the accented form is offered beside it, after a commit key and while
   it is typed, in the typed word's case, as a spelling match is (it always has
   a slot). Never a correction: Space keeps the word as typed.
+- **Apostrophe forms** (`WordAutocorrect.apostropheForms`, round 6, Opus
+  finding 5: "ill be back" kept "ill" with no "I'll"): ten real words
+  commonly typed for a contraction ("ill" → "I'll", "id" → "I'd", "well" →
+  "we'll", "were" → "we're", "wed" → "we'd", "hell" → "he'll", "shell" →
+  "she'll", "shed" → "she'd", "its" → "it's", "lets" → "let's") offer the
+  contraction beside the word as the accented forms do, whatever the
+  context. Never a correction from this table (the corrector's own
+  apostrophe margin still applies, as below).
+- **Apostrophe twins** (`WordCorrecting.keepsWordOverTwin`, round 6, the
+  lead: at a sentence's start "Were you there?" went out as "We're you
+  there?"). A lexicon word and its twin, the same letters with an apostrophe,
+  share a key, so the corrector picks between them by the word model alone,
+  and before the next word is typed a sentence's start can't tell them apart.
+  The commit replaces a lexicon word with its twin only when the twin is at
+  least six times as likely given the sentence's words
+  (`Autocorrector.twinRatio`); otherwise it keeps the word and offers the twin
+  after it, and while the word is typed no correction is pending. On bundle
+  b34, at a sentence's start, "we're" is 4.7 times "were" (kept), "I'll" 7
+  times "ill", "I'd" 10 times "id" and "she'll" 12 times "shell" (corrected);
+  after "Yes", "I hope" or "I think" "we're" is 22 to 58 times "were"
+  (corrected), and after "Where" 1 in 25 (kept, as before). "its", "lets",
+  "well" and "hell" were already kept there (under 2.5 times). Fixed
+  corrections never ask.
 - **When:** only when there is a choice: a correction was made, or the
   corrector has plausible suggestions for the word kept (below the margin
   that would replace it, above the floor). A word typed as meant has none, so
@@ -2310,7 +2404,7 @@ offers up to three likely next words (`WordCorrecting.nextWords`):
   caret ends with that one space after something other than whitespace. Not
   in an empty field, so the idle bar's status line still shows when the
   keyboard comes up; after a sentence's end it predicts the sentence's first
-  word (only "I" passes the floor on the bundle's model). The bar's
+  word. The bar's
   precedence is unchanged (`BarMiddleContent`): a commit key's strip with a
   choice, a swipe's strip and the strip of a word being typed come first,
   and dictation (starting, recording, transcribing, waiting for the model),
@@ -2321,10 +2415,21 @@ offers up to three likely next words (`WordCorrecting.nextWords`):
   (`AutocorrectSetup.predictsNextWords`).
 - **Words:** the forms the word model finds likeliest given the sentence so
   far, from the same read-out the next word's completions use: each at least
-  1 in 40 likely (`Autocorrector.nextWordFloor`) and within 20 times the best
-  (`nextWordRatio`), no single letter but "a" and "I", never the sentence's
-  last word again, one form per spelling (the likelier; "cant" offered as
-  "can't"). Fewer, or none, rather than noise. Cased as a letter typed there
+  1 in 40 likely (`Autocorrector.nextWordFloor`; 1 in 100 at a sentence's
+  start, `sentenceStartFloor`) and within 20 times the best
+  (`nextWordRatio`), no single letter but "a" and "I", no archaic form, never
+  the sentence's last word again, one form per spelling (the likelier;
+  "cant" offered as "can't"). Fewer, or none, rather than noise.
+- **A sentence's start** (round 6, Opus finding 1: after "...before the
+  weekend. " the strip showed only a centred "I", which in SF Pro reads as a
+  stray bar or a second caret, and made the whole middle an "I" button).
+  There the model spreads its probability over many first words, so the
+  floor is lower: on bundle b34 the read-out after any sentence's end (".",
+  "!" and "?" all end one) is "i" 0.114, "i'm" 0.022, "my" 0.015, "the"
+  0.015, "just" 0.014, ..., "so" 0.010, and the strip offers "I", "I'm",
+  "My". A strip whose only word is a single letter never shows
+  (`KeyboardEditor.refreshNextWords`): after an unknown word ("aloalot ")
+  only "I" (0.049) passes, so the status line stays. Cased as a letter typed there
   would be (`swipeShift`: the sentence's start, Shift, caps lock), the
   pronoun I and day names with their capital; Shift or a layer key recases
   them.

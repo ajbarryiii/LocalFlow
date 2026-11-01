@@ -25,6 +25,15 @@ protocol WordCorrecting: AnyObject {
     /// `limit` lexicon forms within the corrector's edit limit of it whatever the keys' distance, lowercase, fewest
     /// edits first, then by the word model in the context. Suggestions only: nothing corrects from them.
     func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String]
+    /// A vowel rival (ARCHITECTURE.md, "Word autocorrect", Vowel rivals): for a word outside the lexicon that a commit would
+    /// correct to `correction`, a lexicon form one vowel away from it that the touch model counts as a far miss, about as
+    /// likely as the correction by the word model in `context`; lowercase. Nil for none. The keyboard then keeps the word
+    /// and offers both.
+    func vowelRival(context: String, word: String, correction: String, keys: [PlacedKey]) -> String?
+    /// An apostrophe twin (ARCHITECTURE.md, "Word autocorrect", Apostrophe twins): for a lexicon word a commit would correct
+    /// to its twin, the same letters with an apostrophe ("were" to "we're"), whether the twin is too little likelier by the
+    /// word model in `context` to replace it. The keyboard then keeps the word and offers the twin.
+    func keepsWordOverTwin(context: String, word: String, correction: String) -> Bool
     /// Next words (ARCHITECTURE.md, "Word autocorrect", Next words): after a finished word and a space, up to `limit` likely
     /// next words given the sentence so far (`context`, normalized), lowercase, best first by the word model; only words
     /// likely enough, and none far less likely than the best. None for a limit below 1.

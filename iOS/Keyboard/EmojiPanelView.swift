@@ -196,6 +196,11 @@ private final class EmojiCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
         label.textAlignment = .center
+        // Text wider than the cell (a sequence the system font draws as two glyphs) shrinks to fit it rather than being
+        // clipped, to 70% at the least; a single emoji always fits and keeps its size.
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.7
+        label.baselineAdjustment = .alignCenters
         contentView.addSubview(label)
         contentView.layer.cornerRadius = 8
         contentView.layer.cornerCurve = .continuous
