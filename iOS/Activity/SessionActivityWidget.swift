@@ -77,13 +77,29 @@ enum ActivityLook {
 }
 
 /// State changes: quick and settled, never a slow fade (the owner: smooth, but snappy). None in Always On, where the
-/// system draws no animation anyway.
+/// system draws no animation anyway (`SessionActivityMotion`).
 private struct PhaseMotion: ViewModifier {
     let value: SessionActivityState.Phase
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     func body(content: Content) -> some View {
-        content.animation(isLuminanceReduced ? nil : .snappy(duration: 0.28), value: value)
+        content.animation(SessionActivityMotion.duration(luminanceReduced: isLuminanceReduced).map { .snappy(duration: $0) },
+                          value: value)
+    }
+}
+
+/// A view arriving or leaving as `SessionActivityMotion` says: with Reduce Motion always a cross-fade.
+private struct Handover: ViewModifier {
+    let kind: (Bool) -> SessionActivityMotion.Handover
+    var anchor: UnitPoint = .center
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        switch kind(reduceMotion) {
+        case .fade: content.transition(.opacity)
+        case .push: content.transition(.push(from: .bottom).combined(with: .opacity))
+        case .scale(let from): content.transition(.opacity.combined(with: .scale(scale: from, anchor: anchor)))
+        }
     }
 }
 
@@ -93,10 +109,8 @@ private extension View {
 
 /// A change of words slides up a little as it blurs in; with Reduce Motion it only cross-fades.
 private struct WordsTransition: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     func body(content: Content) -> some View {
-        content.transition(reduceMotion ? .opacity : .push(from: .bottom).combined(with: .opacity))
+        content.modifier(Handover(kind: SessionActivityMotion.words))
     }
 }
 
@@ -110,6 +124,7 @@ struct MarkView: View {
     /// never be squeezed or clipped.
     let width: CGFloat
     let height: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let fitted = RidgeMark.fitted(in: KeyRect(x: 0, y: 0, width: width, height: height), weight: height < 24 ? 1.35 : 1.1)
@@ -122,8 +137,8 @@ struct MarkView: View {
             Circle()
                 .fill(ActivityLook.accent(state.phase, isStale: isStale))
                 .frame(width: fitted.dotRadius * 2, height: fitted.dotRadius * 2)
-                // The dot grows a touch while recording: the one sign of life the mark gives.
-                .scaleEffect(state.phase == .recording && !isStale ? 1.3 : 1)
+                // The dot grows a touch while recording: the one sign of life the mark gives (not with Reduce Motion).
+                .scaleEffect(SessionActivityMotion.markDotScale(phase: state.phase, isStale: isStale, reduceMotion: reduceMotion))
                 .position(x: fitted.dot.x, y: fitted.dot.y)
         }
         .frame(width: width, height: height)
@@ -133,33 +148,31 @@ struct MarkView: View {
     }
 }
 
-// MARK: The dot matrix
+// MARK: The dot strip
 
-/// A strip of dots, as on the keyboard's island: a faint grid, and a line of bright dots whose shape is the phase.
-/// Every dot is its own view, so a phase change moves each dot's brightness and colour rather than swapping pictures:
-/// the flat line of a ready session rises into the ridge as recording starts and settles back as it stops.
-struct DotMatrix: View {
+/// A row of dots, as the keyboard's island draws its wave (`DotWave`): one calm row of equal dots when ready, the voice's
+/// swell while recording, and a cool glint of light where the wait's shimmer is (the middle while transcribing, the left
+/// third while the model prepares). Every dot is its own view, so a phase change moves each dot's size and brightness
+/// rather than swapping pictures: the row swells as recording starts and settles back as it stops. With Reduce Motion
+/// the dots keep their size and only their brightness changes (`SessionActivityMotion.dotScale`).
+struct DotStrip: View {
     let phase: SessionActivityState.Phase
     let isStale: Bool
     let columns: Int
-    let rows: Int
     let dot: CGFloat
     let gap: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: gap) {
-            ForEach(0 ..< rows, id: \.self) { row in
-                HStack(spacing: gap) {
-                    ForEach(0 ..< columns, id: \.self) { column in
-                        let lit = DotPattern.brightness(phase: isStale ? .ready : phase, column: column, row: row,
-                                                        columns: columns, rows: rows) * (isStale ? 0.4 : 1)
-                        Circle()
-                            .fill(DotPattern.color(phase: phase, column: column, columns: columns, isStale: isStale))
-                            .opacity(0.1 + 0.9 * lit)
-                            .scaleEffect(0.7 + 0.3 * lit)
-                            .frame(width: dot, height: dot)
-                    }
-                }
+        HStack(spacing: gap) {
+            ForEach(0 ..< columns, id: \.self) { column in
+                let u = columns > 1 ? Double(column) / Double(columns - 1) : 0.5
+                let lit = StripPattern.lit(phase: isStale ? .ready : phase, u: u)
+                Circle()
+                    .fill(StripPattern.color(phase: phase, u: u, isStale: isStale))
+                    .opacity((isStale ? 0.6 : 1) * (DotWave.restBrightness + (1 - DotWave.restBrightness) * lit))
+                    .scaleEffect(SessionActivityMotion.dotScale(lit: lit, reduceMotion: reduceMotion))
+                    .frame(width: dot, height: dot)
             }
         }
         .phaseMotion(phase)
@@ -167,54 +180,26 @@ struct DotMatrix: View {
     }
 }
 
-/// Which dots a phase lights, from 0 (the faint grid) to 1, as on the reference pill: one or two smooth lines drawn
-/// in the strip's unit square, each lighting the dots within about a row of it. Ready is a quiet level line; recording
-/// a braid of two lines crossing along the strip; the transcript a low braid with a glint of light in the middle. Pure.
-enum DotPattern {
-    static func brightness(phase: SessionActivityState.Phase, column: Int, row: Int, columns: Int, rows: Int) -> Double {
-        let x = columns > 1 ? Double(column) / Double(columns - 1) : 0.5
-        let y = rows > 1 ? Double(row) / Double(rows - 1) : 0.5
-        let rowsTall = Double(max(rows - 1, 1))
-        let offset = amplitude(phase) * envelope(x) * sin(2 * Double.pi * 2.25 * x)
-        // Distance from the nearer line, in rows.
-        let distance = min(abs(y - (0.5 - offset)), abs(y - (0.5 + offset))) * rowsTall
-        return exp(-pow(distance / 0.6, 2)) * strength(phase: phase, x: x)
+/// How much a phase lifts the strip's dot `u` of the way along it, from 0 (at rest) to 1, and its colour, with the
+/// keyboard's own shapes (`DotWave.lift`, `DotWave.glow`). Live Activities draw no continuous animation, so each phase is
+/// one still moment of the keyboard's motion.
+enum StripPattern {
+    static func lit(phase: SessionActivityState.Phase, u: Double) -> Double {
+        switch phase {
+        case .ready: return 0
+        case .recording: return DotWave.lift(at: u, level: 1, phase: 0.6)
+        case .transcribing, .preparing: return DotWave.glow(at: u, sweep: glint(phase))
+        }
     }
 
-    static func color(phase: SessionActivityState.Phase, column: Int, columns: Int, isStale: Bool) -> Color {
+    static func color(phase: SessionActivityState.Phase, u: Double, isStale: Bool) -> Color {
         guard !isStale, phase == .transcribing || phase == .preparing else { return .white }
-        let x = columns > 1 ? Double(column) / Double(columns - 1) : 0.5
-        // The transcript's glint: a little glacier where the light gathers.
-        return glint(phase: phase, x: x) > 0.45 ? ActivityLook.glacier : .white
-    }
-
-    /// How far each line strays from the middle, as a share of the strip's height.
-    private static func amplitude(_ phase: SessionActivityState.Phase) -> Double {
-        switch phase {
-        case .ready, .preparing: return 0
-        case .recording: return 0.36
-        case .transcribing: return 0.14
-        }
-    }
-
-    /// The lines meet at the strip's ends, so the braid sits inside the pill.
-    private static func envelope(_ x: Double) -> Double { pow(sin(Double.pi * x), 0.9) }
-
-    /// How bright the lines are at `x`.
-    private static func strength(phase: SessionActivityState.Phase, x: Double) -> Double {
-        let taper = 1 - pow(abs(x - 0.5) * 2, 3) * 0.55
-        switch phase {
-        case .ready: return 0.5 * taper
-        case .recording: return taper
-        case .transcribing, .preparing: return (0.3 + 0.7 * glint(phase: phase, x: x)) * taper
-        }
+        // The wait's glint: a little glacier where the light gathers.
+        return DotWave.glow(at: u, sweep: glint(phase)) > 0.45 ? ActivityLook.glacier : .white
     }
 
     /// Where the light gathers while the transcript is made: the middle, or the left third while the model prepares.
-    private static func glint(phase: SessionActivityState.Phase, x: Double) -> Double {
-        let centre = phase == .preparing ? 0.3 : 0.5
-        return exp(-pow((x - centre) / 0.17, 2))
-    }
+    private static func glint(_ phase: SessionActivityState.Phase) -> Double { phase == .preparing ? 0.3 : 0.5 }
 }
 
 // MARK: Timers
@@ -259,11 +244,11 @@ private struct CompactTrailing: View {
                 }
                 .modifier(WordsTransition())
             } else {
-                DotMatrix(phase: state.phase, isStale: isStale, columns: 9, rows: 5, dot: 2.4, gap: 1.3)
-                    .frame(width: 32)
+                DotStrip(phase: state.phase, isStale: isStale, columns: 6, dot: 4, gap: 1.6)
+                    .frame(width: 34)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(ActivityLook.title(state.phase, isStale: isStale))
-                    .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .trailing)))
+                    .modifier(Handover(kind: SessionActivityMotion.compactTrailing, anchor: .trailing))
             }
         }
         .phaseMotion(state.phase)
@@ -278,7 +263,7 @@ private struct MinimalView: View {
         ZStack {
             if state.phase == .recording && !isStale {
                 Circle().fill(ActivityLook.coral).frame(width: 9, height: 9)
-                    .transition(.scale(scale: 0.4).combined(with: .opacity))
+                    .modifier(Handover(kind: SessionActivityMotion.minimalDot))
             } else {
                 MarkView(state: state, isStale: isStale, width: 18, height: 16)
                     .transition(.opacity)
@@ -317,7 +302,7 @@ private struct ExpandedTrailing: View {
                     if state.phase == .recording {
                         Circle().fill(ActivityLook.coral).frame(width: 7, height: 7)
                     } else {
-                        Text("ends in").foregroundStyle(ActivityLook.secondary)
+                        Text(SessionActivityState.countdownLead).foregroundStyle(ActivityLook.secondary)
                     }
                     PhaseTimer(state: state)
                         .foregroundStyle(.white)
@@ -340,8 +325,8 @@ private struct ExpandedBottom: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            DotMatrix(phase: state.phase, isStale: isStale, columns: 43, rows: 7, dot: 4, gap: 3)
-                .frame(maxWidth: .infinity)
+            DotStrip(phase: state.phase, isStale: isStale, columns: 25, dot: 7, gap: 5)
+                .frame(maxWidth: .infinity, minHeight: 14)
             Text(ActivityLook.title(state.phase, isStale: isStale))
                 .font(.system(size: 13, weight: .medium, design: .rounded))
                 .foregroundStyle(ActivityLook.secondary)
@@ -389,8 +374,8 @@ struct LockScreenView: View {
                     .modifier(WordsTransition())
                 }
             }
-            DotMatrix(phase: state.phase, isStale: isStale, columns: 47, rows: 7, dot: 4, gap: 3)
-                .frame(maxWidth: .infinity)
+            DotStrip(phase: state.phase, isStale: isStale, columns: 27, dot: 7, gap: 5)
+                .frame(maxWidth: .infinity, minHeight: 14)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -404,7 +389,7 @@ struct LockScreenView: View {
             switch state.phase {
             case .ready:
                 if let endsAt = state.endsAt {
-                    Text("Session ends in \(Text(timerInterval: min(Date.now, endsAt) ... endsAt, countsDown: true, showsHours: false))")
+                    Text("Session \(SessionActivityState.countdownLead) \(Text(timerInterval: min(Date.now, endsAt) ... endsAt, countsDown: true, showsHours: false)) \(SessionActivityState.countdownTail)")
                 } else {
                     Text("Flow session")
                 }

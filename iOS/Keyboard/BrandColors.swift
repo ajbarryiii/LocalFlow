@@ -55,16 +55,18 @@ struct RidgeMarkShape: Shape {
     }
 }
 
-/// The ridge mark drawn in one colour, `side` points across, its line and dot `weight` times the icon's.
+/// The ridge mark, its line in `color` and its dot in `dot` (the line's colour by default), `side` points across, its
+/// line and dot `weight` times the icon's.
 struct RidgeMarkGlyph: View {
     var color: Color
+    var dot: Color?
     var side: CGFloat
     var weight = 1.0
 
     var body: some View {
         ZStack {
             RidgeMarkShape(weight: weight).stroke(color, style: RidgeMarkShape.style(side: side, weight: weight))
-            RidgeMarkShape(dot: true, weight: weight).fill(color)
+            RidgeMarkShape(dot: true, weight: weight).fill(dot ?? color)
         }
         .frame(width: side, height: side)
         .accessibilityHidden(true)

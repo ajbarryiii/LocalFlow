@@ -239,7 +239,9 @@ final class KeyboardDictationClient: ObservableObject {
         unlaunchedRequestID = nil
         playHaptic(.press)
         guard openingHost else {
-            notifier?.post(.intent)
+            // After the frame that starts the island's grow: the host's start (capture, the Live Activity) then runs
+            // beside the spring rather than ahead of its first frames (round 8 council, Opus finding 2).
+            DispatchQueue.main.async { [notifier] in notifier?.post(.intent) }
             return
         }
         // No `.intent` post: a background host without a session would reject the request before

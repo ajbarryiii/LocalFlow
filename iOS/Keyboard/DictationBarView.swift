@@ -70,10 +70,10 @@ private extension View {
 /// The top row (ARCHITECTURE.md, "Top row"): a menu button on the left, Undo / "Insert last dictation" chips or a
 /// one-line status in the middle (the candidate strip instead while it shows, and over both a revert's "Never correct"
 /// offer, unless dictation's own UI is up: `BarMiddleContent`), and the dictation island on the right. Tapping Start
-/// grows the island across the bar into the recording, which holds the wave and the time and is Stop; Stop contracts it
-/// into the short wait for the transcript, which collapses back into Start. Its parts go where `IslandLayout` puts them,
-/// so Cancel, beside the menu, never moves while a dictation runs. It renders `KeyboardDictationClient.state` and the
-/// strip only, so typing never re-renders it.
+/// grows the island leftwards into the recording, under half the bar, which holds the wave and the time and is Stop;
+/// Stop contracts it into the short wait for the transcript, which opens back into Start. Its parts go where
+/// `IslandLayout` puts them, so Cancel, beside the recording island, never moves while a dictation runs. It renders
+/// `KeyboardDictationClient.state` and the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
@@ -94,7 +94,18 @@ struct DictationBarView: View {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     /// The island's grow and shrink: quick and firm, a touch of give and no wobble (owner, round 8: smooth, never slow).
-    static let islandSpring = Animation.spring(response: 0.3, dampingFraction: 0.86)
+    static let islandSpring = Animation.spring(response: 0.26, dampingFraction: 0.88)
+    /// What leaves at a change of form goes first, this quickly; what arrives waits as long (Opus, round 8: Undo arrived
+    /// over the outgoing × and "Transcribing…").
+    static let handover = 0.06
+    /// Leaving: a quick fade. Arriving: a fade after `handover`, from a little smaller where `scaleFrom` is under 1.
+    static func handing(over reduceMotion: Bool, scaleFrom: CGFloat = 1, anchor: UnitPoint = .center,
+                        after delay: Double = handover) -> AnyTransition {
+        let leave = AnyTransition.opacity.animation(.easeOut(duration: reduceMotion ? 0.15 : handover))
+        guard !reduceMotion else { return .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.15)), removal: leave) }
+        let arrive = scaleFrom < 1 ? AnyTransition.opacity.combined(with: .scale(scale: scaleFrom, anchor: anchor)) : .opacity
+        return .asymmetric(insertion: arrive.animation(.spring(response: 0.24, dampingFraction: 0.82).delay(delay)), removal: leave)
+    }
 
     var body: some View {
         let compact = verticalSizeClass == .compact
@@ -142,8 +153,8 @@ struct DictationBarView: View {
                             onCandidate(index)
                         }
                         .barControl("strip", in: controls)
-                    } else if !capturing {
-                        // While the island records it holds dictation's status itself.
+                    } else {
+                        // While a dictation runs this is plain text: the cold start's caption, a notice, the wait's words.
                         Middle(client: client, state: state, height: height - 8, controls: controls, onAction: onAction)
                     }
                 }
@@ -153,6 +164,11 @@ struct DictationBarView: View {
                 .opacity(menuOpen || layout.middle.width < 1 ? 0 : 1)
                 .allowsHitTesting(!menuOpen && layout.middle.width >= 1)
                 .position(x: CGFloat(layout.middle.x + layout.middle.width / 2), y: centreY)
+                // The middle moves with the island's form (beside Start, then left of Cancel, then between Cancel and the
+                // wait): what it held leaves where it was, first, and what it holds next arrives in its new place.
+                .id(form)
+                // The wait's words take the room the contracting island leaves: they wait until most of it is free.
+                .transition(Self.handing(over: reduceMotion, after: form == .processing ? 0.14 : Self.handover))
 
                 if let cancel = layout.cancel {
                     Button {
@@ -164,18 +180,19 @@ struct DictationBarView: View {
                             .foregroundStyle(.primary)
                             .frame(width: CGFloat(cancel.width), height: CGFloat(cancel.width))
                             .background(Circle().fill(Color(uiColor: KeyPalette.fill)))
-                            .contentShape(Rectangle())
+                            .contentShape(CancelTapShape(compact: compact))
                     }
                     .buttonStyle(PressableStyle())
                     .accessibilityLabel("Cancel dictation")
                     .accessibilityIdentifier("lf.cancel")
-                    .barControl("cancel", in: controls)
+                    .barControl("cancel", in: controls) {
+                        KeyboardMetrics.cancelTapArea(circle: $0, barHeight: barHeight, compact: compact)
+                    }
                     .opacity(menuOpen ? MenuCover.dimmedAlpha : 1)
                     .position(x: CGFloat(cancel.x + cancel.width / 2), y: centreY)
-                    // It pops in where it stays: the scale is about its own centre, not the bar's.
-                    .transition(reduceMotion ? .opacity.animation(.easeOut(duration: 0.15))
-                        : .opacity.combined(with: .scale(scale: 0.6, anchor: UnitPoint(
-                            x: (cancel.x + cancel.width / 2) / max(Double(geometry.size.width), 1), y: 0.5))))
+                    // It pops in where it stays, after what leaves has gone: the scale is about its own centre.
+                    .transition(Self.handing(over: reduceMotion, scaleFrom: 0.6, anchor: UnitPoint(
+                        x: (cancel.x + cancel.width / 2) / max(Double(geometry.size.width), 1), y: 0.5)))
                 }
 
                 DictationIsland(client: client, state: state, height: height, compact: compact, onAction: onAction,
@@ -220,7 +237,8 @@ struct DictationBarView: View {
 }
 
 /// Chips when there is something to act on, and a notice whenever one is up; otherwise one line of status
-/// (`BarStatus`). While the island records, it holds the status instead.
+/// (`BarStatus`). While a dictation runs its room is narrow (beside Cancel), so its words may take two lines; while
+/// recording it shows only the cold start's caption, plain, never a control.
 private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -239,8 +257,10 @@ private struct Middle: View {
     var body: some View {
         let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice,
                                chipsShown: undoShown || insertLastShown, sessionReady: state.sessionReady)
-        // A chip settles in from a little smaller: a short spring, with Reduce Motion a fade.
-        let arrival: AnyTransition = reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.88, anchor: .leading))
+        // A chip settles in from a little smaller once what it replaces has gone: a short spring, with Reduce Motion a fade.
+        let arrival = DictationBarView.handing(over: reduceMotion, scaleFrom: 0.88, anchor: .leading)
+        // Beside Cancel the room is narrow: two short lines rather than a truncated one.
+        let lines = state.mode.isInProgress ? 2 : 1
         HStack(spacing: 6) {
             if undoShown {
                 Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
@@ -268,11 +288,17 @@ private struct Middle: View {
                 Text(notice)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
+                    .lineLimit(lines)
+                    .minimumScaleFactor(0.8)
                     .accessibilityIdentifier("lf.notice")
-            case .wave:
-                // Only while recording, when the island holds the wave.
+            case .wave(let caption?):
+                // The cold start's caption while the island records: the full one where it fits, else the short one.
+                ViewThatFits(in: .horizontal) {
+                    statusText(caption, ink: statusInk)
+                    statusText(KeyboardMessages.modelLoadingShortCaption, ink: statusInk)
+                }
+            case .wave(nil):
+                // The island's wave says it is listening.
                 EmptyView()
             case .text(let line, let attention, let ready):
                 HStack(spacing: 5) {
@@ -290,17 +316,34 @@ private struct Middle: View {
                             .foregroundStyle(Color(palette.ember))
                             .accessibilityHidden(true)
                     }
-                    Text(line)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
-                        .lineLimit(1)
-                        // Beside the dot the session line may shrink a little further, so at the largest bar text on
-                        // a 375-point phone it still shows whole (never below the default size there).
-                        .minimumScaleFactor(ready ? 0.8 : 0.85)
-                        .accessibilityIdentifier("lf.status")
+                    if lines > 1 {
+                        // Beside Cancel: the line whole where it fits, else its short form, else two lines.
+                        ViewThatFits(in: .horizontal) {
+                            statusText(line, ink: attention ? AnyShapeStyle(.primary) : statusInk)
+                            if let short = KeyboardMessages.shortForm(of: line) {
+                                statusText(short, ink: attention ? AnyShapeStyle(.primary) : statusInk)
+                            }
+                            Text(line)
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.8)
+                                .accessibilityIdentifier("lf.status")
+                        }
+                    } else {
+                        Text(line)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
+                            .lineLimit(1)
+                            // Beside the dot the session line may shrink a little further, so at the largest bar text
+                            // on a 375-point phone it still shows whole (never below the default size there).
+                            .minimumScaleFactor(ready ? 0.8 : 0.85)
+                            .accessibilityIdentifier("lf.status")
+                    }
                 }
-                // A line that goes ("Transcribing…" as Undo arrives) gets out of the way at once.
-                .transition(.asymmetric(insertion: .opacity, removal: .opacity.animation(.easeOut(duration: 0.08))))
+                // A line that goes ("Transcribing…" as Undo arrives) gets out of the way at once, first.
+                .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(DictationBarView.handover)),
+                                        removal: .opacity.animation(.easeOut(duration: DictationBarView.handover))))
             case .none:
                 EmptyView()
             }
@@ -309,102 +352,18 @@ private struct Middle: View {
 
     private var palette: BrandPalette { BrandPalette(colorScheme: colorScheme, contrast: contrast) }
 
+    private func statusText(_ text: String, ink: AnyShapeStyle) -> some View {
+        Text(text)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(ink)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityIdentifier("lf.status")
+    }
+
     /// The status line's ink: the palette's where the system's secondary text is too faint (the light keyboard).
     private var statusInk: AnyShapeStyle {
         palette.statusInk.map { AnyShapeStyle(Color($0)) } ?? AnyShapeStyle(.secondary)
-    }
-}
-
-/// The recording wave (`DotWave`) in the island: dim dots through which two strands of lit dots braid and swell with the
-/// voice and settle into the mark's aurora dot at the right; a flat row in silence. The level it draws follows the
-/// latest the keyboard read, quickly up and slowly down, and the strands drift, on the display's clock only while
-/// `live` (recording); otherwise, and with Reduce Motion, it stands still at the latest level.
-private struct DotWaveView: View {
-    let level: Float
-    let live: Bool
-    let ink: Color
-    let mark: Color
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var motion = WaveMotion()
-
-    var body: some View {
-        if reduceMotion || !live {
-            canvas(level: live ? Double(level) : 0, phase: 0)
-        } else {
-            TimelineView(.animation(minimumInterval: DotWave.frameInterval)) { context in
-                let frame = motion.advance(to: context.date, level: Double(level))
-                canvas(level: frame.level, phase: frame.phase)
-            }
-        }
-    }
-
-    private func canvas(level: Double, phase: Double) -> some View {
-        Canvas { context, size in
-            let width = Double(size.width), height = Double(size.height)
-            context.fillDots(DotWave.dots(level: level, phase: phase, width: width, height: height), color: ink)
-            let dot = DotWave.markDot(level: level, width: width, height: height)
-            context.fill(Path(ellipseIn: dot.rect), with: .color(mark))
-        }
-    }
-}
-
-private extension DotWave.Dot {
-    var rect: CGRect { CGRect(x: x - radius, y: y - radius, width: 2 * radius, height: 2 * radius) }
-}
-
-private extension GraphicsContext {
-    /// Fills dots in `color` at their brightness, a few fills a frame: one path for each of eight brightness steps.
-    func fillDots(_ dots: [DotWave.Dot], color: Color) {
-        let steps = 8
-        var paths = [Path](repeating: Path(), count: steps + 1)
-        for dot in dots {
-            paths[min(max(Int((dot.brightness * Double(steps)).rounded()), 0), steps)].addEllipse(in: dot.rect)
-        }
-        for (step, path) in paths.enumerated() where step > 0 && !path.isEmpty {
-            fill(path, with: .color(color.opacity(Double(step) / Double(steps))))
-        }
-    }
-}
-
-/// The wave's clock between frames: the smoothed level and the drift since recording began. A reference, so the frames
-/// advance it without re-rendering anything.
-private final class WaveMotion {
-    private var follower = DotWave.LevelFollower()
-    private var start: Date?
-    private var last: Date?
-
-    func advance(to date: Date, level: Double) -> (level: Double, phase: Double) {
-        let start = self.start ?? date
-        self.start = start
-        follower.follow(level, over: min(date.timeIntervalSince(last ?? date), 0.1))
-        last = date
-        return (follower.value, DotWave.phase(elapsed: date.timeIntervalSince(start)))
-    }
-}
-
-/// The wait's shimmer (`DotWave.shimmer`) in the short island: a calm row of cool dots with a bright spot sweeping
-/// across, on the display's clock while it shows; with Reduce Motion the row stands still.
-private struct ShimmerView: View {
-    let color: Color
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// One sweep, in seconds, entering at the left and leaving at the right.
-    private static let period = 1.1
-
-    var body: some View {
-        if reduceMotion {
-            canvas(sweep: -1)
-        } else {
-            TimelineView(.animation(minimumInterval: DotWave.frameInterval)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: Self.period) / Self.period
-                canvas(sweep: t * 1.6 - 0.3)
-            }
-        }
-    }
-
-    private func canvas(sweep: Double) -> some View {
-        Canvas { context, size in
-            context.fillDots(DotWave.shimmer(sweep: sweep, width: Double(size.width), height: Double(size.height)), color: color)
-        }
     }
 }
 
@@ -566,9 +525,9 @@ private struct ChipLabel: View {
 
 /// The dictation island (ARCHITECTURE.md, "Top row", "Keyboard look"): a near-black pill in both modes, in the spirit of
 /// the Dynamic Island. Idle it is Start, the ridge mark (its dot aurora) beside "Start". Starting and recording it is
-/// grown across the bar and is Stop as a whole: the wave (`DotWaveView`), the time and a stop glyph, or what dictation
-/// has to say (a notice, the cold start's caption, "Open LocalFlow to start a session"). Waiting for the transcript it
-/// is the short shimmer, which takes no taps; the middle names the wait and VoiceOver hears it from the label.
+/// grown leftwards, under half the bar, and is Stop as a whole: the wave (`DotFieldRepresentable`), the time and a stop
+/// glyph; what dictation has to say is the middle's. Waiting for the transcript it is the short shimmer, which takes no
+/// taps; the middle names the wait and VoiceOver hears it from the label.
 private struct DictationIsland: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -617,12 +576,9 @@ private struct DictationIsland: View {
         .accessibilityIdentifier("lf.mic")
     }
 
-    /// What it holds hands over in a quick fade as it changes form; what arrives in the grown island waits a moment
-    /// for the room, so it never shows squeezed (taps work throughout).
-    private var arrival: AnyTransition {
-        reduceMotion ? .opacity : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.14).delay(0.07)),
-                                              removal: .opacity.animation(.easeOut(duration: 0.08)))
-    }
+    /// What it holds hands over as it changes form: what leaves goes first, quickly, and what arrives in the grown
+    /// island follows once there is room, so it never shows squeezed (taps work throughout).
+    private var arrival: AnyTransition { DictationBarView.handing(over: reduceMotion) }
 
     @ViewBuilder private func content(_ palette: BrandPalette) -> some View {
         let ink = Color(palette.island.ink)
@@ -632,102 +588,75 @@ private struct DictationIsland: View {
                 IslandMark(line: ink, dot: Color(palette.live), side: 19)
                 Text("Start").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
+            // A process's first live timer text takes about 55 ms to resolve (round 9: Foundation's attribute-scope
+            // reflection, profiled on the simulator); resolved here while idle, it no longer stalls Start's first frames
+            // (round 8 council, Opus finding 2). A timer that has ended: it never ticks.
+            .background {
+                Text(timerInterval: Date.distantPast...Date.distantPast, countsDown: false)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
             .transition(arrival)
-        case .starting:
-            recording(palette, startedAt: nil).transition(arrival)
-        case .stop(let startedAt):
-            recording(palette, startedAt: startedAt).transition(arrival)
+        case .starting, .stop:
+            // One view from starting to recording: the dimmed row brightens and the time arrives, nothing blinks.
+            recording(palette, startedAt: recordingStartedAt).transition(arrival)
         case .processing:
-            ShimmerView(color: Color(palette.shimmer))
-                .padding(.horizontal, 12)
+            DotFieldRepresentable(kind: .shimmer, level: 0, ink: palette.shimmer, mark: nil, reduceMotion: reduceMotion)
+                .padding(.horizontal, 11)
                 .frame(height: waveHeight)
+                .accessibilityHidden(true)
                 .transition(arrival)
         }
+    }
+
+    /// When the recording began; nil while it is still starting.
+    private var recordingStartedAt: Date? {
+        if case .stop(let startedAt) = CapsuleContent(mode: state.mode) { return startedAt }
+        return nil
     }
 
     /// The recording's height for the wave's dots, inside the island's rounded ends.
     private var waveHeight: CGFloat { min(24, height - 12) }
 
-    /// Starting and recording: dictation's status or the wave, then the time while recording, then the stop glyph.
+    /// Starting and recording: the wave (its calm row, dimmed, until the recording begins), the time while recording, and
+    /// the stop glyph. Dictation's words are the middle's, beside Cancel.
     private func recording(_ palette: BrandPalette, startedAt: Date?) -> some View {
         let ink = Color(palette.island.ink)
-        let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice, chipsShown: false)
-        return HStack(spacing: 10) {
+        return HStack(spacing: 8) {
+            DotFieldRepresentable(kind: .wave(live: startedAt != nil), level: Double(state.levels.last ?? 0), ink: palette.island.ink,
+                                  mark: palette.live, reduceMotion: reduceMotion)
+                .frame(maxWidth: .infinity)
+                .frame(height: waveHeight)
+                .opacity(startedAt == nil ? 0.55 : 1)
+                .animation(.easeOut(duration: 0.15), value: startedAt == nil)
+                // VoiceOver hears the mode from Stop's value; the wave is decoration.
+                .accessibilityHidden(true)
+            // The time's room is kept from the start, so nothing in the island moves when the recording begins.
             Group {
-                switch status {
-                case .notice(let text):
-                    line(text, ink: ink, identifier: "lf.notice")
-                case .wave(let caption):
-                    if let caption {
-                        // The full caption while it leaves the wave room; on a narrow bar the short one.
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 8) {
-                                waveCaption(caption, ink: ink)
-                                wave(palette, live: true).frame(minWidth: CGFloat(BarStatus.captionedWaveWidth))
-                            }
-                            HStack(spacing: 8) {
-                                waveCaption(KeyboardMessages.modelLoadingShortCaption, ink: ink)
-                                wave(palette, live: true)
-                            }
-                        }
-                    } else {
-                        wave(palette, live: true)
-                    }
-                case .text(let text, _, _) where text != KeyboardMessages.starting:
-                    // "Open LocalFlow to start a session" while the host has not come up.
-                    line(text, ink: ink, identifier: "lf.status")
-                default:
-                    // Starting: the calm row, dimmed until the recording begins.
-                    wave(palette, live: false).opacity(0.55)
+                if let startedAt {
+                    Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
+                        .transition(.opacity.animation(.easeOut(duration: 0.15)))
+                } else {
+                    Text(verbatim: "0:00").hidden()
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let startedAt {
-                Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(ink.opacity(0.75))
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(ink.opacity(0.75))
+            .lineLimit(1)
+            .fixedSize()
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                 .fill(ink)
                 .frame(width: 10, height: 10)
                 .accessibilityHidden(true)
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 15)
+        .padding(.leading, 12)
+        .padding(.trailing, 14)
     }
 
-    private func wave(_ palette: BrandPalette, live: Bool) -> some View {
-        DotWaveView(level: state.levels.last ?? 0, live: live, ink: Color(palette.island.ink), mark: Color(palette.live))
-            .frame(height: waveHeight)
-            // VoiceOver hears the mode from Stop's value; the wave is decoration.
-            .accessibilityHidden(true)
-    }
-
-    private func line(_ text: String, ink: Color, identifier: String) -> some View {
-        Text(text)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(ink)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .accessibilityIdentifier(identifier)
-    }
-
-    private func waveCaption(_ caption: String, ink: Color) -> some View {
-        Text(caption)
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(ink.opacity(0.7))
-            .lineLimit(1)
-            .fixedSize()
-            .accessibilityIdentifier("lf.status")
-    }
-
-    /// The mode, the time, and whatever text the grown island shows instead of the middle.
+    /// The mode, and the time while recording.
     private var accessibilityValue: String {
-        KeyboardMessages.islandAccessibilityValue(
-            for: state.mode, status: BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice, chipsShown: false),
-            now: Date())
+        KeyboardMessages.islandAccessibilityValue(for: state.mode, now: Date())
     }
 
     private var accessibilityHint: String {
@@ -779,6 +708,21 @@ private struct StartTapShape: Shape {
         let area = KeyboardMetrics.startTapArea(
             capsule: KeyRect(x: Double(rect.minX), y: Double(rect.minY) + top, width: Double(rect.width), height: Double(rect.height)),
             barHeight: compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight, compact: compact, capturing: capturing)
+        return Path(CGRect(x: area.x, y: area.y - top, width: area.width, height: area.height))
+    }
+}
+
+/// Cancel's tap area (`KeyboardMetrics.cancelTapArea`) in its circle's coordinates; it looks the same. The circle is
+/// centred in the bar.
+private struct CancelTapShape: Shape {
+    let compact: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let barHeight = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
+        let top = (barHeight - Double(rect.height)) / 2
+        let area = KeyboardMetrics.cancelTapArea(
+            circle: KeyRect(x: Double(rect.minX), y: Double(rect.minY) + top, width: Double(rect.width), height: Double(rect.height)),
+            barHeight: barHeight, compact: compact)
         return Path(CGRect(x: area.x, y: area.y - top, width: area.width, height: area.height))
     }
 }
@@ -873,7 +817,7 @@ struct MenuPanelView: View {
                     Label {
                         Text(client.state.sessionSummary)
                     } icon: {
-                        RidgeMarkGlyph(color: color(palette.link), side: 18)
+                        RidgeMarkGlyph(color: color(palette.markLine), dot: color(palette.markDot), side: 18)
                     }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(color(palette.primary))

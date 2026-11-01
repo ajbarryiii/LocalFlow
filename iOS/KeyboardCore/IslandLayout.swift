@@ -7,9 +7,12 @@ enum IslandForm: Equatable, Sendable {
 }
 
 /// Where the top row's parts go for an island form (ARCHITECTURE.md, "Top row"), left to right inside the bar's
-/// padding: the menu button, Cancel while a dictation is in progress, the middle (status, chips, candidates), and the
-/// island, whose right end never moves. Cancel sits beside the menu, so no change of the island's width moves it once
-/// shown (round 5). Each part is a horizontal span in the bar's coordinates; all are the control height tall. Pure.
+/// padding: the menu button, the middle (status, chips, candidates), Cancel while a dictation is in progress, and the
+/// island, whose right end never moves. While recording the island stays under half the bar (round 9, owner), with
+/// Cancel beside it in the bar's right half, in reach of a right thumb, a clear gap from Stop. Cancel's place is the
+/// recording's, so it never moves once shown (round 5): when the wait contracts the island, the middle takes the room
+/// between Cancel and the short pill. Each part is a horizontal span in the bar's coordinates; all are the control
+/// height tall. Pure.
 struct IslandLayout: Equatable, Sendable {
     struct Span: Equatable, Sendable {
         var x: Double
@@ -19,17 +22,23 @@ struct IslandLayout: Equatable, Sendable {
 
     static let padding = 8.0
     static let spacing = 8.0
+    /// Between Cancel and the recording island: Cancel discards the dictation, so a near miss for Stop must not reach it.
+    static let cancelGap = 12.0
+    /// How far right of the bar's middle Cancel's centre sits at least: in the right half, where a right thumb is.
+    static let cancelOffset = 4.0
+    /// The recording island's widest, in a wide (landscape) bar.
+    static let maximumExpandedWidth = 200.0
 
     var menu: Span
     var cancel: Span?
     var middle: Span
     var island: Span
 
-    /// Cancel's circle, a little smaller than the bar's controls.
+    /// Cancel's circle, a little smaller than the bar's controls (its tap area is wider, `KeyboardMetrics.cancelTapArea`).
     static func cancelWidth(controlHeight: Double) -> Double { controlHeight - 6 }
 
     /// The wait's short pill: room for its shimmer and no more.
-    static func processingWidth(controlHeight: Double) -> Double { controlHeight * 1.9 }
+    static func processingWidth(controlHeight: Double) -> Double { controlHeight * 1.5 }
 
     /// Start's width with a `labelWidth` "Start" beside the mark: its padding, the 19-point mark and the gap, never
     /// narrower than 2.4 times its height (the capsule's width before the island).
@@ -37,27 +46,37 @@ struct IslandLayout: Equatable, Sendable {
         max(controlHeight * 2.4, 14 + 19 + 6 + labelWidth + 14)
     }
 
+    /// The recording island's width in a bar `barWidth` points wide: as wide as leaves Cancel, beside it, in the bar's
+    /// right half, so always under half the bar, and no wider than `maximumExpandedWidth`.
+    static func expandedWidth(barWidth: Double, controlHeight: Double) -> Double {
+        let room = barWidth / 2 - padding - cancelGap - cancelWidth(controlHeight: controlHeight) / 2 - cancelOffset
+        return max(min(room.rounded(.down), maximumExpandedWidth), 0)
+    }
+
     /// The parts in a bar `barWidth` points wide whose controls are `controlHeight` tall, for an island `form` whose
     /// compact width is `startWidth`. In a bar too narrow for everything the middle goes first, then the island shrinks.
     init(barWidth: Double, controlHeight: Double, startWidth: Double, form: IslandForm) {
         let end = barWidth - Self.padding
         menu = Span(x: Self.padding, width: controlHeight)
-        var next = menu.maxX + Self.spacing
-        if form == .compact {
+        let next = menu.maxX + Self.spacing
+        guard form != .compact else {
             cancel = nil
+            island = Span(x: end - min(startWidth, max(end - next, 0)), width: min(startWidth, max(end - next, 0)))
+            middle = Span(x: next, width: max(island.x - Self.spacing - next, 0))
+            return
+        }
+        let cancelWidth = Self.cancelWidth(controlHeight: controlHeight)
+        let recording = min(Self.expandedWidth(barWidth: barWidth, controlHeight: controlHeight),
+                            max(end - next - cancelWidth - Self.cancelGap, 0))
+        let cancel = Span(x: end - recording - Self.cancelGap - cancelWidth, width: cancelWidth)
+        self.cancel = cancel
+        if form == .expanded {
+            island = Span(x: end - recording, width: recording)
+            middle = Span(x: next, width: max(cancel.x - Self.spacing - next, 0))
         } else {
-            let cancel = Span(x: next, width: Self.cancelWidth(controlHeight: controlHeight))
-            self.cancel = cancel
-            next = cancel.maxX + Self.spacing
+            let width = min(Self.processingWidth(controlHeight: controlHeight), recording)
+            island = Span(x: end - width, width: width)
+            middle = Span(x: cancel.maxX + Self.spacing, width: max(island.x - Self.spacing - cancel.maxX - Self.spacing, 0))
         }
-        let room = max(end - next, 0)
-        let width: Double
-        switch form {
-        case .compact: width = min(startWidth, room)
-        case .expanded: width = room
-        case .processing: width = min(Self.processingWidth(controlHeight: controlHeight), room)
-        }
-        island = Span(x: end - width, width: width)
-        middle = Span(x: next, width: max(island.x - Self.spacing - next, 0))
     }
 }

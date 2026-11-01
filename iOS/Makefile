@@ -119,8 +119,9 @@ KEYBOARD_SWIFT_SOURCES ?= $(call swift_sources,Keyboard)
 ACTIVITY_SWIFT_SOURCES ?= $(call swift_sources,Activity)
 ACTIVITYCORE_SOURCES ?= $(call swift_sources,ActivityCore)
 ACTIVITY_ATTRIBUTES_SOURCES ?= Activity/SessionActivityAttributes.swift
-# The ridge mark, drawn as the keyboard draws it; KeyboardLayout has its box type. Both are Foundation only.
-ACTIVITY_KEYBOARDCORE_SOURCES ?= KeyboardCore/RidgeMark.swift KeyboardCore/KeyboardLayout.swift
+# The ridge mark, drawn as the keyboard draws it; KeyboardLayout has its box type; DotWave the swell the strip shares with
+# the keyboard's wave. All are Foundation only.
+ACTIVITY_KEYBOARDCORE_SOURCES ?= KeyboardCore/RidgeMark.swift KeyboardCore/KeyboardLayout.swift KeyboardCore/DotWave.swift
 SHARED_SOURCES ?= $(call swift_sources,Shared)
 HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)

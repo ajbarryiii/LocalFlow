@@ -18,6 +18,8 @@ enum SessionActivityTests {
             ("recordingIsNeverHeld", isolated(testRecordingIsNeverHeld)),
             ("sessionEndEndsAtOnce", isolated(testSessionEndEndsAtOnce)),
             ("newSessionReplacesTheOldActivity", isolated(testNewSessionReplacesTheOldActivity)),
+            ("reduceMotionChangesOnlyOpacity", testReduceMotionChangesOnlyOpacity),
+            ("countdownSpeaksTheBarsWords", testCountdownSpeaksTheBarsWords),
         ]
     }
 
@@ -46,6 +48,53 @@ enum SessionActivityTests {
 
     private static let transcribing = SessionActivityState(phase: .transcribing, endsAt: nil, since: nil)
     private static let preparing = SessionActivityState(phase: .preparing, endsAt: nil, since: nil)
+
+    // MARK: Motion and words
+
+    /// Sol, round 8: with Reduce Motion every phase change of the activity is opacity only: no view grows, shrinks or
+    /// slides as it arrives or leaves, and neither the mark's dot nor the strip's dots change size, so the strip's shape
+    /// shows in brightness alone. Without it, the small scale changes stay. Nothing animates in Always On.
+    private static func testReduceMotionChangesOnlyOpacity() {
+        let handovers: [(Bool) -> SessionActivityMotion.Handover] = [
+            SessionActivityMotion.words, SessionActivityMotion.compactTrailing, SessionActivityMotion.minimalDot,
+        ]
+        for handover in handovers {
+            TestSupport.expectEqual(handover(true), .fade)
+            TestSupport.expect(handover(false) != .fade, "no motion without Reduce Motion")
+        }
+        for phase in SessionActivityState.Phase.allCases {
+            for stale in [false, true] {
+                TestSupport.expectEqual(SessionActivityMotion.markDotScale(phase: phase, isStale: stale, reduceMotion: true), 1)
+            }
+        }
+        TestSupport.expect(SessionActivityMotion.markDotScale(phase: .recording, isStale: false, reduceMotion: false) > 1,
+                           "the mark's dot no longer swells while recording")
+        TestSupport.expectEqual(SessionActivityMotion.markDotScale(phase: .ready, isStale: false, reduceMotion: false), 1)
+        for lit in [0.0, 0.3, 1] {
+            TestSupport.expectEqual(SessionActivityMotion.dotScale(lit: lit, reduceMotion: true), 1)
+        }
+        TestSupport.expect(SessionActivityMotion.dotScale(lit: 1, reduceMotion: false)
+            > SessionActivityMotion.dotScale(lit: 0, reduceMotion: false), "lit dots do not grow")
+        TestSupport.expect(SessionActivityMotion.dotScale(lit: 1, reduceMotion: false) <= 1, "a lit dot outgrows its place")
+        TestSupport.expectEqual(SessionActivityMotion.duration(luminanceReduced: true), nil)
+        TestSupport.expect((SessionActivityMotion.duration(luminanceReduced: false) ?? 1) <= 0.3, "phase changes are slow")
+    }
+
+    /// Opus, round 8: the bar said "Session ends after 3 min idle" while the island said "ends in 2:15". Both now say
+    /// when an idle session ends in the same words: the bar in whole minutes, to the nearest (never under one), the
+    /// activity as a live countdown.
+    private static func testCountdownSpeaksTheBarsWords() {
+        let lead = SessionActivityState.countdownLead, tail = SessionActivityState.countdownTail
+        TestSupport.expectEqual(lead, "ends in")
+        TestSupport.expectEqual(KeyboardMessages.idleTimeout(minutes: 2), "\(lead) 2 min \(tail)")
+        var status = Fixture.status(.active, heartbeatAt: now)
+        status.model = .ready
+        for (left, minutes) in [(135.0, 2), (150, 3), (179, 3), (20, 1), (300, 5)] {
+            status.sessionExpiresAt = now + left
+            TestSupport.expectEqual(KeyboardMessages.hint(for: status, now: now), "Session \(lead) \(minutes) min \(tail)")
+            TestSupport.expectEqual(KeyboardMessages.sessionSummary(for: status, now: now), "Session \(lead) \(minutes) min \(tail)")
+        }
+    }
 
     // MARK: What it shows
 

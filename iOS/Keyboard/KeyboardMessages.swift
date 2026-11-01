@@ -6,6 +6,18 @@ enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
     static let preparingModel = "Preparing model…"
+    /// `preparingModel` where the bar's middle, between Cancel and the wait's pill, has no room for it: the shimmer beside
+    /// it and the cold start's caption before it say what is prepared.
+    static let preparingShort = "Preparing…"
+
+    /// The short form of a line where one fits better beside Cancel, if it has one.
+    static func shortForm(of line: String) -> String? {
+        switch line {
+        case preparingModel: return preparingShort
+        case modelLoadingCaption: return modelLoadingShortCaption
+        default: return nil
+        }
+    }
     static let starting = "Starting…"
     /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`). Short enough for a
     /// 375-point phone beside Cancel and the labelled Stop capsule.
@@ -13,10 +25,10 @@ enum KeyboardMessages {
     /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
     /// presentation"), nothing prepares it now.
     static let modelLoadsWhenDictating = "Model loads when you dictate"
-    /// Beside the recording wave while the host still prepares the model: the wave itself says "listening".
+    /// In the bar's middle while recording as the host still prepares the model: the wave itself says "listening".
     static let modelLoadingCaption = "Model loading"
-    /// `modelLoadingCaption` where it would leave the wave less than `BarStatus.captionedWaveWidth` (a 375-point phone,
-    /// large text): the rest of the bar says it is a recording, so "Loading" is the model.
+    /// `modelLoadingCaption` where the bar's middle has no room for it beside Cancel (a 375-point phone, large text): the
+    /// rest of the bar says it is a recording, so "Loading" is the model.
     static let modelLoadingShortCaption = "Loading"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
@@ -59,24 +71,16 @@ enum KeyboardMessages {
         }
     }
 
-    /// What VoiceOver hears as the island's value while it is Stop: the mode, the time while recording, and the text the
-    /// island shows in place of the bar's middle (`status`: a notice, the cold start's caption, the starting line when it
-    /// is more than "Starting…"), which the button's label and value would otherwise hide. Empty for Start and the wait,
-    /// whose text the middle holds.
-    static func islandAccessibilityValue(for mode: KeyboardMode, status: BarStatus, now: Date) -> String {
-        let base: String
+    /// What VoiceOver hears as the island's value while it is Stop: the mode, and the time while recording. Empty for Start
+    /// and the wait. Dictation's text (a notice, the cold start's caption, "Open LocalFlow to start a session") is the
+    /// middle's, which VoiceOver reaches on its own (round 9: the island no longer holds it).
+    static func islandAccessibilityValue(for mode: KeyboardMode, now: Date) -> String {
         switch mode {
-        case .starting: base = "Starting"
+        case .starting: return "Starting"
         case .recording(_, let startedAt):
             let seconds = max(0, Int(now.timeIntervalSince(startedAt)))
-            base = "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
+            return "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
         default: return ""
-        }
-        switch status {
-        case .notice(let text): return base + ", " + text
-        case .wave(let caption?): return base + ", " + caption
-        case .text(let text, _, _) where text != starting: return base + ", " + text
-        default: return base
         }
     }
 
@@ -135,13 +139,16 @@ enum KeyboardMessages {
         return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
     }
 
-    /// How the bar and the menu name the session's end: it ends after this many idle minutes, not at a fixed time.
+    /// How the bar and the menu name the session's end, in the Live Activity's words ("ends in 2:15"): when it ends if
+    /// nothing is dictated, not at a fixed time.
     static func idleTimeout(minutes: Int) -> String {
-        "ends after \(minutes) min idle"
+        "ends in \(minutes) min if idle"
     }
 
+    /// The minutes until `expiresAt`, to the nearest, so the bar agrees with the Live Activity's countdown (2:15 is 2
+    /// minutes); never under one while the session runs.
     private static func minutesLeft(until expiresAt: Date, now: Date) -> Int {
-        max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
+        max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded()))
     }
 
     /// Dictation is ready to go: a live host runs a session and its model has not failed or gone missing (it may
@@ -222,7 +229,8 @@ enum CapsuleContent: Equatable, Sendable {
 }
 
 /// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): a notice whenever one is up; while
-/// recording the live wave, with a caption only when it says something the user needs (the model still loading);
+/// recording, where the island shows the live wave, a caption only when it says something the user needs (the model
+/// still loading); while starting, nothing unless it is more than "Starting…" (the island's dimmed row says that);
 /// otherwise the one-line status (ready and idle: only the model or session hint, led by the mark's dot while the
 /// session is ready, `KeyboardMessages.isSessionReady`), unless a chip shows.
 enum BarStatus: Equatable, Sendable {
@@ -232,9 +240,6 @@ enum BarStatus: Equatable, Sendable {
     /// the dot shows; information, not a control.
     case text(String, attention: Bool, ready: Bool = false)
     case none
-
-    /// The least room the recording wave keeps beside its full caption; with less, the caption is the short one.
-    static let captionedWaveWidth = 80.0
 
     init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool, sessionReady: Bool = false) {
         if let notice {
@@ -248,6 +253,7 @@ enum BarStatus: Equatable, Sendable {
         let line: String?
         switch mode {
         case .ready: line = hint
+        case .starting: line = title == KeyboardMessages.starting ? nil : title
         default: line = title.isEmpty ? nil : title
         }
         guard let line, !chipsShown else {

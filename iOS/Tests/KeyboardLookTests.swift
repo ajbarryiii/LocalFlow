@@ -104,8 +104,9 @@ enum KeyboardLookTests {
     }
 
     /// Accents on the backdrop (the readiness dot, an error's symbol, the menu's link) and on the island (the live dot
-    /// the wave settles into, the wait's cool shimmer) reach 3:1, as do the island's lit dots; its resting dots stay
-    /// below that, a texture rather than a mark.
+    /// the wave settles into, the wait's cool shimmer) reach 3:1, as do the island's lit dots. Round 9 (owner): the dim dot
+    /// field is gone, so the resting row is the line itself, a calm 3:1 or better, and the swell still brightens past it.
+    /// (Round 8 kept resting dots under 3:1, a texture behind the strands.)
     private static func testAccentsReachThreeToOne() {
         variants { palette, name in
             for (role, color) in [("aurora", palette.aurora), ("ember", palette.ember)] {
@@ -118,8 +119,8 @@ enum KeyboardLookTests {
                 TestSupport.expect(value >= 3, "\(role) on the island, \(name): \(value)")
             }
             let rest = BrandPalette.blend(palette.island.ink, alpha: DotWave.restBrightness, over: island)
-            TestSupport.expect(ratio(rest, island) < 3, "resting dots are as loud as lit ones, \(name)")
-            TestSupport.expect(ratio(rest, island) > 1.2, "resting dots are invisible, \(name)")
+            TestSupport.expect(ratio(rest, island) >= 3, "the resting row is faint, \(name): \(ratio(rest, island))")
+            TestSupport.expect(ratio(palette.island.ink, island) > ratio(rest, island) * 1.5, "the swell does not brighten, \(name)")
         }
     }
 
@@ -230,12 +231,19 @@ enum KeyboardLookTests {
 
     /// Round 8 (owner): quieter. The trace is the label colour's grey, fading towards its tail; at the finger it reaches
     /// 3:1 against the backdrop.
+    /// Round 9 (Opus, round 8: a light grey trace on the grey keys was almost invisible mid-swipe): at the finger the trace
+    /// stands 3:1 off the keys it crosses as well as off the backdrop, in both modes and with Increase Contrast; it stays
+    /// neutral (a grey) and a little translucent, so it is quiet.
     private static func testSwipeTrailIsQuietAndNeutral() {
         variants { palette, name in
-            let finger = BrandPalette.blend(palette.trail, alpha: palette.trailAlpha, over: palette.backdrop)
-            let value = ratio(finger, palette.backdrop)
-            TestSupport.expect(value >= 3, "trail at the finger, \(name): \(value)")
+            TestSupport.expect(palette.trail.red == palette.trail.green && palette.trail.green == palette.trail.blue,
+                               "the trail is not grey, \(name)")
             TestSupport.expect(palette.trailAlpha < 1, "the trail is opaque, \(name)")
+            for (surface, label) in [(palette.backdrop, "backdrop"), (palette.keyFill, "keys")] {
+                let finger = BrandPalette.blend(palette.trail, alpha: palette.trailAlpha, over: surface)
+                let value = ratio(finger, surface)
+                TestSupport.expect(value >= 3, "trail at the finger on the \(label), \(name): \(value)")
+            }
         }
         // The pure trail carries each point's place along it: 0 at the tail, 1 at the finger.
         let samples = [0.0, 0.125, 0.25].enumerated().map { SwipeSample(x: Double($0.offset) * 10, y: 50, t: $0.element) }
@@ -252,6 +260,9 @@ enum KeyboardLookTests {
             let value = ratio(menu.link, menu.card)
             TestSupport.expect(value >= 4.5, "link on the card, \(name): \(value)")
             TestSupport.expect(sameHue(menu.link, BrandPalette.aurora), "link is not aurora's hue, \(name)")
+            // Round 9 (Opus, round 8): the menu's mark is ink with the aurora dot, like every other mark, not all aurora.
+            TestSupport.expectEqual(menu.markLine, menu.primary)
+            TestSupport.expectEqual(menu.markDot, menu.link)
         }
     }
 
@@ -327,7 +338,11 @@ enum KeyboardLookTests {
                                 .wave(caption: KeyboardMessages.modelLoadingCaption))
         TestSupport.expectEqual(status(recording, title: "Listening", notice: "Couldn't reach LocalFlow"), .notice("Couldn't reach LocalFlow"))
         TestSupport.expectEqual(status(recording, title: "Listening", chips: true), .wave(caption: nil))
-        TestSupport.expectEqual(status(.starting, title: "Starting…"), .text("Starting…", attention: false))
+        // Round 9 (Opus, round 8: Cancel arrived over the outgoing line): while starting, the island's dimmed row says it
+        // is starting, and the middle, now beside it, stays empty rather than flash "Starting…" for a moment; only a
+        // line that says more shows.
+        TestSupport.expectEqual(status(.starting, title: "Starting…"), .none)
+        TestSupport.expectEqual(status(.starting, title: KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
         TestSupport.expectEqual(status(.transcribing, title: "Transcribing…"), .text("Transcribing…", attention: false))
         TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: "Session on"), .text("Session on", attention: false))
         TestSupport.expectEqual(status(.ready, title: "Ready to dictate"), .none)
@@ -367,7 +382,7 @@ enum KeyboardLookTests {
                     ready: Bool) -> BarStatus {
             BarStatus(mode: mode, title: title, hint: hint, notice: notice, chipsShown: chips, sessionReady: ready)
         }
-        let line = "Session ends after 5 min idle"
+        let line = "Session ends in 5 min if idle"
         TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: true), .text(line, attention: false, ready: true))
         TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: false), .text(line, attention: false, ready: false))
         TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, chips: true, ready: true), .none)
@@ -381,12 +396,20 @@ enum KeyboardLookTests {
                                 .text("The speech model failed to load", attention: true, ready: false))
     }
 
-    /// Sol, round 4: on a 375-point phone "Model loading" left the wave about 55 points. Where the full caption would
-    /// leave the wave less than `captionedWaveWidth`, the caption is the short one, which still names the wait.
+    /// Sol, round 4: on a 375-point phone "Model loading" left the wave about 55 points. Round 9: the caption is the
+    /// middle's, beside Cancel; where the full caption does not fit there (the largest bar text), it is the short one,
+    /// which still names the wait. (Round 8's `captionedWaveWidth`, the wave's room beside the caption inside the island,
+    /// went with the caption's move.)
     private static func testLoadingCaptionHasAShortForm() {
         let short = KeyboardMessages.modelLoadingShortCaption, full = KeyboardMessages.modelLoadingCaption
         TestSupport.expect(short.count < full.count, "\(short) is not shorter than \(full)")
         TestSupport.expect(full.lowercased().contains(short.lowercased()), "\(short) says something else than \(full)")
-        TestSupport.expect(BarStatus.captionedWaveWidth >= 12 * DotWave.pitch, "the wave keeps too few columns")
+        TestSupport.expectEqual(KeyboardMessages.shortForm(of: full), short)
+        // Round 9: the wait's words sit between Cancel and the short pill; "Preparing model…" has a short form there too.
+        let preparing = KeyboardMessages.preparingModel
+        TestSupport.expectEqual(KeyboardMessages.shortForm(of: preparing), KeyboardMessages.preparingShort)
+        TestSupport.expect(preparing.hasPrefix(KeyboardMessages.preparingShort.dropLast()), "the short form says something else")
+        TestSupport.expect(KeyboardMessages.preparingShort.count < preparing.count, "the short form is not shorter")
+        TestSupport.expectEqual(KeyboardMessages.shortForm(of: "Transcribing…"), nil)
     }
 }

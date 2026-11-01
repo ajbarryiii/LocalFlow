@@ -123,6 +123,19 @@ struct KeyboardMetrics: Equatable, Sendable {
         return KeyRect(x: capsule.x + startHitInset, y: 0, width: max(capsule.width - 2 * startHitInset, 0), height: max(bottom, 0))
     }
 
+    /// Cancel's tap area is this wide, and as tall where the bar has room (Opus, round 8: a tap 2 points beside its
+    /// 32-point circle typed a letter).
+    static let cancelHitSize: Double = 44
+
+    /// Cancel's tap area, in the bar's coordinates, from its circle there: `cancelHitSize` wide about the circle, and as
+    /// tall up to the bottom of the bar's controls, above the strip that goes to the keys (`reachAboveKeys`), so it never
+    /// reaches into the keys. ARCHITECTURE.md, "Reach and touch regions".
+    static func cancelTapArea(circle: KeyRect, barHeight: Double, compact: Bool) -> KeyRect {
+        let bottom = barHeight - reachAboveKeys(compact: compact)
+        let top = max(0, bottom - cancelHitSize)
+        return KeyRect(x: circle.midX - cancelHitSize / 2, y: top, width: cancelHitSize, height: bottom - top)
+    }
+
     /// Whether a touch at (x, y) in the key area's coordinates is the Start capsule's: inside `start`, its tap area
     /// in the bar's coordinates, which reaches into the keys only while capturing (an edge is the capsule's).
     static func keyPointGoesToStart(x: Double, y: Double, barHeight: Double, start: KeyRect?) -> Bool {

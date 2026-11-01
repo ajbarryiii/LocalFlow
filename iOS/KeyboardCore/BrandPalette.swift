@@ -51,7 +51,8 @@ struct BrandPalette: Equatable {
     var statusInk: RGB?
     /// The width of a fill's edge, in points: a hairline, a full point with Increase Contrast.
     var edgeWidth: Double
-    /// The swipe trail's colour, the label colour's, and its opacity at the finger (`SwipeTrail`).
+    /// The swipe trail's colour, the label colour's, and its opacity at the finger (`SwipeTrail`): 3:1 at the finger
+    /// against the keys it crosses and the backdrop, still translucent.
     var trail: RGB
     var trailAlpha: Double
     /// The keys' fill (`KeyPalette.fill`).
@@ -78,8 +79,9 @@ struct BrandPalette: Equatable {
             pillEdge = RGB(1, 1, 1)
             pillEdgeAlpha = 0.22
             statusInk = nil
+            // Light enough to show on the grey keys it crosses (3:1 at the finger), not only on the backdrop.
             trail = RGB(1, 1, 1)
-            trailAlpha = 0.5
+            trailAlpha = highContrast ? 0.8 : 0.72
         } else {
             backdrop = RGB(230 / 255, 232 / 255, 234 / 255)
             keyFill = RGB(1, 1, 1)
