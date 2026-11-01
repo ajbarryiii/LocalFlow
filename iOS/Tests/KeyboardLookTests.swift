@@ -19,7 +19,8 @@ enum KeyboardLookTests {
             ("capsuleStyleFollowsTheMode", testCapsuleStyleFollowsTheMode),
             ("barStatusKeepsWordsWhereTheyEarnTheirSpace", testBarStatusKeepsWordsWhereTheyEarnTheirSpace),
             ("islandTakesItsFormFromTheMode", testIslandTakesItsFormFromTheMode),
-            ("startsDotShowsTheSession", testStartsDotShowsTheSession),
+            ("theSessionShowsInTheDotsMotion", testTheSessionShowsInTheDotsMotion),
+            ("menusDotMatchesStartsDot", testMenusDotMatchesStartsDot),
             ("statusLineReadsAtAAOnTheBackdrop", testStatusLineReadsAtAAOnTheBackdrop),
         ]
     }
@@ -384,12 +385,28 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Round 10 (owner: "an orange/yellow dot ... if a session is inactive ... and a green dot if the session is active"):
-    /// the session's state is the dot of Start's own mark, so there is one dot, not two (round 4 to 9 led the idle line
-    /// with a second, aurora dot). Aurora while a live session can take a dictation, breathing while its model prepares;
-    /// ember, the palette's warm yellow, while none can ("not on yet": an error keeps its triangle and its words). Both
-    /// read at 3:1 on the island in every appearance, and differ clearly from each other.
-    private static func testStartsDotShowsTheSession() {
+    /// The session cases Start's dot covers, as (mode, a session is ready).
+    private static let sessionCases: [(KeyboardMode, Bool)] = [
+        (.ready, true), (.ready, false), (.preparingModel, true), (.preparingModel, false), (.hostUnavailable, false),
+        (.hostUnavailable, true), (.error(.transcriptionFailed), true), (.error(.sessionInactive), false),
+        (.needsFullAccess, false), (.configurationError, false), (.incompatible, false),
+    ]
+
+    /// Round 11 (owner, after trying round 10's green and amber dots: amber made the logo look worse, and iOS's own
+    /// orange microphone dot means a session is on): the mark's dot is always the brand's aurora, and the session shows in
+    /// its motion. A session ready: a heartbeat, a soft ring rippling out from the dot every few seconds. Its model
+    /// preparing: round 10's breathing. No session, or dictation cannot run here: the same dot, still. With Reduce
+    /// Motion nothing moves, so the dot is lit while a session is on (ready or preparing) and unlit, a neutral grey of the
+    /// same size and place, while none is. Colour never carries the state alone, so Differentiate Without Colour needs no
+    /// case of its own (this replaces round 10's ember dot and the round 11 ember ring). No state draws the dot in ember.
+    private static func testTheSessionShowsInTheDotsMotion() {
+        let looks: [(SessionDot, SessionDot.Look, SessionDot.Look)] = [
+            (.ready, .heartbeat, .lit), (.preparing, .breathing, .lit), (.off, .lit, .unlit),
+        ]
+        for (dot, moving, still) in looks {
+            TestSupport.expectEqual(dot.look(reduceMotion: false), moving)
+            TestSupport.expectEqual(dot.look(reduceMotion: true), still)
+        }
         let cases: [(KeyboardMode, Bool, SessionDot)] = [
             (.ready, true, .ready), (.preparingModel, true, .preparing), (.preparingModel, false, .preparing),
             (.ready, false, .off), (.hostUnavailable, false, .off), (.hostUnavailable, true, .off),
@@ -399,14 +416,68 @@ enum KeyboardLookTests {
         for (mode, ready, dot) in cases {
             TestSupport.expectEqual(SessionDot(mode: mode, sessionReady: ready), dot)
         }
-        TestSupport.expect(SessionDot.preparing.breathes && !SessionDot.ready.breathes && !SessionDot.off.breathes, "breathing")
         variants { palette, name in
-            TestSupport.expectEqual(SessionDot.ready.color(palette), palette.live)
-            TestSupport.expectEqual(SessionDot.preparing.color(palette), palette.live)
-            let off = SessionDot.off.color(palette)
-            TestSupport.expect(sameHue(off, BrandPalette.ember), "the no-session dot is not ember, \(name)")
-            TestSupport.expect(ratio(off, palette.island.color) >= 3, "the no-session dot is faint on the island, \(name)")
-            TestSupport.expect(abs(hue(off) - hue(palette.live)) > 60, "the dots' colours are alike, \(name)")
+            for (dot, _, _) in looks {
+                for reduceMotion in [false, true] {
+                    let color = dot.color(palette, reduceMotion: reduceMotion)
+                    TestSupport.expect(!sameHue(color, BrandPalette.ember) || isGrey(color), "\(dot) is ember, \(name)")
+                    if dot.look(reduceMotion: reduceMotion) == .unlit {
+                        TestSupport.expectEqual(color, palette.unlitDot)
+                    } else {
+                        TestSupport.expectEqual(color, palette.live)
+                    }
+                }
+            }
+            // Unlit: a neutral grey that still shows on the island, well short of the lit dot and the mark's line.
+            let unlit = palette.unlitDot, island = palette.island.color
+            TestSupport.expect(isGrey(unlit), "the unlit dot has a hue, \(name)")
+            TestSupport.expect(ratio(unlit, island) >= 1.6, "the unlit dot vanishes on the island, \(name): \(ratio(unlit, island))")
+            TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.live, island), "the unlit dot looks lit, \(name)")
+            TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.island.ink, island), "the unlit dot looks like the line")
+        }
+        // The heartbeat: subtle, slow and one place to tune it (owner: judged on a phone).
+        let beat = SessionDot.Heartbeat.self
+        TestSupport.expectEqual(beat.period, 3)
+        TestSupport.expect(beat.ripple >= 0.8 && beat.ripple <= 1.2 && beat.ripple < beat.period, "the ripple takes \(beat.ripple) s")
+        TestSupport.expect(beat.reach >= 3.5 && beat.reach <= 5, "the ripple reaches \(beat.reach) pt")
+        TestSupport.expect(beat.opacity > 0.3 && beat.opacity <= 0.6, "the ripple starts at \(beat.opacity)")
+        TestSupport.expect(beat.firstDelay >= 0.2 && beat.firstDelay <= 0.6, "the first ripple waits \(beat.firstDelay) s")
+        // Its widest ring stays inside Start's pill, unclipped: the mark's box starts at Start's padding (14 pt) and is
+        // centred on the bar's control height.
+        for height in [KeyboardMetrics.barControlHeight, KeyboardMetrics.compactBarControlHeight] {
+            let box = KeyRect(x: 14, y: (height - 19) / 2, width: 19, height: 19)
+            let mark = RidgeMark.fitted(in: box, weight: 1.3)
+            let widest = mark.dotRadius + beat.reach
+            let r = height / 2
+            let centre = (x: max(r, mark.dot.x), y: r)
+            let distance = ((mark.dot.x - centre.x) * (mark.dot.x - centre.x) + (mark.dot.y - centre.y) * (mark.dot.y - centre.y)).squareRoot()
+            TestSupport.expect(distance + widest <= r - 0.5, "the ripple leaves Start's pill at \(height): \(distance + widest) of \(r)")
+        }
+    }
+
+    /// Round 11 (Opus, round 10: "No session running" sat beside a green mark under Start's amber dot; the owner: the
+    /// same rule in the menu): the menu's session mark is Start's, the same look from the same state in every case, in
+    /// the card's variant of each colour: the lit dot reads at 3:1 on the card, the unlit one is the card's neutral grey.
+    private static func testMenusDotMatchesStartsDot() {
+        variants { palette, name in
+            let menu = MenuPalette(dark: name.hasPrefix("dark"), highContrast: name.hasSuffix("high"))
+            for (mode, ready) in sessionCases {
+                let dot = SessionDot(mode: mode, sessionReady: ready)
+                for reduceMotion in [false, true] {
+                    let onMenu = dot.menuColor(menu, reduceMotion: reduceMotion), onStart = dot.color(palette, reduceMotion: reduceMotion)
+                    if dot.look(reduceMotion: reduceMotion) == .unlit {
+                        TestSupport.expectEqual(onMenu, menu.unlitDot)
+                        TestSupport.expect(isGrey(onMenu) && isGrey(onStart), "an unlit dot has a hue, \(name)")
+                    } else {
+                        TestSupport.expectEqual(onMenu, menu.markDot)
+                        TestSupport.expect(sameHue(onMenu, onStart), "the menu's dot is not Start's for \(mode), \(ready), \(name)")
+                        TestSupport.expect(ratio(onMenu, menu.card) >= 3, "the menu's dot is faint on the card, \(name)")
+                    }
+                }
+            }
+            let unlit = menu.unlitDot
+            TestSupport.expect(isGrey(unlit) && ratio(unlit, menu.card) >= 1.6, "the menu's unlit dot vanishes, \(name)")
+            TestSupport.expect(ratio(unlit, menu.card) < 0.75 * ratio(menu.markDot, menu.card), "the menu's unlit dot looks lit, \(name)")
         }
     }
 }

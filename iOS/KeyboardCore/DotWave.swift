@@ -5,7 +5,7 @@ import Foundation
 /// silence it is one calm row of equal dots. Round 9 (owner): ours rather than the reference video's braided strands over
 /// a dim dot grid. Round 10 (owner: "slow, consistent and wavelike"): the row's shape is the voice's own, the last `span`
 /// seconds of it, the newest beside the mark's dot; what was said moves left as it ages, so a syllable is a pulse that
-/// crosses the row at the wait shimmer's pace. The view records the level (`LevelFollower`) into a `Trace` every frame.
+/// crosses the row (in 0.75 s since round 11, a little quicker than the wait shimmer's sweep). The view records the level (`LevelFollower`) into a `Trace` every frame.
 /// Which dot is how large and bright for a trace and a moment is all here, so the view only draws. Pure.
 enum DotWave {
     /// One dot, in the box's points: its centre, radius, and brightness from 0 (unlit) to 1.
@@ -27,12 +27,16 @@ enum DotWave {
     /// The mark's dot: its radius at rest, and how much the voice swells it.
     static let markRadius = 2.55
     static let markGrowth = 0.35
-    /// How many seconds of the voice the row shows: a syllable crosses it in this long.
-    static let span = 1.1
+    /// How many seconds of the voice the row shows: a syllable crosses it in this long. Round 11 (owner: "travel across
+    /// faster still? say about 0.75s"; at the shimmer's 1.1 s the wider recording island still read slower than it).
+    static let span = 0.75
     /// One sweep of the wait's shimmer, in seconds, entering at the left and leaving at the right; the wave keeps its pace.
     static let shimmerPeriod = 1.1
     /// The shimmer's room inside the wait's pill, on each side.
     static let shimmerInset = 11.0
+    /// The row reads the voice this long ago at its newest end, so the trace's softening has samples on both sides there
+    /// and the dot beside the mark's never jumps as a new level arrives (round 11; the mark's dot swells with the voice now).
+    static let readDelay = 0.045
     /// The wave's and the shimmer's frame interval: at most 60 frames a second, even on a 120 Hz display.
     static let frameInterval = 1.0 / 60
 
@@ -79,7 +83,7 @@ enum DotWave {
 
     /// The lift for the voice in `trace` at the moment `now`.
     static func lift(at u: Double, trace: Trace, now: Double) -> Double {
-        lift(at: u) { trace.level(age: $0, now: now) }
+        lift(at: u) { trace.level(age: $0 + readDelay, now: now) }
     }
 
     /// The wave's dots in a `width` by `height` box for the voice `levelAt(age)` (as `lift`). No room, no dots.
@@ -96,7 +100,7 @@ enum DotWave {
 
     /// The wave's dots for the voice in `trace` at the moment `now`.
     static func dots(trace: Trace, now: Double, width: Double, height: Double) -> [Dot] {
-        dots(width: width, height: height) { trace.level(age: $0, now: now) }
+        dots(width: width, height: height) { trace.level(age: $0 + readDelay, now: now) }
     }
 
     /// The wave's dots for a voice held at `level` for the whole row (with Reduce Motion, the row stands still at each
@@ -106,13 +110,13 @@ enum DotWave {
     }
 
     /// An invented moment of speech for the Live Activity's still strip, which cannot animate: three words of different
-    /// loudness, newest last.
-    private static let stillVoice: [(age: Double, level: Double)] = [(0.12, 0.95), (0.42, 0.7), (0.78, 0.85)]
+    /// loudness, newest last, at fractions of the row's `span`.
+    private static let stillVoice: [(age: Double, level: Double)] = [(0.11, 0.95), (0.38, 0.7), (0.71, 0.85)]
 
     /// The Live Activity's strip while recording: the lift at `u` for `stillVoice`, each word a soft pulse.
     static func stillLift(at u: Double) -> Double {
         lift(at: u) { age in
-            stillVoice.map { $0.level * exp(-pow((age - $0.age) / 0.09, 2)) }.max() ?? 0
+            stillVoice.map { $0.level * exp(-pow((age / span - $0.age) / 0.08, 2)) }.max() ?? 0
         }
     }
 

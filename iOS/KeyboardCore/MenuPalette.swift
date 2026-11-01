@@ -28,9 +28,11 @@ struct MenuPalette: Equatable {
     var secondary: RGB
     /// "Open LocalFlow": aurora on the dark card, a deep aurora on the light one.
     var link: RGB
-    /// The session line's ridge mark: ink with the accent's dot, like every other mark (round 9; it was all aurora).
+    /// The session line's ridge mark: ink with the accent's dot, like every other mark (round 9; it was all aurora). Its
+    /// dot shows the session as Start's does (`SessionDot.menuColor`, round 11), unlit in the card's grey.
     var markLine: RGB { primary }
     var markDot: RGB { link }
+    var unlitDot: RGB { BrandPalette.blend(primary, alpha: 0.38, over: card) }
     /// The text-width choice: its track on the card, and the chosen segment on the track; `primary` text reads on both.
     var track: RGB
     var selectedSegment: RGB

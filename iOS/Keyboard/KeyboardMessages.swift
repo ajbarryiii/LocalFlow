@@ -270,11 +270,32 @@ enum BarStatus: Equatable, Sendable {
     }
 }
 
-/// Start's mark's dot (round 10, owner: "an orange/yellow dot ... if a session is inactive ... and a green dot if the
-/// session is active"): the session at a glance, the one dot on the idle bar. Aurora while a live session can take a
-/// dictation, breathing while its model prepares; ember, a warm "not on yet", while none can.
+/// The session on Start's mark's dot, and on the menu's (round 11, owner, after trying round 10's green and amber dots:
+/// amber made the logo look worse, and iOS's own orange microphone dot means a session is on). The dot is always the
+/// brand's aurora; the session shows in its motion. A live session that can take a dictation: a heartbeat, a soft ring
+/// rippling out from the dot every few seconds; its model preparing: breathing; no session, or dictation cannot run
+/// here: the same dot, still. With Reduce Motion nothing moves: lit while a session is on, unlit (a neutral grey) while
+/// none is.
 enum SessionDot: Equatable, Sendable {
     case ready, preparing, off
+
+    /// How the dot is drawn.
+    enum Look: Equatable, Sendable {
+        case heartbeat, breathing, lit, unlit
+    }
+
+    /// The heartbeat, in one place to tune (the owner judges it on a phone): a ring `ripple` seconds long growing from
+    /// the dot's edge to `reach` points beyond it, ease-out, fading from `opacity`, every `period` seconds, the first
+    /// `firstDelay` after the mark appears.
+    enum Heartbeat {
+        static let period = 3.0
+        static let ripple = 1.0
+        static let reach = 4.5
+        static let opacity = 0.6
+        static let firstDelay = 0.4
+        /// The ring's stroke, in points.
+        static let lineWidth = 1.0
+    }
 
     init(mode: KeyboardMode, sessionReady: Bool) {
         switch mode {
@@ -285,10 +306,21 @@ enum SessionDot: Equatable, Sendable {
         }
     }
 
-    /// The dot pulses gently: the model is loading.
-    var breathes: Bool { self == .preparing }
+    func look(reduceMotion: Bool) -> Look {
+        switch self {
+        case .ready: return reduceMotion ? .lit : .heartbeat
+        case .preparing: return reduceMotion ? .lit : .breathing
+        case .off: return reduceMotion ? .unlit : .lit
+        }
+    }
 
-    func color(_ palette: BrandPalette) -> BrandPalette.RGB {
-        self == .off ? palette.noSession : palette.live
+    /// The dot's colour on the island: aurora, or the unlit grey.
+    func color(_ palette: BrandPalette, reduceMotion: Bool) -> BrandPalette.RGB {
+        look(reduceMotion: reduceMotion) == .unlit ? palette.unlitDot : palette.live
+    }
+
+    /// The dot's colour on the menu's card (round 11, Opus: it was always aurora, beside "No session running").
+    func menuColor(_ menu: MenuPalette, reduceMotion: Bool) -> MenuPalette.RGB {
+        look(reduceMotion: reduceMotion) == .unlit ? menu.unlitDot : menu.markDot
     }
 }

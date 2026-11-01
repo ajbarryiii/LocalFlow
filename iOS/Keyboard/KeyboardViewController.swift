@@ -46,12 +46,17 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     /// Whether a touch in the key area (in its coordinates) is the Stop capsule's, through the bar's hosting view
     /// behind the keys: one in its reach into the top row while dictation is starting or recording
-    /// (ARCHITECTURE.md, "Reach and touch regions"). Only the capsule's frame now counts, never one it left.
+    /// (ARCHITECTURE.md, "Reach and touch regions"). Only the capsule's frame now counts, never one it left, and for a
+    /// moment after a recording ends its former area.
     private func startTakesTouch(in point: CGPoint) -> Bool {
         guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
         let inBar = keyArea.convert(point, to: barView)
-        return KeyboardMetrics.keyPointGoesToStart(x: Double(inBar.x), y: Double(point.y), barHeight: shownBarHeight(barView),
-                                                   start: barControls.frame(of: "start"))
+        let barHeight = shownBarHeight(barView)
+        // Just after a recording ends Stop's former reach still takes the touch, and nothing there acts on it: a quick
+        // second tap on Stop never types (`BarControlRegions.stopGuard`).
+        return [barControls.frame(of: "start"), barControls.stopGuard].contains { start in
+            KeyboardMetrics.keyPointGoesToStart(x: Double(inBar.x), y: Double(point.y), barHeight: barHeight, start: start)
+        }
     }
 
     /// The bar's drawn height: from its top to the key area's.

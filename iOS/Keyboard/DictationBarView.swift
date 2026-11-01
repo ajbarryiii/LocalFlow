@@ -53,6 +53,16 @@ final class BarControlFrames {
     func set(_ id: String, _ rect: KeyRect?) {
         regions.set(id, rect, now: CACurrentMediaTime())
     }
+
+    /// The recording ended (Stop was tapped, or the host ended it): the island's former area takes no tap for a
+    /// moment, and Cancel, sliding into it, ignores taps (`BarControlRegions.stopGuard`).
+    func captureEnded() { regions.captureEnded(now: CACurrentMediaTime()) }
+
+    /// The island's former area while the guard after a recording's end holds.
+    var stopGuard: KeyRect? { regions.stopGuard(now: CACurrentMediaTime()) }
+
+    /// Whether Cancel acts on a tap now.
+    var acceptsCancel: Bool { regions.acceptsCancel(now: CACurrentMediaTime()) }
 }
 
 private extension View {
@@ -157,24 +167,28 @@ struct DictationBarView: View {
                         }
                         .barControl("strip", in: controls)
                     } else {
-                        // While a dictation runs this is plain text: the cold start's caption, a notice, the wait's words.
-                        Middle(client: client, state: state, height: height - 8, controls: controls, onAction: onAction)
+                        // While a dictation runs this is plain text: the cold start's caption, a notice.
+                        Middle(client: client, state: state, height: height - 8, controls: controls, layout: layout,
+                               onAction: onAction)
                     }
                 }
-                .frame(width: CGFloat(layout.middle.width), height: height, alignment: .leading)
+                // What it holds starts beside the menu button, in either hand.
+                .frame(width: CGFloat(layout.middle.width), height: height,
+                       alignment: layout.middleStart == .left ? .leading : .trailing)
                 // The middle cross-fades when what it holds changes (the strip coming or going), never as its words change.
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: middle)
                 .opacity(menuOpen || layout.middle.width < 1 ? 0 : 1)
                 .allowsHitTesting(!menuOpen && layout.middle.width >= 1)
                 .position(x: CGFloat(layout.middle.x + layout.middle.width / 2), y: centreY)
-                // The middle moves with the island's form (beside Start, then left of Cancel, then between Cancel and the
-                // wait): what it held leaves where it was, first, and what it holds next arrives in its new place.
+                // The middle moves with the island's form (beside Start, then beside Cancel): what it held leaves where it
+                // was, first, and what it holds next arrives in its new place.
                 .id(form)
-                // The wait's words take the room the contracting island leaves: they wait until most of it is free.
-                .transition(Self.handing(over: reduceMotion, after: form == .processing ? 0.14 : Self.handover))
+                .transition(Self.handing(over: reduceMotion))
 
                 if let cancel = layout.cancel {
                     Button {
+                        // Just after Stop, Cancel slides into what was Stop: a quick second tap there must not cancel.
+                        guard controls.acceptsCancel else { return }
                         onAction()
                         client.cancelTapped()
                     } label: {
@@ -193,13 +207,14 @@ struct DictationBarView: View {
                     }
                     .opacity(menuOpen ? MenuCover.dimmedAlpha : 1)
                     .position(x: CGFloat(cancel.x + cancel.width / 2), y: centreY)
-                    // It pops in where it stays, after what leaves has gone: the scale is about its own centre.
+                    // It pops in after what leaves has gone, the scale about its own centre; at Stop it slides with the
+                    // contracting island to the same gap beside the wait's pill, in the island's spring.
                     .transition(Self.handing(over: reduceMotion, scaleFrom: 0.6, anchor: UnitPoint(
                         x: (cancel.x + cancel.width / 2) / max(Double(geometry.size.width), 1), y: 0.5)))
                 }
 
                 DictationIsland(client: client, state: state, height: height, compact: compact, leftHanded: chrome.leftHanded,
-                                onAction: onAction, onUnavailable: onMenu)
+                                onAction: onAction, onStop: controls.captureEnded, onUnavailable: onMenu)
                     .frame(width: CGFloat(layout.island.width), height: height)
                     // With Reduce Motion the island never resizes in view: each form is its own island, cross-faded.
                     .id(reduceMotion ? AnyHashable(form) : AnyHashable(0))
@@ -217,6 +232,10 @@ struct DictationBarView: View {
         .background(Color(uiColor: KeyAreaView.touchableBackground))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .coordinateSpace(.named(BarControlFrames.space))
+        // A recording the host ended (the five-minute cap) contracts the island as Stop does: guard its former area too.
+        .onChange(of: form) { old, new in
+            if old == .expanded, new == .processing { controls.captureEnded() }
+        }
         // The island grows and shrinks with a short spring, and its contents hand over with it; with Reduce Motion
         // nothing moves or resizes: the parts take their places at once and the island cross-fades.
         .animation(reduceMotion ? nil : Self.islandSpring, value: form)
@@ -247,10 +266,17 @@ private struct Middle: View {
     let state: KeyboardViewState
     let height: CGFloat
     let controls: BarControlFrames
+    /// Where the bar's parts are: the middle's items run outwards from the menu button (`IslandLayout.leftToRight`).
+    let layout: IslandLayout
     let onAction: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The middle's items, listed outwards from the menu button.
+    private enum Item: Hashable {
+        case undo, insertLast, status
+    }
 
     private var undoShown: Bool { state.canUndo && !state.mode.isInProgress }
     /// Not while a dictation is in progress: the middle is dictation's then (a notice, "Open LocalFlow to start a
@@ -261,73 +287,83 @@ private struct Middle: View {
         let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice,
                                chipsShown: undoShown || insertLastShown)
         // A chip settles in from a little smaller once what it replaces has gone: a short spring, with Reduce Motion a fade.
-        let arrival = DictationBarView.handing(over: reduceMotion, scaleFrom: 0.88, anchor: .leading)
+        let arrival = DictationBarView.handing(over: reduceMotion, scaleFrom: 0.88,
+                                               anchor: layout.middleStart == .left ? .leading : .trailing)
         // Beside Cancel the room is narrow: two short lines rather than a truncated one.
         let lines = state.mode.isInProgress ? 2 : 1
+        let items = (undoShown ? [Item.undo] : []) + (insertLastShown ? [Item.insertLast] : []) + [Item.status]
         HStack(spacing: 6) {
-            if undoShown {
-                Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
-                    onAction()
-                    client.undoLastDictation()
-                }
-                .accessibilityLabel("Undo last dictation")
-                .accessibilityIdentifier("lf.undo")
-                .barControl("undo", in: controls)
-                .transition(arrival)
-            }
-            if insertLastShown {
-                Chip(title: "Insert last", symbol: "text.insert", height: height) {
-                    onAction()
-                    client.insertLastDictation()
-                }
-                .accessibilityLabel("Insert last dictation")
-                .accessibilityIdentifier("lf.insertLast")
-                .barControl("insertLast", in: controls)
-                .transition(arrival)
-            }
-            switch status {
-            case .notice(let notice):
-                // Notices render on their own, ahead of any idle hint or status, in every mode.
-                Text(notice)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(lines)
-                    .minimumScaleFactor(0.8)
-                    .accessibilityIdentifier("lf.notice")
-            case .text(let line, let attention):
-                HStack(spacing: 5) {
-                    if attention {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color(palette.ember))
-                            .accessibilityHidden(true)
+            // Outwards from the menu button: left to right, mirrored left-handed (round 11, owner).
+            ForEach(layout.leftToRight(fromMenu: items), id: \.self) { item in
+                switch item {
+                case .undo:
+                    Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
+                        onAction()
+                        client.undoLastDictation()
                     }
-                    if lines > 1 {
-                        // Beside Cancel: the line whole where it fits, else two lines.
-                        ViewThatFits(in: .horizontal) {
-                            statusText(line, ink: attention ? AnyShapeStyle(.primary) : statusInk)
-                            Text(line)
-                                .font(.footnote.weight(.medium))
-                                .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
-                                .lineLimit(2)
-                                .minimumScaleFactor(0.8)
-                                .accessibilityIdentifier("lf.status")
-                        }
-                    } else {
+                    .accessibilityLabel("Undo last dictation")
+                    .accessibilityIdentifier("lf.undo")
+                    .barControl("undo", in: controls)
+                    .transition(arrival)
+                case .insertLast:
+                    Chip(title: "Insert last", symbol: "text.insert", height: height) {
+                        onAction()
+                        client.insertLastDictation()
+                    }
+                    .accessibilityLabel("Insert last dictation")
+                    .accessibilityIdentifier("lf.insertLast")
+                    .barControl("insertLast", in: controls)
+                    .transition(arrival)
+                case .status:
+                    statusView(status, lines: lines)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func statusView(_ status: BarStatus, lines: Int) -> some View {
+        switch status {
+        case .notice(let notice):
+            // Notices render on their own, ahead of any idle hint or status, in every mode.
+            Text(notice)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(lines)
+                .minimumScaleFactor(0.8)
+                .accessibilityIdentifier("lf.notice")
+        case .text(let line, let attention):
+            HStack(spacing: 5) {
+                if attention {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(palette.ember))
+                        .accessibilityHidden(true)
+                }
+                if lines > 1 {
+                    // Beside Cancel: the line whole where it fits, else two lines.
+                    ViewThatFits(in: .horizontal) {
+                        statusText(line, ink: attention ? AnyShapeStyle(.primary) : statusInk)
                         Text(line)
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.8)
                             .accessibilityIdentifier("lf.status")
                     }
+                } else {
+                    Text(line)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .accessibilityIdentifier("lf.status")
                 }
-                // A line that goes (an error's as Undo arrives) gets out of the way at once, first.
-                .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(DictationBarView.handover)),
-                                        removal: .opacity.animation(.easeOut(duration: DictationBarView.handover))))
-            case .none:
-                EmptyView()
             }
+            // A line that goes (an error's as Undo arrives) gets out of the way at once, first.
+            .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(DictationBarView.handover)),
+                                    removal: .opacity.animation(.easeOut(duration: DictationBarView.handover))))
+        case .none:
+            EmptyView()
         }
     }
 
@@ -516,6 +552,8 @@ private struct DictationIsland: View {
     let compact: Bool
     let leftHanded: Bool
     let onAction: () -> Void
+    /// Stop was tapped, ending the recording: its former area takes no tap for a moment (`BarControlFrames.captureEnded`).
+    let onStop: () -> Void
     /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
     let onUnavailable: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -532,6 +570,7 @@ private struct DictationIsland: View {
             if state.mode.allowsDictation {
                 onAction()
                 if state.mode == .hostUnavailable { bounces += 1 }
+                if state.mode.isActiveCapture { onStop() }
                 client.micTapped()
             } else {
                 onUnavailable()
@@ -572,10 +611,8 @@ private struct DictationIsland: View {
         case .start:
             HStack(spacing: 6) {
                 let dot = SessionDot(mode: state.mode, sessionReady: state.sessionReady)
-                IslandMark(line: ink, dot: Color(dot.color(palette)), side: 19, breathes: dot.breathes && !reduceMotion,
-                           pops: reduceMotion ? 0 : bounces)
-                    // The dot changes colour with a small, quick cross-fade.
-                    .animation(.easeOut(duration: 0.2), value: dot)
+                SessionMark(line: ink, dot: dot.color(palette, reduceMotion: reduceMotion), look: dot.look(reduceMotion: reduceMotion),
+                            side: 19, pops: reduceMotion ? 0 : bounces)
                 Text("Start").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
             // A process's first live timer text takes about 55 ms to resolve (round 9: Foundation's attribute-scope
@@ -669,30 +706,41 @@ private struct DictationIsland: View {
     }
 }
 
-/// The ridge mark on the island: its line in the island's ink, its dot the session's colour (`SessionDot`), `side` points
-/// across, a little larger and heavier than the icon's proportions so the W reads at this size. While the model prepares
-/// the dot breathes; each change of `pops` (a tap on Start without a session) swells it once, quickly.
-private struct IslandMark: View {
+/// The ridge mark with the session's dot (`SessionDot`), on Start and in the menu, so the two always agree: its line in
+/// `line`, `side` points across, at `weight` times the icon's (a little heavier on the island, so the W reads at this
+/// size), its dot in `dot` drawn as `look` says: with the heartbeat's ring rippling out of it, breathing (its opacity
+/// down to 35% and back every 1.2 s), lit and still, or unlit. Each change of `pops` (a tap on Start without a session)
+/// swells the dot once, quickly.
+private struct SessionMark: View {
     let line: Color
-    let dot: Color
+    let dot: BrandPalette.RGB
+    let look: SessionDot.Look
     let side: CGFloat
-    var breathes = false
+    var weight = 1.3
     var pops = 0
     @State private var dim = false
 
+    private var breathes: Bool { look == .breathing }
+
     var body: some View {
         ZStack {
-            RidgeMarkShape(weight: 1.3).stroke(line, style: RidgeMarkShape.style(side: side, weight: 1.3))
-            RidgeMarkShape(dot: true, weight: 1.3).fill(dot)
+            RidgeMarkShape(weight: weight).stroke(line, style: RidgeMarkShape.style(side: side, weight: weight))
+            if look == .heartbeat {
+                HeartbeatRing(color: UIColor(dot), weight: weight)
+                    .allowsHitTesting(false)
+            }
+            RidgeMarkShape(dot: true, weight: weight).fill(Color(dot))
                 .opacity(breathes && dim ? 0.35 : 1)
                 .keyframeAnimator(initialValue: 1.0, trigger: pops) { content, scale in
-                    content.scaleEffect(scale, anchor: RidgeMarkShape.dotAnchor(weight: 1.3))
+                    content.scaleEffect(scale, anchor: RidgeMarkShape.dotAnchor(weight: weight))
                 } keyframes: { _ in
                     SpringKeyframe(1.6, duration: 0.12, spring: .snappy)
                     SpringKeyframe(1, duration: 0.3, spring: .smooth)
                 }
         }
         .frame(width: side, height: side)
+        // The dot changes with a small, quick cross-fade (lit and unlit with Reduce Motion).
+        .animation(.easeOut(duration: 0.2), value: look)
         .accessibilityHidden(true)
         .onAppear { if breathes { breathe() } }
         .onChange(of: breathes) { _, now in
@@ -764,6 +812,7 @@ struct MenuPanelView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
     private static let cardShape = RoundedRectangle(cornerRadius: CGFloat(MenuCover.cornerRadius), style: .continuous)
@@ -809,6 +858,11 @@ struct MenuPanelView: View {
         MenuPalette(dark: colorScheme == .dark, highContrast: contrast == .increased)
     }
 
+    /// The session's dot, from the same state as Start's.
+    private var sessionDot: SessionDot {
+        SessionDot(mode: client.state.mode, sessionReady: client.state.sessionReady)
+    }
+
     private func color(_ rgb: MenuPalette.RGB) -> Color {
         Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
@@ -839,7 +893,9 @@ struct MenuPanelView: View {
                     Label {
                         Text(client.state.sessionSummary)
                     } icon: {
-                        RidgeMarkGlyph(color: color(palette.markLine), dot: color(palette.markDot), side: 18)
+                        // The session's dot, as on Start (round 11, Opus: it was always aurora).
+                        SessionMark(line: color(palette.markLine), dot: sessionDot.menuColor(palette, reduceMotion: reduceMotion),
+                                    look: sessionDot.look(reduceMotion: reduceMotion), side: 18, weight: 1)
                     }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(color(palette.primary))
