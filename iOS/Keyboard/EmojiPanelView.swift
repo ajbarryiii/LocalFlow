@@ -24,6 +24,7 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     }
 
     private static let recentsKey = "lf.emojiRecents"
+    private static let shownTint = BrandPalette.dynamic(\.aurora)
     /// The catalog, split once.
     private static let catalog: [Section] = EmojiCatalog.categories.map { Section(name: $0.name, symbol: $0.symbol, emoji: $0.emoji) }
 
@@ -116,9 +117,11 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
 
     private func styleChrome() {
         for case let button as UIButton in jumpBar.arrangedSubviews where sections.indices.contains(button.tag) {
-            let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: bold ? .semibold : .regular)
+            let shown = button.tag == shownSection
+            let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: bold || shown ? .semibold : .regular)
             button.setImage(UIImage(systemName: sections[button.tag].symbol, withConfiguration: configuration), for: .normal)
-            button.tintColor = button.tag == shownSection ? .label : .secondaryLabel
+            // The category shown takes the accent, as the keyboard marks every current state.
+            button.tintColor = shown ? Self.shownTint : .secondaryLabel
             button.accessibilityTraits = button.tag == shownSection ? [.button, .selected] : .button
         }
     }

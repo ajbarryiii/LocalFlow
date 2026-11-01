@@ -35,6 +35,8 @@ struct KeyboardViewState: Equatable {
     var sessionSummary = ""
     /// Recent input levels while recording, oldest first.
     var levels: [Float] = []
+    /// How many levels this recording has heard, the newest's number (the wave keeps each level on its side by it).
+    var levelSerial = 0
 }
 
 /// The keyboard side of the protocol in ARCHITECTURE.md. While visible it polls and observes the
@@ -43,7 +45,8 @@ struct KeyboardViewState: Equatable {
 @MainActor
 final class KeyboardDictationClient: ObservableObject {
     static let pollInterval: TimeInterval = 0.2
-    static let levelHistoryCount = 20
+    /// Enough for the recording wave to span a landscape bar.
+    static let levelHistoryCount = 72
     private static let noticeDuration: TimeInterval = 4
 
     @Published private(set) var state = KeyboardViewState()
@@ -72,6 +75,7 @@ final class KeyboardDictationClient: ObservableObject {
     private var unlaunchedRequestID: UUID?
     private var notice: (text: String, until: Date)?
     private var levels: [Float] = []
+    private var levelSerial = 0
     private var levelSampledAt: Date?
 
     private var notifier: DarwinNotifier? { configuration.map(DarwinNotifier.init(configuration:)) }
@@ -124,6 +128,7 @@ final class KeyboardDictationClient: ObservableObject {
         observations.forEach { $0.cancel() }
         observations = []
         levels = []
+        levelSerial = 0
         levelSampledAt = nil
         // No field identity outlives the keyboard being visible: a request bound to a field is never
         // auto-inserted after hiding (it stays available as "Insert last dictation").
@@ -355,6 +360,7 @@ final class KeyboardDictationClient: ObservableObject {
     private func sampleLevel(of mode: KeyboardMode, status: StoreRead<HostStatus>) {
         guard case .recording(let level, _) = mode else {
             levels = []
+            levelSerial = 0
             levelSampledAt = nil
             return
         }
@@ -363,6 +369,7 @@ final class KeyboardDictationClient: ObservableObject {
         guard sampledAt != levelSampledAt else { return }
         levelSampledAt = sampledAt
         levels.append(level)
+        levelSerial += 1
         levels.removeFirst(max(0, levels.count - Self.levelHistoryCount))
     }
 
@@ -382,7 +389,7 @@ final class KeyboardDictationClient: ObservableObject {
                                      canInsertLast: manualInsertID != nil,
                                      canUndo: target?.canUndoLastDictation == true,
                                      sessionSummary: KeyboardMessages.sessionSummary(for: status.value, now: now),
-                                     levels: levels)
+                                     levels: levels, levelSerial: levelSerial)
         guard next != state else { return }
         if mode.phase != state.mode.phase {
             if case .recording = mode { playHaptic(.listening) }

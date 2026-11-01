@@ -1,8 +1,9 @@
 import Foundation
 
 /// The menu panel's colours (ARCHITECTURE.md, "Top row", menu), as sRGB components so their contrast is testable:
-/// a white card in light mode and a dark grey one in dark mode, with text that reads at WCAG AA (4.5:1) on it.
-/// The round 1 card was the key fill (grey in dark mode), where Apple's blue measured 1.7:1. Pure.
+/// a white card in light mode and a dark grey one in dark mode, with text that reads at WCAG AA (4.5:1) on it, and
+/// "Open LocalFlow" in the brand's accent (`BrandPalette.link`). The round 1 card was the key fill (grey in dark
+/// mode), where Apple's blue measured 1.7:1. Pure.
 struct MenuPalette: Equatable {
     struct RGB: Equatable {
         var red: Double
@@ -25,7 +26,7 @@ struct MenuPalette: Equatable {
     var card: RGB
     var primary: RGB
     var secondary: RGB
-    /// "Open LocalFlow": a blue that keeps its contrast on the card.
+    /// "Open LocalFlow": aurora on the dark card, a deep aurora on the light one.
     var link: RGB
 
     /// `highContrast`: Increase Contrast, which darkens the light mode's secondary text and brightens the dark mode's.
@@ -34,13 +35,12 @@ struct MenuPalette: Equatable {
             card = RGB(0.173, 0.173, 0.180)
             primary = RGB(1, 1, 1)
             secondary = highContrast ? RGB(0.84, 0.84, 0.86) : RGB(0.68, 0.68, 0.70)
-            link = RGB(0.392, 0.710, 1)
         } else {
             card = RGB(1, 1, 1)
             primary = RGB(0, 0, 0)
             secondary = highContrast ? RGB(0.28, 0.28, 0.29) : RGB(0.39, 0.39, 0.40)
-            link = RGB(0, 0.384, 0.800)
         }
+        link = BrandPalette(dark: dark, highContrast: highContrast).link
     }
 
     /// WCAG contrast ratio, 1 to 21.

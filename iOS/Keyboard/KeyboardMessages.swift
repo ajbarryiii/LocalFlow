@@ -14,6 +14,8 @@ enum KeyboardMessages {
     static let modelLoadsWhenDictating = "Model loads when you dictate"
     /// The Start capsule's label while a finished recording waits for the model.
     static let preparingCaption = "Preparing"
+    /// Beside the recording wave while the host still prepares the model: the wave itself says "listening".
+    static let modelLoadingCaption = "Model loading"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
         + "your speech on this iPhone. Nothing leaves your phone."
@@ -130,5 +132,55 @@ enum KeyboardMessages {
         if status.model == .notPrepared { return modelLoadsWhenDictating }
         guard let expiresAt = status.sessionExpiresAt else { return "Session on" }
         return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
+    }
+}
+
+/// The Start capsule's colour for a mode (ARCHITECTURE.md, "Keyboard look"): aurora Start, coral Stop while starting
+/// and recording, glacier while the recording waits for its transcript, and Start dimmed where dictation cannot run.
+enum CapsuleStyle: Equatable, Sendable {
+    case start, stop, working, unavailable
+
+    init(mode: KeyboardMode) {
+        switch mode {
+        case .starting, .recording: self = .stop
+        case .transcribing, .waitingForModel: self = .working
+        case .needsFullAccess, .configurationError, .incompatible: self = .unavailable
+        case .ready, .preparingModel, .hostUnavailable, .error: self = .start
+        }
+    }
+}
+
+/// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): a notice whenever one is up; while
+/// recording the live wave, with a caption only when it says something the user needs (the model still loading);
+/// otherwise the one-line status (ready and idle: only the model or session hint), unless a chip shows.
+enum BarStatus: Equatable, Sendable {
+    case notice(String)
+    case wave(caption: String?)
+    /// `attention`: an error or a state that keeps dictation from working.
+    case text(String, attention: Bool)
+    case none
+
+    init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool) {
+        if let notice {
+            self = .notice(notice)
+            return
+        }
+        if case .recording = mode {
+            self = .wave(caption: title == KeyboardMessages.listeningWhilePreparing ? KeyboardMessages.modelLoadingCaption : nil)
+            return
+        }
+        let line: String?
+        switch mode {
+        case .ready: line = hint
+        default: line = title.isEmpty ? nil : title
+        }
+        guard let line, !chipsShown else {
+            self = .none
+            return
+        }
+        switch mode {
+        case .error, .needsFullAccess, .configurationError, .incompatible: self = .text(line, attention: true)
+        default: self = .text(line, attention: false)
+        }
     }
 }

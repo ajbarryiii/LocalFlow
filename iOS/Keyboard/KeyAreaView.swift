@@ -281,7 +281,8 @@ final class KeyAreaView: UIView {
                 view.configure(title: displayed(character), symbol: nil, font: font, weight: symbolWeight)
             case .shift:
                 let symbol = shift == .capsLock ? "capslock.fill" : (shift == .once ? "shift.fill" : "shift")
-                view.configure(title: nil, symbol: symbol, font: wordFont, weight: symbolWeight)
+                // Caps lock is a state that stays: the accent key, like an action key.
+                view.configure(title: nil, symbol: symbol, font: wordFont, weight: symbolWeight, prominent: shift == .capsLock)
             case .delete:
                 view.configure(title: nil, symbol: "delete.left", font: wordFont, weight: symbolWeight)
             case .space:
@@ -589,7 +590,7 @@ final class KeyAreaView: UIView {
                 trail.alpha = 1
             }
             trailSampleCount = samples.count
-            trail.points = SwipeTrail.points(from: samples)
+            trail.points = SwipeTrail.points(from: samples, maximumAlpha: BrandPalette(traitCollection).trailAlpha)
         } else if trailSampleCount != nil {
             trailSampleCount = nil
             if UIAccessibility.isReduceMotionEnabled {
@@ -743,12 +744,13 @@ extension UIReturnKeyType {
         }
     }
 
-    /// Action keys are tinted like the system keyboard's.
+    /// Action keys take the accent, as the system keyboard tints them.
     var isProminent: Bool { self != .default && self != .next && self != .continue }
 }
 
 /// Draws a `SwipeTrail`: a stroke through its points whose width and opacity follow each point, round at
-/// the finger, in the tint color. It takes no touches.
+/// the finger, its colour running from glacier at the tail to aurora at the finger (`BrandPalette.trailColor`, deeper
+/// hues on the light keyboard). It takes no touches.
 private final class SwipeTrailView: UIView {
     var points: [SwipeTrail.Point] = [] {
         didSet {
@@ -781,20 +783,20 @@ private final class SwipeTrailView: UIView {
         backgroundColor = .clear
         contentMode = .redraw
         isAccessibilityElement = false
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self]) { (view: SwipeTrailView, _: UITraitCollection) in
+            view.setNeedsDisplay()
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    override func tintColorDidChange() {
-        super.tintColorDidChange()
-        setNeedsDisplay()
-    }
 
     /// Each segment is a quadrilateral between its ends' widths, edged along the normals shared with the
     /// next segment so neighbors meet without gaps or overlaps; a disc rounds the finger's end.
     override func draw(_ rect: CGRect) {
         guard points.count >= 2, let context = UIGraphicsGetCurrentContext() else { return }
+        let palette = BrandPalette(traitCollection)
         let normals = points.indices.map(normal(at:))
         for index in points.indices.dropLast() {
             let a = points[index], b = points[index + 1]
@@ -808,12 +810,14 @@ private final class SwipeTrailView: UIView {
             context.addLine(to: CGPoint(x: b.x - nb.x * hb, y: b.y - nb.y * hb))
             context.addLine(to: CGPoint(x: a.x - na.x * ha, y: a.y - na.y * ha))
             context.closePath()
-            context.setFillColor(tintColor.withAlphaComponent(alpha).cgColor)
+            context.setFillColor(UIColor(palette.trailColor(at: (a.fraction + b.fraction) / 2), alpha: alpha).cgColor)
             context.fillPath()
         }
         if let finger = points.last, finger.width > 0, finger.alpha > 0 {
             let radius = finger.width / 2
-            context.setFillColor(tintColor.withAlphaComponent(finger.alpha).cgColor)
+            // Over the last segment, not on top of it: stacked, the two would make a brighter cap at the finger.
+            context.setBlendMode(.copy)
+            context.setFillColor(UIColor(palette.trailColor(at: finger.fraction), alpha: finger.alpha).cgColor)
             context.fillEllipse(in: CGRect(x: finger.x - radius, y: finger.y - radius, width: finger.width, height: finger.width))
         }
     }

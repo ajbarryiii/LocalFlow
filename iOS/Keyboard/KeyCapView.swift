@@ -1,12 +1,10 @@
 import UIKit
 
-/// Key colors after iOS 26's keyboard: every key shares one fill, and action return keys are
-/// tinted. Dynamic, so they follow light and dark mode, and Increase Contrast, without re-rendering.
+/// Key colors after iOS 26's keyboard: every key shares one fill, and action return keys and caps lock take the
+/// brand's accent (`BrandPalette.accent`, ARCHITECTURE.md, "Keyboard look"). Dynamic, so they follow light and dark
+/// mode, and Increase Contrast, without re-rendering.
 enum KeyPalette {
-    static let fill = UIColor { traits in
-        let high = traits.accessibilityContrast == .high
-        return traits.userInterfaceStyle == .dark ? UIColor(white: high ? 0.50 : 0.42, alpha: 1) : .white
-    }
+    static let fill = BrandPalette.dynamic(\.keyFill)
     static let pressedFill = UIColor {
         $0.userInterfaceStyle == .dark ? UIColor(white: 0.58, alpha: 1) : UIColor(white: 0.80, alpha: 1)
     }
@@ -14,7 +12,9 @@ enum KeyPalette {
     static let edge = UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(white: 0.85, alpha: 0.7) : UIColor(white: 0.25, alpha: 0.6)
     }
-    static let prominentFill = UIColor.systemBlue
+    /// Aurora, with ink on it; on the light keyboard an edge in deep aurora sets it off the pale backdrop.
+    static let prominentFill = BrandPalette.dynamic(\.accent.bottom)
+    static let prominentInk = BrandPalette.dynamic(\.accent.ink)
     /// A disabled return key (`ReturnKeyRule`): the plain fill, its caption dimmed.
     static let disabledAlpha: CGFloat = 0.35
     static let shadow = UIColor(white: 0, alpha: 1).cgColor
@@ -69,11 +69,11 @@ final class KeyCapView: UIView {
         let tinted = prominent && enabled
         label.text = title
         label.font = font
-        label.textColor = tinted ? .white : (secondary ? .secondaryLabel : .label)
+        label.textColor = tinted ? KeyPalette.prominentInk : (secondary ? .secondaryLabel : .label)
         icon.image = symbol.flatMap {
-            UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: weight))
+            UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: tinted ? .semibold : weight))
         }
-        icon.tintColor = tinted ? .white : .label
+        icon.tintColor = tinted ? KeyPalette.prominentInk : .label
         isProminent = tinted
         isEnabled = enabled
         updateCaptionAlpha()
@@ -88,11 +88,18 @@ final class KeyCapView: UIView {
         icon.alpha = alpha
     }
 
-    /// Increase Contrast: a visible edge on every key (a CGColor, so resolved here).
+    /// Increase Contrast: a visible edge on every key; an accent key's own edge where it has one (a CGColor, so
+    /// resolved here).
     private func updateEdge() {
         let high = traitCollection.accessibilityContrast == .high
-        layer.borderWidth = high ? 1 : 0
-        layer.borderColor = high ? KeyPalette.edge.resolvedColor(with: traitCollection).cgColor : nil
+        let accentEdge = isProminent ? BrandPalette(traitCollection).accent.edge : nil
+        if let accentEdge {
+            layer.borderWidth = 1
+            layer.borderColor = UIColor(accentEdge).cgColor
+        } else {
+            layer.borderWidth = high ? 1 : 0
+            layer.borderColor = high ? KeyPalette.edge.resolvedColor(with: traitCollection).cgColor : nil
+        }
     }
 
     override func layoutSubviews() {
@@ -104,7 +111,7 @@ final class KeyCapView: UIView {
     }
 
     private func updateFill() {
-        backgroundColor = isProminent ? (isPressed ? KeyPalette.prominentFill.withAlphaComponent(0.7) : KeyPalette.prominentFill)
+        backgroundColor = isProminent ? (isPressed ? KeyPalette.prominentFill.withAlphaComponent(0.65) : KeyPalette.prominentFill)
             : (isPressed ? KeyPalette.pressedFill : KeyPalette.fill)
     }
 }
@@ -189,7 +196,7 @@ final class KeyCalloutView: UIView {
 }
 
 /// The press-and-hold alternates row (`KeyTouchModel.alternatesTouch`): one bubble over the held key's cells, the
-/// picked cell highlighted in the tint, as on Apple's keyboard. It takes no touches; the held finger drives it.
+/// picked cell highlighted in the brand's accent. It takes no touches; the held finger drives it.
 final class KeyAlternatesView: UIView {
     private let bubble = CAShapeLayer()
     private let highlight = CALayer()
@@ -247,11 +254,15 @@ final class KeyAlternatesView: UIView {
             label.text = options[index]
             label.font = .systemFont(ofSize: options[index].count > 1 ? size * 0.65 : size, weight: weight)
             label.frame = cells[index].offsetBy(dx: -outer.minX, dy: -outer.minY)
-            label.textColor = index == selected ? .white : .label
+            label.textColor = index == selected ? KeyPalette.prominentInk : .label
         }
         let picked = cells[min(max(selected, 0), cells.count - 1)].offsetBy(dx: -outer.minX, dy: -outer.minY)
         highlight.frame = picked.insetBy(dx: 1, dy: 3)
-        highlight.backgroundColor = UIColor.systemBlue.cgColor
+        highlight.backgroundColor = KeyPalette.prominentFill.resolvedColor(with: traitCollection).cgColor
+        // The accent's edge on the light keyboard, as on Start and the action keys.
+        let edge = BrandPalette(traitCollection).accent.edge
+        highlight.borderWidth = edge == nil ? 0 : 1
+        highlight.borderColor = edge.map { UIColor($0).cgColor }
         CATransaction.commit()
         isHidden = false
     }

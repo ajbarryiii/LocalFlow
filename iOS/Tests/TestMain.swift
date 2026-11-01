@@ -53,6 +53,7 @@ struct LocalFlowIOSTests {
             ("BarControlRegions", BarControlRegionsTests.tests),
             ("BarContent", BarContentTests.tests),
             ("MenuPalette", MenuPaletteTests.tests),
+            ("KeyboardLook", KeyboardLookTests.tests),
             ("KeyAlternates", KeyAlternatesTests.tests),
             ("LFBinaryFile", LFBinaryFileTests.tests),
             ("SwipeCore", SwipeCoreTests.tests),

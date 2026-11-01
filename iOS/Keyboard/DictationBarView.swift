@@ -70,8 +70,8 @@ private extension View {
 /// The top row, modeled on Wispr Flow's keyboard (ARCHITECTURE.md, "Top row"): a menu button on
 /// the left, Undo / "Insert last dictation" chips or a one-line status in the middle (the swipe
 /// candidate strip instead while it shows, and over both a revert's "Never correct" offer, unless dictation's
-/// own UI is up: `BarMiddleContent`), and the Start capsule on the right, which becomes a red
-/// "Stop" capsule with live level bars and the elapsed time while recording. It renders `KeyboardDictationClient.state` and
+/// own UI is up: `BarMiddleContent`), and the Start capsule on the right, which becomes a coral
+/// "Stop" capsule with the elapsed time while recording, the live wave across the middle. It renders `KeyboardDictationClient.state` and
 /// the strip only, so typing never re-renders it.
 struct DictationBarView: View {
     @ObservedObject var client: KeyboardDictationClient
@@ -111,10 +111,10 @@ struct DictationBarView: View {
             .accessibilityIdentifier("lf.menu")
             .barControl("menu", in: controls)
 
+            let middle = BarMiddleContent.resolve(neverCorrectOffer: neverCorrect.offer != nil, candidates: swipe.strip != nil,
+                                                  dictationInProgress: state.mode.isInProgress, notice: state.notice != nil,
+                                                  dictationUndoShown: state.canUndo && !state.mode.isInProgress)
             Group {
-                let middle = BarMiddleContent.resolve(neverCorrectOffer: neverCorrect.offer != nil, candidates: swipe.strip != nil,
-                                                      dictationInProgress: state.mode.isInProgress, notice: state.notice != nil,
-                                                      dictationUndoShown: state.canUndo && !state.mode.isInProgress)
                 if middle == .neverCorrect, let offer = neverCorrect.offer {
                     NeverCorrectChip(word: offer.typed, height: height - 8) {
                         onAction()
@@ -132,6 +132,8 @@ struct DictationBarView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // The middle cross-fades when what it holds changes (the strip coming or going), never as its words change.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: middle)
 
             if state.mode.isInProgress {
                 Button {
@@ -162,6 +164,8 @@ struct DictationBarView: View {
         .background(Color(uiColor: KeyAreaView.touchableBackground))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .coordinateSpace(.named(BarControlFrames.space))
+        // Start, Stop, the wait for the transcript and Undo hand over in a short cross-fade (none with Reduce Motion).
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: CapsuleStyle(mode: state.mode))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canUndo)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canInsertLast)
         // The bar's height is fixed: its text grows to what one line holds there.
@@ -169,18 +173,25 @@ struct DictationBarView: View {
     }
 }
 
-/// Chips when there is something to act on, and a notice whenever one is up; otherwise one line of
-/// status.
+/// Chips when there is something to act on, and a notice whenever one is up; while recording the live wave;
+/// otherwise one line of status (`BarStatus`).
 private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
     let controls: BarControlFrames
     let onAction: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var undoShown: Bool { state.canUndo && !state.mode.isInProgress }
+    private var insertLastShown: Bool { state.canInsertLast && !state.mode.isRecording }
 
     var body: some View {
+        let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice,
+                               chipsShown: undoShown || insertLastShown)
         HStack(spacing: 6) {
-            if state.canUndo, !state.mode.isInProgress {
+            if undoShown {
                 Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
                     onAction()
                     client.undoLastDictation()
@@ -189,7 +200,7 @@ private struct Middle: View {
                 .accessibilityIdentifier("lf.undo")
                 .barControl("undo", in: controls)
             }
-            if state.canInsertLast, !state.mode.isRecording {
+            if insertLastShown {
                 Chip(title: "Insert last", symbol: "text.insert", height: height) {
                     onAction()
                     client.insertLastDictation()
@@ -198,7 +209,8 @@ private struct Middle: View {
                 .accessibilityIdentifier("lf.insertLast")
                 .barControl("insertLast", in: controls)
             }
-            if let notice = state.notice {
+            switch status {
+            case .notice(let notice):
                 // Notices render on their own, ahead of any idle hint or status, in every mode.
                 Text(notice)
                     .font(.footnote.weight(.medium))
@@ -206,24 +218,104 @@ private struct Middle: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .accessibilityIdentifier("lf.notice")
-            } else if !(state.canUndo && !state.mode.isInProgress), !(state.canInsertLast && !state.mode.isRecording),
-                      let status = statusLine {
-                Text(status)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(state.mode.needsAttention ? .primary : .secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .accessibilityIdentifier("lf.status")
+            case .wave(let caption):
+                if let caption {
+                    Text(caption)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityIdentifier("lf.status")
+                }
+                RecordingWave(levels: state.levels, serial: state.levelSerial)
+                    .frame(height: height)
+                    // VoiceOver hears the mode from Stop's value; the wave is decoration.
+                    .accessibilityHidden(true)
+            case .text(let line, let attention):
+                HStack(spacing: 5) {
+                    if attention {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(BrandPalette(colorScheme: colorScheme, contrast: contrast).ember))
+                            .accessibilityHidden(true)
+                    }
+                    Text(line)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(attention ? .primary : .secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .accessibilityIdentifier("lf.status")
+                }
+            case .none:
+                EmptyView()
             }
         }
     }
+}
 
-    /// Ready and idle show only the model or session hint; everything else its one-line title.
-    private var statusLine: String? {
-        switch state.mode {
-        case .ready: return state.hint
-        default: return state.title.isEmpty ? nil : state.title
+/// The recording wave (`RidgeWave`): the ridge mark's line across the bar's middle, glacier fading in at the left to
+/// aurora at the right, where the newest level arrives beside a glacier dot, as in the mark. It flows left between
+/// levels on the display's own clock, only while it shows; with Reduce Motion it stands still at each level.
+private struct RecordingWave: View {
+    let levels: [Float]
+    let serial: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    /// When the newest level arrived, and the time the previous one took, which the flow spreads the step over.
+    @State private var arrival = (serial: 0, at: Date.distantPast, interval: 0.15)
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                wave(progress: 1)
+            } else {
+                TimelineView(.animation) { context in
+                    wave(progress: arrival.serial == serial ? context.date.timeIntervalSince(arrival.at) / arrival.interval : 0)
+                }
+            }
         }
+        .onChange(of: serial, initial: true) { _, newSerial in
+            let now = Date()
+            // The host publishes about ten levels a second; the keyboard reads them every 0.1–0.2 s.
+            let interval = min(max(now.timeIntervalSince(arrival.at), 0.08), 0.3)
+            arrival = (newSerial, now, interval)
+        }
+    }
+
+    private func wave(progress: Double) -> some View {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        let glacier = Color(palette.glacier), aurora = Color(palette.aurora)
+        return GeometryReader { geometry in
+            let lineWidth = CGFloat(RidgeWave.lineWidth(height: Double(geometry.size.height)))
+            // The mark's dot at the right, on the middle line, where the newest level comes out of it.
+            let radius = lineWidth * 1.1
+            HStack(spacing: 3) {
+                RidgeWaveShape(levels: levels, serial: serial, progress: progress)
+                    .stroke(LinearGradient(colors: [glacier, aurora, aurora], startPoint: .leading, endPoint: .trailing),
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+                    // Old levels fade out at the left; the arriving one fades in beside the dot.
+                    .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3),
+                                                 .init(color: .black, location: 0.94), .init(color: .clear, location: 1)],
+                                         startPoint: .leading, endPoint: .trailing))
+                Circle().fill(glacier).frame(width: 2 * radius, height: 2 * radius)
+            }
+        }
+    }
+}
+
+/// `RidgeWave`'s corners as a line, in the shape's frame.
+private struct RidgeWaveShape: Shape {
+    let levels: [Float]
+    let serial: Int
+    let progress: Double
+
+    func path(in rect: CGRect) -> Path {
+        let corners = RidgeWave.corners(levels: levels, serial: serial, width: Double(rect.width), height: Double(rect.height),
+                                        progress: progress)
+        var path = Path()
+        path.addLines(corners.map { CGPoint(x: Double(rect.minX) + $0.x, y: Double(rect.minY) + $0.y) })
+        return path
     }
 }
 
@@ -237,6 +329,8 @@ private struct CandidateStrip: View {
     let height: CGFloat
     let onCandidate: (Int) -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var width: CGFloat = 0
 
     var body: some View {
@@ -264,7 +358,7 @@ private struct CandidateStrip: View {
                         .foregroundStyle(.primary)
                         .padding(.horizontal, CGFloat(CandidateStripLayout.padding))
                         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
-                        .background(Capsule().fill(emphasized ? Color(uiColor: KeyPalette.fill) : .clear))
+                        .background { if emphasized { pill } }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle())
@@ -276,6 +370,14 @@ private struct CandidateStrip: View {
         }
         .frame(maxWidth: .infinity)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+
+    /// The candidate Space would put in sits on a soft aurora pill (`BrandPalette.pill`).
+    private var pill: some View {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        return Capsule()
+            .fill(Color(palette.pill).opacity(palette.pillAlpha))
+            .overlay(Capsule().strokeBorder(Color(palette.aurora).opacity(colorScheme == .dark ? 0.45 : 0.3), lineWidth: 0.75))
     }
 
     private func label(_ index: Int) -> String {
@@ -300,17 +402,9 @@ private struct NeverCorrectChip: View {
 
     var body: some View {
         Button(action: action) {
-            Label("Never correct \u{201C}\(word)\u{201D}", systemImage: "text.badge.checkmark")
-                .font(.footnote.weight(.medium))
-                .lineLimit(1)
+            ChipLabel(title: "Never correct \u{201C}\(word)\u{201D}", symbol: "text.badge.checkmark", height: height)
                 .truncationMode(.middle)
                 .minimumScaleFactor(0.8)
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 10)
-                .frame(height: height)
-                .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
-                .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
-                .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel("Never correct \(word)")
@@ -327,23 +421,43 @@ private struct Chip: View {
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.footnote.weight(.medium))
-                .lineLimit(1)
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 10)
-                .frame(height: height)
-                .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
-                .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
-                .contentShape(Rectangle())
+            ChipLabel(title: title, symbol: symbol, height: height)
         }
         .buttonStyle(PressableStyle())
         .fixedSize()
     }
 }
 
-/// The primary control: "Start" with a waveform glyph, a red "Stop" with live levels and the elapsed
-/// time while starting or recording, and a spinner while transcribing.
+/// A bar chip: a key-coloured capsule with the key's shadow, its symbol in the accent (`BrandPalette.keyGlyph`).
+private struct ChipLabel: View {
+    let title: String
+    let symbol: String
+    let height: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol)
+                .fontWeight(.semibold)
+                .foregroundStyle(Color(BrandPalette(colorScheme: colorScheme, contrast: contrast).keyGlyph))
+        }
+        .font(.footnote.weight(.medium))
+        .lineLimit(1)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 11)
+        .frame(height: height)
+        .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
+        .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The primary control (ARCHITECTURE.md, "Keyboard look"): "Start" with the ridge mark, in the app's primary-button
+/// aurora; a coral "Stop" with the elapsed time while starting or recording (the wave in the middle shows the levels);
+/// glacier with a spinner while the recording waits for its transcript; ink on every fill.
 private struct StartCapsule: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -353,8 +467,12 @@ private struct StartCapsule: View {
     /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
     let onUnavailable: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
+        let style = CapsuleStyle(mode: state.mode)
+        let fill = fill(style)
         Button {
             if state.mode.allowsDictation {
                 onAction()
@@ -364,66 +482,71 @@ private struct StartCapsule: View {
             }
         } label: {
             content
+                .foregroundStyle(Color(fill.ink))
                 .padding(.horizontal, 14)
                 .frame(minWidth: height * 2.4, minHeight: height, maxHeight: height)
-                .background(Capsule().fill(fill))
+                .background {
+                    Capsule()
+                        .fill(LinearGradient(colors: [Color(fill.top), Color(fill.bottom)], startPoint: .topLeading,
+                                             endPoint: .bottomTrailing))
+                        .overlay { if let edge = fill.edge { Capsule().strokeBorder(Color(edge), lineWidth: 1) } }
+                        // The keys' shadow; an edged fill needs none.
+                        .shadow(color: .black.opacity(fill.edge == nil ? 0.35 : 0), radius: 0, y: 1)
+                }
                 .contentShape(StartTapShape(compact: compact, capturing: state.mode.isActiveCapture))
         }
         .buttonStyle(PressableStyle())
         // Not `.disabled`, which would dim the spinner; the client ignores taps it cannot act on.
         .allowsHitTesting(!state.mode.isWaitingForTranscript)
-        .opacity(state.mode.allowsDictation ? 1 : 0.45)
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: state.mode.isActiveCapture)
+        .opacity(style == .unavailable ? 0.45 : 1)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: style)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint(state.mode == .hostUnavailable ? "Opens LocalFlow to start a session" : "")
         .accessibilityIdentifier("lf.mic")
     }
 
+    private func fill(_ style: CapsuleStyle) -> BrandPalette.Fill {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        switch style {
+        case .start, .unavailable: return palette.accent
+        case .stop: return palette.stop
+        case .working: return palette.working
+        }
+    }
+
     @ViewBuilder private var content: some View {
         switch state.mode {
         case .recording(_, let startedAt):
-            // "Stop" in words, as while starting; four level bars and the time beside it fit a 375 pt phone with the
-            // menu button and Cancel.
+            // "Stop" in words, as while starting, and the time: with the wave beside it, it fits a 375 pt phone with
+            // the menu button and Cancel.
             HStack(spacing: 6) {
                 Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
                 Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
-                LevelBars(levels: state.levels, height: height * 0.4)
                 Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
                     .fixedSize()
             }
-            .foregroundStyle(.white)
         case .starting:
             HStack(spacing: 6) {
-                ProgressView().tint(.white).controlSize(.small)
+                ProgressView().tint(Color(fill(.stop).ink)).controlSize(.small)
                 Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
-            .foregroundStyle(.white)
         case .transcribing, .waitingForModel:
             HStack(spacing: 7) {
-                ProgressView().tint(foreground).controlSize(.small)
+                ProgressView().tint(Color(fill(.working).ink)).controlSize(.small)
                 if let caption = KeyboardMessages.capsuleCaption(for: state.mode) {
                     Text(caption).font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
                 }
             }
-            .foregroundStyle(foreground)
         default:
             HStack(spacing: 6) {
-                Image(systemName: "waveform").font(.system(size: 15, weight: .semibold))
+                RidgeMarkGlyph(color: Color(fill(.start).ink), side: 17)
                 Text("Start").font(.subheadline.weight(.semibold))
             }
-            .foregroundStyle(foreground)
         }
     }
-
-    /// A white capsule on the dark keyboard and a black one on the light keyboard, like Wispr's.
-    private var fill: Color {
-        state.mode.isActiveCapture ? .red : .primary
-    }
-
-    private var foreground: Color { Color(uiColor: .systemBackground) }
 
     private var accessibilityLabel: String {
         switch state.mode {
@@ -457,26 +580,6 @@ private struct StartTapShape: Shape {
             capsule: KeyRect(x: Double(rect.minX), y: Double(rect.minY) + top, width: Double(rect.width), height: Double(rect.height)),
             barHeight: compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight, compact: compact, capturing: capturing)
         return Path(CGRect(x: area.x, y: area.y - top, width: area.width, height: area.height))
-    }
-}
-
-private struct LevelBars: View {
-    static let count = 4
-    let levels: [Float]
-    let height: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        let recent = levels.suffix(Self.count)
-        let padded = Array(repeating: Float(0), count: Self.count - recent.count) + recent
-        HStack(spacing: 2) {
-            ForEach(0 ..< padded.count, id: \.self) { index in
-                Capsule().frame(width: 2.5, height: max(2.5, height * CGFloat(padded[index])))
-            }
-        }
-        .frame(height: height)
-        .animation(reduceMotion ? nil : .linear(duration: 0.1), value: levels)
-        .accessibilityHidden(true)
     }
 }
 
@@ -537,7 +640,11 @@ struct MenuPanelView: View {
             ForEach(KeyboardMessages.menuItems(accessibilitySize: largeText), id: \.self) { item in
                 switch item {
                 case .session:
-                    Label(client.state.sessionSummary, systemImage: "waveform.circle")
+                    Label {
+                        Text(client.state.sessionSummary)
+                    } icon: {
+                        RidgeMarkGlyph(color: color(palette.link), side: 18)
+                    }
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(color(palette.primary))
                         .fixedSize(horizontal: false, vertical: true)
@@ -629,7 +736,7 @@ private extension KeyboardMode {
         return false
     }
 
-    /// Starting or recording: the capsule is the red Stop.
+    /// Starting or recording: the capsule is the coral Stop.
     var isActiveCapture: Bool {
         switch self {
         case .starting, .recording: return true
@@ -642,13 +749,6 @@ private extension KeyboardMode {
         switch self {
         case .needsFullAccess, .configurationError, .incompatible: return false
         default: return true
-        }
-    }
-
-    var needsAttention: Bool {
-        switch self {
-        case .error, .needsFullAccess, .configurationError, .incompatible: return true
-        default: return false
         }
     }
 }

@@ -1020,13 +1020,14 @@ only when the strip's words change (suggestions while a word is typed). It repor
 every other point of the bar
 ([Reach and touch regions](#reach-and-touch-regions)).
 
-- **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
-  dictation control. While starting or recording it is a red capsule labelled
-  "Stop", with live level bars and the elapsed time while recording (it fits
-  a 375 pt phone with the menu button and Cancel), with a small cancel button
-  (`lf.cancel`) beside it. While transcribing it shows a spinner; while
-  waiting for the model, a spinner labelled "Preparing"
-  (`KeyboardMessages.capsuleCaption`). The capsule is never replaced by the
+- **Right:** a "Start" capsule with the ridge mark (`lf.mic`), the primary
+  dictation control. While starting or recording it is a coral capsule
+  labelled "Stop", with the elapsed time while recording (with the wave in
+  the middle it fits a 375 pt phone with the menu button and Cancel), with a
+  small cancel button (`lf.cancel`) beside it. While transcribing it is a
+  glacier capsule with a spinner; while waiting for the model, a spinner
+  labelled "Preparing" (`KeyboardMessages.capsuleCaption`). Its colours are
+  in [Keyboard look](#keyboard-look) (`CapsuleStyle`). The capsule is never replaced by the
   candidate strip, the chips or a notice, so the wait is explained whatever
   holds the middle. When dictation cannot run here (no Full Access,
   configuration, versions), it explains why.
@@ -1037,8 +1038,8 @@ every other point of the bar
   dictation from working. The card spans the key area with an 8-point margin
   on each side; its text follows Dynamic Type and reads at WCAG AA (4.5:1 or
   better) on it in light and dark mode (`MenuPalette`: a white card in light
-  mode, a dark grey one in dark mode, "Open LocalFlow" in a blue that keeps
-  its contrast). When it does not fit (landscape, the largest sizes) it
+  mode, a dark grey one in dark mode, "Open LocalFlow" and the session line's
+  ridge mark in the brand's accent, `BrandPalette.link`). When it does not fit (landscape, the largest sizes) it
   scrolls inside its rounded corners. At the accessibility sizes the actions
   come first ("Open LocalFlow", then the text-width choice), then the
   session status and the tip, which points above
@@ -1048,7 +1049,12 @@ every other point of the bar
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on, otherwise a one-line
   status (model preparation, errors, notices): "Preparing model…" in
-  `preparingModel` and `waitingForModel`. The candidate strip, after a
+  `preparingModel` and `waitingForModel` (`BarStatus`). While recording, the
+  middle shows the recording wave instead of "Listening"
+  ([Keyboard look](#keyboard-look)), captioned "Model loading" only while
+  the host still prepares the model; a notice still shows instead of it. An
+  error or a state that keeps dictation from working leads its line with an
+  ember warning symbol. The candidate strip, after a
   swipe ([Swipe typing](#swipe-typing)) or a commit key
   ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
   The "Never correct" chip after an autocorrect revert replaces both while it
@@ -1073,8 +1079,57 @@ every other point of the bar
   back to Messages) still reports `.dark` while its backdrop is light; dark
   keys pinned from it sat on light glass (simulator, iOS 26.4). Bold Text
   makes key captions and bar text bold; Increase Contrast gives the keys a
-  lighter fill in dark mode and a visible edge; Reduce Motion drops the bar's
-  press shrink and the capsule's spring (key-press highlights stay).
+  lighter fill in dark mode and a visible edge, and deepens the light
+  keyboard's brand strokes further; Reduce Motion drops the bar's press
+  shrink, the capsule's spring, the bar's cross-fades and the wave's flow
+  (the wave then stands still at each level; key-press highlights stay).
+
+### Keyboard look
+
+The keys stay as calm as Apple's: one neutral fill, no colour on letters.
+LocalFlow's colours (`BrandPalette`, the app's `Theme`: aurora #6DFFA8,
+glacier #67E8F9, coral #FF7D5E, ember #F5C66B, ink #04120A) mark only where
+something happens. On the light keyboard aurora and glacier are too pale for
+glyphs or thin strokes, so strokes and glyphs use deeper variants of the same
+hues; filled controls keep their bright fill and gain a 1 pt edge in the deep
+hue instead. The contract (`KeyboardLookTests`), in light and dark mode, with
+and without Increase Contrast, against the backdrop measured on iOS 26.4:
+ink on every fill 4.5:1 or better; every fill 3:1 against the backdrop, or an
+edge that is; strokes and glyphs on the backdrop, and accent glyphs on a key
+or chip, 3:1 or better; the highlighted candidate's text 4.5:1 on its pill.
+
+- **Start** is the app's primary button: `Theme.gradient` (aurora with a hint
+  of glacier) with ink, and the ridge mark (`RidgeMark`, the icon's W line
+  and dot, drawn as a vector) beside "Start". **Stop** is coral with ink;
+  the wait for a transcript is glacier with ink (`CapsuleStyle`: Start
+  dimmed to 45% where dictation cannot run here).
+- **The recording wave** (`RidgeWave`) is the mark's line come alive across
+  the bar's middle: one corner per input level the keyboard reads (several
+  a second), alternately above and below the middle line, each as far from
+  it as its level is loud (silence is a gentle ridge), the newest at the
+  right beside the mark's glacier dot. It flows left between levels on the
+  display's clock (`TimelineView`) only while recording, fades in at the
+  left, and runs from glacier to aurora. The keyboard keeps the last 72
+  levels, enough to span a landscape bar. With Reduce Motion it stands still
+  at each level.
+- **Action return keys** (send, go, search, and the others Apple tints) are
+  aurora with an ink caption; a plain or disabled Return stays neutral.
+  **Caps lock** is the same accent key, so a locked shift is unmistakable;
+  shift once shows only the filled arrow. The press-and-hold alternates
+  highlight their pick in the accent.
+- **The highlighted candidate** (the one Space puts in) sits on a soft aurora
+  pill with a hairline aurora edge; the others stay plain.
+- **Chips** (Undo, "Insert last", "Never correct") are key-coloured capsules
+  with the keys' shadow and their symbol in the accent; the emoji jump bar's
+  shown category is the accent.
+- **The swipe trace** runs from glacier at its tail to aurora at the finger
+  ([Swipe typing](#swipe-typing)).
+- **Motion**: Start, Stop, the wait for the transcript and Undo hand over in
+  a 0.2 s cross-fade, and the middle cross-fades when what it holds changes
+  (the strip coming or going), never as its words change. Nothing animates
+  while idle, and no animation delays a tap. Reduce Motion turns them off.
+- The keyboard draws no backdrop of its own and no glass
+  ([Touchable backgrounds](#keyboard-extension-keyboard)).
 
 ## Keyboard core (KeyboardCore/)
 
@@ -1103,7 +1158,8 @@ keyboard hides.
   field. "@" and "." there are not letters: they never swipe and are never
   soft taps.
 - **Return key** (`ReturnKeyRule`): in a field with
-  `enablesReturnKeyAutomatically`, Return is drawn dimmed (and untinted) and
+  `enablesReturnKeyAutomatically`, Return is drawn dimmed (and without the
+  accent, [Keyboard look](#keyboard-look)) and
   types nothing while the field has no text: neither the proxy's `hasText`
   nor text the keyboard typed that the proxy does not show yet.
 - `KeyTouchModel` tracks every touch: one view, nearest-key hit testing, no
@@ -1156,7 +1212,7 @@ keyboard hides.
   categories (`EmojiCatalog`, generated by `scripts/generate-emoji-catalog.py`
   from emoji-test.txt: fully-qualified emoji without skin-tone variants). There
   is no search and no skin-tone picker yet. No category name is shown: the
-  gap between sections and the jump bar's highlighted symbol mark them, and
+  gap between sections and the jump bar's symbol in the accent mark them, and
   the grid takes the height, four rows of 41 pt cells in portrait and three
   of 40 pt in landscape.
 - An emoji's press binds to its field like a held key's: adopted when the
@@ -1656,7 +1712,7 @@ suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
   so, the least useful go (the last that is neither the emphasized nor the
   quoted word) until the rest fit; only those two may shrink further (to
   0.6). The 1 pt dividers sit between shown candidates, but none beside the
-  emphasized candidate's pill.
+  emphasized candidate's aurora pill ([Keyboard look](#keyboard-look)).
 
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
@@ -1698,8 +1754,13 @@ Autocorrect's commits use the same record ("Commit record",
 
 **Swipe trace** (`SwipeTrail`). While a touch is a swipe, the key area draws
 a trail of the last 0.15 s of samples (at least the last two), above the keys
-and taking no touches: a round-capped stroke in the tint color that tapers
-from 8 pt at the finger to nothing and fades from 45% opacity to transparent.
+and taking no touches: a round-capped stroke that tapers from 8 pt at the
+finger to nothing, fades from the palette's opacity (70% on the dark
+keyboard, 85% on the light one, `BrandPalette.trailAlpha`) to transparent,
+and runs from glacier at the tail to aurora at the finger, in deeper hues on
+the light keyboard. The finger's round end replaces the last segment under
+it rather than doubling it. Its drawing is bounded as before: only the area
+the trace covered and covers is redrawn.
 It follows every move, and fades out over about 0.15 s when the swipe ends or
 is cancelled (at once with Reduce Motion). It is drawn from the samples in
 memory only.
