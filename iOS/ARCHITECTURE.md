@@ -37,6 +37,7 @@ contract.
 | "Microphone choice", "Media services reset ends the session" | [Capture](#capture) |
 | "Custom dictionary", "Find strength" | [Custom dictionary](#custom-dictionary) |
 | "App Store packaging" | [App Store packaging](#app-store-packaging) |
+| "Live Activity" | [Live Activity](#live-activity-activity-activitycore) |
 
 ## Goal
 
@@ -72,6 +73,10 @@ keyboards entirely. Those fields are out of scope.
    entitlement, which LocalFlow does not have.
 6. The encoder targets the `ios19` Core ML opset, so the deployment target is
    **iOS 26.0**.
+7. **A Live Activity starts only from the foreground**, and its views run in
+   a separate WidgetKit extension that cannot animate on its own: only content
+   updates (with transitions of at most two seconds) and live timers move it.
+   iOS leaves the Dynamic Island out of screenshots and screen recordings.
 
 These lead to the "Flow session" design:
 
@@ -104,18 +109,20 @@ iOS/
   KeyboardCore/            keyboard logic: keyboard and tests
   App/                     containing app (SwiftUI, AVFoundation, Core ML, UIKit lifecycle)
   Keyboard/                keyboard extension (UIKit key area, SwiftUI top row, Core ML swipe encoder)
+  ActivityCore/            the Live Activity's content state: app, Live Activity extension and tests
+  Activity/                Live Activity extension (WidgetKit, SwiftUI) and its ActivityKit attributes
   Tests/                   dependency-free executable tests run on the macOS host
   Config/                  Info.plist, entitlements and privacy manifest templates
   scripts/                 build helpers and the App Store bundle checker
 ```
 
-- `Shared/`, `HostCore/` and `KeyboardCore/` import only Foundation, plus
+- `Shared/`, `HostCore/`, `ActivityCore/` and `KeyboardCore/` import only Foundation, plus
   CoreFoundation for Darwin notifications in `Shared/` and Accelerate for the
   tap and word models in `KeyboardCore/`, so they compile for the macOS test
   runner. UIKit, SwiftUI, AVFoundation and Core ML belong in
   `App/` and `Keyboard/`.
-- The app is compiled from `App/`, `Shared/`, `HostCore/` and these macOS
-  sources:
+- The app is compiled from `App/`, `Shared/`, `HostCore/`, `ActivityCore/`,
+  `Activity/SessionActivityAttributes.swift` and these macOS sources:
   - `Sources/Parakeet/*.swift`: the model runtime (`LocalParakeetService`).
   - `Sources/Dictionary/*.swift`: the custom dictionary
     ([Custom dictionary](#custom-dictionary)).
@@ -125,22 +132,28 @@ iOS/
 - The keyboard is compiled from `Keyboard/`, `Shared/` and `KeyboardCore/`
   only. It never links Parakeet, the dictionary, `LocalDictationCore` or
   `HostCore`, and it never captures audio.
+- The Live Activity extension is compiled from `Activity/`, `ActivityCore/`
+  and `KeyboardCore/RidgeMark.swift` with `KeyboardCore/KeyboardLayout.swift`
+  (the ridge mark and its box) only. It reads no files, settings or App Group
+  ([Live Activity](#live-activity-activity-activitycore)).
 
 ## Identifiers
 
-The Makefile injects these into both Info.plists:
+The Makefile injects these into the Info.plists:
 
 | Variable | Default (`CHANNEL=dev`) | `CHANNEL=appstore` |
 | --- | --- | --- |
 | `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | `com.ajbarryiii.localflow.ios` |
 | keyboard bundle ID | `$(BUNDLE_ID).keyboard` | `$(BUNDLE_ID).keyboard` |
+| Live Activity bundle ID | `$(BUNDLE_ID).activity` | `$(BUNDLE_ID).activity` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | `group.$(BUNDLE_ID)` |
 | `URL_SCHEME` | `localflow-dev` | `localflow` |
 | `UNIVERSAL_LINK` | empty | `https://wildernesslabs.ai/localflow/dictate` |
 | `DISPLAY_NAME` | `LocalFlow Dev` | `LocalFlow` |
 
-Both Info.plists carry `LocalFlowAppGroupIdentifier` and `LocalFlowURLScheme`,
-and `LocalFlowUniversalLink` when `UNIVERSAL_LINK` is set.
+The app's and the keyboard's Info.plists carry `LocalFlowAppGroupIdentifier`
+and `LocalFlowURLScheme`, and `LocalFlowUniversalLink` when `UNIVERSAL_LINK`
+is set. The Live Activity extension's carries none of them.
 `LocalFlowConfiguration.main` (Shared) reads them and rejects an empty value,
 an unexpanded `$(VARIABLE)` and an invalid URL scheme, so no Swift file
 hardcodes an identifier.
@@ -153,7 +166,7 @@ hardcodes an identifier.
   when one is set, else `<scheme>://dictate`.
 - **Signing.** With `UNIVERSAL_LINK` set, only the app is signed with
   `com.apple.developer.associated-domains` = `["applinks:<host>"]`; the
-  keyboard gets nothing new. Device builds stop unless the app's profile
+  keyboard and the Live Activity get nothing new. Device builds stop unless the app's profile
   grants Associated Domains (`*` or that entry). Empty, the bundles have no
   key and no entitlement.
 - **Channels.** `CHANNEL=appstore` refuses an empty or non-https value. Dev,
@@ -871,7 +884,8 @@ transcripts or other user data.
   `willEnterForeground`, `didBecomeActive`, `didEnterBackground`, the
   protected-data notifications and memory warnings; and mirrors the core's
   state into SwiftUI. It decides when the bounce screen shows and plays the
-  bounce screen's recording haptic.
+  bounce screen's recording haptic, and it drives the session's Live Activity
+  ([Live Activity](#live-activity-activity-activitycore)).
 - **`MicrophoneCapture`** implements `HostCapture` with one `AVAudioEngine`
   input tap for the whole session ([Capture](#capture)).
   - It requests a 0.2 s (else 0.1 s) I/O buffer, a 16 kHz sample rate, mono
@@ -929,6 +943,79 @@ transcripts or other user data.
     synthetic source. A requested but unusable synthetic source fails closed
     and never constructs real capture. It does not prove background audio
     behavior; only a device test can.
+
+## Live Activity (Activity/, ActivityCore/)
+
+The Flow session shows as a Live Activity: in the Dynamic Island (compact,
+minimal and expanded) and on the Lock Screen. Tapping it opens the app; it has
+no buttons.
+
+- **Content.** `SessionActivityAttributes` (`Activity/`, compiled into the app
+  and the extension) has no fixed attributes. Its content state,
+  `SessionActivityState` (`ActivityCore/`), holds only the phase and the dates
+  its timers need, never text, audio or levels:
+
+  | Phase | Host state | Dates |
+  | --- | --- | --- |
+  | `ready` | session `active`, no dictation in progress | `endsAt`: `sessionExpiresAt` |
+  | `recording` | dictation `starting` or `recording` | `since`: the dictation's `startedAt` (admission) |
+  | `transcribing` | dictation `transcribing`, model not preparing | none |
+  | `preparing` | dictation `transcribing` while the model prepares | none |
+
+  A `starting` or `inactive` session shows nothing. A transcription that
+  outlives its session is not shown.
+- **Decisions** (`HostCore/SessionActivity.swift`; pure, tested with a fake
+  backend). `SessionActivityPolicy` maps the host state to a phase and a stale
+  date; `SessionActivityDriver` starts, updates and ends the activity through
+  `SessionActivityBackend`, which `LiveActivityBackend` (App) implements with
+  ActivityKit and nothing else. The controller calls `sync` after every status
+  change and on every tick.
+  - **Launch.** Every activity an earlier run left is ended at once, before a
+    session can start.
+  - **Start.** Only with the app active (ActivityKit's rule), the user's Live
+    Activities switch on, and a session `active`. A start the system refuses
+    is not asked again for that session. The app never prompts or explains
+    when Live Activities are off; iOS asks the user itself on the first
+    activity.
+  - **Update.** Only when the phase or a date changes: never for levels,
+    heartbeats or the model state while recording. Updates carry no alert, so
+    they never sound or wake the screen. A wait (`transcribing`,
+    `preparing`) shows at least `minimumWaitDisplay` (0.5 s) before giving
+    way to anything but `recording`, so a fast transcription reads as a beat
+    rather than a flicker; a new recording and a session's end are never held.
+  - **End.** The moment the session ends for any reason, or a different
+    session is current, with the immediate dismissal policy.
+  - **Stale date.** `ready`: `endsAt` plus `staleGrace` (30 s); `recording`:
+    `since` plus `maxDictationDuration` plus `staleGrace`; waits and a ready
+    state without an expiry: 5 minutes from the update. A killed app's
+    activity therefore turns stale soon after its session would have ended,
+    and then reads "Session ended" with no timers; the next launch ends it.
+- **Look.** Monochrome, as the keyboard's island: white ink on a near-black
+  pill, the ridge mark (`RidgeMark`) with its dot in the phase's accent
+  (aurora ready, coral recording, glacier waiting), a coral recording dot
+  beside the timer, and a dot-matrix strip whose lit dots trace the phase: a
+  quiet level line when ready, a braid of two crossing lines while recording,
+  a low braid with a glacier glint in the middle while transcribing (on the
+  left third while the model prepares).
+  - Compact: the mark leading; trailing, a small strip, or the coral dot and
+    the elapsed time while recording, so the island grows as recording starts
+    and narrows as it stops. Minimal: the mark, or the coral dot while
+    recording. Expanded: the mark and "LocalFlow", the countdown ("ends in")
+    or the recording time, the strip and the phase's name. Lock Screen: the
+    mark, the phase's name, one line of guidance or the countdown, the
+    recording time, and the strip on its own dark background, in either
+    appearance.
+- **Motion.** Every phase change animates with one quick spring
+  (`snappy`, 0.28 s, no overshoot): each dot of the strip moves its brightness
+  and colour, so the line rises into the braid and settles back; changed words
+  push up and blur in (a cross-fade with Reduce Motion); the trailing side
+  swaps between the strip and the timer. Timers are live
+  (`Text(timerInterval:)`). Nothing animates in Always On.
+- **Build.** `LocalFlowActivity.appex` (`$(BUNDLE_ID).activity`), a
+  `com.apple.widgetkit-extension` linked with the `_NSExtensionMain` entry
+  point as Xcode links every extension; no entitlements beyond the signing
+  identity's, no App Group, no push, no resources. The app's Info.plist sets
+  `NSSupportsLiveActivities`.
 
 ## Keyboard extension (Keyboard/)
 
@@ -2661,38 +2748,42 @@ app reads only the count. The models are fixed.
 ## Build and targets (iOS/Makefile)
 
 - `make -C iOS` builds `iOS/build/<platform>/LocalFlow.app` with
-  `PlugIns/LocalFlowKeyboard.appex`. The default platform is the arm64
-  simulator; `PLATFORM=device` builds for arm64 devices.
-  - Both are compiled for `arm64-apple-ios26.0[-simulator]` with
+  `PlugIns/LocalFlowKeyboard.appex` and `PlugIns/LocalFlowActivity.appex`.
+  The default platform is the arm64 simulator; `PLATFORM=device` builds for
+  arm64 devices.
+  - All three are compiled for `arm64-apple-ios26.0[-simulator]` with
     `-Xcc -DACCELERATE_NEW_LAPACK`, because the iOS 26 SDK deprecates the
     CBLAS interface the shared decoder uses.
   - The keyboard is compiled with `-application-extension`, the
-    `_NSExtensionMain` entry point and module `LocalFlowKeyboard`.
+    `_NSExtensionMain` entry point and module `LocalFlowKeyboard`; the Live
+    Activity likewise, as module `LocalFlowActivity`.
   - Simulator builds embed the entitlements in each executable's
-    `__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The `.appex` is
-    signed before the app.
+    `__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The extensions
+    are signed before the app.
   - Every build compiles the app icon into `Assets.car` with `actool`,
     records Xcode's build metadata (`DTXcode`, `DTSDKBuild` and the rest) in
-    both Info.plists, and copies each target's privacy manifest.
+    every Info.plist, and copies each target's privacy manifest.
 - `PARAKEET_BUNDLE_DIR` copies the model into `LocalFlow.app/Parakeet/` and
   relabels it with `scripts/label-localflow-model.py`; repeat builds keep an
   unchanged copy. `SWIPE_BUNDLE_DIR` adds swipe typing
   ([Swipe typing](#swipe-typing)).
 - `make -C iOS check` runs:
   1. a simulator type-check, with `-warnings-as-errors`, of the app, the app's
-     self-test variant and the keyboard;
+     self-test variant, the keyboard and the Live Activity;
   2. the host tests ([Testing and verification](#testing-and-verification));
   3. lint: `plutil -lint` of the plists, entitlements and privacy manifests,
      and `sh -n` of `scripts/*.sh`.
 - `make PLATFORM=device binaries` compiles and links without signing. Device
-  builds need `CODESIGN_IDENTITY`, `TEAM_ID` and two provisioning profiles
-  with the App Group; the build checks each profile's App ID and App Group,
-  and with `UNIVERSAL_LINK` set the app profile's Associated Domains
+  builds need `CODESIGN_IDENTITY`, `TEAM_ID` and three provisioning profiles:
+  `APP_PROFILE` and `KEYBOARD_PROFILE` with the App Group, and
+  `ACTIVITY_PROFILE` for `$(BUNDLE_ID).activity`, which needs no capability.
+  The build checks each profile's App ID, the app's and the keyboard's App
+  Group, and with `UNIVERSAL_LINK` set the app profile's Associated Domains
   ([Identifiers](#identifiers), README).
 - The app declares the `audio` background mode, is iPhone-only
   (`UIDeviceFamily` 1) and arm64-only. The keyboard is universal (1 and 2),
   because App Review requires every extension to be universal, and requests
-  Full Access (`RequestsOpenAccess`).
+  Full Access (`RequestsOpenAccess`). The Live Activity is universal too.
 - The repository's CI runs the macOS `make check` only. The iOS checks run
   locally.
 
@@ -2711,10 +2802,10 @@ app reads only the count. The models are fixed.
   `["applinks:wildernesslabs.ai"]` for the universal link
   ([Identifiers](#identifiers)), signed with an Apple Distribution identity.
 - **Versions.** `CFBundleShortVersionString` stays in the Info.plist
-  templates, the same for app and keyboard. `BUILD_NUMBER` sets
-  `CFBundleVersion` for both and must grow with each upload.
+  templates, the same for every bundle. `BUILD_NUMBER` sets
+  `CFBundleVersion` for all three and must grow with each upload.
 - **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
-  cryptography is SHA-256 for model verification. Both executables require
+  cryptography is SHA-256 for model verification. Every executable requires
   `arm64` in `UIRequiredDeviceCapabilities`.
 - **Icon.** The build flattens the production icon source, a full-bleed
   square in `Resources/` ([Resources/ICON.md](Resources/ICON.md)), and scales
@@ -2725,7 +2816,8 @@ app reads only the count. The models are fixed.
   being its emoji recents; `1C8F.1` for the App Group settings), system boot time
   (`35F9.1`, elapsed-time measurement) and file timestamps (`C617.1`,
   expiring the App Group's dictation files and the never-correct store's
-  leftover staging files). A new use of a required-reason
+  leftover staging files). The Live Activity's manifest declares no
+  required-reason API, because it calls none. A new use of a required-reason
   API must be added to the manifest and to the checker's required reasons.
 - **Packaging.** `make ipa` zips exactly the signed app under `Payload/`.
   `make appstore-check` runs `scripts/check-appstore-bundle.sh` on the app
@@ -2779,13 +2871,17 @@ app reads only the count. The models are fixed.
    for, in the never-correct store on this iPhone until the user clears it;
    the app reads only their count ("Never correct",
    [Word autocorrect](#word-autocorrect)).
+10. The Live Activity shows on the Lock Screen and in the Dynamic Island, so
+    it carries only the session's phase and its timer dates: never a
+    transcript, audio, a level or anything about the app being dictated into
+    ([Live Activity](#live-activity-activity-activitycore)).
 
 ## Testing and verification
 
 ### Host tests (`make -C iOS test`)
 
 - The host test binary is compiled for macOS from `Shared/`, `HostCore/`,
-  `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
+  `ActivityCore/`, `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
   `Keyboard/AutocorrectLoader.swift`, `Keyboard/KeyboardMessages.swift`,
   `Sources/Dictionary/*.swift`, `Sources/Parakeet/LocalParakeetCore.swift`,
   `Sources/Parakeet/ParakeetSilenceCompactor.swift` and `Tests/`. Every pure
@@ -2847,6 +2943,12 @@ merge (AGENTS.md).
   cancelled at lock, dictation from another app after unlock without opening
   LocalFlow, a session that idles out while locked, then the first bounce
   after unlock starting a new session).
+- **Live Activity:** the compact, minimal and expanded island and the Lock
+  Screen while ready, recording, transcribing and preparing, in dark and
+  light; the morph as recording starts and stops; the activity going at End
+  session, idle expiry and an interruption; none left after a relaunch; a
+  killed app's activity turning "Session ended"; nothing shown with Live
+  Activities off, and no prompt from the app.
 - **Resources:** background transcription latency and peak memory, Neural
   Engine against CPU (CPU through the self-test); no jetsam in the
   background; battery over 30 minutes, idle session against no session

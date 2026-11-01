@@ -3,7 +3,8 @@
 # Connect accepts and what ARCHITECTURE.md ("App Store packaging") promises:
 # production identifiers, the compiled icon, privacy manifests, Xcode build
 # metadata, matching versions, distribution signing, the universal link and its
-# Associated Domains entitlement, and no self-test code.
+# Associated Domains entitlement, the Live Activity extension without any
+# capability, and no self-test code.
 # It reads only the bundle; it never uploads or contacts Apple.
 #
 # Usage: check-appstore-bundle.sh --app PATH --bundle-id ID --app-group GROUP
@@ -75,6 +76,7 @@ if [ -n "$ipa" ]; then
     fi
 fi
 appex="$app/PlugIns/LocalFlowKeyboard.appex"
+activity="$app/PlugIns/LocalFlowActivity.appex"
 
 # A scalar at a plutil key path, or empty if absent.
 value() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
@@ -109,15 +111,22 @@ expect_json() {   # file keypath expected-json what
 # Info.plist: identity, versions and metadata.
 app_plist="$app/Info.plist"
 keyboard_plist="$appex/Info.plist"
-for plist in "$app_plist" "$keyboard_plist"; do
+activity_plist="$activity/Info.plist"
+for plist in "$app_plist" "$keyboard_plist" "$activity_plist"; do
     [ -f "$plist" ] || { fail "missing $plist"; continue; }
 done
-if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
+# Exactly the two extensions.
+plugins=$(ls "$app/PlugIns" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')
+[ "$plugins" = "LocalFlowActivity.appex LocalFlowKeyboard.appex " ] ||
+    fail "app: PlugIns holds '$plugins', expected LocalFlowActivity.appex and LocalFlowKeyboard.appex"
+if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ] && [ -f "$activity_plist" ]; then
     case "$bundle_id" in *.dev|*.dev.*) fail "bundle identifier '$bundle_id' is a development identifier" ;; esac
     expect "$app_plist" CFBundleIdentifier "$bundle_id" app
     expect "$keyboard_plist" CFBundleIdentifier "$bundle_id.keyboard" keyboard
+    expect "$activity_plist" CFBundleIdentifier "$bundle_id.activity" activity
     expect "$app_plist" CFBundleDisplayName "$display_name" app
     expect "$keyboard_plist" CFBundleDisplayName "$display_name" keyboard
+    expect "$activity_plist" CFBundleDisplayName "$display_name" activity
 
     version=$(value "$app_plist" CFBundleShortVersionString)
     build=$(value "$app_plist" CFBundleVersion)
@@ -125,17 +134,22 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
         key=${pair%%:*} number=${pair#*:}
         echo "$number" | grep -Eqx '[0-9]+(\.[0-9]+){0,2}' || fail "app: $key '$number' is not one to three integers"
     done
-    expect "$keyboard_plist" CFBundleShortVersionString "$version" keyboard
-    expect "$keyboard_plist" CFBundleVersion "$build" keyboard
+    for plist in "$keyboard_plist" "$activity_plist"; do
+        what=$( [ "$plist" = "$keyboard_plist" ] && echo keyboard || echo activity )
+        expect "$plist" CFBundleShortVersionString "$version" "$what"
+        expect "$plist" CFBundleVersion "$build" "$what"
+    done
 
-    for plist in "$app_plist" "$keyboard_plist"; do
-        what=$( [ "$plist" = "$app_plist" ] && echo app || echo keyboard )
+    for plist in "$app_plist" "$keyboard_plist" "$activity_plist"; do
+        case "$plist" in "$app_plist") what=app ;; "$keyboard_plist") what=keyboard ;; *) what=activity ;; esac
         for key in DTXcode DTXcodeBuild DTSDKBuild DTSDKName DTPlatformVersion DTPlatformBuild DTCompiler BuildMachineOSBuild; do
             [ -n "$(value "$plist" "$key")" ] || fail "$what: $key is missing (App Store Connect checks the toolchain)"
         done
         expect "$plist" DTPlatformName iphoneos "$what"
         expect_json "$plist" CFBundleSupportedPlatforms '["iPhoneOS"]' "$what"
         expect_json "$plist" UIRequiredDeviceCapabilities '["arm64"]' "$what"
+        # The activity draws only its content state: it reads neither the App Group nor the scheme.
+        [ "$what" = activity ] && continue
         expect "$plist" LocalFlowAppGroupIdentifier "$app_group" "$what"
         expect "$plist" LocalFlowURLScheme "$url_scheme" "$what"
         # The keyboard opens the universal link, never the scheme, which stays for the simulator.
@@ -149,6 +163,13 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ]; then
     expect_bool "$keyboard_plist" NSExtension.NSExtensionAttributes.RequestsOpenAccess true keyboard
     # App Review requires every extension to be universal, whatever the app's family.
     expect_json "$keyboard_plist" UIDeviceFamily '[1,2]' keyboard
+    expect_json "$activity_plist" UIDeviceFamily '[1,2]' activity
+    # The session's Live Activity: a WidgetKit extension, allowed by the app.
+    expect "$activity_plist" NSExtension.NSExtensionPointIdentifier com.apple.widgetkit-extension activity
+    expect_bool "$app_plist" NSSupportsLiveActivities true app
+    for key in LocalFlowAppGroupIdentifier LocalFlowURLScheme LocalFlowUniversalLink; do
+        [ -z "$(kind "$activity_plist" "$key")" ] || fail "activity: $key is present (it reads no shared files or links)"
+    done
 
     # The icon comes from a compiled asset catalog, as App Store Connect requires.
     expect "$app_plist" CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName AppIcon app
@@ -185,8 +206,12 @@ approved_reasons() {
         NSPrivacyAccessedAPICategoryActiveKeyboards) echo "3EC4.1 54BD.1" ;;
     esac
 }
-for target in app keyboard; do
-    if [ "$target" = app ]; then manifest="$app/PrivacyInfo.xcprivacy"; else manifest="$appex/PrivacyInfo.xcprivacy"; fi
+for target in app keyboard activity; do
+    case "$target" in
+        app) manifest="$app/PrivacyInfo.xcprivacy" ;;
+        keyboard) manifest="$appex/PrivacyInfo.xcprivacy" ;;
+        activity) manifest="$activity/PrivacyInfo.xcprivacy" ;;
+    esac
     if [ ! -f "$manifest" ]; then
         fail "$target: PrivacyInfo.xcprivacy is missing"
         continue
@@ -225,11 +250,11 @@ for target in app keyboard; do
         [ "$reasons" -gt 0 ] || fail "$target privacy manifest: entry $index ($type) has no reason"
         index=$((index + 1))
     done
-    if [ "$target" = app ]; then
-        required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
-    else
-        required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1"
-    fi
+    case "$target" in
+        app|keyboard) required="UserDefaults:CA92.1 UserDefaults:1C8F.1 SystemBootTime:35F9.1 FileTimestamp:C617.1" ;;
+        # The activity calls no required-reason API.
+        activity) required= ;;
+    esac
     for pair in $required; do
         case "$declared " in
             *" $pair "*) ;;
@@ -240,7 +265,7 @@ done
 
 # Contents: the model, no self-test code, nothing a build machine left behind.
 [ -f "$app/Parakeet/bundle.json" ] || fail "app: the Parakeet model is missing (build with PARAKEET_BUNDLE_DIR)"
-for binary in "$app/LocalFlow" "$appex/LocalFlowKeyboard"; do
+for binary in "$app/LocalFlow" "$appex/LocalFlowKeyboard" "$activity/LocalFlowActivity"; do
     [ -f "$binary" ] || { fail "missing $binary"; continue; }
     if grep -aq LOCALFLOW_SELFTEST "$binary"; then fail "$(basename "$binary") is a self-test build"; fi
 done
@@ -252,9 +277,12 @@ junk=$(find "$app" \( -name .DS_Store -o -name '*.xcent' -o -name '*.der' -o -na
 if codesign --verify --deep --strict "$app" 2>"$work/verify.txt"; then :; else
     fail "codesign --verify failed: $(head -2 "$work/verify.txt" | tr '\n' ' ')"
 fi
-for bundle in "$app" "$appex"; do
-    what=$( [ "$bundle" = "$app" ] && echo app || echo keyboard )
-    id=$( [ "$bundle" = "$app" ] && echo "$bundle_id" || echo "$bundle_id.keyboard" )
+for bundle in "$app" "$appex" "$activity"; do
+    case "$bundle" in
+        "$app") what=app id=$bundle_id ;;
+        "$appex") what=keyboard id=$bundle_id.keyboard ;;
+        *) what=activity id=$bundle_id.activity ;;
+    esac
     authority=$(codesign -dvv "$bundle" 2>&1 | sed -n 's/^Authority=//p' | head -1)
     case "$authority" in
         "Apple Distribution:"*|"iPhone Distribution:"*) ;;
@@ -264,7 +292,14 @@ for bundle in "$app" "$appex"; do
     if codesign -d --entitlements - --xml "$bundle" > "$entitlements" 2>/dev/null && [ -s "$entitlements" ]; then
         expect "$entitlements" application-identifier "$team_id.$id" "$what entitlements"
         expect "$entitlements" com\\.apple\\.developer\\.team-identifier "$team_id" "$what entitlements"
-        expect_json "$entitlements" com\\.apple\\.security\\.application-groups "[\"$app_group\"]" "$what entitlements"
+        if [ "$what" = activity ]; then
+            # No capability at all: no App Group, no push.
+            for key in com\\.apple\\.security\\.application-groups aps-environment; do
+                [ -z "$(kind "$entitlements" "$key")" ] || fail "$what entitlements: $(shown "$key") is present (it needs no capability)"
+            done
+        else
+            expect_json "$entitlements" com\\.apple\\.security\\.application-groups "[\"$app_group\"]" "$what entitlements"
+        fi
         debuggable=$(kind "$entitlements" get-task-allow)
         if [ -n "$debuggable" ] && { [ "$debuggable" != bool ] || [ "$(value "$entitlements" get-task-allow)" != false ]; }; then
             fail "$what entitlements: get-task-allow is present and not the Boolean false (a development signature)"
@@ -289,8 +324,10 @@ for bundle in "$app" "$appex"; do
         expect "$profile" Entitlements.application-identifier "$team_id.$id" "$what profile"
         expect "$profile" TeamIdentifier.0 "$team_id" "$what profile"
         expect_bool "$profile" Entitlements.beta-reports-active true "$what profile"
-        json "$profile" Entitlements.com\\.apple\\.security\\.application-groups | tr -d '[]' | tr ',' '\n' |
-            grep -Fqx "\"$app_group\"" || fail "$what profile: it does not grant App Group $app_group"
+        if [ "$what" != activity ]; then
+            json "$profile" Entitlements.com\\.apple\\.security\\.application-groups | tr -d '[]' | tr ',' '\n' |
+                grep -Fqx "\"$app_group\"" || fail "$what profile: it does not grant App Group $app_group"
+        fi
         if [ "$what" = app ]; then
             domains=com\\.apple\\.developer\\.associated-domains
             case "$(kind "$profile" "Entitlements.$domains")" in
