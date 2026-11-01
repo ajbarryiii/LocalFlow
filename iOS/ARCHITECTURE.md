@@ -941,7 +941,7 @@ transcripts or other user data.
     in compact height, with its controls 38 pt and 32 pt tall, centred in
     it; the key area is 216 pt and 162 pt. The top row's hosting view also
     reaches `KeyboardMetrics.stopReachIntoKeys(compact:)` down behind the key
-    area, for the Stop capsule's tap area
+    area, for Stop's tap area
     ([Reach and touch regions](#reach-and-touch-regions)); it draws only the
     top row.
   - **The band above the keyboard.** In most hosts (Messages, Safari,
@@ -1020,22 +1020,38 @@ only when the strip's words change (suggestions while a word is typed). It repor
 every other point of the bar
 ([Reach and touch regions](#reach-and-touch-regions)).
 
-- **Right:** a "Start" capsule with the ridge mark (`lf.mic`), the primary
-  dictation control. While starting or recording it is a coral capsule
-  labelled "Stop", with the elapsed time while recording (with the wave in
-  the middle it fits a 375 pt phone with the menu button and Cancel), with a
-  small cancel button (`lf.cancel`) beside it. While transcribing or
-  waiting for the model it is a glacier capsule with only a spinner; the
-  middle says what it waits for ("Transcribing…", "Preparing model…"), and
-  VoiceOver hears it from the capsule's label
-  (`KeyboardMessages.capsuleAccessibilityLabel`). From starting until the
-  transcript arrives the capsule keeps the recording Stop's width
-  (`CapsuleContent`), so Cancel beside it never moves (round 4 council: it
-  slid about 22 pt on Stop). Its colours are in
-  [Keyboard look](#keyboard-look) (`CapsuleStyle`). The capsule is never
-  replaced by the candidate strip, the chips or a notice. When dictation
-  cannot run here (no Full Access, configuration, versions), it explains
-  why.
+- **Right: the island** (`lf.mic`), the dictation control: a dark pill in
+  the spirit of the Dynamic Island, whose parts go where `IslandLayout`
+  puts them (pure, tested), its right end always at the bar's trailing
+  padding.
+  - **Start** (idle, errors, and where dictation cannot run): the compact
+    island, the ridge mark beside "Start", as wide as its label needs and
+    never narrower than 2.4 times its height.
+  - **Recording.** A tap on Start grows the island with a spring across the
+    bar, from Cancel to its right end, and the whole island is Stop: the
+    wave ([Keyboard look](#keyboard-look)), the elapsed time and a stop
+    glyph. While starting it holds the wave's flat row, dimmed, or "Open
+    LocalFlow to start a session" when the host has not come up. It holds
+    dictation's status itself while it spans the bar: the cold start's
+    caption ("Model loading", or "Loading" where the full caption would
+    leave the wave less than 80 pt: a 375 pt phone at large text) and any
+    notice, which shows instead of the wave. VoiceOver hears that text, the
+    mode and the time in the island's value
+    (`KeyboardMessages.islandAccessibilityValue`).
+  - **The wait** (transcribing, waiting for the model): Stop contracts it
+    into a short pill (1.9 times its height) holding only a cool shimmer,
+    which takes no taps; the middle says what it waits for
+    ("Transcribing…", "Preparing model…"), and VoiceOver hears it from the
+    island's label (`KeyboardMessages.capsuleAccessibilityLabel`). When the
+    transcript lands it opens back into Start, and Undo arrives in the
+    middle.
+  - **Cancel** (`lf.cancel`), a small circle, shows from starting until the
+    transcript arrives, beside the menu button, where no change of the
+    island moves it (round 5).
+  - What it holds for a mode is `CapsuleContent`, its form `IslandForm`
+    (from `CapsuleStyle`). It is never replaced by the candidate strip, the
+    chips or a notice. When dictation cannot run here (no Full Access,
+    configuration, versions), Start is dimmed and explains why.
 - **Left:** a menu button (`lf.menu`) that opens a panel over the key area
   with the session status, "Open LocalFlow", the trackpad
   tip with the field's text width ("Full width" or "Chat bubble",
@@ -1070,15 +1086,12 @@ every other point of the bar
   (`lf.insertLast`) when there is something to act on (neither while a
   dictation is in progress, so the wait's line always shows), otherwise a one-line
   status (model preparation, errors, notices): "Preparing model…" in
-  `preparingModel` and `waitingForModel` (`BarStatus`). While recording, the
-  middle shows the recording wave instead of "Listening"
-  ([Keyboard look](#keyboard-look)), captioned "Model loading" only while
-  the host still prepares the model ("Loading" where the full caption would
-  leave the wave less than 80 pt: a 375 pt phone at large text); a notice
-  still shows instead of it. Idle with a ready session (a live host's active
+  `preparingModel` and `waitingForModel` (`BarStatus`). While the island
+  records it has no room: the island holds the status
+  (`BarStatus.wave`, the starting line, a notice). Idle with a ready session (a live host's active
   session whose model has not failed or gone missing,
   `KeyboardMessages.isSessionReady`), the status line is led by a small
-  glacier dot, the mark's: information, not a control. An
+  aurora dot, the mark's: information, not a control. An
   error or a state that keeps dictation from working leads its line with an
   ember warning symbol. The candidate strip, after a
   swipe ([Swipe typing](#swipe-typing)) or a commit key, while a word is
@@ -1111,66 +1124,81 @@ every other point of the bar
   back to Messages) still reports `.dark` while its backdrop is light; dark
   keys pinned from it sat on light glass (simulator, iOS 26.4). Bold Text
   makes key captions and bar text bold; Increase Contrast gives the keys a
-  lighter fill in dark mode and a visible edge, and deepens the light
-  keyboard's brand strokes further; Reduce Motion drops the bar's press
-  shrink, the capsule's spring, the bar's cross-fades and the wave's flow
-  (the wave then stands still at each level; key-press highlights stay).
+  lighter fill in dark mode and a visible edge, a full-point edge on the
+  dark island, and deepens the light keyboard's accents further; Reduce
+  Motion drops the bar's press shrink, the island's spring (it takes each
+  form at once, cross-faded in 0.15 s), the chips' spring, the pill's glide,
+  the wave's drift and smoothing (it stands still at each level) and the
+  shimmer's sweep; key-press highlights stay.
 
 ### Keyboard look
 
 The keys stay as calm as Apple's: one neutral fill, no colour on letters.
-LocalFlow's colours (`BrandPalette`, the app's `Theme`: aurora #6DFFA8,
-glacier #67E8F9, coral #FF7D5E, ember #F5C66B, ink #04120A) mark only where
-something happens. On the light keyboard aurora and glacier are too pale for
-glyphs or thin strokes, so strokes and glyphs use deeper variants of the same
-hues; filled controls keep their bright fill and gain a 0.5 pt hairline edge
-in the deep hue instead (1 pt with Increase Contrast; round 4 council: the
-1 pt edge read as a sticker outline beside the edgeless keys). The contract (`KeyboardLookTests`), in light and dark mode, with
-and without Increase Contrast, against the backdrop measured on iOS 26.4:
-ink on every fill 4.5:1 or better; every fill 3:1 against the backdrop, or an
-edge that is; strokes and glyphs on the backdrop, and accent glyphs on a key
-or chip, 3:1 or better; the highlighted candidate's text 4.5:1 on its pill.
+Every control is monochrome (round 8, owner: the aurora buttons were very
+bright and jarring; the brand colours are for accents). LocalFlow's colours
+(`BrandPalette`, the app's `Theme`: aurora #6DFFA8, glacier #67E8F9, ember
+#F5C66B) mark only small things that show a state: aurora for the mark's
+dot (on Start, the readiness dot, the dot the wave settles into) and the
+menu's link, glacier for the wait's shimmer alone, ember for an error's
+symbol. On the light keyboard aurora and ember are too pale on the backdrop,
+so there they take deeper variants of the same hues; on the island, dark in
+both modes, they stay bright. The contract (`KeyboardLookTests`), in light
+and dark mode, with and without Increase Contrast, against the backdrop
+measured on iOS 26.4: ink on every fill 4.5:1 or better; every fill 3:1
+against the backdrop, or an edge that is (a hairline, 0.5 pt, a full point
+with Increase Contrast); fills, inks, edges, the candidate pill and the
+swipe trace grey; accents on the backdrop and on the island 3:1 or better;
+the highlighted candidate's text 4.5:1 on its pill.
 
-- **Start** is the app's primary button: `Theme.gradient` (aurora with a hint
-  of glacier) with ink, and the ridge mark (`RidgeMark`, the icon's W line
-  and dot, drawn as a vector, 19 pt and 1.3 times the icon's weight so the W
-  reads at that size) beside "Start". **Stop** is coral with ink;
-  the wait for a transcript is glacier with ink (`CapsuleStyle`: Start
-  dimmed to 45% where dictation cannot run here). On the light keyboard that
-  capsule's fill is the glacier at 85% of its saturation, the same hue and
-  brightness (#7DEBF9, `BrandPalette.calmGlacier`; round 7, Opus visual: the
-  bright cyan was the loudest thing on the bar while the user waits, louder
-  than Stop), with its deep-glacier edge; ink on it stays far above 4.5:1. The
-  dark keyboard keeps the app's glacier.
-- **The recording wave** (`RidgeWave`) is the mark's line come alive across
-  the bar's middle: one corner per input level the keyboard reads (several
-  a second), alternately above and below the middle line, each as far from
-  it as its level is loud (silence is a gentle ridge), the newest at the
-  right beside the mark's glacier dot. It flows left between levels on the
-  display's clock (`TimelineView`) only while recording, fades in at the
-  left, and runs from glacier to aurora. The keyboard keeps the last 72
-  levels, enough to span a landscape bar. With Reduce Motion it stands still
-  at each level.
-- **Action return keys** (send, go, search, and the others Apple tints) are
-  aurora with an ink caption; a plain or disabled Return stays neutral.
-  **Caps lock** is the same accent key, so a locked shift is unmistakable;
-  shift once shows only the filled arrow. The press-and-hold alternates
-  highlight their pick in the accent.
-- **The highlighted candidate** (the one Space puts in) sits on a pill with
-  a hairline aurora edge; the others stay plain. On the dark keyboard the pill
-  is a soft aurora tint (20%). On the light one it is the keys' white fill
-  with a thin deep-aurora edge (round 6, Opus finding 3: the mint pill with
-  its green edge, beside the mint Start with its green edge, read as a
-  second main button), so only Start carries the mint.
+- **The island** (Start, the recording, the wait) is near-black (#09090A)
+  with white text on the dark keyboard, darker than the backdrop like the
+  Dynamic Island on a dark screen, with a grey hairline that sets it off; on
+  the light keyboard it is graphite (#2B2B2E): black across the bar was the
+  heaviest thing on the keyboard. Start carries the ridge mark (`RidgeMark`,
+  the icon's W line and dot, drawn as a vector, 19 pt and 1.3 times the
+  icon's weight), its line white and its dot aurora. Start is dimmed to 45%
+  where dictation cannot run here.
+- **The recording wave** (`DotWave`, pure, tested) fills the recording
+  island: a field of dim dots 4 pt apart in up to five staggered rows,
+  through which two smooth strands of lit white dots braid and swell
+  with the voice; they rise out of the line at the left and settle into the
+  mark's aurora dot at the right, which swells a little with the voice. In
+  silence the strands lie on the middle row: one calm line. The level it
+  draws follows the latest the keyboard reads, quick to rise (45 ms) and
+  slow to fall (0.4 s) (`DotWave.LevelFollower`); the strands drift slowly
+  (1.1 rad/s) only while recording. It draws in a `Canvas` on the display's
+  clock, at most 60 frames a second and only while recording and visible,
+  in eight brightness steps (a fill each). The keyboard keeps the last 72
+  levels; the wave draws the latest.
+- **The wait's shimmer** (`DotWave.shimmer`): up to three rows of dots in a
+  cool glacier white, the middle row brighter, with a bright spot sweeping
+  across every 1.1 s.
+- **Action return keys** (send, go, search, and the others Apple tints) and
+  **caps lock** take the accent: the label colour's side, a light grey key
+  (#E6E6E8) with a dark caption on the dark keyboard and the island's
+  graphite with a white caption on the light one, as Apple marks a locked
+  shift; a plain or disabled Return stays neutral, and shift once shows only
+  the filled arrow. The press-and-hold alternates highlight their pick in
+  the accent.
+- **The highlighted candidate** (the one Space puts in) sits on a neutral
+  pill: a soft white veil (14%) with a faint white edge on the dark
+  keyboard, the keys' white with a thin grey edge on the light one. When
+  the pick moves within the same strip the pill glides to it (0.18 s); the
+  words never animate.
 - **Chips** (Undo, "Insert last", "Never correct") are key-coloured capsules
-  with the keys' shadow and their symbol in the accent; the emoji jump bar's
-  shown category is the accent.
-- **The swipe trace** runs from glacier at its tail to aurora at the finger
+  with the keys' shadow, their symbol in the label colour and a little
+  heavier. The emoji jump bar's shown category is the label colour, the
+  others secondary.
+- **The swipe trace** is the label colour's grey, fading towards its tail
   ([Swipe typing](#swipe-typing)).
-- **Motion**: Start, Stop, the wait for the transcript and Undo hand over in
-  a 0.2 s cross-fade, and the middle cross-fades when what it holds changes
-  (the strip coming or going), never as its words change. Nothing animates
-  while idle, and no animation delays a tap. Reduce Motion turns them off.
+- **Motion** is quick and never delays a tap: the island grows and shrinks
+  with a spring (response 0.3 s, damping 0.86), what it holds hands over in
+  a fade, and what arrives in the grown island waits 0.07 s for the room.
+  A press dims what the island holds. Cancel and the chips arrive with a
+  short spring from a little smaller; a status line that goes leaves in
+  0.08 s. The middle cross-fades when what it holds changes (the strip
+  coming or going), never as its words change. Nothing animates while idle.
+  Reduce Motion: [Top row](#top-row), appearance and accessibility.
 - The keyboard draws no backdrop of its own and no glass
   ([Touchable backgrounds](#keyboard-extension-keyboard)).
 
@@ -1289,30 +1317,30 @@ The views are touchable ("Touchable backgrounds",
   (`KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`, in
   the bar's own coordinates; a point on a frame's edge is the control's). It
   types the top-row key nearest it.
-  - The controls are the menu button, the Cancel button, the Start capsule,
+  - The controls are the menu button, the Cancel button, the island,
     the Undo and "Insert last" chips, the candidate strip and the "Never
     correct" chip. The bar reports their frames as they lay out and forgets
     them as they go (`BarControlFrames`).
   - Each control's tap area is exactly the rectangle it reports
     (`contentShape(Rectangle())`), so every point of the bar is a control's
     or the keys'.
-  - The Start/Stop capsule's tap area, and the frame it reports, is
+  - The island's tap area, and the frame it reports, is
     `KeyboardMetrics.startTapArea(capsule:barHeight:compact:capturing:)`: its
     frame inset by `KeyboardMetrics.startHitInset` (6 pt) at the sides and
     bottom, reaching up to the bar's top. It looks the same, and the keys take
     the ring beside and below it.
   - **Stop reaches into the top row.** While dictation is starting or
-    recording, the capsule's tap area instead reaches down through the top
+    recording, the island's tap area instead reaches down through the top
     row of keys, to half the row gap below it
     (`KeyboardMetrics.stopReachIntoKeys(compact:)`, 56 pt into the key area
-    in portrait), at the same width. The key area leaves a touch there to
+    in portrait), at the same width: the recording island spans the bar
+    from Cancel, so this is most of the top row. The key area leaves a touch there to
     the bar (`KeyboardMetrics.keyPointGoesToStart`), judged against the
-    capsule's frame now, never a lingering one; every other row, and the top
-    row beside the capsule, types as before. While the menu panel is open
+    island's frame now, never a lingering one; every other row, and the top
+    row beside the island, types as before. While the menu panel is open
     the key area leaves it nothing.
   - Two places inside a control's frame take no tap: the 1 pt dividers
-    between candidates, and the Start capsule while it shows the transcribing
-    spinner.
+    between candidates, and the island while it shows the wait's shimmer.
   - Until the bar has reported any frame, only the reach above the keys goes
     to them.
   - **Linger.** A control that moves or goes also keeps its previous frame
@@ -1807,10 +1835,9 @@ Autocorrect's commits use the same record ("Commit record",
 **Swipe trace** (`SwipeTrail`). While a touch is a swipe, the key area draws
 a trail of the last 0.15 s of samples (at least the last two), above the keys
 and taking no touches: a round-capped stroke that tapers from 8 pt at the
-finger to nothing, fades from the palette's opacity (70% on the dark
-keyboard, 85% on the light one, `BrandPalette.trailAlpha`) to transparent,
-and runs from glacier at the tail to aurora at the finger, in deeper hues on
-the light keyboard. The finger's round end replaces the last segment under
+finger to nothing, fades from the palette's opacity (50%,
+`BrandPalette.trailAlpha`) to transparent, in the label colour's grey
+(`BrandPalette.trail`: white on the dark keyboard, black on the light one). The finger's round end replaces the last segment under
 it rather than doubling it. Its drawing is bounded as before: only the area
 the trace covered and covers is redrawn.
 It follows every move, and fades out over about 0.15 s when the swipe ends or
@@ -2837,7 +2864,7 @@ merge (AGENTS.md).
 - **Swipe typing:** recognition, the candidate strip, the trace, and spacing
   around tapped words.
 - **Touch regions:** fast taps on the top and bottom rows, and taps in the bar
-  outside its controls, type without dropped letters; the Start capsule and
+  outside its controls, type without dropped letters; the island and
   the chips still take their taps, Start also from the bar above it, and
   while dictating Stop also from the top-row keys under it (other keys
   still type); a quick skid types its key; a low tap

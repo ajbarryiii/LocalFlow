@@ -5,7 +5,7 @@ import Foundation
 /// tail. Pure; the key area draws it. Built from samples in memory only.
 enum SwipeTrail {
     /// One point of the trail, in key-area points: the stroke's width there, its opacity, and how far along the trail
-    /// it is (0 at the tail, 1 at the finger), which sets its colour (`BrandPalette.trailColor`).
+    /// it is (0 at the tail, 1 at the finger).
     struct Point: Equatable, Sendable {
         var x: Double
         var y: Double
@@ -19,7 +19,7 @@ enum SwipeTrail {
     /// The stroke's width at the finger, in points; it narrows to nothing at the tail.
     static let maximumWidth: Double = 8
     /// The stroke's opacity at the finger by default; it fades to transparent at the tail. The keyboard passes its
-    /// palette's (`BrandPalette.trailAlpha`), which its brand colours need.
+    /// palette's (`BrandPalette.trailAlpha`).
     static let maximumAlpha: Double = 0.45
 
     /// The trail's points, oldest first and the finger (the newest sample) last: every sample at most

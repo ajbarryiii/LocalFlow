@@ -1,7 +1,7 @@
 import UIKit
 
 /// Key colors after iOS 26's keyboard: every key shares one fill, and action return keys and caps lock take the
-/// brand's accent (`BrandPalette.accent`, ARCHITECTURE.md, "Keyboard look"). Dynamic, so they follow light and dark
+/// accent (`BrandPalette.accent`, ARCHITECTURE.md, "Keyboard look"): the label colour's side, monochrome. Dynamic, so they follow light and dark
 /// mode, and Increase Contrast, without re-rendering.
 enum KeyPalette {
     static let fill = BrandPalette.dynamic(\.keyFill)
@@ -12,8 +12,8 @@ enum KeyPalette {
     static let edge = UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(white: 0.85, alpha: 0.7) : UIColor(white: 0.25, alpha: 0.6)
     }
-    /// Aurora, with ink on it; on the light keyboard an edge in deep aurora sets it off the pale backdrop.
-    static let prominentFill = BrandPalette.dynamic(\.accent.bottom)
+    /// A light key with dark ink on the dark keyboard, a near-black one with white ink on the light keyboard.
+    static let prominentFill = BrandPalette.dynamic(\.accent.color)
     static let prominentInk = BrandPalette.dynamic(\.accent.ink)
     /// A disabled return key (`ReturnKeyRule`): the plain fill, its caption dimmed.
     static let disabledAlpha: CGFloat = 0.35
@@ -197,7 +197,7 @@ final class KeyCalloutView: UIView {
 }
 
 /// The press-and-hold alternates row (`KeyTouchModel.alternatesTouch`): one bubble over the held key's cells, the
-/// picked cell highlighted in the brand's accent. It takes no touches; the held finger drives it.
+/// picked cell highlighted in the accent. It takes no touches; the held finger drives it.
 final class KeyAlternatesView: UIView {
     private let bubble = CAShapeLayer()
     private let highlight = CALayer()
@@ -260,7 +260,7 @@ final class KeyAlternatesView: UIView {
         let picked = cells[min(max(selected, 0), cells.count - 1)].offsetBy(dx: -outer.minX, dy: -outer.minY)
         highlight.frame = picked.insetBy(dx: 1, dy: 3)
         highlight.backgroundColor = KeyPalette.prominentFill.resolvedColor(with: traitCollection).cgColor
-        // The accent's edge on the light keyboard, as on Start and the action keys.
+        // The accent's edge where it has one, as on the action keys.
         let palette = BrandPalette(traitCollection), edge = palette.accent.edge
         highlight.borderWidth = edge == nil ? 0 : CGFloat(palette.edgeWidth)
         highlight.borderColor = edge.map { UIColor($0).cgColor }

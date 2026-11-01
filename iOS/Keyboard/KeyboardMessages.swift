@@ -6,6 +6,7 @@ enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
     static let preparingModel = "Preparing model…"
+    static let starting = "Starting…"
     /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`). Short enough for a
     /// 375-point phone beside Cancel and the labelled Stop capsule.
     static let listeningWhilePreparing = "Listening · model loads"
@@ -36,7 +37,7 @@ enum KeyboardMessages {
         case .needsFullAccess: return "Allow Full Access to dictate"
         case .configurationError: return "LocalFlow is not installed correctly"
         case .incompatible: return "Update LocalFlow"
-        case .starting: return "Starting…"
+        case .starting: return starting
         case .recording: return "Listening"
         case .transcribing: return "Transcribing…"
         case .waitingForModel, .preparingModel: return preparingModel
@@ -55,6 +56,27 @@ enum KeyboardMessages {
         case .transcribing: return "Transcribing"
         case .waitingForModel: return "Preparing model"
         default: return "Start dictation"
+        }
+    }
+
+    /// What VoiceOver hears as the island's value while it is Stop: the mode, the time while recording, and the text the
+    /// island shows in place of the bar's middle (`status`: a notice, the cold start's caption, the starting line when it
+    /// is more than "Starting…"), which the button's label and value would otherwise hide. Empty for Start and the wait,
+    /// whose text the middle holds.
+    static func islandAccessibilityValue(for mode: KeyboardMode, status: BarStatus, now: Date) -> String {
+        let base: String
+        switch mode {
+        case .starting: base = "Starting"
+        case .recording(_, let startedAt):
+            let seconds = max(0, Int(now.timeIntervalSince(startedAt)))
+            base = "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
+        default: return ""
+        }
+        switch status {
+        case .notice(let text): return base + ", " + text
+        case .wave(let caption?): return base + ", " + caption
+        case .text(let text, _, _) where text != starting: return base + ", " + text
+        default: return base
         }
     }
 
@@ -123,7 +145,7 @@ enum KeyboardMessages {
     }
 
     /// Dictation is ready to go: a live host runs a session and its model has not failed or gone missing (it may
-    /// still load when the user dictates). The idle bar then leads its line with a glacier dot.
+    /// still load when the user dictates). The idle bar then leads its line with the mark's dot.
     static func isSessionReady(_ status: HostStatus?, now: Date) -> Bool {
         guard let status, status.schema == DictationProtocol.schema, status.session == .active,
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
@@ -153,8 +175,8 @@ enum KeyboardMessages {
     }
 }
 
-/// The Start capsule's colour for a mode (ARCHITECTURE.md, "Keyboard look"): aurora Start, coral Stop while starting
-/// and recording, glacier while the recording waits for its transcript, and Start dimmed where dictation cannot run.
+/// The island's state for a mode (ARCHITECTURE.md, "Keyboard look"): Start, Stop while starting and recording, working
+/// while the recording waits for its transcript, and Start dimmed where dictation cannot run.
 enum CapsuleStyle: Equatable, Sendable {
     case start, stop, working, unavailable
 
@@ -168,33 +190,40 @@ enum CapsuleStyle: Equatable, Sendable {
     }
 }
 
-/// What the Start capsule holds (ARCHITECTURE.md, "Top row"): the ridge mark and "Start"; while starting, a spinner and
-/// "Stop"; while recording, "Stop" and the time; while the recording waits for its transcript, only a spinner (the
-/// middle says what it waits for). From starting until the transcript arrives the capsule keeps the recording Stop's
-/// width, so Cancel beside it never moves.
+extension IslandForm {
+    /// Start (dimmed or not) is the compact island; Stop grows it across the bar; the wait contracts it.
+    init(_ style: CapsuleStyle) {
+        switch style {
+        case .start, .unavailable: self = .compact
+        case .stop: self = .expanded
+        case .working: self = .processing
+        }
+    }
+}
+
+/// What the island holds (ARCHITECTURE.md, "Top row"): the ridge mark and "Start"; while starting, the status and the
+/// stop glyph; while recording, the wave, the time and the stop glyph; while the recording waits for its transcript, only
+/// the shimmer (the middle says what it waits for).
 enum CapsuleContent: Equatable, Sendable {
     case start
     case starting
     case stop(startedAt: Date)
-    case spinner
+    case processing
 
     init(mode: KeyboardMode) {
         switch mode {
         case .starting: self = .starting
         case .recording(_, let startedAt): self = .stop(startedAt: startedAt)
-        case .transcribing, .waitingForModel: self = .spinner
+        case .transcribing, .waitingForModel: self = .processing
         case .needsFullAccess, .configurationError, .incompatible, .ready, .preparingModel, .hostUnavailable, .error:
             self = .start
         }
     }
-
-    /// The capsule is as wide as the recording Stop.
-    var keepsStopWidth: Bool { self != .start }
 }
 
 /// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): a notice whenever one is up; while
 /// recording the live wave, with a caption only when it says something the user needs (the model still loading);
-/// otherwise the one-line status (ready and idle: only the model or session hint, led by a glacier dot while the
+/// otherwise the one-line status (ready and idle: only the model or session hint, led by the mark's dot while the
 /// session is ready, `KeyboardMessages.isSessionReady`), unless a chip shows.
 enum BarStatus: Equatable, Sendable {
     case notice(String)

@@ -6,7 +6,8 @@ enum KeyboardMessagesTests {
         [
             ("hintTellsWhenTheModelIsNotReady", testHintTellsWhenTheModelIsNotReady),
             ("hintNeedsALiveHost", testHintNeedsALiveHost),
-            ("capsuleShowsOnlyASpinnerWhileWaiting", testCapsuleShowsOnlyASpinnerWhileWaiting),
+            ("capsuleShowsOnlyAnIndicatorWhileWaiting", testCapsuleShowsOnlyAnIndicatorWhileWaiting),
+            ("voiceOverReadsWhatTheIslandShows", testVoiceOverReadsWhatTheIslandShows),
             ("sessionReadyNeedsALiveSessionAndAUsableModel", testSessionReadyNeedsALiveSessionAndAUsableModel),
             ("preparingTitles", testPreparingTitles),
             ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
@@ -50,11 +51,42 @@ enum KeyboardMessagesTests {
     }
 
     /// Round 4 council (Opus finding 5): "Preparing model…" in the middle sat beside a "Preparing" capsule. Both waits
-    /// for a transcript show only the spinner in the capsule, as transcription did; the middle names the wait and
+    /// for a transcript show only an indicator in the capsule (the processing island's shimmer since round 8, a spinner
+    /// before), as transcription did; the middle names the wait and
     /// VoiceOver hears it from the capsule's label.
-    private static func testCapsuleShowsOnlyASpinnerWhileWaiting() {
-        TestSupport.expectEqual(CapsuleContent(mode: .waitingForModel), .spinner)
-        TestSupport.expectEqual(CapsuleContent(mode: .transcribing), .spinner)
+    /// Sol, round 8: while the island records it holds dictation's own text (a notice, the cold start's caption, "Open
+    /// LocalFlow to start a session") inside Stop, whose label and value replace it for VoiceOver. The island's value names
+    /// the mode, the time while recording, and that text, so VoiceOver can read it again; it is empty when Start or the
+    /// wait shows (the middle holds their text, which VoiceOver reaches on its own).
+    private static func testVoiceOverReadsWhatTheIslandShows() {
+        let startedAt = Fixture.now, now = Fixture.now + 75
+        let recording = KeyboardMode.recording(level: 0.4, startedAt: startedAt)
+        func value(_ mode: KeyboardMode, title: String, notice: String? = nil) -> String {
+            KeyboardMessages.islandAccessibilityValue(for: mode, status: BarStatus(mode: mode, title: title, hint: nil, notice: notice,
+                                                                                   chipsShown: false), now: now)
+        }
+        let time = Duration.seconds(75).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
+        TestSupport.expectEqual(value(recording, title: "Listening"), "Recording, \(time)")
+        TestSupport.expectEqual(value(recording, title: KeyboardMessages.listeningWhilePreparing),
+                                "Recording, \(time), \(KeyboardMessages.modelLoadingCaption)")
+        TestSupport.expectEqual(value(recording, title: "Listening", notice: KeyboardMessages.storeWriteFailed),
+                                "Recording, \(time), \(KeyboardMessages.storeWriteFailed)")
+        TestSupport.expectEqual(value(.starting, title: KeyboardMessages.starting), "Starting")
+        TestSupport.expectEqual(value(.starting, title: KeyboardMessages.openLocalFlow), "Starting, \(KeyboardMessages.openLocalFlow)")
+        TestSupport.expectEqual(value(.starting, title: KeyboardMessages.starting, notice: KeyboardMessages.storeWriteFailed),
+                                "Starting, \(KeyboardMessages.storeWriteFailed)")
+        // A recording that started in the future (a clock step) never reads a negative time.
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .recording(level: 0, startedAt: now + 5),
+                                                                          status: .wave(caption: nil), now: now),
+                                "Recording, " + Duration.seconds(0).formatted(.units(allowed: [.minutes, .seconds], width: .wide)))
+        for mode in [KeyboardMode.ready, .transcribing, .waitingForModel, .error(.modelFailed), .hostUnavailable, .needsFullAccess] {
+            TestSupport.expectEqual(value(mode, title: KeyboardMessages.title(for: mode, launcherFailed: false), notice: "No speech detected"), "")
+        }
+    }
+
+    private static func testCapsuleShowsOnlyAnIndicatorWhileWaiting() {
+        TestSupport.expectEqual(CapsuleContent(mode: .waitingForModel), .processing)
+        TestSupport.expectEqual(CapsuleContent(mode: .transcribing), .processing)
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .waitingForModel), "Preparing model")
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .transcribing), "Transcribing")
         TestSupport.expectEqual(BarStatus(mode: .waitingForModel, title: KeyboardMessages.title(for: .waitingForModel, launcherFailed: false),

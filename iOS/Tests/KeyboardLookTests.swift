@@ -5,22 +5,20 @@ import Foundation
 enum KeyboardLookTests {
     static var tests: [TestCase] {
         [
-            ("textOnEveryBrandFillReadsAtAA", testTextOnEveryBrandFillReadsAtAA),
-            ("brandFillsStandOffTheBackdropOrHaveAnEdge", testBrandFillsStandOffTheBackdropOrHaveAnEdge),
-            ("brandGlyphsAndStrokesReachThreeToOne", testBrandGlyphsAndStrokesReachThreeToOne),
+            ("textOnEveryFillReadsAtAA", testTextOnEveryFillReadsAtAA),
+            ("fillsStandOffTheBackdropOrHaveAnEdge", testFillsStandOffTheBackdropOrHaveAnEdge),
+            ("brandColoursAreAccentsOnly", testBrandColoursAreAccentsOnly),
+            ("theIslandIsDarkInBothModes", testTheIslandIsDarkInBothModes),
+            ("accentsReachThreeToOne", testAccentsReachThreeToOne),
             ("lightModeUsesDeeperHues", testLightModeUsesDeeperHues),
-            ("theLightWaitingCapsuleIsCalmer", testTheLightWaitingCapsuleIsCalmer),
             ("highlightedCandidateStaysLegible", testHighlightedCandidateStaysLegible),
-            ("swipeTrailRunsFromGlacierToAurora", testSwipeTrailRunsFromGlacierToAurora),
+            ("swipeTrailIsQuietAndNeutral", testSwipeTrailIsQuietAndNeutral),
             ("menuLinkIsTheBrandAccent", testMenuLinkIsTheBrandAccent),
             ("ridgeMarkIsTheIconsLineAndDot", testRidgeMarkIsTheIconsLineAndDot),
             ("ridgeMarkFitsItsBoxCentred", testRidgeMarkFitsItsBoxCentred),
-            ("waveFollowsTheLevelsNewestAtTheRight", testWaveFollowsTheLevelsNewestAtTheRight),
-            ("waveFlowsLeftAndKeepsEachLevelsSide", testWaveFlowsLeftAndKeepsEachLevelsSide),
-            ("waveStaysInsideItsBox", testWaveStaysInsideItsBox),
             ("capsuleStyleFollowsTheMode", testCapsuleStyleFollowsTheMode),
             ("barStatusShowsTheWaveWhileRecording", testBarStatusShowsTheWaveWhileRecording),
-            ("capsuleHoldsItsWidthUntilTheTranscript", testCapsuleHoldsItsWidthUntilTheTranscript),
+            ("islandTakesItsFormFromTheMode", testIslandTakesItsFormFromTheMode),
             ("idleLineShowsReadinessWithADot", testIdleLineShowsReadinessWithADot),
             ("statusLineReadsAtAAOnTheBackdrop", testStatusLineReadsAtAAOnTheBackdrop),
             ("loadingCaptionHasAShortForm", testLoadingCaptionHasAShortForm),
@@ -40,103 +38,116 @@ enum KeyboardLookTests {
     }
 
     private static func fills(_ palette: BrandPalette) -> [(String, BrandPalette.Fill)] {
-        [("accent", palette.accent), ("stop", palette.stop), ("working", palette.working)]
+        [("accent", palette.accent), ("island", palette.island)]
     }
 
     // MARK: Palette
 
-    /// Ink on Start, the action keys and caps lock (aurora), Stop (coral) and the preparing capsule (glacier), at both
-    /// ends of each fill's gradient.
-    private static func testTextOnEveryBrandFillReadsAtAA() {
+    /// The caption on the action keys and caps lock (the accent fill), and the island's text (Start, Stop's time, the
+    /// status inside it).
+    private static func testTextOnEveryFillReadsAtAA() {
         variants { palette, name in
             for (role, fill) in fills(palette) {
-                for (end, color) in [("top", fill.top), ("bottom", fill.bottom)] {
-                    let value = ratio(fill.ink, color)
-                    TestSupport.expect(value >= 4.5, "\(role) ink on \(end), \(name): \(value)")
-                }
+                let value = ratio(fill.ink, fill.color)
+                TestSupport.expect(value >= 4.5, "\(role) ink, \(name): \(value)")
             }
         }
     }
 
-    /// A filled control reaches 3:1 against the keyboard's backdrop, or has an edge that does.
-    private static func testBrandFillsStandOffTheBackdropOrHaveAnEdge() {
+    /// A filled control reaches 3:1 against the keyboard's backdrop, or has an edge that does. Edges are hairlines (a
+    /// full point with Increase Contrast): round 4 council (Opus, visual 5), a 1-point edge read as a sticker outline.
+    private static func testFillsStandOffTheBackdropOrHaveAnEdge() {
         variants { palette, name in
             for (role, fill) in fills(palette) {
-                let fillRatio = min(ratio(fill.top, palette.backdrop), ratio(fill.bottom, palette.backdrop))
+                let fillRatio = ratio(fill.color, palette.backdrop)
                 let edgeRatio = fill.edge.map { ratio($0, palette.backdrop) } ?? 0
                 TestSupport.expect(fillRatio >= 3 || edgeRatio >= 3, "\(role), \(name): fill \(fillRatio), edge \(edgeRatio)")
             }
             TestSupport.expect(palette.edgeWidth > 0 && palette.edgeWidth <= 1, "edge width \(palette.edgeWidth), \(name)")
         }
-        // Round 4 council (Opus, visual 5): the light keyboard's 1-point edge read as a sticker outline beside the
-        // edgeless keys. It is a hairline, in the same deep hue (so its contrast holds), and a full point again with
-        // Increase Contrast.
-        let light = BrandPalette(dark: false, highContrast: false), lightHigh = BrandPalette(dark: false, highContrast: true)
-        TestSupport.expect(light.edgeWidth < 1, "light edge \(light.edgeWidth)")
-        TestSupport.expectEqual(lightHigh.edgeWidth, 1)
+        for dark in [false, true] {
+            TestSupport.expect(BrandPalette(dark: dark, highContrast: false).edgeWidth < 1, "edge is not a hairline")
+            TestSupport.expectEqual(BrandPalette(dark: dark, highContrast: true).edgeWidth, 1)
+        }
     }
 
-    /// The wave, the jump bar's category and an error's symbol on the backdrop, and accent glyphs on a key or chip
-    /// (Undo's symbol).
-    private static func testBrandGlyphsAndStrokesReachThreeToOne() {
+    /// Round 8 (owner, on a phone): the aurora buttons were very bright and jarring; the brand colours are for accents.
+    /// No control is filled with a brand hue: the accent keys and the island are greys with grey ink, in both modes and
+    /// with Increase Contrast, as are the highlighted candidate's pill and the swipe trace.
+    private static func testBrandColoursAreAccentsOnly() {
         variants { palette, name in
-            for (role, color) in [("aurora", palette.aurora), ("glacier", palette.glacier), ("coral", palette.coral),
-                                  ("ember", palette.ember)] {
+            for (role, fill) in fills(palette) {
+                for (part, color) in [("fill", fill.color), ("ink", fill.ink)] + (fill.edge.map { [("edge", $0)] } ?? []) {
+                    TestSupport.expect(isGrey(color), "\(role) \(part) is tinted, \(name): \(color)")
+                }
+            }
+            TestSupport.expect(isGrey(palette.pill) && isGrey(palette.pillEdge), "the candidate pill is tinted, \(name)")
+            TestSupport.expect(isGrey(palette.trail), "the swipe trace is tinted, \(name)")
+            // The accent keys read as the primary action: their fill is the label colour's side, far off the keys'.
+            TestSupport.expect(ratio(palette.accent.color, palette.keyFill) >= 3, "the accent key is not set off the keys, \(name)")
+        }
+    }
+
+    /// The island (Start, the recording, the wait for the transcript) is a dark pill in both modes, in the spirit of the
+    /// Dynamic Island, with white text: near-black on the dark keyboard, darker than the backdrop with a hairline edge to
+    /// set it off; graphite on the light keyboard, where black across the bar was the heaviest thing on the keyboard.
+    private static func testTheIslandIsDarkInBothModes() {
+        variants { palette, name in
+            TestSupport.expect(palette.island.color.luminance < 0.03, "island fill is not dark, \(name)")
+            TestSupport.expect(palette.island.ink.luminance > 0.9, "island ink is not white, \(name)")
+        }
+        for high in [false, true] {
+            let dark = BrandPalette(dark: true, highContrast: high), light = BrandPalette(dark: false, highContrast: high)
+            TestSupport.expect(dark.island.color.luminance < dark.backdrop.luminance, "the dark island is not below the backdrop")
+            TestSupport.expect(light.island.color.luminance > dark.island.color.luminance, "the light island is not softer")
+        }
+    }
+
+    /// Accents on the backdrop (the readiness dot, an error's symbol, the menu's link) and on the island (the live dot
+    /// the wave settles into, the wait's cool shimmer) reach 3:1, as do the island's lit dots; its resting dots stay
+    /// below that, a texture rather than a mark.
+    private static func testAccentsReachThreeToOne() {
+        variants { palette, name in
+            for (role, color) in [("aurora", palette.aurora), ("ember", palette.ember)] {
                 let value = ratio(color, palette.backdrop)
                 TestSupport.expect(value >= 3, "\(role) on the backdrop, \(name): \(value)")
             }
-            let onKey = ratio(palette.keyGlyph, palette.keyFill)
-            TestSupport.expect(onKey >= 3, "key glyph on the key fill, \(name): \(onKey)")
+            let island = palette.island.color
+            for (role, color) in [("live", palette.live), ("shimmer", palette.shimmer), ("lit dot", palette.island.ink)] {
+                let value = ratio(color, island)
+                TestSupport.expect(value >= 3, "\(role) on the island, \(name): \(value)")
+            }
+            let rest = BrandPalette.blend(palette.island.ink, alpha: DotWave.restBrightness, over: island)
+            TestSupport.expect(ratio(rest, island) < 3, "resting dots are as loud as lit ones, \(name)")
+            TestSupport.expect(ratio(rest, island) > 1.2, "resting dots are invisible, \(name)")
         }
     }
 
     /// The light keyboard's strokes are darker than the dark keyboard's, in the same hues: the bright brand colours are
-    /// too pale on a light backdrop. The dark keyboard uses the app's colours as they are.
+    /// too pale on a light backdrop. The dark keyboard uses the app's colours as they are. On the island, which is dark
+    /// in both modes, the live dot is the app's aurora and the shimmer a cool glacier white.
     private static func testLightModeUsesDeeperHues() {
         let dark = BrandPalette(dark: true, highContrast: false), light = BrandPalette(dark: false, highContrast: false)
         TestSupport.expectEqual(dark.aurora, BrandPalette.aurora)
-        TestSupport.expectEqual(dark.glacier, BrandPalette.glacier)
-        TestSupport.expectEqual(dark.coral, BrandPalette.coral)
         TestSupport.expectEqual(dark.ember, BrandPalette.ember)
-        TestSupport.expectEqual(dark.accent.ink, BrandPalette.ink)
-        for (role, deep, bright) in [("aurora", light.aurora, BrandPalette.aurora), ("glacier", light.glacier, BrandPalette.glacier),
-                                     ("coral", light.coral, BrandPalette.coral), ("ember", light.ember, BrandPalette.ember)] {
+        for (role, deep, bright) in [("aurora", light.aurora, BrandPalette.aurora), ("ember", light.ember, BrandPalette.ember)] {
             TestSupport.expect(deep.luminance < bright.luminance / 2, "\(role) is not deeper in light mode")
             TestSupport.expect(sameHue(deep, bright), "\(role) changes hue in light mode: \(hue(deep)) vs \(hue(bright))")
+        }
+        variants { palette, name in
+            TestSupport.expectEqual(palette.live, BrandPalette.aurora)
+            TestSupport.expect(sameHue(palette.shimmer, BrandPalette.glacier), "shimmer is not glacier's hue, \(name)")
+            TestSupport.expect(palette.shimmer.luminance > BrandPalette.glacier.luminance, "shimmer is not paler than glacier, \(name)")
         }
         // Increase Contrast never lowers a stroke's contrast.
         for darkMode in [false, true] {
             let normal = BrandPalette(dark: darkMode, highContrast: false), high = BrandPalette(dark: darkMode, highContrast: true)
-            for (a, b) in [(normal.aurora, high.aurora), (normal.glacier, high.glacier), (normal.coral, high.coral),
-                           (normal.ember, high.ember)] {
+            for (a, b) in [(normal.aurora, high.aurora), (normal.ember, high.ember)] {
                 TestSupport.expect(ratio(b, high.backdrop) >= ratio(a, normal.backdrop) - 1e-9, "Increase Contrast lowered a stroke")
             }
-        }
-    }
-
-    /// Round 6 council (Opus, visual): on the light keyboard the bright glacier capsule (preparing, transcribing) was the
-    /// loudest thing on the bar while the user waits, louder than Stop, the action before it. There its fill is the glacier
-    /// at about 85% of its saturation, the same hue and brightness; ink on it and its edge keep their contrast (the AA and
-    /// edge tests above). The dark keyboard keeps the app's glacier.
-    private static func testTheLightWaitingCapsuleIsCalmer() {
-        func saturation(_ c: RGB) -> Double {
-            let high = max(c.red, c.green, c.blue), low = min(c.red, c.green, c.blue)
-            return high > 0 ? (high - low) / high : 0
-        }
-        for high in [false, true] {
-            let light = BrandPalette(dark: false, highContrast: high), dark = BrandPalette(dark: true, highContrast: high)
-            TestSupport.expectEqual(dark.working.top, BrandPalette.glacier)
-            TestSupport.expectEqual(dark.working.bottom, BrandPalette.glacier)
-            for fill in [light.working.top, light.working.bottom] {
-                let share = saturation(fill) / saturation(BrandPalette.glacier)
-                TestSupport.expect(share >= 0.8 && share <= 0.9, "light working saturation \(share) of the glacier's")
-                TestSupport.expect(sameHue(fill, BrandPalette.glacier), "light working hue \(hue(fill))")
-                TestSupport.expect(abs(max(fill.red, fill.green, fill.blue) - max(BrandPalette.glacier.red, BrandPalette.glacier.green,
-                                                                                  BrandPalette.glacier.blue)) < 0.01,
-                                   "light working brightness")
-                TestSupport.expect(ratio(light.working.ink, fill) >= 4.5, "ink on the light working fill")
+            if let a = normal.island.edge, let b = high.island.edge {
+                TestSupport.expect(ratio(b, high.backdrop) >= ratio(a, normal.backdrop), "Increase Contrast lowered the island's edge")
             }
-            TestSupport.expect(light.working.edge.map { ratio($0, light.backdrop) >= 3 } == true, "light working edge")
         }
     }
 
@@ -158,10 +169,14 @@ enum KeyboardLookTests {
         return min(d, 360 - d) <= 20
     }
 
-    /// The candidate Space puts in sits on a pill whose text reads at 4.5:1 on it over the backdrop, with an aurora edge.
-    /// On the dark keyboard it is a soft aurora tint, visibly green, not grey. Round 6 council (Opus finding 3): on the light
-    /// keyboard the mint pill with its green edge, beside the mint Start with its green edge, read as a second main button.
-    /// There it is the keys' white fill with a thin deep-aurora edge: a choice, untinted, nothing like Start's fill.
+    /// A neutral: no channel more than 2% from the others (Apple's greys lean a touch blue).
+    private static func isGrey(_ c: RGB) -> Bool {
+        max(c.red, c.green, c.blue) - min(c.red, c.green, c.blue) <= 0.02
+    }
+
+    /// The candidate Space puts in sits on a pill whose text reads at 4.5:1 on it over the backdrop, with a visible
+    /// edge. Round 8 (owner): no aurora tint or edge; the pill is neutral in both modes, a soft white veil on the dark
+    /// keyboard and the keys' white on the light one, and never the accent keys' or the island's fill.
     private static func testHighlightedCandidateStaysLegible() {
         variants { palette, name in
             TestSupport.expect(palette.pillAlpha > 0 && palette.pillAlpha <= 1, "pill alpha \(palette.pillAlpha)")
@@ -169,22 +184,15 @@ enum KeyboardLookTests {
             let value = ratio(palette.text, pill)
             TestSupport.expect(value >= 4.5, "candidate on the pill, \(name): \(value)")
             TestSupport.expect(palette.pillEdgeAlpha > 0 && palette.pillEdgeAlpha < 1, "pill edge alpha, \(name)")
-            TestSupport.expectEqual(palette.pillEdge, palette.aurora)
+            let edge = BrandPalette.blend(palette.pillEdge, alpha: palette.pillEdgeAlpha, over: pill)
+            TestSupport.expect(ratio(edge, palette.backdrop) >= 1.5, "pill edge is invisible, \(name): \(ratio(edge, palette.backdrop))")
+            TestSupport.expect(ratio(pill, palette.accent.color) > 1.5 && ratio(pill, palette.island.color) > 1.5,
+                               "the pill looks like a primary control, \(name)")
         }
         for high in [false, true] {
-            let dark = BrandPalette(dark: true, highContrast: high), light = BrandPalette(dark: false, highContrast: high)
-            // Dark: as before, a fifth of aurora with its edge.
-            TestSupport.expectEqual(dark.pill, BrandPalette.aurora)
-            TestSupport.expectEqual(dark.pillAlpha, 0.2)
-            let tinted = BrandPalette.blend(dark.pill, alpha: dark.pillAlpha, over: dark.backdrop)
-            TestSupport.expect(tinted.green > tinted.red + 0.04, "dark pill is not tinted green: \(tinted)")
-            // Light: the key fill, opaque, so no hint of Start's mint; set off the backdrop as a key is, and by its edge.
+            let light = BrandPalette(dark: false, highContrast: high)
             TestSupport.expectEqual(light.pill, light.keyFill)
             TestSupport.expectEqual(light.pillAlpha, 1)
-            TestSupport.expect(hue(light.pill) == -1, "light pill is tinted")
-            TestSupport.expect(light.pill != light.accent.top && light.pill != light.accent.bottom, "light pill is Start's fill")
-            let edge = BrandPalette.blend(light.pillEdge, alpha: light.pillEdgeAlpha, over: light.pill)
-            TestSupport.expect(ratio(edge, light.backdrop) >= 1.5, "light pill edge is invisible: \(ratio(edge, light.backdrop))")
         }
         // `blend`: alpha 0 is the backdrop, 1 the colour.
         let a = RGB(1, 0, 0), b = RGB(0, 0, 1)
@@ -220,21 +228,16 @@ enum KeyboardLookTests {
         TestSupport.expect(ratio(high, measured) > ratio(normal, measured), "Increase Contrast does not deepen the status line")
     }
 
-    /// Glacier at the tail, aurora at the finger, in between by the point's position along the trail; at the finger the
-    /// trail reaches 3:1 against the backdrop.
-    private static func testSwipeTrailRunsFromGlacierToAurora() {
+    /// Round 8 (owner): quieter. The trace is the label colour's grey, fading towards its tail; at the finger it reaches
+    /// 3:1 against the backdrop.
+    private static func testSwipeTrailIsQuietAndNeutral() {
         variants { palette, name in
-            TestSupport.expectEqual(palette.trailColor(at: 0), palette.glacier)
-            TestSupport.expectEqual(palette.trailColor(at: 1), palette.aurora)
-            TestSupport.expectEqual(palette.trailColor(at: -1), palette.glacier)
-            TestSupport.expectEqual(palette.trailColor(at: 2), palette.aurora)
-            let middle = palette.trailColor(at: 0.5)
-            TestSupport.expect(abs(middle.green - (palette.glacier.green + palette.aurora.green) / 2) < 1e-9, "trail midpoint")
-            let finger = BrandPalette.blend(palette.aurora, alpha: palette.trailAlpha, over: palette.backdrop)
+            let finger = BrandPalette.blend(palette.trail, alpha: palette.trailAlpha, over: palette.backdrop)
             let value = ratio(finger, palette.backdrop)
             TestSupport.expect(value >= 3, "trail at the finger, \(name): \(value)")
+            TestSupport.expect(palette.trailAlpha < 1, "the trail is opaque, \(name)")
         }
-        // The pure trail carries each point's place along it, for the colour: 0 at the tail, 1 at the finger.
+        // The pure trail carries each point's place along it: 0 at the tail, 1 at the finger.
         let samples = [0.0, 0.125, 0.25].enumerated().map { SwipeSample(x: Double($0.offset) * 10, y: 50, t: $0.element) }
         let trail = SwipeTrail.points(from: samples, window: 0.25)
         TestSupport.expectEqual(trail.map(\.fraction), [0, 0.5, 1])
@@ -296,74 +299,10 @@ enum KeyboardLookTests {
         }
     }
 
-    // MARK: Recording wave
-
-    /// One corner per level, the newest at the right edge, each at least the quiet height from the middle line and at
-    /// most the box's half height, louder levels further out; silence draws a gentle ridge, not a flat line.
-    private static func testWaveFollowsTheLevelsNewestAtTheRight() {
-        let width = 160.0, height = 30.0
-        let wave = RidgeWave.corners(levels: [0, 0.5, 1], serial: 3, width: width, height: height, progress: 1)
-        let mid = height / 2
-        TestSupport.expectEqual(wave.last?.x, width - RidgeWave.inset(height: height))
-        let offsets = wave.suffix(3).map { abs($0.y - mid) }
-        TestSupport.expect(offsets[0] < offsets[1] && offsets[1] < offsets[2], "louder is not taller: \(offsets)")
-        TestSupport.expect(abs(offsets[0] - RidgeWave.quietAmplitude(height: height)) < 1e-9, "silence \(offsets[0])")
-        TestSupport.expect(RidgeWave.quietAmplitude(height: height) > 0, "silence is a flat line")
-        // Older than the levels heard: quiet corners, out to the left edge.
-        TestSupport.expect(wave.first!.x <= RidgeWave.inset(height: height) + 1e-9, "the wave does not reach the left: \(wave.first!)")
-        for corner in wave.dropLast(3) {
-            TestSupport.expect(abs(abs(corner.y - mid) - RidgeWave.quietAmplitude(height: height)) < 1e-9, "padding is not quiet")
-        }
-        // Corners are evenly spaced.
-        let steps = zip(wave, wave.dropFirst()).map { $1.x - $0.x }
-        TestSupport.expect(steps.allSatisfy { abs($0 - RidgeWave.step) < 1e-9 }, "uneven steps \(steps)")
-        TestSupport.expect(RidgeWave.corners(levels: [], serial: 0, width: 0, height: height, progress: 1).isEmpty, "no width")
-    }
-
-    /// Between two levels the corners slide left by `progress` of a step, and every level stays on its side of the
-    /// middle line as it travels (the side follows the level's serial number, not its place).
-    private static func testWaveFlowsLeftAndKeepsEachLevelsSide() {
-        let width = 120.0, height = 30.0, mid = height / 2
-        let before = RidgeWave.corners(levels: [0.2, 0.9], serial: 2, width: width, height: height, progress: 1)
-        let after = RidgeWave.corners(levels: [0.2, 0.9, 0.4], serial: 3, width: width, height: height, progress: 1)
-        func side(_ y: Double) -> Bool { y < mid }
-        // The 0.9 level was the newest corner; after the next level it is one step to the left, on the same side.
-        let loud = before[before.count - 1], moved = after[after.count - 2]
-        TestSupport.expect(abs(moved.x - (loud.x - RidgeWave.step)) < 1e-9, "the level did not move one step left")
-        TestSupport.expectEqual(side(moved.y), side(loud.y))
-        TestSupport.expect(side(after[after.count - 1].y) != side(moved.y), "neighbours are on the same side")
-        // Just after a level arrives (progress 0) the wave sits one step to the right, at progress 1 in place.
-        let start = RidgeWave.corners(levels: [0.2, 0.9, 0.4], serial: 3, width: width, height: height, progress: 0)
-        let half = RidgeWave.corners(levels: [0.2, 0.9, 0.4], serial: 3, width: width, height: height, progress: 0.5)
-        TestSupport.expect(abs(start.last!.x - (after.last!.x + RidgeWave.step)) < 1e-9, "start \(start.last!)")
-        TestSupport.expect(abs(half.last!.x - (after.last!.x + RidgeWave.step / 2)) < 1e-9, "half \(half.last!)")
-        // The same corners on the same sides; sliding right leaves room for one more quiet corner at the left.
-        TestSupport.expectEqual(Array(start.map(\.y).suffix(after.count)), after.map(\.y))
-        TestSupport.expect(start.count <= after.count + 1, "start \(start.count) corners")
-    }
-
-    /// Every corner stays inside the box with the stroke's room, at any progress; only the arriving corner may sit past
-    /// the right edge for the fraction of a step it has yet to travel, and the view fades that edge.
-    private static func testWaveStaysInsideItsBox() {
-        let width = 90.0, height = 24.0
-        let levels: [Float] = (0 ..< 40).map { Float($0 % 5) / 4 }
-        for progress in [0.0, 0.3, 1.0] {
-            let wave = RidgeWave.corners(levels: levels + [2, -1, .nan], serial: 43, width: width, height: height, progress: progress)
-            for corner in wave {
-                TestSupport.expect(corner.y >= RidgeWave.inset(height: height) - 1e-9
-                    && corner.y <= height - RidgeWave.inset(height: height) + 1e-9, "y outside: \(corner)")
-                TestSupport.expect(corner.x <= width - RidgeWave.inset(height: height) + (1 - progress) * RidgeWave.step + 1e-9,
-                                   "x past the right edge: \(corner)")
-            }
-            TestSupport.expect(wave.first!.x <= RidgeWave.inset(height: height) + 1e-9, "the wave does not reach the left")
-            TestSupport.expect(wave.first!.x > RidgeWave.inset(height: height) - RidgeWave.step - 1e-9, "more corners than needed")
-        }
-    }
-
     // MARK: Dictation states
 
-    /// Start is aurora; starting and recording show coral Stop; the wait for a transcript glacier; a state where
-    /// dictation cannot run here the dimmed Start.
+    /// The island's state for a mode: Start while idle (and after errors); starting and recording are Stop; the wait for
+    /// a transcript is the working island; a state where dictation cannot run here the dimmed Start.
     private static func testCapsuleStyleFollowsTheMode() {
         let cases: [(KeyboardMode, CapsuleStyle)] = [
             (.ready, .start), (.hostUnavailable, .start), (.preparingModel, .start), (.error(.transcriptionFailed), .start),
@@ -400,25 +339,28 @@ enum KeyboardLookTests {
         TestSupport.expect(KeyboardMessages.modelLoadingCaption.count <= 14, KeyboardMessages.modelLoadingCaption)
     }
 
-    /// Round 4 council (Opus finding 3): on Stop the wide "Stop 0:03" capsule became a narrow spinner and Cancel slid
-    /// about 22 points. From starting until the transcript arrives the capsule keeps the recording Stop's width; only
-    /// Start (idle, errors, and where dictation cannot run) takes its own.
-    private static func testCapsuleHoldsItsWidthUntilTheTranscript() {
+    /// Round 8 (owner): the island. Start is the compact island, holding the mark and "Start"; starting and recording
+    /// grow it across the bar into Stop (the whole island stops), holding the wave and the time; the wait for the
+    /// transcript contracts it into the short processing island with only its shimmer (the middle names the wait).
+    /// This replaces round 4's rule that the capsule keeps the recording Stop's width so Cancel never moves: Cancel now
+    /// sits at the bar's left beside the menu, where no change of the island's width can move it (`IslandLayout`).
+    private static func testIslandTakesItsFormFromTheMode() {
         let startedAt = Date(timeIntervalSince1970: 1_000)
-        let cases: [(KeyboardMode, CapsuleContent)] = [
-            (.starting, .starting), (.recording(level: 0.4, startedAt: startedAt), .stop(startedAt: startedAt)),
-            (.transcribing, .spinner), (.waitingForModel, .spinner),
-            (.ready, .start), (.preparingModel, .start), (.hostUnavailable, .start), (.error(.transcriptionFailed), .start),
-            (.needsFullAccess, .start), (.configurationError, .start), (.incompatible, .start),
+        let cases: [(KeyboardMode, CapsuleContent, IslandForm)] = [
+            (.starting, .starting, .expanded), (.recording(level: 0.4, startedAt: startedAt), .stop(startedAt: startedAt), .expanded),
+            (.transcribing, .processing, .processing), (.waitingForModel, .processing, .processing),
+            (.ready, .start, .compact), (.preparingModel, .start, .compact), (.hostUnavailable, .start, .compact),
+            (.error(.transcriptionFailed), .start, .compact),
+            (.needsFullAccess, .start, .compact), (.configurationError, .start, .compact), (.incompatible, .start, .compact),
         ]
-        for (mode, content) in cases {
+        for (mode, content, form) in cases {
             TestSupport.expectEqual(CapsuleContent(mode: mode), content)
-            TestSupport.expectEqual(CapsuleContent(mode: mode).keepsStopWidth, content != .start)
+            TestSupport.expectEqual(IslandForm(CapsuleStyle(mode: mode)), form)
         }
     }
 
-    /// Round 4 council (Opus, visual 4): idle with a ready session, the status line is led by a glacier dot (the mark's
-    /// dot). It shows only on the idle line, never on an error, a notice or another mode's line, and is information,
+    /// Round 4 council (Opus, visual 4): idle with a ready session, the status line is led by a dot (the mark's dot,
+    /// aurora since round 8, when the glacier went to the wait's shimmer alone). It shows only on the idle line, never on an error, a notice or another mode's line, and is information,
     /// not a control (a tap there still types the key under it).
     private static func testIdleLineShowsReadinessWithADot() {
         func status(_ mode: KeyboardMode, title: String = "", hint: String? = nil, notice: String? = nil, chips: Bool = false,
@@ -445,6 +387,6 @@ enum KeyboardLookTests {
         let short = KeyboardMessages.modelLoadingShortCaption, full = KeyboardMessages.modelLoadingCaption
         TestSupport.expect(short.count < full.count, "\(short) is not shorter than \(full)")
         TestSupport.expect(full.lowercased().contains(short.lowercased()), "\(short) says something else than \(full)")
-        TestSupport.expect(BarStatus.captionedWaveWidth >= 2 * RidgeWave.step * 3, "the wave keeps too few corners")
+        TestSupport.expect(BarStatus.captionedWaveWidth >= 12 * DotWave.pitch, "the wave keeps too few columns")
     }
 }

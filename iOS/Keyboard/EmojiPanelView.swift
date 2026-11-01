@@ -24,7 +24,6 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     }
 
     private static let recentsKey = "lf.emojiRecents"
-    private static let shownTint = BrandPalette.dynamic(\.aurora)
     /// The catalog, split once.
     private static let catalog: [Section] = EmojiCatalog.categories.map { Section(name: $0.name, symbol: $0.symbol, emoji: $0.emoji) }
 
@@ -120,8 +119,8 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
             let shown = button.tag == shownSection
             let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: bold || shown ? .semibold : .regular)
             button.setImage(UIImage(systemName: sections[button.tag].symbol, withConfiguration: configuration), for: .normal)
-            // The category shown takes the accent, as the keyboard marks every current state.
-            button.tintColor = shown ? Self.shownTint : .secondaryLabel
+            // The category shown is the label colour and heavier; the others are secondary.
+            button.tintColor = shown ? .label : .secondaryLabel
             button.accessibilityTraits = button.tag == shownSection ? [.button, .selected] : .button
         }
     }

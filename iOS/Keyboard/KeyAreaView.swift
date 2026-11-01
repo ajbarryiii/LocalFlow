@@ -749,8 +749,7 @@ extension UIReturnKeyType {
 }
 
 /// Draws a `SwipeTrail`: a stroke through its points whose width and opacity follow each point, round at
-/// the finger, its colour running from glacier at the tail to aurora at the finger (`BrandPalette.trailColor`, deeper
-/// hues on the light keyboard). It takes no touches.
+/// the finger, in the label colour's grey (`BrandPalette.trail`). It takes no touches.
 private final class SwipeTrailView: UIView {
     var points: [SwipeTrail.Point] = [] {
         didSet {
@@ -810,14 +809,14 @@ private final class SwipeTrailView: UIView {
             context.addLine(to: CGPoint(x: b.x - nb.x * hb, y: b.y - nb.y * hb))
             context.addLine(to: CGPoint(x: a.x - na.x * ha, y: a.y - na.y * ha))
             context.closePath()
-            context.setFillColor(UIColor(palette.trailColor(at: (a.fraction + b.fraction) / 2), alpha: alpha).cgColor)
+            context.setFillColor(UIColor(palette.trail, alpha: alpha).cgColor)
             context.fillPath()
         }
         if let finger = points.last, finger.width > 0, finger.alpha > 0 {
             let radius = finger.width / 2
             // Over the last segment, not on top of it: stacked, the two would make a brighter cap at the finger.
             context.setBlendMode(.copy)
-            context.setFillColor(UIColor(palette.trailColor(at: finger.fraction), alpha: finger.alpha).cgColor)
+            context.setFillColor(UIColor(palette.trail, alpha: finger.alpha).cgColor)
             context.fillEllipse(in: CGRect(x: finger.x - radius, y: finger.y - radius, width: finger.width, height: finger.width))
         }
     }
