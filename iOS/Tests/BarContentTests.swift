@@ -9,6 +9,7 @@ enum BarContentTests {
             ("emojiRecentsAreNewestFirstAndBounded", testEmojiRecentsAreNewestFirstAndBounded),
             ("noDividerBesideTheHighlightedCandidate", testNoDividerBesideTheHighlightedCandidate),
             ("longCandidatesAreDroppedRatherThanShrunk", testLongCandidatesAreDroppedRatherThanShrunk),
+            ("candidatesShareOneTextSize", testCandidatesShareOneTextSize),
         ]
     }
 
@@ -87,7 +88,8 @@ enum BarContentTests {
         func shown(_ strip: SwipeStrip, _ widths: [Double], _ available: Double = 257) -> CandidateStripLayout.Fit {
             CandidateStripLayout.fit(strip, widths: widths, available: available)
         }
-        TestSupport.expectEqual(shown(strip, [55, 62, 91]), CandidateStripLayout.Fit(shown: [0, 1, 2], minimumScale: 0.8))
+        TestSupport.expectEqual(shown(strip, [55, 62, 91]).shown, [0, 1, 2])
+        TestSupport.expect(shown(strip, [55, 62, 91]).scale >= CandidateStripLayout.minimumScale, "shrunk below 0.8")
         TestSupport.expectEqual(shown(strip, [55, 62, 102]).shown, [0, 1])
         // The least useful goes, not the long one: the third, whatever its length.
         TestSupport.expectEqual(shown(strip, [55, 102, 40]).shown, [0, 1])
@@ -100,9 +102,40 @@ enum BarContentTests {
         TestSupport.expectEqual(shown(committed, [130, 120, 125]).shown, [0, 2])
         TestSupport.expectEqual(shown(committed, [150, 120, 145]).shown, [2])
         // What is left shrinks below 0.8 only when it must.
-        TestSupport.expectEqual(shown(committed, [150, 120, 320]), CandidateStripLayout.Fit(shown: [2], minimumScale: 0.6))
+        TestSupport.expectEqual(shown(committed, [150, 120, 320]).shown, [2])
+        TestSupport.expect(shown(committed, [150, 120, 320]).scale < CandidateStripLayout.minimumScale, "the last word did not shrink")
+        TestSupport.expectEqual(shown(committed, [150, 120, 900]), CandidateStripLayout.Fit(shown: [2], scale: 0.6))
         // Unmeasured (no width yet): everything, as before.
         TestSupport.expectEqual(shown(strip, [55, 62, 102], 0).shown, [0, 1, 2])
         TestSupport.expectEqual(shown(strip, [], 257).shown, [0, 1, 2])
+    }
+
+    /// Round 4 council (Opus finding 2): each word shrank on its own, so "yesterday" showed at full size beside a smaller
+    /// "yesterday's". The shown words share one scale: the largest at which the tightest of them fits its slot, never
+    /// above full size, and never below `minimumScale` while a word can still be dropped instead.
+    private static func testCandidatesShareOneTextSize() {
+        let strip = SwipeStrip(candidates: ["yesterday", "yesterday's", "yesterdays"], inserted: 0,
+                               live: SwipeStrip.Live(quoted: nil, marked: nil))
+        // Three slots of (257 − 2) / 3 = 85 points, 73 of them for text.
+        func fit(_ widths: [Double], _ available: Double = 257) -> CandidateStripLayout.Fit {
+            CandidateStripLayout.fit(strip, widths: widths, available: available)
+        }
+        // Everything fits at full size: nothing shrinks.
+        TestSupport.expectEqual(fit([60, 70, 66]), CandidateStripLayout.Fit(shown: [0, 1, 2], scale: 1))
+        // One long word sets the size for all three.
+        let shared = fit([66, 85, 80])
+        TestSupport.expectEqual(shared.shown, [0, 1, 2])
+        TestSupport.expect(abs(shared.scale - 73.0 / 85) < 1e-9, "scale \(shared.scale)")
+        TestSupport.expect([66.0, 85, 80].allSatisfy { $0 * shared.scale <= 73 + 1e-9 }, "a word overflows its slot")
+        // A word that would need less than 0.8 goes, and the rest share the size they need (here full size).
+        let dropped = fit([60, 70, 100])
+        TestSupport.expectEqual(dropped.shown, [0, 1])
+        TestSupport.expectEqual(dropped.scale, 1)
+        // Two slots of 128 points, 116 for text: the longer of the two sets the size.
+        let two = fit([60, 130, 100])
+        TestSupport.expectEqual(two.shown, [0, 1])
+        TestSupport.expect(abs(two.scale - 116.0 / 130) < 1e-9, "scale \(two.scale)")
+        // Unmeasured: the floor, for all.
+        TestSupport.expectEqual(fit([60, 70, 66], 0), CandidateStripLayout.Fit(shown: [0, 1, 2], scale: CandidateStripLayout.minimumScale))
     }
 }

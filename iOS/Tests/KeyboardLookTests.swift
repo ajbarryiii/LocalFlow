@@ -19,6 +19,9 @@ enum KeyboardLookTests {
             ("waveStaysInsideItsBox", testWaveStaysInsideItsBox),
             ("capsuleStyleFollowsTheMode", testCapsuleStyleFollowsTheMode),
             ("barStatusShowsTheWaveWhileRecording", testBarStatusShowsTheWaveWhileRecording),
+            ("capsuleHoldsItsWidthUntilTheTranscript", testCapsuleHoldsItsWidthUntilTheTranscript),
+            ("idleLineShowsReadinessWithADot", testIdleLineShowsReadinessWithADot),
+            ("loadingCaptionHasAShortForm", testLoadingCaptionHasAShortForm),
         ]
     }
 
@@ -61,7 +64,14 @@ enum KeyboardLookTests {
                 let edgeRatio = fill.edge.map { ratio($0, palette.backdrop) } ?? 0
                 TestSupport.expect(fillRatio >= 3 || edgeRatio >= 3, "\(role), \(name): fill \(fillRatio), edge \(edgeRatio)")
             }
+            TestSupport.expect(palette.edgeWidth > 0 && palette.edgeWidth <= 1, "edge width \(palette.edgeWidth), \(name)")
         }
+        // Round 4 council (Opus, visual 5): the light keyboard's 1-point edge read as a sticker outline beside the
+        // edgeless keys. It is a hairline, in the same deep hue (so its contrast holds), and a full point again with
+        // Increase Contrast.
+        let light = BrandPalette(dark: false, highContrast: false), lightHigh = BrandPalette(dark: false, highContrast: true)
+        TestSupport.expect(light.edgeWidth < 1, "light edge \(light.edgeWidth)")
+        TestSupport.expectEqual(lightHigh.edgeWidth, 1)
     }
 
     /// The wave, the jump bar's category and an error's symbol on the backdrop, and accent glyphs on a key or chip
@@ -188,11 +198,11 @@ enum KeyboardLookTests {
                            "the dot is below the ridge")
     }
 
-    /// Fitted into a box, the mark keeps its shape (one scale), all its ink inside the box, centred.
+    /// Fitted into a box, the mark keeps its shape (one scale), all its ink inside the box, centred, at any weight.
     private static func testRidgeMarkFitsItsBoxCentred() {
-        for box in [KeyRect(x: 0, y: 0, width: 16, height: 16), KeyRect(x: 10, y: 4, width: 30, height: 20),
-                    KeyRect(x: -3, y: 2, width: 12, height: 40)] {
-            let mark = RidgeMark.fitted(in: box)
+        for (box, weight) in [(KeyRect(x: 0, y: 0, width: 16, height: 16), 1.0), (KeyRect(x: 10, y: 4, width: 30, height: 20), 1),
+                              (KeyRect(x: -3, y: 2, width: 12, height: 40), 1), (KeyRect(x: 0, y: 0, width: 19, height: 19), 1.3)] {
+            let mark = RidgeMark.fitted(in: box, weight: weight)
             let half = mark.lineWidth / 2
             let xs = mark.line.map(\.x) + [mark.dot.x - mark.dotRadius, mark.dot.x + mark.dotRadius]
             let ys = mark.line.map(\.y) + [mark.dot.y - mark.dotRadius, mark.dot.y + mark.dotRadius]
@@ -205,8 +215,8 @@ enum KeyboardLookTests {
             // It fills the box's shorter side.
             TestSupport.expect(abs(maxX - minX - box.width) < 1e-6 || abs(maxY - minY - box.height) < 1e-6, "does not fill \(box)")
             // One scale: the first stroke keeps its direction and the dot its size relative to the line.
-            let scale = mark.lineWidth / RidgeMark.lineWidth
-            TestSupport.expect(abs(mark.dotRadius - RidgeMark.dotRadius * scale) < 1e-9, "dot scaled apart from the line")
+            let scale = mark.lineWidth / (RidgeMark.lineWidth * weight)
+            TestSupport.expect(abs(mark.dotRadius - RidgeMark.dotRadius * weight * scale) < 1e-9, "dot scaled apart from the line")
             let dx = mark.line[1].x - mark.line[0].x, dy = mark.line[1].y - mark.line[0].y
             TestSupport.expect(abs(dx - (RidgeMark.line[1].x - RidgeMark.line[0].x) * scale) < 1e-9
                 && abs(dy - (RidgeMark.line[1].y - RidgeMark.line[0].y) * scale) < 1e-9, "the mark is distorted")
@@ -315,5 +325,53 @@ enum KeyboardLookTests {
         TestSupport.expectEqual(status(.ready, title: "", notice: "No speech detected", chips: true), .notice("No speech detected"))
         // The caption is short enough for the SE beside Cancel and Stop.
         TestSupport.expect(KeyboardMessages.modelLoadingCaption.count <= 14, KeyboardMessages.modelLoadingCaption)
+    }
+
+    /// Round 4 council (Opus finding 3): on Stop the wide "Stop 0:03" capsule became a narrow spinner and Cancel slid
+    /// about 22 points. From starting until the transcript arrives the capsule keeps the recording Stop's width; only
+    /// Start (idle, errors, and where dictation cannot run) takes its own.
+    private static func testCapsuleHoldsItsWidthUntilTheTranscript() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let cases: [(KeyboardMode, CapsuleContent)] = [
+            (.starting, .starting), (.recording(level: 0.4, startedAt: startedAt), .stop(startedAt: startedAt)),
+            (.transcribing, .spinner), (.waitingForModel, .spinner),
+            (.ready, .start), (.preparingModel, .start), (.hostUnavailable, .start), (.error(.transcriptionFailed), .start),
+            (.needsFullAccess, .start), (.configurationError, .start), (.incompatible, .start),
+        ]
+        for (mode, content) in cases {
+            TestSupport.expectEqual(CapsuleContent(mode: mode), content)
+            TestSupport.expectEqual(CapsuleContent(mode: mode).keepsStopWidth, content != .start)
+        }
+    }
+
+    /// Round 4 council (Opus, visual 4): idle with a ready session, the status line is led by a glacier dot (the mark's
+    /// dot). It shows only on the idle line, never on an error, a notice or another mode's line, and is information,
+    /// not a control (a tap there still types the key under it).
+    private static func testIdleLineShowsReadinessWithADot() {
+        func status(_ mode: KeyboardMode, title: String = "", hint: String? = nil, notice: String? = nil, chips: Bool = false,
+                    ready: Bool) -> BarStatus {
+            BarStatus(mode: mode, title: title, hint: hint, notice: notice, chipsShown: chips, sessionReady: ready)
+        }
+        let line = "Session ends after 5 min idle"
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: true), .text(line, attention: false, ready: true))
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: false), .text(line, attention: false, ready: false))
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, chips: true, ready: true), .none)
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, notice: "No speech detected", ready: true),
+                                .notice("No speech detected"))
+        TestSupport.expectEqual(status(.preparingModel, title: KeyboardMessages.preparingModel, ready: true),
+                                .text(KeyboardMessages.preparingModel, attention: false, ready: false))
+        TestSupport.expectEqual(status(.hostUnavailable, title: "Start opens LocalFlow", ready: true),
+                                .text("Start opens LocalFlow", attention: false, ready: false))
+        TestSupport.expectEqual(status(.error(.modelFailed), title: "The speech model failed to load", ready: true),
+                                .text("The speech model failed to load", attention: true, ready: false))
+    }
+
+    /// Sol, round 4: on a 375-point phone "Model loading" left the wave about 55 points. Where the full caption would
+    /// leave the wave less than `captionedWaveWidth`, the caption is the short one, which still names the wait.
+    private static func testLoadingCaptionHasAShortForm() {
+        let short = KeyboardMessages.modelLoadingShortCaption, full = KeyboardMessages.modelLoadingCaption
+        TestSupport.expect(short.count < full.count, "\(short) is not shorter than \(full)")
+        TestSupport.expect(full.lowercased().contains(short.lowercased()), "\(short) says something else than \(full)")
+        TestSupport.expect(BarStatus.captionedWaveWidth >= 2 * RidgeWave.step * 3, "the wave keeps too few corners")
     }
 }

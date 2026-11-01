@@ -76,6 +76,9 @@ struct KeyboardMetrics: Equatable, Sendable {
     var keyGap: Double
     var sideMargin: Double
 
+    /// The keys' corner radius, in points.
+    static let keyCornerRadius: Double = 8.5
+
     /// Portrait key-area height (Apple's keys without the predictive bar).
     static let regularHeight: Double = 216
     static let compactHeight: Double = 162

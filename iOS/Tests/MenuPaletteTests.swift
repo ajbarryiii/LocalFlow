@@ -7,6 +7,7 @@ enum MenuPaletteTests {
         [
             ("contrastIsWCAGsRatio", testContrastIsWCAGsRatio),
             ("everyMenuTextReadsAtAA", testEveryMenuTextReadsAtAA),
+            ("menuCardLeavesNoKeyPeekingOut", testMenuCardLeavesNoKeyPeekingOut),
         ]
     }
 
@@ -28,7 +29,60 @@ enum MenuPaletteTests {
                     let ratio = MenuPalette.contrast(text, palette.card)
                     TestSupport.expect(ratio >= 4.5, "\(name) \(dark ? "dark" : "light")\(high ? " high" : ""): \(ratio)")
                 }
+                // The text-width choice's words, on its track and on the chosen segment.
+                for (name, fill) in [("track", palette.track), ("selected segment", palette.selectedSegment)] {
+                    let ratio = MenuPalette.contrast(palette.primary, fill)
+                    TestSupport.expect(ratio >= 4.5, "text on the \(name) \(dark ? "dark" : "light")\(high ? " high" : ""): \(ratio)")
+                }
             }
         }
+    }
+
+    /// Round 4 council (Opus finding 4): the card was inset 8 points but the keys only 3 to 6, so slivers of dimmed keys
+    /// showed at its edges and corners. The card covers every key it lies over, rounded corners included, on the Pro, the
+    /// SE and in landscape, and every letter, number and symbol layout: over the three rows above the bottom row when its
+    /// content fits there (the bottom row shows whole below it), otherwise over all four.
+    private static func testMenuCardLeavesNoKeyPeekingOut() {
+        let radius = KeyboardMetrics.keyCornerRadius, cardRadius = MenuCover.cornerRadius
+        /// Whether the rounded `key` lies inside the rounded `card`: inside its rectangle, and at each of the card's
+        /// corners the key's corner arc inside the card's.
+        func covers(_ card: KeyRect, _ key: KeyRect) -> Bool {
+            let e = 1e-9
+            guard key.x >= card.x - e, key.y >= card.y - e, key.maxX <= card.maxX + e, key.maxY <= card.maxY + e else { return false }
+            for (kx, cx, sx) in [(key.x + radius, card.x + cardRadius, 1.0), (key.maxX - radius, card.maxX - cardRadius, -1.0)] {
+                for (ky, cy, sy) in [(key.y + radius, card.y + cardRadius, 1.0), (key.maxY - radius, card.maxY - cardRadius, -1.0)] {
+                    // The key's corner centre lies in the card's corner zone only when it is outside the card's straight
+                    // edges' reach on both axes.
+                    guard (kx - cx) * sx < 0, (ky - cy) * sy < 0 else { continue }
+                    let distance = ((kx - cx) * (kx - cx) + (ky - cy) * (ky - cy)).squareRoot()
+                    if distance + radius > cardRadius + e { return false }
+                }
+            }
+            return true
+        }
+        for (width, height) in [(402.0, KeyboardMetrics.regularHeight), (375, KeyboardMetrics.regularHeight),
+                                (874, KeyboardMetrics.compactHeight), (667, KeyboardMetrics.compactHeight)] {
+            let metrics = KeyboardMetrics(width: width, height: height)
+            let small = MenuCover.card(metrics: metrics, contentHeight: 100)
+            let tall = MenuCover.card(metrics: metrics, contentHeight: 1_000)
+            TestSupport.expect(small.x >= 0 && small.maxX <= width && small.y >= 0, "card outside the key area at \(width)")
+            TestSupport.expect(tall.maxY <= height, "card below the key area at \(width)")
+            for layer in [KeyboardLayer.letters, .numbers, .symbols] {
+                for key in KeyboardLayout.keys(for: layer, metrics: metrics, showsGlobe: true, field: .url) {
+                    let bottomRow = key.frame.y >= metrics.rowY(3) - 1e-9
+                    TestSupport.expect(covers(tall, key.frame), "\(key.label) peeks out of the tall card at \(width)")
+                    if bottomRow {
+                        TestSupport.expect(key.frame.y >= small.maxY, "the card cuts the bottom row's \(key.label) at \(width)")
+                    } else {
+                        TestSupport.expect(covers(small, key.frame), "\(key.label) peeks out of the card at \(width)")
+                    }
+                }
+            }
+            // Content that fits over the three rows keeps the short card; more takes the tall one.
+            let threeRows = small.height
+            TestSupport.expectEqual(MenuCover.card(metrics: metrics, contentHeight: threeRows), small)
+            TestSupport.expectEqual(MenuCover.card(metrics: metrics, contentHeight: threeRows + 1), tall)
+        }
+        TestSupport.expect(MenuCover.dimmedAlpha > 0.2 && MenuCover.dimmedAlpha < 0.6, "dimmed alpha \(MenuCover.dimmedAlpha)")
     }
 }

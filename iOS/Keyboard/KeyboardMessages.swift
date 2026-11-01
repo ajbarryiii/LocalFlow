@@ -12,10 +12,11 @@ enum KeyboardMessages {
     /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
     /// presentation"), nothing prepares it now.
     static let modelLoadsWhenDictating = "Model loads when you dictate"
-    /// The Start capsule's label while a finished recording waits for the model.
-    static let preparingCaption = "Preparing"
     /// Beside the recording wave while the host still prepares the model: the wave itself says "listening".
     static let modelLoadingCaption = "Model loading"
+    /// `modelLoadingCaption` where it would leave the wave less than `BarStatus.captionedWaveWidth` (a 375-point phone,
+    /// large text): the rest of the bar says it is a recording, so "Loading" is the model.
+    static let modelLoadingShortCaption = "Loading"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
         + "your speech on this iPhone. Nothing leaves your phone."
@@ -46,10 +47,15 @@ enum KeyboardMessages {
         }
     }
 
-    /// Text beside the Start capsule's spinner. The capsule is never replaced by the candidate strip, the
-    /// chips or a notice, so the wait for the model is explained whatever else holds the bar.
-    static func capsuleCaption(for mode: KeyboardMode) -> String? {
-        mode == .waitingForModel ? preparingCaption : nil
+    /// What VoiceOver calls the Start capsule; while the recording waits, the capsule shows only a spinner and this
+    /// names the wait.
+    static func capsuleAccessibilityLabel(for mode: KeyboardMode) -> String {
+        switch mode {
+        case .starting, .recording: return "Stop dictation"
+        case .transcribing: return "Transcribing"
+        case .waitingForModel: return "Preparing model"
+        default: return "Start dictation"
+        }
     }
 
     static func text(for code: HostErrorCode) -> String {
@@ -116,6 +122,18 @@ enum KeyboardMessages {
         max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded(.up)))
     }
 
+    /// Dictation is ready to go: a live host runs a session and its model has not failed or gone missing (it may
+    /// still load when the user dictates). The idle bar then leads its line with a glacier dot.
+    static func isSessionReady(_ status: HostStatus?, now: Date) -> Bool {
+        guard let status, status.schema == DictationProtocol.schema, status.session == .active,
+              DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
+        else { return false }
+        switch status.model {
+        case .failed, .unavailable: return false
+        case .notPrepared, .preparing, .ready: return true
+        }
+    }
+
     /// A small hint about the model or session, only from a live host: a dead host's last status
     /// would otherwise claim "Preparing model…" forever.
     static func hint(for status: HostStatus?, now: Date) -> String? {
@@ -150,17 +168,46 @@ enum CapsuleStyle: Equatable, Sendable {
     }
 }
 
+/// What the Start capsule holds (ARCHITECTURE.md, "Top row"): the ridge mark and "Start"; while starting, a spinner and
+/// "Stop"; while recording, "Stop" and the time; while the recording waits for its transcript, only a spinner (the
+/// middle says what it waits for). From starting until the transcript arrives the capsule keeps the recording Stop's
+/// width, so Cancel beside it never moves.
+enum CapsuleContent: Equatable, Sendable {
+    case start
+    case starting
+    case stop(startedAt: Date)
+    case spinner
+
+    init(mode: KeyboardMode) {
+        switch mode {
+        case .starting: self = .starting
+        case .recording(_, let startedAt): self = .stop(startedAt: startedAt)
+        case .transcribing, .waitingForModel: self = .spinner
+        case .needsFullAccess, .configurationError, .incompatible, .ready, .preparingModel, .hostUnavailable, .error:
+            self = .start
+        }
+    }
+
+    /// The capsule is as wide as the recording Stop.
+    var keepsStopWidth: Bool { self != .start }
+}
+
 /// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): a notice whenever one is up; while
 /// recording the live wave, with a caption only when it says something the user needs (the model still loading);
-/// otherwise the one-line status (ready and idle: only the model or session hint), unless a chip shows.
+/// otherwise the one-line status (ready and idle: only the model or session hint, led by a glacier dot while the
+/// session is ready, `KeyboardMessages.isSessionReady`), unless a chip shows.
 enum BarStatus: Equatable, Sendable {
     case notice(String)
     case wave(caption: String?)
-    /// `attention`: an error or a state that keeps dictation from working.
-    case text(String, attention: Bool)
+    /// `attention`: an error or a state that keeps dictation from working. `ready`: idle with dictation ready, which
+    /// the dot shows; information, not a control.
+    case text(String, attention: Bool, ready: Bool = false)
     case none
 
-    init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool) {
+    /// The least room the recording wave keeps beside its full caption; with less, the caption is the short one.
+    static let captionedWaveWidth = 80.0
+
+    init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool, sessionReady: Bool = false) {
         if let notice {
             self = .notice(notice)
             return
@@ -180,6 +227,7 @@ enum BarStatus: Equatable, Sendable {
         }
         switch mode {
         case .error, .needsFullAccess, .configurationError, .incompatible: self = .text(line, attention: true)
+        case .ready: self = .text(line, attention: false, ready: sessionReady)
         default: self = .text(line, attention: false)
         }
     }

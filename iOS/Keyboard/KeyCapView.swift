@@ -18,7 +18,7 @@ enum KeyPalette {
     /// A disabled return key (`ReturnKeyRule`): the plain fill, its caption dimmed.
     static let disabledAlpha: CGFloat = 0.35
     static let shadow = UIColor(white: 0, alpha: 1).cgColor
-    static let cornerRadius: CGFloat = 8.5
+    static let cornerRadius = CGFloat(KeyboardMetrics.keyCornerRadius)
 }
 
 /// One key's cap: drawing only. The key area tracks touches and owns the state.
@@ -92,9 +92,10 @@ final class KeyCapView: UIView {
     /// resolved here).
     private func updateEdge() {
         let high = traitCollection.accessibilityContrast == .high
-        let accentEdge = isProminent ? BrandPalette(traitCollection).accent.edge : nil
+        let palette = BrandPalette(traitCollection)
+        let accentEdge = isProminent ? palette.accent.edge : nil
         if let accentEdge {
-            layer.borderWidth = 1
+            layer.borderWidth = CGFloat(palette.edgeWidth)
             layer.borderColor = UIColor(accentEdge).cgColor
         } else {
             layer.borderWidth = high ? 1 : 0
@@ -260,8 +261,8 @@ final class KeyAlternatesView: UIView {
         highlight.frame = picked.insetBy(dx: 1, dy: 3)
         highlight.backgroundColor = KeyPalette.prominentFill.resolvedColor(with: traitCollection).cgColor
         // The accent's edge on the light keyboard, as on Start and the action keys.
-        let edge = BrandPalette(traitCollection).accent.edge
-        highlight.borderWidth = edge == nil ? 0 : 1
+        let palette = BrandPalette(traitCollection), edge = palette.accent.edge
+        highlight.borderWidth = edge == nil ? 0 : CGFloat(palette.edgeWidth)
         highlight.borderColor = edge.map { UIColor($0).cgColor }
         CATransaction.commit()
         isHidden = false

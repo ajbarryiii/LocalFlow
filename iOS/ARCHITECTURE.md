@@ -1024,20 +1024,33 @@ every other point of the bar
   dictation control. While starting or recording it is a coral capsule
   labelled "Stop", with the elapsed time while recording (with the wave in
   the middle it fits a 375 pt phone with the menu button and Cancel), with a
-  small cancel button (`lf.cancel`) beside it. While transcribing it is a
-  glacier capsule with a spinner; while waiting for the model, a spinner
-  labelled "Preparing" (`KeyboardMessages.capsuleCaption`). Its colours are
-  in [Keyboard look](#keyboard-look) (`CapsuleStyle`). The capsule is never replaced by the
-  candidate strip, the chips or a notice, so the wait is explained whatever
-  holds the middle. When dictation cannot run here (no Full Access,
-  configuration, versions), it explains why.
-- **Left:** a menu button (`lf.menu`) that opens a panel over the key area,
-  dimming the keys, with the session status, "Open LocalFlow", the trackpad
+  small cancel button (`lf.cancel`) beside it. While transcribing or
+  waiting for the model it is a glacier capsule with only a spinner; the
+  middle says what it waits for ("Transcribing…", "Preparing model…"), and
+  VoiceOver hears it from the capsule's label
+  (`KeyboardMessages.capsuleAccessibilityLabel`). From starting until the
+  transcript arrives the capsule keeps the recording Stop's width
+  (`CapsuleContent`), so Cancel beside it never moves (round 4 council: it
+  slid about 22 pt on Stop). Its colours are in
+  [Keyboard look](#keyboard-look) (`CapsuleStyle`). The capsule is never
+  replaced by the candidate strip, the chips or a notice. When dictation
+  cannot run here (no Full Access, configuration, versions), it explains
+  why.
+- **Left:** a menu button (`lf.menu`) that opens a panel over the key area
+  with the session status, "Open LocalFlow", the trackpad
   tip with the field's text width ("Full width" or "Chat bubble",
   [Field profiles](#field-profiles)), and details of anything that keeps
-  dictation from working. The card spans the key area with an 8-point margin
-  on each side; its text follows Dynamic Type and reads at WCAG AA (4.5:1 or
-  better) on it in light and dark mode (`MenuPalette`: a white card in light
+  dictation from working. The open menu is one calm layer (`MenuCover`): the
+  keys and the bar's controls other than the menu button fade alike to 35%,
+  the bar's middle goes (the card says the same), and the system backdrop is
+  never tinted (a tint over the keyboard's area shows a seam under the band
+  iOS draws above it). The card lies over the keys with none peeking out: it
+  reaches 2 pt past their outer edges, its corners rounded to the keys' own
+  radius plus that, over the three rows above the bottom row when its
+  content fits there, otherwise over all four. Its text follows Dynamic Type,
+  the text-width choice included (two segments, stacked when they do not fit
+  side by side), and reads at WCAG AA (4.5:1 or
+  better) in light and dark mode (`MenuPalette`: a white card in light
   mode, a dark grey one in dark mode, "Open LocalFlow" and the session line's
   ridge mark in the brand's accent, `BrandPalette.link`). When it does not fit (landscape, the largest sizes) it
   scrolls inside its rounded corners. At the accessibility sizes the actions
@@ -1047,12 +1060,18 @@ every other point of the bar
   The session line is the bar's ("Session ends after 5 min idle"). A tap outside the panel's card, or
   on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
-  (`lf.insertLast`) when there is something to act on, otherwise a one-line
+  (`lf.insertLast`) when there is something to act on (neither while a
+  dictation is in progress, so the wait's line always shows), otherwise a one-line
   status (model preparation, errors, notices): "Preparing model…" in
   `preparingModel` and `waitingForModel` (`BarStatus`). While recording, the
   middle shows the recording wave instead of "Listening"
   ([Keyboard look](#keyboard-look)), captioned "Model loading" only while
-  the host still prepares the model; a notice still shows instead of it. An
+  the host still prepares the model ("Loading" where the full caption would
+  leave the wave less than 80 pt: a 375 pt phone at large text); a notice
+  still shows instead of it. Idle with a ready session (a live host's active
+  session whose model has not failed or gone missing,
+  `KeyboardMessages.isSessionReady`), the status line is led by a small
+  glacier dot, the mark's: information, not a control. An
   error or a state that keeps dictation from working leads its line with an
   ember warning symbol. The candidate strip, after a
   swipe ([Swipe typing](#swipe-typing)) or a commit key
@@ -1066,7 +1085,8 @@ every other point of the bar
   types the top-row key under it), e.g. "Start opens LocalFlow" with no
   session. The bar and the menu name the session's end alike: "ends after N
   min idle". Bar text grows with Dynamic Type up to what one line of the
-  fixed-height bar holds, and shrinks at most to 85%.
+  fixed-height bar holds, and shrinks at most to 85% (80% for the session
+  line beside its dot).
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
@@ -1091,8 +1111,9 @@ LocalFlow's colours (`BrandPalette`, the app's `Theme`: aurora #6DFFA8,
 glacier #67E8F9, coral #FF7D5E, ember #F5C66B, ink #04120A) mark only where
 something happens. On the light keyboard aurora and glacier are too pale for
 glyphs or thin strokes, so strokes and glyphs use deeper variants of the same
-hues; filled controls keep their bright fill and gain a 1 pt edge in the deep
-hue instead. The contract (`KeyboardLookTests`), in light and dark mode, with
+hues; filled controls keep their bright fill and gain a 0.5 pt hairline edge
+in the deep hue instead (1 pt with Increase Contrast; round 4 council: the
+1 pt edge read as a sticker outline beside the edgeless keys). The contract (`KeyboardLookTests`), in light and dark mode, with
 and without Increase Contrast, against the backdrop measured on iOS 26.4:
 ink on every fill 4.5:1 or better; every fill 3:1 against the backdrop, or an
 edge that is; strokes and glyphs on the backdrop, and accent glyphs on a key
@@ -1100,7 +1121,8 @@ or chip, 3:1 or better; the highlighted candidate's text 4.5:1 on its pill.
 
 - **Start** is the app's primary button: `Theme.gradient` (aurora with a hint
   of glacier) with ink, and the ridge mark (`RidgeMark`, the icon's W line
-  and dot, drawn as a vector) beside "Start". **Stop** is coral with ink;
+  and dot, drawn as a vector, 19 pt and 1.3 times the icon's weight so the W
+  reads at that size) beside "Start". **Stop** is coral with ink;
   the wait for a transcript is glacier with ink (`CapsuleStyle`: Start
   dimmed to 45% where dictation cannot run here).
 - **The recording wave** (`RidgeWave`) is the mark's line come alive across
@@ -1707,11 +1729,13 @@ three candidates, cased the same way, the inserted word emphasized.
 Autocorrect shows its choices in the same strip after a commit key, and its
 suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
 
-- **Layout** (`CandidateStripLayout`, round 3): equal slots, each word on one
-  line shrunk to no less than 0.8 of its size. When the words do not all fit
-  so, the least useful go (the last that is neither the emphasized nor the
-  quoted word) until the rest fit; only those two may shrink further (to
-  0.6). The 1 pt dividers sit between shown candidates, but none beside the
+- **Layout** (`CandidateStripLayout`, rounds 3 and 5): equal slots, each
+  word on one line, all at one text size: the largest at which every shown
+  word fits its slot, never above full size and no less than 0.8 of it (round
+  4 council: each word shrank on its own, so "yesterday's" showed smaller
+  than "yesterday"). When the words do not all fit at 0.8, the least useful go
+  (the last that is neither the emphasized nor the quoted word) until the
+  rest fit; only those two may shrink further (to 0.6). The 1 pt dividers sit between shown candidates, but none beside the
   emphasized candidate's aurora pill ([Keyboard look](#keyboard-look)).
 
 - Tapping another candidate replaces the inserted word, but only while the

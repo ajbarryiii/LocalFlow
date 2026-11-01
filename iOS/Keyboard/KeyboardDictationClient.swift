@@ -33,6 +33,8 @@ struct KeyboardViewState: Equatable {
     var canUndo = false
     /// For the menu panel: whether a session runs and how long it stays idle.
     var sessionSummary = ""
+    /// A live session can take a dictation now (`KeyboardMessages.isSessionReady`): the idle bar shows its dot.
+    var sessionReady = false
     /// Recent input levels while recording, oldest first.
     var levels: [Float] = []
     /// How many levels this recording has heard, the newest's number (the wave keeps each level on its side by it).
@@ -389,6 +391,7 @@ final class KeyboardDictationClient: ObservableObject {
                                      canInsertLast: manualInsertID != nil,
                                      canUndo: target?.canUndoLastDictation == true,
                                      sessionSummary: KeyboardMessages.sessionSummary(for: status.value, now: now),
+                                     sessionReady: KeyboardMessages.isSessionReady(status.value, now: now),
                                      levels: levels, levelSerial: levelSerial)
         guard next != state else { return }
         if mode.phase != state.mode.phase {

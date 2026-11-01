@@ -28,6 +28,9 @@ struct MenuPalette: Equatable {
     var secondary: RGB
     /// "Open LocalFlow": aurora on the dark card, a deep aurora on the light one.
     var link: RGB
+    /// The text-width choice: its track on the card, and the chosen segment on the track; `primary` text reads on both.
+    var track: RGB
+    var selectedSegment: RGB
 
     /// `highContrast`: Increase Contrast, which darkens the light mode's secondary text and brightens the dark mode's.
     init(dark: Bool, highContrast: Bool) {
@@ -35,10 +38,14 @@ struct MenuPalette: Equatable {
             card = RGB(0.173, 0.173, 0.180)
             primary = RGB(1, 1, 1)
             secondary = highContrast ? RGB(0.84, 0.84, 0.86) : RGB(0.68, 0.68, 0.70)
+            track = RGB(0.235, 0.235, 0.245)
+            selectedSegment = highContrast ? RGB(0.36, 0.36, 0.37) : RGB(0.42, 0.42, 0.43)
         } else {
             card = RGB(1, 1, 1)
             primary = RGB(0, 0, 0)
             secondary = highContrast ? RGB(0.28, 0.28, 0.29) : RGB(0.39, 0.39, 0.40)
+            track = highContrast ? RGB(0.86, 0.86, 0.88) : RGB(0.92, 0.92, 0.93)
+            selectedSegment = RGB(1, 1, 1)
         }
         link = BrandPalette(dark: dark, highContrast: highContrast).link
     }

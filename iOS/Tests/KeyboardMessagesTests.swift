@@ -6,7 +6,8 @@ enum KeyboardMessagesTests {
         [
             ("hintTellsWhenTheModelIsNotReady", testHintTellsWhenTheModelIsNotReady),
             ("hintNeedsALiveHost", testHintNeedsALiveHost),
-            ("capsuleNamesTheWaitForTheModel", testCapsuleNamesTheWaitForTheModel),
+            ("capsuleShowsOnlyASpinnerWhileWaiting", testCapsuleShowsOnlyASpinnerWhileWaiting),
+            ("sessionReadyNeedsALiveSessionAndAUsableModel", testSessionReadyNeedsALiveSessionAndAUsableModel),
             ("preparingTitles", testPreparingTitles),
             ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
             ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
@@ -47,16 +48,42 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.hint(for: nil, now: Fixture.now), nil)
     }
 
-    /// The Start capsule is never replaced by the candidate strip, the chips or a notice, so it names the
-    /// wait for the model itself; transcription keeps the bare spinner.
-    private static func testCapsuleNamesTheWaitForTheModel() {
-        TestSupport.expectEqual(KeyboardMessages.capsuleCaption(for: .waitingForModel), KeyboardMessages.preparingCaption)
-        let others: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .starting,
-                                      .recording(level: 0.2, startedAt: Fixture.now), .transcribing, .error(.modelFailed),
-                                      .preparingModel, .ready, .hostUnavailable]
+    /// Round 4 council (Opus finding 5): "Preparing model…" in the middle sat beside a "Preparing" capsule. Both waits
+    /// for a transcript show only the spinner in the capsule, as transcription did; the middle names the wait and
+    /// VoiceOver hears it from the capsule's label.
+    private static func testCapsuleShowsOnlyASpinnerWhileWaiting() {
+        TestSupport.expectEqual(CapsuleContent(mode: .waitingForModel), .spinner)
+        TestSupport.expectEqual(CapsuleContent(mode: .transcribing), .spinner)
+        TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .waitingForModel), "Preparing model")
+        TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .transcribing), "Transcribing")
+        TestSupport.expectEqual(BarStatus(mode: .waitingForModel, title: KeyboardMessages.title(for: .waitingForModel, launcherFailed: false),
+                                          hint: nil, notice: nil, chipsShown: false),
+                                .text(KeyboardMessages.preparingModel, attention: false))
+        let others: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .error(.modelFailed), .preparingModel, .ready,
+                                      .hostUnavailable]
         for mode in others {
-            TestSupport.expectEqual(KeyboardMessages.capsuleCaption(for: mode), nil)
+            TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: mode), "Start dictation")
         }
+        TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .starting), "Stop dictation")
+        TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .recording(level: 0, startedAt: Fixture.now)), "Stop dictation")
+    }
+
+    /// Round 4 council (Opus, visual 4): the idle bar shows that dictation is ready. Only a live host's active session
+    /// counts, and only while its model can load (not failed or missing); a model that loads when the user dictates is
+    /// ready enough.
+    private static func testSessionReadyNeedsALiveSessionAndAUsableModel() {
+        let now = Fixture.now
+        for model in [HostStatus.Model.notPrepared, .preparing, .ready] {
+            TestSupport.expect(KeyboardMessages.isSessionReady(status(model: model), now: now), "\(model) is not ready")
+        }
+        for model in [HostStatus.Model.failed, .unavailable] {
+            TestSupport.expect(!KeyboardMessages.isSessionReady(status(model: model), now: now), "\(model) is ready")
+        }
+        TestSupport.expect(!KeyboardMessages.isSessionReady(status(model: .ready, .inactive), now: now), "no session is ready")
+        TestSupport.expect(!KeyboardMessages.isSessionReady(status(model: .ready, .starting), now: now), "a starting session is ready")
+        let late = now + DictationProtocol.livenessTimeout + 0.001
+        TestSupport.expect(!KeyboardMessages.isSessionReady(status(model: .ready), now: late), "a dead host is ready")
+        TestSupport.expect(!KeyboardMessages.isSessionReady(nil, now: now), "no status is ready")
     }
 
     private static func testPreparingTitles() {

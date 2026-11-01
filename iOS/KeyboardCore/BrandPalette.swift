@@ -3,8 +3,8 @@ import Foundation
 /// The keyboard's LocalFlow colours (ARCHITECTURE.md, "Keyboard look"): the Wilderness Labs palette of the app's
 /// `Theme` (aurora, glacier, coral, ember, and the ink drawn on them) where something happens, the keys' neutral fill
 /// everywhere else. On the light keyboard the bright hues are too pale for glyphs or thin strokes, so strokes and
-/// glyphs take deeper variants of the same hues, and filled controls keep their bright fill with an edge in the deep
-/// hue. As sRGB components so their contrast is testable (`MenuPalette`); the keyboard makes colours of them. Pure.
+/// glyphs take deeper variants of the same hues, and filled controls keep their bright fill with a hairline edge in
+/// the deep hue. As sRGB components so their contrast is testable (`MenuPalette`); the keyboard makes colours of them. Pure.
 struct BrandPalette: Equatable {
     typealias RGB = MenuPalette.RGB
 
@@ -47,6 +47,9 @@ struct BrandPalette: Equatable {
     /// The candidate Space would put in: `pill` at `pillAlpha` over the backdrop.
     var pill: RGB
     var pillAlpha: Double
+    /// The width of a fill's edge, in points: a hairline that only sets the bright fill off the light backdrop (the fill
+    /// carries the colour), a full point with Increase Contrast.
+    var edgeWidth: Double
     /// The swipe trail's opacity at the finger (`SwipeTrail`); its colour runs from glacier at the tail to aurora.
     var trailAlpha: Double
     /// The keys' fill (`KeyPalette.fill`).
@@ -72,6 +75,7 @@ struct BrandPalette: Equatable {
             pill = Self.aurora
             pillAlpha = 0.2
             trailAlpha = 0.7
+            edgeWidth = 1
         } else {
             backdrop = RGB(230 / 255, 232 / 255, 234 / 255)
             keyFill = RGB(1, 1, 1)
@@ -87,6 +91,7 @@ struct BrandPalette: Equatable {
             pill = Self.aurora
             pillAlpha = 0.38
             trailAlpha = 0.85
+            edgeWidth = highContrast ? 1 : 0.5
         }
         link = aurora
     }

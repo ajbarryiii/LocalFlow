@@ -24,20 +24,24 @@ enum RidgeMark {
     static let dot = Point(x: 16, y: 26)
     static let dotRadius = 1.8
 
-    /// The mark's ink (the line with its round caps, and the dot), in its units.
-    private static let ink: (minX: Double, minY: Double, maxX: Double, maxY: Double) = {
-        let half = lineWidth / 2
-        return (min(line.map(\.x).min()! - half, dot.x - dotRadius), min(line.map(\.y).min()! - half, dot.y - dotRadius),
-                max(line.map(\.x).max()! + half, dot.x + dotRadius), max(line.map(\.y).max()! + half, dot.y + dotRadius))
-    }()
+    /// The mark's ink (the line with its round caps, and the dot), in its units, with the line and dot `weight` times
+    /// their size.
+    private static func ink(weight: Double) -> (minX: Double, minY: Double, maxX: Double, maxY: Double) {
+        let half = lineWidth * weight / 2, radius = dotRadius * weight
+        return (min(line.map(\.x).min()! - half, dot.x - radius), min(line.map(\.y).min()! - half, dot.y - radius),
+                max(line.map(\.x).max()! + half, dot.x + radius), max(line.map(\.y).max()! + half, dot.y + radius))
+    }
 
-    /// The mark at one scale, as large as fits in `box`, its ink centred there.
-    static func fitted(in box: KeyRect) -> Fitted {
+    /// The mark at one scale, as large as fits in `box`, its ink centred there. `weight` thickens the line and the dot
+    /// (1 is the icon's): at small sizes a heavier mark keeps its W from reading as a scribble.
+    static func fitted(in box: KeyRect, weight: Double = 1) -> Fitted {
+        let ink = ink(weight: weight)
         let width = ink.maxX - ink.minX, height = ink.maxY - ink.minY
         let scale = max(0, min(box.width / width, box.height / height))
         let originX = box.midX - (ink.minX + width / 2) * scale, originY = box.midY - (ink.minY + height / 2) * scale
         func place(_ p: Point) -> Point { Point(x: originX + p.x * scale, y: originY + p.y * scale) }
-        return Fitted(line: line.map(place), dot: place(dot), dotRadius: dotRadius * scale, lineWidth: lineWidth * scale)
+        return Fitted(line: line.map(place), dot: place(dot), dotRadius: dotRadius * weight * scale,
+                      lineWidth: lineWidth * weight * scale)
     }
 }
 

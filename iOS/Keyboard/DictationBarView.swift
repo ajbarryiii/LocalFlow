@@ -97,6 +97,8 @@ struct DictationBarView: View {
         let height = CGFloat(compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight)
         let barHeight = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
         let capturing = state.mode.isActiveCapture
+        // Under the open menu the bar's controls fade as the keys do, and its middle goes: the card says the same.
+        let menuOpen = chrome.isMenuOpen
         HStack(spacing: 8) {
             Button(action: onMenu) {
                 Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")
@@ -134,6 +136,8 @@ struct DictationBarView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             // The middle cross-fades when what it holds changes (the strip coming or going), never as its words change.
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: middle)
+            .opacity(menuOpen ? 0 : 1)
+            .allowsHitTesting(!menuOpen)
 
             if state.mode.isInProgress {
                 Button {
@@ -151,11 +155,13 @@ struct DictationBarView: View {
                 .accessibilityLabel("Cancel dictation")
                 .accessibilityIdentifier("lf.cancel")
                 .barControl("cancel", in: controls)
+                .opacity(menuOpen ? MenuCover.dimmedAlpha : 1)
             }
             StartCapsule(client: client, state: state, height: height, compact: compact, onAction: onAction, onUnavailable: onMenu)
                 .barControl("start", in: controls) {
                     KeyboardMetrics.startTapArea(capsule: $0, barHeight: barHeight, compact: compact, capturing: capturing)
                 }
+                .opacity(menuOpen ? MenuCover.dimmedAlpha : 1)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity)
@@ -168,6 +174,7 @@ struct DictationBarView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: CapsuleStyle(mode: state.mode))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canUndo)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.canInsertLast)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: menuOpen)
         // The bar's height is fixed: its text grows to what one line holds there.
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
@@ -185,11 +192,13 @@ private struct Middle: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     private var undoShown: Bool { state.canUndo && !state.mode.isInProgress }
-    private var insertLastShown: Bool { state.canInsertLast && !state.mode.isRecording }
+    /// Not while a dictation is in progress: the chip would hide the line that names the wait, which the capsule's
+    /// spinner no longer says.
+    private var insertLastShown: Bool { state.canInsertLast && !state.mode.isInProgress }
 
     var body: some View {
         let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice,
-                               chipsShown: undoShown || insertLastShown)
+                               chipsShown: undoShown || insertLastShown, sessionReady: state.sessionReady)
         HStack(spacing: 6) {
             if undoShown {
                 Chip(title: "Undo", symbol: "arrow.uturn.backward", height: height) {
@@ -220,19 +229,30 @@ private struct Middle: View {
                     .accessibilityIdentifier("lf.notice")
             case .wave(let caption):
                 if let caption {
-                    Text(caption)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .accessibilityIdentifier("lf.status")
+                    // The full caption while it leaves the wave room; on a narrow bar the short one.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            waveCaption(caption)
+                            wave.frame(minWidth: CGFloat(BarStatus.captionedWaveWidth))
+                        }
+                        HStack(spacing: 6) {
+                            waveCaption(KeyboardMessages.modelLoadingShortCaption)
+                            wave
+                        }
+                    }
+                } else {
+                    wave
                 }
-                RecordingWave(levels: state.levels, serial: state.levelSerial)
-                    .frame(height: height)
-                    // VoiceOver hears the mode from Stop's value; the wave is decoration.
-                    .accessibilityHidden(true)
-            case .text(let line, let attention):
+            case .text(let line, let attention, let ready):
                 HStack(spacing: 5) {
+                    if ready {
+                        // Dictation is ready: the mark's glacier dot. Information, not a control.
+                        Circle()
+                            .fill(Color(BrandPalette(colorScheme: colorScheme, contrast: contrast).glacier))
+                            .frame(width: 6, height: 6)
+                            .padding(.trailing, 1)
+                            .accessibilityHidden(true)
+                    }
                     if attention {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 11, weight: .semibold))
@@ -243,13 +263,31 @@ private struct Middle: View {
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(attention ? .primary : .secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        // Beside the dot the session line may shrink a little further, so at the largest bar text on
+                        // a 375-point phone it still shows whole (never below the default size there).
+                        .minimumScaleFactor(ready ? 0.8 : 0.85)
                         .accessibilityIdentifier("lf.status")
                 }
             case .none:
                 EmptyView()
             }
         }
+    }
+
+    private func waveCaption(_ caption: String) -> some View {
+        Text(caption)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityIdentifier("lf.status")
+    }
+
+    private var wave: some View {
+        RecordingWave(levels: state.levels, serial: state.levelSerial)
+            .frame(height: height)
+            // VoiceOver hears the mode from Stop's value; the wave is decoration.
+            .accessibilityHidden(true)
     }
 }
 
@@ -322,8 +360,9 @@ private struct RidgeWaveShape: Shape {
 /// Up to three candidates side by side, as on Apple's predictive bar: a swipe's or autocorrect's after a commit key
 /// (the one in the field now emphasized), or the suggestions while a word is typed (the word as typed in quotes and
 /// the correction a space would make emphasized, while one is pending). A tap replaces the word (the editor decides
-/// whether it still can). Words that would shrink below `CandidateStripLayout.minimumScale` make room by dropping the
-/// least useful candidate; no divider shows beside the emphasized one's pill.
+/// whether it still can). The words share one text size (`CandidateStripLayout`); words that would shrink below
+/// `CandidateStripLayout.minimumScale` make room by dropping the least useful candidate; no divider shows beside the
+/// emphasized one's pill.
 private struct CandidateStrip: View {
     let strip: SwipeStrip
     let height: CGFloat
@@ -335,6 +374,7 @@ private struct CandidateStrip: View {
 
     var body: some View {
         let fit = CandidateStripLayout.fit(strip, widths: strip.candidates.indices.map(textWidth), available: Double(width))
+        let size = baseFont.pointSize * CGFloat(fit.scale)
         HStack(spacing: 0) {
             ForEach(Array(fit.shown.enumerated()), id: \.element) { position, index in
                 let word = strip.candidates[index]
@@ -352,9 +392,12 @@ private struct CandidateStrip: View {
                     onCandidate(index)
                 } label: {
                     Text(label(index))
-                        .font(.subheadline.weight(emphasized ? .semibold : .regular))
+                        .font(.system(size: size, weight: emphasized ? .semibold : .regular))
                         .lineLimit(1)
-                        .minimumScaleFactor(CGFloat(fit.minimumScale))
+                        // The shared size is worked out from the full-size widths; a smaller size sets its letters a
+                        // touch looser, which tightening absorbs before the tightest word would truncate.
+                        .allowsTightening(true)
+                        .minimumScaleFactor(0.95)
                         .foregroundStyle(.primary)
                         .padding(.horizontal, CGFloat(CandidateStripLayout.padding))
                         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
@@ -384,11 +427,15 @@ private struct CandidateStrip: View {
         index == strip.live?.quoted ? "\u{201C}\(strip.candidates[index])\u{201D}" : strip.candidates[index]
     }
 
+    /// The bar's text size for candidates at full size.
+    private var baseFont: UIFont {
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+        return UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
+    }
+
     /// The candidate's width at full size, in the bar's text size.
     private func textWidth(_ index: Int) -> Double {
-        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
-        let base = UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
-        let font = UIFont.systemFont(ofSize: base.pointSize, weight: index == strip.emphasized ? .semibold : .regular)
+        let font = UIFont.systemFont(ofSize: baseFont.pointSize, weight: index == strip.emphasized ? .semibold : .regular)
         return Double(ceil((label(index) as NSString).size(withAttributes: [.font: font]).width))
     }
 }
@@ -457,7 +504,8 @@ private struct ChipLabel: View {
 
 /// The primary control (ARCHITECTURE.md, "Keyboard look"): "Start" with the ridge mark, in the app's primary-button
 /// aurora; a coral "Stop" with the elapsed time while starting or recording (the wave in the middle shows the levels);
-/// glacier with a spinner while the recording waits for its transcript; ink on every fill.
+/// glacier with only a spinner while the recording waits for its transcript; ink on every fill. From starting until the
+/// transcript it keeps the recording Stop's width (`CapsuleContent`), so Cancel beside it stays put.
 private struct StartCapsule: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -473,6 +521,7 @@ private struct StartCapsule: View {
     var body: some View {
         let style = CapsuleStyle(mode: state.mode)
         let fill = fill(style)
+        let edgeWidth = CGFloat(BrandPalette(colorScheme: colorScheme, contrast: contrast).edgeWidth)
         Button {
             if state.mode.allowsDictation {
                 onAction()
@@ -489,7 +538,7 @@ private struct StartCapsule: View {
                     Capsule()
                         .fill(LinearGradient(colors: [Color(fill.top), Color(fill.bottom)], startPoint: .topLeading,
                                              endPoint: .bottomTrailing))
-                        .overlay { if let edge = fill.edge { Capsule().strokeBorder(Color(edge), lineWidth: 1) } }
+                        .overlay { if let edge = fill.edge { Capsule().strokeBorder(Color(edge), lineWidth: edgeWidth) } }
                         // The keys' shadow; an edged fill needs none.
                         .shadow(color: .black.opacity(fill.edge == nil ? 0.35 : 0), radius: 0, y: 1)
                 }
@@ -516,46 +565,49 @@ private struct StartCapsule: View {
     }
 
     @ViewBuilder private var content: some View {
-        switch state.mode {
-        case .recording(_, let startedAt):
-            // "Stop" in words, as while starting, and the time: with the wave beside it, it fits a 375 pt phone with
-            // the menu button and Cancel.
-            HStack(spacing: 6) {
-                Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
-                Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
-                Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-        case .starting:
-            HStack(spacing: 6) {
-                ProgressView().tint(Color(fill(.stop).ink)).controlSize(.small)
-                Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
-            }
-        case .transcribing, .waitingForModel:
-            HStack(spacing: 7) {
-                ProgressView().tint(Color(fill(.working).ink)).controlSize(.small)
-                if let caption = KeyboardMessages.capsuleCaption(for: state.mode) {
-                    Text(caption).font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+        let content = CapsuleContent(mode: state.mode)
+        if content.keepsStopWidth {
+            ZStack {
+                // The recording Stop's width, held through starting and the wait for the transcript.
+                stop(time: Text(verbatim: "0:00")).hidden().accessibilityHidden(true)
+                switch content {
+                case .stop(let startedAt):
+                    // "Stop" in words, as while starting, and the time: with the wave beside it, it fits a 375 pt
+                    // phone with the menu button and Cancel.
+                    stop(time: Text(timerInterval: startedAt...Date.distantFuture, countsDown: false))
+                case .starting:
+                    HStack(spacing: 6) {
+                        ProgressView().tint(Color(fill(.stop).ink)).controlSize(.small)
+                        Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+                    }
+                case .spinner:
+                    // The middle says what the recording waits for; VoiceOver hears it from the label.
+                    ProgressView().tint(Color(fill(.working).ink)).controlSize(.small)
+                case .start:
+                    EmptyView()
                 }
             }
-        default:
+        } else {
             HStack(spacing: 6) {
-                RidgeMarkGlyph(color: Color(fill(.start).ink), side: 17)
+                // A little larger and heavier than the icon's proportions, so the W reads at this size.
+                RidgeMarkGlyph(color: Color(fill(.start).ink), side: 19, weight: 1.3)
                 Text("Start").font(.subheadline.weight(.semibold))
             }
         }
     }
 
-    private var accessibilityLabel: String {
-        switch state.mode {
-        case .starting, .recording: return "Stop dictation"
-        case .transcribing: return "Transcribing"
-        case .waitingForModel: return "Preparing model"
-        default: return "Start dictation"
+    private func stop(time: Text) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
+            Text("Stop").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
+            time
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .lineLimit(1)
+                .fixedSize()
         }
     }
+
+    private var accessibilityLabel: String { KeyboardMessages.capsuleAccessibilityLabel(for: state.mode) }
 
     private var accessibilityValue: String {
         switch state.mode {
@@ -584,9 +636,11 @@ private struct StartTapShape: Shape {
 }
 
 /// The menu: session status, "Open LocalFlow", the trackpad tip with the field's text width, and details of anything
-/// that keeps dictation from working (the actions first at the accessibility sizes). A tap outside the card closes it. The card spans the key area with the same
-/// margin on each side, and scrolls inside its rounded corners when it does not fit (landscape, the largest text
-/// sizes); its text follows Dynamic Type and reads at 4.5:1 or better (`MenuPalette`).
+/// that keeps dictation from working (the actions first at the accessibility sizes). A tap outside the card closes it. The
+/// card lies over the keys with none peeking out (`MenuCover`): over the three rows above the bottom row, or all four
+/// when its content needs more, and scrolls inside its rounded corners when even that is too little (landscape, the
+/// largest text sizes); its text, the text-width choice included, follows Dynamic Type and reads at 4.5:1 or better
+/// (`MenuPalette`).
 struct MenuPanelView: View {
     @ObservedObject var client: KeyboardDictationClient
     @ObservedObject var chrome: KeyboardChrome
@@ -598,21 +652,32 @@ struct MenuPanelView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let keyboardName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LocalFlow"
 
-    private static let cardShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+    private static let cardShape = RoundedRectangle(cornerRadius: CGFloat(MenuCover.cornerRadius), style: .continuous)
+    /// The content's own height, which picks the card's (`MenuCover.card`).
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onClose)
-                .accessibilityHidden(true)
-            ViewThatFits(in: .vertical) {
-                card(content)
-                // Too tall: the card keeps its rounded corners and its content scrolls inside them.
-                card(ScrollView { content }.scrollBounceBehavior(.basedOnSize))
+        GeometryReader { geometry in
+            let frame = MenuCover.card(metrics: KeyboardMetrics(width: Double(geometry.size.width), height: Double(geometry.size.height)),
+                                       contentHeight: Double(contentHeight))
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onClose)
+                    .accessibilityHidden(true)
+                ScrollView {
+                    content
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(width: CGFloat(frame.width), height: CGFloat(frame.height), alignment: .top)
+                .background(Self.cardShape.fill(color(palette.card)))
+                .clipShape(Self.cardShape)
+                .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+                .offset(x: CGFloat(frame.x), y: CGFloat(frame.y))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityAddTraits(.isModal)
     }
 
@@ -622,15 +687,6 @@ struct MenuPanelView: View {
 
     private func color(_ rgb: MenuPalette.RGB) -> Color {
         Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
-    }
-
-    private func card<Content: View>(_ content: Content) -> some View {
-        content
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Self.cardShape.fill(color(palette.card)))
-            .clipShape(Self.cardShape)
-            .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
-            .padding(8)
     }
 
     private var content: some View {
@@ -683,14 +739,47 @@ struct MenuPanelView: View {
         .padding(12)
     }
 
+    /// The field's text width, as two segments whose text follows Dynamic Type like the rest of the card (a segmented
+    /// `Picker` keeps its default size), side by side or, when they do not fit so, stacked.
     private var layoutPicker: some View {
-        Picker("Text width", selection: Binding(get: { chrome.layout }, set: { if $0 != chrome.layout { onToggleLayout() } })) {
-            Text("Full width").tag(FieldLayout.fullWidth)
-            Text("Chat bubble").tag(FieldLayout.messages)
+        let options: [(layout: FieldLayout, title: String)] = [(.fullWidth, "Full width"), (.messages, "Chat bubble")]
+        let segments = ForEach(options, id: \.layout) { option in
+            segment(option.title, selected: option.layout == chrome.layout) {
+                if option.layout != chrome.layout { onToggleLayout() }
+            }
         }
-        .pickerStyle(.segmented)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 2) { segments }
+            VStack(spacing: 2) { segments }
+        }
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(color(palette.track)))
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Text width for moving the cursor")
         .accessibilityIdentifier("lf.layoutToggle")
+    }
+
+    private func segment(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(selected ? .semibold : .medium))
+                .foregroundStyle(color(palette.primary))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(color(palette.selectedSegment))
+                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     /// The full explanation for the states the top row condenses to one line.
@@ -730,11 +819,6 @@ private extension KeyboardMode {
 
     /// The recording ended: the capsule is a spinner that takes no taps.
     var isWaitingForTranscript: Bool { self == .transcribing || self == .waitingForModel }
-
-    var isRecording: Bool {
-        if case .recording = self { return true }
-        return false
-    }
 
     /// Starting or recording: the capsule is the coral Stop.
     var isActiveCapture: Bool {

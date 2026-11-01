@@ -340,10 +340,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         settings.recordCursorTouchRate(rate, eventStepScale: scale)
     }
 
-    /// The menu panel covers the key area, dimmed so its keys do not look live; a tap outside its card, or on the menu
-    /// button, closes it.
+    /// The menu panel covers the key area, its keys faded as the bar's controls are (`MenuCover`) so they do not look
+    /// live, over the untinted backdrop; a tap outside its card, or on the menu button, closes it.
     private func setMenu(visible: Bool) {
         if chrome.isMenuOpen != visible { chrome.isMenuOpen = visible }
+        let keysAlpha = CGFloat(visible ? MenuCover.dimmedAlpha : 1)
+        if keyArea.alpha != keysAlpha {
+            UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.15) { self.keyArea.alpha = keysAlpha }
+        }
         if visible, menuPanel == nil {
             keyArea.cancelAllTouches()
             readField()
@@ -351,7 +355,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
                 client: client, chrome: chrome,
                 onClose: { [weak self] in self?.setMenu(visible: false) },
                 onToggleLayout: { [weak self] in self?.toggleFieldLayout() }))
-            panel.view.backgroundColor = Self.menuDimming
+            // Touchable, never a tint: a tint over the keyboard shows a seam under the band iOS draws above it.
+            panel.view.backgroundColor = KeyAreaView.touchableBackground
             panel.safeAreaRegions = []
             panel.view.translatesAutoresizingMaskIntoConstraints = false
             addChild(panel)
@@ -370,11 +375,6 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
             panel.removeFromParent()
             menuPanel = nil
         }
-    }
-
-    /// Over the keys while the menu is open: dark enough that they read as inactive, and touchable.
-    private static let menuDimming = UIColor {
-        UIColor(white: 0, alpha: $0.userInterfaceStyle == .dark ? 0.5 : 0.25)
     }
 
     // MARK: KeyboardTextTarget
