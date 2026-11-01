@@ -80,19 +80,28 @@ enum SessionActivityTests {
         TestSupport.expect((SessionActivityMotion.duration(luminanceReduced: false) ?? 1) <= 0.3, "phase changes are slow")
     }
 
-    /// Opus, round 8: the bar said "Session ends after 3 min idle" while the island said "ends in 2:15". Both now say
-    /// when an idle session ends in the same words: the bar in whole minutes, to the nearest (never under one), the
-    /// activity as a live countdown.
+    /// Opus, round 8: the bar said "Session ends after 3 min idle" while the island said "ends in 2:15"; round 9 gave both
+    /// the same words. Round 10 (owner: the words were wordy): the island and the Lock Screen show the countdown beside a
+    /// small timer glyph, "4:58" in the expanded island and "4:53 left" on the Lock Screen, instead of "ends in 4:58" and
+    /// "Session ends in 4:53 if idle". VoiceOver still hears the whole meaning, in the menu's words ("Session ends in 2
+    /// min if idle", whole minutes to the nearest, never under one).
     private static func testCountdownSpeaksTheBarsWords() {
         let lead = SessionActivityState.countdownLead, tail = SessionActivityState.countdownTail
         TestSupport.expectEqual(lead, "ends in")
+        TestSupport.expectEqual(SessionActivityState.countdownSymbol, "timer")
+        TestSupport.expectEqual(SessionActivityState.lockScreenCountdownTail, "left")
+        let spoken = SessionActivityState.countdownSpokenLead
+        TestSupport.expect(spoken.hasPrefix("Session ends") && spoken.contains(tail), "VoiceOver misses the meaning: \(spoken)")
+        TestSupport.expect(("4:53 " + SessionActivityState.lockScreenCountdownTail).count < "Session ends in 4:53 if idle".count / 2,
+                           "the Lock Screen's countdown is still wordy")
         TestSupport.expectEqual(KeyboardMessages.idleTimeout(minutes: 2), "\(lead) 2 min \(tail)")
         var status = Fixture.status(.active, heartbeatAt: now)
         status.model = .ready
         for (left, minutes) in [(135.0, 2), (150, 3), (179, 3), (20, 1), (300, 5)] {
             status.sessionExpiresAt = now + left
-            TestSupport.expectEqual(KeyboardMessages.hint(for: status, now: now), "Session \(lead) \(minutes) min \(tail)")
             TestSupport.expectEqual(KeyboardMessages.sessionSummary(for: status, now: now), "Session \(lead) \(minutes) min \(tail)")
+            TestSupport.expectEqual(KeyboardMessages.spokenStatus(mode: .ready, status: status, launcherFailed: false, now: now),
+                                    "Session \(lead) \(minutes) min \(tail)")
         }
     }
 

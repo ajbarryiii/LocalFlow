@@ -7,7 +7,8 @@ import UIKit
 /// SwiftUI `Canvas` inside `TimelineView(.animation)`, which in some keyboard processes drew nothing at all for the rest
 /// of the process (round 8 council, finding 1). Here every change of size, level or colour draws a frame at once, so the
 /// first frame never waits for a clock, and a display link moves the dots only while the view is in a window, shown,
-/// and animating (recording, or the wait's sweep), at most 60 frames a second.
+/// and animating (recording, or the wait's sweep), at most 60 frames a second. While recording, each frame records the
+/// followed level into the wave's trace (`DotWave.Trace`), which the row shows.
 struct DotFieldRepresentable: UIViewRepresentable {
     let kind: DotFieldView.Kind
     /// The latest input level, 0 to 1.
@@ -16,11 +17,13 @@ struct DotFieldRepresentable: UIViewRepresentable {
     /// The mark's dot at the wave's right end, if any.
     let mark: BrandPalette.RGB?
     let reduceMotion: Bool
+    /// Left to right reversed (the left-handed island, where the mark's dot is at the wave's left).
+    var mirrored = false
 
     func makeUIView(context: Context) -> DotFieldView { DotFieldView() }
 
     func updateUIView(_ view: DotFieldView, context: Context) {
-        view.configure(kind: kind, level: level, ink: ink, mark: mark, reduceMotion: reduceMotion)
+        view.configure(kind: kind, level: level, ink: ink, mark: mark, reduceMotion: reduceMotion, mirrored: mirrored)
     }
 }
 
@@ -32,17 +35,15 @@ final class DotFieldView: UIView {
         case shimmer
     }
 
-    /// One shimmer sweep, in seconds, entering at the left and leaving at the right.
-    static let shimmerPeriod = 1.1
-
     private var kind = Kind.wave(live: false)
     private var level = 0.0
     private var ink = BrandPalette.RGB(1, 1, 1)
     private var mark: BrandPalette.RGB?
     private var reduceMotion = false
+    private var mirrored = false
 
     private var follower = DotWave.LevelFollower()
-    private var startedAt: CFTimeInterval?
+    private var trace = DotWave.Trace()
     private var lastFrame: CFTimeInterval?
     private var link: CADisplayLink?
     private var dotLayers: [DotLayer] = []
@@ -64,13 +65,15 @@ final class DotFieldView: UIView {
         link?.invalidate()
     }
 
-    func configure(kind: Kind, level: Double, ink: BrandPalette.RGB, mark: BrandPalette.RGB?, reduceMotion: Bool) {
+    func configure(kind: Kind, level: Double, ink: BrandPalette.RGB, mark: BrandPalette.RGB?, reduceMotion: Bool,
+                   mirrored: Bool) {
         if kind != self.kind {
-            // A new recording starts its drift and its level from rest.
+            // A new recording starts its level and its row from rest.
             follower = DotWave.LevelFollower()
-            startedAt = nil
+            trace = DotWave.Trace()
             lastFrame = nil
         }
+        self.mirrored = mirrored
         self.kind = kind
         self.level = level
         self.ink = ink
@@ -132,20 +135,28 @@ final class DotFieldView: UIView {
         switch kind {
         case .wave(let live):
             var shown = live ? level : 0
-            var phase = 0.0
             if live && !reduceMotion {
-                follower.follow(level, over: min(now - (lastFrame ?? now), 0.1))
-                lastFrame = now
-                let start = startedAt ?? now
-                startedAt = start
+                // Only a frame after the last moves the row (layout and a new level draw at the same moment again).
+                if now > (lastFrame ?? -.infinity) {
+                    follower.follow(level, over: min(now - (lastFrame ?? now), 0.1))
+                    trace.record(follower.value, at: now)
+                    lastFrame = now
+                }
                 shown = follower.value
-                phase = DotWave.phase(elapsed: now - start)
+                dots = DotWave.dots(trace: trace, now: now, width: width, height: height)
+            } else {
+                // Still: the calm row while starting; with Reduce Motion, the row stands at each level.
+                dots = DotWave.dots(level: shown, width: width, height: height)
             }
-            dots = DotWave.dots(level: shown, phase: phase, width: width, height: height)
             if mark != nil, !dots.isEmpty { markDot = DotWave.markDot(level: shown, width: width, height: height) }
         case .shimmer:
-            let sweep = animates ? (now.truncatingRemainder(dividingBy: Self.shimmerPeriod) / Self.shimmerPeriod) * 1.6 - 0.3 : -1
+            let period = DotWave.shimmerPeriod
+            let sweep = animates ? (now.truncatingRemainder(dividingBy: period) / period) * 1.6 - 0.3 : -1
             dots = DotWave.shimmer(sweep: sweep, width: width, height: height)
+        }
+        if mirrored {
+            dots = dots.map { DotWave.Dot(x: width - $0.x, y: $0.y, radius: $0.radius, brightness: $0.brightness) }
+            markDot = markDot.map { DotWave.Dot(x: width - $0.x, y: $0.y, radius: $0.radius, brightness: $0.brightness) }
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)

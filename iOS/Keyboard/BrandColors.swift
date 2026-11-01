@@ -48,6 +48,12 @@ struct RidgeMarkShape: Shape {
         return path
     }
 
+    /// Where the dot's centre is in the box, as a unit point (the anchor to scale the dot about).
+    static func dotAnchor(weight: Double = 1) -> UnitPoint {
+        let mark = RidgeMark.fitted(in: KeyRect(x: 0, y: 0, width: 1, height: 1), weight: weight)
+        return UnitPoint(x: mark.dot.x, y: mark.dot.y)
+    }
+
     /// The line's stroke in a box `side` points across.
     static func style(side: CGFloat, weight: Double = 1) -> StrokeStyle {
         let mark = RidgeMark.fitted(in: KeyRect(x: 0, y: 0, width: Double(side), height: Double(side)), weight: weight)

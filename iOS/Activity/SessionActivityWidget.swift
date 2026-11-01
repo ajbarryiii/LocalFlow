@@ -187,7 +187,7 @@ enum StripPattern {
     static func lit(phase: SessionActivityState.Phase, u: Double) -> Double {
         switch phase {
         case .ready: return 0
-        case .recording: return DotWave.lift(at: u, level: 1, phase: 0.6)
+        case .recording: return DotWave.stillLift(at: u)
         case .transcribing, .preparing: return DotWave.glow(at: u, sweep: glint(phase))
         }
     }
@@ -222,6 +222,19 @@ private struct PhaseTimer: View {
         case .transcribing, .preparing:
             EmptyView()
         }
+    }
+}
+
+/// The ready session's countdown glyph (round 10: in place of "ends in" and "Session ends in … if idle"), which VoiceOver
+/// reads as the words it replaces.
+private struct CountdownGlyph: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image(systemName: SessionActivityState.countdownSymbol)
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(ActivityLook.secondary)
+            .accessibilityLabel(SessionActivityState.countdownSpokenLead)
     }
 }
 
@@ -302,12 +315,13 @@ private struct ExpandedTrailing: View {
                     if state.phase == .recording {
                         Circle().fill(ActivityLook.coral).frame(width: 7, height: 7)
                     } else {
-                        Text(SessionActivityState.countdownLead).foregroundStyle(ActivityLook.secondary)
+                        CountdownGlyph(size: 13)
                     }
                     PhaseTimer(state: state)
                         .foregroundStyle(.white)
                         .frame(width: 40, alignment: .trailing)
                 }
+                .accessibilityElement(children: .combine)
                 .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
                 .id(state.phase)
                 .modifier(WordsTransition())
@@ -389,7 +403,11 @@ struct LockScreenView: View {
             switch state.phase {
             case .ready:
                 if let endsAt = state.endsAt {
-                    Text("Session \(SessionActivityState.countdownLead) \(Text(timerInterval: min(Date.now, endsAt) ... endsAt, countsDown: true, showsHours: false)) \(SessionActivityState.countdownTail)")
+                    HStack(spacing: 5) {
+                        CountdownGlyph(size: 12)
+                        Text("\(Text(timerInterval: min(Date.now, endsAt) ... endsAt, countsDown: true, showsHours: false)) \(SessionActivityState.lockScreenCountdownTail)")
+                    }
+                    .accessibilityElement(children: .combine)
                 } else {
                     Text("Flow session")
                 }

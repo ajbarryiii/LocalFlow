@@ -6,12 +6,14 @@ enum DictationIslandTests {
     static var tests: [TestCase] {
         [
             ("waveIsOneRowOfDots", testWaveIsOneRowOfDots),
+            ("waveIsATinyBitBigger", testWaveIsATinyBitBigger),
             ("silenceIsAFlatRowOfDots", testSilenceIsAFlatRowOfDots),
             ("louderSwellsTheRow", testLouderSwellsTheRow),
+            ("theRowIsTheVoiceMovingLeft", testTheRowIsTheVoiceMovingLeft),
+            ("syllablesAreDistinctPulses", testSyllablesAreDistinctPulses),
+            ("tenLevelsASecondLookContinuous", testTenLevelsASecondLookContinuous),
             ("strandsSettleIntoTheMarksDot", testStrandsSettleIntoTheMarksDot),
             ("waveStaysInsideThePill", testWaveStaysInsideThePill),
-            ("waveIsDeterministicAndDriftsSlowly", testWaveIsDeterministicAndDriftsSlowly),
-            ("levelRisesQuicklyAndFallsSlowly", testLevelRisesQuicklyAndFallsSlowly),
             ("shimmerSweepsAlongTheRow", testShimmerSweepsAlongTheRow),
             ("islandIsAnchoredAtTheRight", testIslandIsAnchoredAtTheRight),
             ("recordingIslandIsUnderHalfTheBar", testRecordingIslandIsUnderHalfTheBar),
@@ -20,6 +22,9 @@ enum DictationIslandTests {
             ("processingIslandIsShort", testProcessingIslandIsShort),
             ("recordingKeepsTheMiddleForItsWords", testRecordingKeepsTheMiddleForItsWords),
             ("barPartsNeverOverlap", testBarPartsNeverOverlap),
+            ("leftHandedMirrorsTheDictationControls", testLeftHandedMirrorsTheDictationControls),
+            ("leftHandedKeepsEveryContractMirrored", testLeftHandedKeepsEveryContractMirrored),
+            ("leftHandedStopReachesTheKeysUnderItsIsland", testLeftHandedStopReachesTheKeysUnderItsIsland),
         ]
     }
 
@@ -27,142 +32,149 @@ enum DictationIslandTests {
 
     private static let width = 90.0, height = 24.0
 
+    /// A voice held at `level` for the whole row.
+    private static func held(_ level: Double, width: Double = width, height: Double = height) -> [DotWave.Dot] {
+        DotWave.dots(level: level, width: width, height: height)
+    }
+
+    /// A trace of the voice as the view records it, one level a frame at 60 frames a second: `level(t)` for t seconds
+    /// from 0 to `until`, read through the view's follower.
+    private static func trace(until: Double, _ level: (Double) -> Double) -> DotWave.Trace {
+        var trace = DotWave.Trace(), follower = DotWave.LevelFollower()
+        for frame in 0 ... Int((until * 60).rounded()) {
+            let t = Double(frame) / 60
+            follower.follow(level(t), over: 1.0 / 60)
+            trace.record(follower.value, at: t)
+        }
+        return trace
+    }
+
     /// Round 9 (owner: the braid over a dim dot field read as the reference video): the wave is one row of dots along the
     /// middle line, evenly spaced, with no dim field around it: every dot is at least the resting brightness.
     private static func testWaveIsOneRowOfDots() {
-        for level in [0, 0.5, 1.0] {
-            for phase in [0, 1.3, 4.0] {
-                let dots = DotWave.dots(level: level, phase: phase, width: width, height: height)
-                TestSupport.expect(dots.count >= 10, "only \(dots.count) dots")
-                TestSupport.expect(dots.allSatisfy { abs($0.y - height / 2) < 1e-9 }, "a dot leaves the row at \(level), \(phase)")
-                TestSupport.expect(dots.allSatisfy { $0.brightness >= DotWave.restBrightness - 1e-9 }, "a dim field dot at \(level)")
-                TestSupport.expect(DotWave.restBrightness >= 0.4, "the resting row is a texture, not a line")
-                let xs = dots.map(\.x)
-                for (a, b) in zip(xs, xs.dropFirst()) {
-                    TestSupport.expect(abs(b - a - DotWave.pitch) < 1e-9, "uneven spacing \(b - a)")
-                }
-                // Dots stay dots: neighbours never touch, however loud.
-                for (a, b) in zip(dots, dots.dropFirst()) {
-                    TestSupport.expect(b.x - a.x > a.radius + b.radius + 0.3, "dots touch at \(level)")
-                }
+        let speech = trace(until: 2) { 0.5 + 0.5 * sin($0 * 9) }
+        for dots in [held(0), held(0.5), held(1), DotWave.dots(trace: speech, now: 2, width: width, height: height)] {
+            TestSupport.expect(dots.count >= 10, "only \(dots.count) dots")
+            TestSupport.expect(dots.allSatisfy { abs($0.y - height / 2) < 1e-9 }, "a dot leaves the row")
+            TestSupport.expect(dots.allSatisfy { $0.brightness >= DotWave.restBrightness - 1e-9 }, "a dim field dot")
+            TestSupport.expect(DotWave.restBrightness >= 0.4, "the resting row is a texture, not a line")
+            let xs = dots.map(\.x)
+            for (a, b) in zip(xs, xs.dropFirst()) {
+                TestSupport.expect(abs(b - a - DotWave.pitch) < 1e-9, "uneven spacing \(b - a)")
             }
-        }
-    }
-
-    /// In silence the row rests: every dot the same size and brightness, at any phase of the drift. A calm line, not
-    /// nothing.
-    private static func testSilenceIsAFlatRowOfDots() {
-        for phase in [0, 1.3, 4.0] {
-            for level in [0, -2, .nan] {
-                let dots = DotWave.dots(level: level, phase: phase, width: width, height: height)
-                TestSupport.expect(!dots.isEmpty, "no dots")
-                TestSupport.expect(dots.allSatisfy { abs($0.radius - DotWave.restRadius) < 1e-9 }, "silence swells at \(phase)")
-                TestSupport.expect(dots.allSatisfy { abs($0.brightness - DotWave.restBrightness) < 1e-9 }, "silence glows")
-            }
-        }
-    }
-
-    /// A louder level swells the row: its largest dot and its total size never shrink for more level, and full level is
-    /// clearly more than half. Levels outside 0...1 count as their nearest end. The swell is a smooth hump: neighbours
-    /// differ little, and the row's ends stay near rest, so it rises out of the line at the left and settles into the
-    /// mark's dot at the right.
-    private static func testLouderSwellsTheRow() {
-        func swell(_ level: Double) -> (largest: Double, total: Double) {
-            (0 ..< 16).map { step -> (Double, Double) in
-                let dots = DotWave.dots(level: level, phase: Double(step) * .pi / 8, width: width, height: height)
-                return (dots.map(\.radius).max()!, dots.map(\.radius).reduce(0, +))
-            }.reduce((0.0, 0.0)) { (max($0.0, $1.0), max($0.1, $1.1)) }
-        }
-        let levels = [0, 0.25, 0.5, 0.75, 1.0].map(swell)
-        for (a, b) in zip(levels, levels.dropFirst()) {
-            TestSupport.expect(b.largest >= a.largest - 1e-9 && b.total >= a.total - 1e-9, "louder is smaller: \(levels)")
-        }
-        TestSupport.expectEqual(levels[0].largest, DotWave.restRadius)
-        TestSupport.expect(levels[4].largest > levels[2].largest && levels[2].largest > DotWave.restRadius, "no swell: \(levels)")
-        TestSupport.expect(levels[4].largest >= DotWave.restRadius * 1.8, "the swell is too slight: \(levels)")
-        TestSupport.expectEqual(swell(3).largest, levels[4].largest)
-        for phase in [0, 0.7, 2.5] {
-            let dots = DotWave.dots(level: 1, phase: phase, width: width, height: height)
-            let growth = DotWave.restRadius * 1.0
-            TestSupport.expect(dots.first!.radius - DotWave.restRadius < growth / 2 && dots.last!.radius - DotWave.restRadius < growth / 2,
-                               "the row's ends swell at \(phase)")
+            // Dots stay dots: neighbours never touch, however loud.
             for (a, b) in zip(dots, dots.dropFirst()) {
-                TestSupport.expect(abs(a.radius - b.radius) < 0.6, "a jagged step at \(phase)")
+                TestSupport.expect(b.x - a.x > a.radius + b.radius + 0.3, "dots touch")
             }
-            // The Live Activity's strip draws the same swell (`DotWave.lift`).
+        }
+    }
+
+    /// Round 10 (owner: "make it a tiny bit bigger"): the dots, the swell's height and the mark's dot are each about 15 to
+    /// 20 percent larger than round 9's (rest 1.2, full 2.45, mark 2.2 pt), the dots still a dot's gap apart.
+    private static func testWaveIsATinyBitBigger() {
+        for (now, before) in [(DotWave.restRadius, 1.2), (DotWave.fullRadius, 2.45), (DotWave.markRadius, 2.2)] {
+            TestSupport.expect(now >= before * 1.12 && now <= before * 1.25, "\(now) is not a tiny bit bigger than \(before)")
+        }
+        TestSupport.expect(DotWave.pitch > 2 * DotWave.fullRadius + 0.3, "full dots touch at pitch \(DotWave.pitch)")
+        TestSupport.expect(DotWave.pitch <= 5.4 * 1.2, "the row spreads out: pitch \(DotWave.pitch)")
+        // The swell's height: a full dot is more than twice a resting one.
+        TestSupport.expect(DotWave.fullRadius >= DotWave.restRadius * 2, "the swell is slight")
+    }
+
+    /// In silence the row rests: every dot the same size and brightness. A calm line, not nothing. A row that has heard
+    /// nothing for its whole span is silent again, however loud it was before.
+    private static func testSilenceIsAFlatRowOfDots() {
+        for level in [0, -2, .nan] {
+            let dots = held(level)
+            TestSupport.expect(!dots.isEmpty, "no dots")
+            TestSupport.expect(dots.allSatisfy { abs($0.radius - DotWave.restRadius) < 1e-9 }, "silence swells")
+            TestSupport.expect(dots.allSatisfy { abs($0.brightness - DotWave.restBrightness) < 1e-9 }, "silence glows")
+        }
+        let afterwards = trace(until: 3) { $0 < 1 ? 1 : 0 }
+        let dots = DotWave.dots(trace: afterwards, now: 3, width: width, height: height)
+        TestSupport.expect(dots.allSatisfy { abs($0.radius - DotWave.restRadius) < 0.01 }, "the row never settles: \(dots.map(\.radius))")
+        TestSupport.expect(DotWave.dots(trace: DotWave.Trace(), now: 5, width: width, height: height)
+            .allSatisfy { abs($0.radius - DotWave.restRadius) < 1e-9 }, "an empty trace swells")
+    }
+
+    /// Round 10 (owner: "move more with your voice"): loud and quiet look clearly different. A voice held loud swells the
+    /// row at least twice as much as one held at half, and full level is the whole swell; levels outside 0...1 count as
+    /// their nearest end. Bigger is brighter: the swell is one shape, not two. The Live Activity's strip draws the same
+    /// lift (`DotWave.lift`).
+    private static func testLouderSwellsTheRow() {
+        func growth(_ dots: [DotWave.Dot]) -> Double { dots.map { $0.radius - DotWave.restRadius }.reduce(0, +) }
+        let levels = [0, 0.25, 0.5, 0.75, 1.0].map { growth(held($0)) }
+        for (a, b) in zip(levels, levels.dropFirst()) {
+            TestSupport.expect(b >= a - 1e-9, "louder is smaller: \(levels)")
+        }
+        TestSupport.expect(levels[4] >= 2 * levels[2], "loud and half look alike: \(levels)")
+        TestSupport.expect(levels[2] > 0, "half a level shows nothing")
+        TestSupport.expect(abs(held(1).map(\.radius).max()! - DotWave.fullRadius) < 0.05, "full level is not the whole swell")
+        TestSupport.expectEqual(held(3), held(1))
+        // The same word said quietly and loudly, at the same place in the row: the loud one's dots are clearly larger.
+        func word(_ level: Double) -> [DotWave.Dot] {
+            DotWave.dots(trace: trace(until: 1) { $0 >= 0.6 && $0 < 0.8 ? level : 0 }, now: 1, width: width, height: height)
+        }
+        let quiet = word(0.5), loudWord = word(1), row = loudWord
+        TestSupport.expect(growth(loudWord) > 2 * growth(quiet) && growth(quiet) > 0,
+                           "loud and quiet words look alike: \(quiet.map(\.radius)) vs \(loudWord.map(\.radius))")
+        for dots in [held(1), row] {
             for (index, dot) in dots.enumerated() {
-                let lift = DotWave.lift(at: Double(index) / Double(dots.count - 1), level: 1, phase: phase)
-                TestSupport.expect(abs(dot.radius - (DotWave.restRadius + (DotWave.fullRadius - DotWave.restRadius) * lift)) < 1e-9,
-                                   "the strip's swell differs from the wave's")
+                let largest = dots.max { $0.radius < $1.radius }!
+                TestSupport.expectEqual(largest.brightness, dots.map(\.brightness).max()!)
+                TestSupport.expect(dot.brightness <= 1 && dot.radius <= DotWave.fullRadius + 1e-9, "dot \(index) overflows")
             }
-            // Bigger is brighter: the swell is one shape, not two.
+        }
+        // The Live Activity's still strip has the wave's lift: a few pulses, resting at the left end.
+        let strip = (0 ... 24).map { DotWave.stillLift(at: Double($0) / 24) }
+        TestSupport.expect(strip.first! < 0.05, "the strip's left end swells")
+        let peaks = zip(zip(strip, strip.dropFirst()), strip.dropFirst(2)).filter { $0.0.1 > $0.0.0 && $0.0.1 >= $0.1 && $0.0.1 > 0.2 }
+        TestSupport.expect(peaks.count >= 2, "the still strip is one smooth hump, not a voice: \(strip)")
+    }
+
+    /// Round 10 (owner: "slow, consistent and wavelike"): the row's shape is the voice's own, not a fixed sine. It shows
+    /// the last `DotWave.span` seconds of the voice, the newest beside the mark's dot at the right; what was said moves
+    /// left as it ages and leaves the row after `span`, so a syllable crosses the row at the wait shimmer's pace. The row
+    /// rises out of the line at the left.
+    private static func testTheRowIsTheVoiceMovingLeft() {
+        TestSupport.expect(abs(DotWave.span - DotWave.shimmerPeriod) <= 0.25, "the wave's pace \(DotWave.span) s is not the shimmer's")
+        TestSupport.expectEqual(DotWave.shimmerPeriod, 1.1)
+        // One syllable at 0.2 s, then silence.
+        let syllable = trace(until: 1.6) { $0 >= 0.2 && $0 < 0.32 ? 1 : 0 }
+        func peak(at now: Double) -> Double {
+            let dots = DotWave.dots(trace: syllable, now: now, width: width, height: height)
             let largest = dots.max { $0.radius < $1.radius }!
-            TestSupport.expectEqual(largest.brightness, dots.map(\.brightness).max()!)
+            return largest.radius > DotWave.restRadius + 0.3 ? largest.x : -1
         }
+        let early = peak(at: 0.45), later = peak(at: 0.8)
+        TestSupport.expect(early > 0 && later > 0, "the syllable does not show: \(early), \(later)")
+        TestSupport.expect(early > later + 10, "the syllable does not move left: \(early) then \(later)")
+        // Its speed: across the row in `span`.
+        let rowLength = DotWave.dots(level: 0, width: width, height: height).map(\.x).max()!
+            - DotWave.dots(level: 0, width: width, height: height).map(\.x).min()!
+        let speed = (early - later) / 0.35
+        TestSupport.expect(abs(speed - rowLength / DotWave.span) < rowLength / DotWave.span * 0.35, "speed \(speed) pt/s")
+        TestSupport.expect(peak(at: 0.26 + DotWave.span + 0.25) < 0, "the syllable never leaves the row")
+        // The left end rises out of the line: it never takes the voice's full height.
+        let loud = held(1)
+        TestSupport.expect(loud.first!.radius - DotWave.restRadius < (DotWave.fullRadius - DotWave.restRadius) / 2, "the left end swells")
+        // The same trace and moment draw the same dots.
+        TestSupport.expectEqual(DotWave.dots(trace: syllable, now: 0.5, width: width, height: height),
+                                DotWave.dots(trace: syllable, now: 0.5, width: width, height: height))
     }
 
-    /// The row comes to rest in the mark's dot at the right: on the middle line past the row, inside the pill, swelling a
-    /// little with the voice.
-    private static func testStrandsSettleIntoTheMarksDot() {
-        for level in [0, 0.6, 1.0] {
-            let mark = DotWave.markDot(level: level, width: width, height: height)
-            TestSupport.expect(abs(mark.y - height / 2) < 1e-9, "the mark's dot is off the middle line")
-            TestSupport.expect(mark.x + mark.radius <= width + 1e-9 && mark.x - mark.radius >= 0, "the mark's dot is outside")
-            for phase in [0, 2.0, 5.0] {
-                let dots = DotWave.dots(level: level, phase: phase, width: width, height: height)
-                let last = dots.max { $0.x < $1.x }!
-                TestSupport.expect(mark.x - mark.radius > last.x + last.radius + 1, "the mark's dot overlaps the row")
-            }
-        }
-        TestSupport.expect(DotWave.markDot(level: 1, width: width, height: height).radius
-            > DotWave.markDot(level: 0, width: width, height: height).radius, "the mark's dot ignores the voice")
-    }
-
-    /// Every dot and the mark's dot lie wholly inside the box, for any level and phase, in boxes from the landscape bar's
-    /// to the SE's; a box with no room draws nothing.
-    private static func testWaveStaysInsideThePill() {
-        for (w, h) in [(180.0, 24.0), (90, 20), (56, 24), (40, 12)] {
-            for level in [0, 0.4, 1, 7, -1, .nan, .infinity] {
-                for phase in [0, 0.9, 3.3, -12, .nan] {
-                    let dots = DotWave.dots(level: level, phase: phase, width: w, height: h)
-                        + [DotWave.markDot(level: level, width: w, height: h)]
-                    for dot in dots {
-                        TestSupport.expect(dot.x - dot.radius >= -1e-9 && dot.x + dot.radius <= w + 1e-9
-                            && dot.y - dot.radius >= -1e-9 && dot.y + dot.radius <= h + 1e-9, "outside \(w)x\(h): \(dot)")
-                        TestSupport.expect(dot.radius > 0 && dot.brightness >= 0 && dot.brightness <= 1, "bad dot \(dot)")
-                    }
-                }
-            }
-        }
-        TestSupport.expect(DotWave.dots(level: 1, phase: 0, width: 4, height: 24).isEmpty, "dots in no room")
-        TestSupport.expect(DotWave.dots(level: 1, phase: 0, width: 100, height: 2).isEmpty, "dots in no room")
-    }
-
-    /// The same level, phase and size draw the same dots. The swell drifts along the row slowly: well under a cycle a
-    /// second.
-    private static func testWaveIsDeterministicAndDriftsSlowly() {
-        TestSupport.expectEqual(DotWave.dots(level: 0.7, phase: 2.2, width: width, height: height),
-                                DotWave.dots(level: 0.7, phase: 2.2, width: width, height: height))
-        TestSupport.expect(DotWave.dots(level: 0.7, phase: 2.2, width: width, height: height)
-            != DotWave.dots(level: 0.7, phase: 2.9, width: width, height: height), "the phase moves nothing")
-        let perSecond = DotWave.phase(elapsed: 1) - DotWave.phase(elapsed: 0)
-        TestSupport.expect(perSecond > 0.3 && perSecond < .pi, "drift \(perSecond) rad/s")
-        TestSupport.expectEqual(DotWave.phase(elapsed: 0), 0)
-    }
-
-    /// The level the wave draws follows the input quickly up (most of a jump within a tenth of a second) and slowly down
-    /// (still more than half a tenth of a second after silence, nearly gone after a second), never overshooting.
-    private static func testLevelRisesQuicklyAndFallsSlowly() {
+    /// Round 10 (owner): syllables read as distinct pulses. The level follows the input quickly up (most of a jump within
+    /// 50 ms) and quickly down (under a fifth within 0.2 s; round 9 kept half after 0.1 s, a 0.4 s fall), never
+    /// overshooting; two syllables 0.25 s apart show as two pulses with a dip between them.
+    private static func testSyllablesAreDistinctPulses() {
         var follower = DotWave.LevelFollower()
         TestSupport.expectEqual(follower.value, 0)
-        for _ in 0 ..< 6 { follower.follow(1, over: 1.0 / 60) }
+        for _ in 0 ..< 3 { follower.follow(1, over: 1.0 / 60) }
         TestSupport.expect(follower.value >= 0.8 && follower.value <= 1, "rise \(follower.value)")
         for _ in 0 ..< 60 { follower.follow(1, over: 1.0 / 60) }
-        let top = follower.value
-        for _ in 0 ..< 6 { follower.follow(0, over: 1.0 / 60) }
-        TestSupport.expect(follower.value >= 0.5 * top, "fall \(follower.value)")
-        for _ in 0 ..< 54 { follower.follow(0, over: 1.0 / 60) }
-        TestSupport.expect(follower.value <= 0.1 && follower.value >= 0, "after a second \(follower.value)")
+        for _ in 0 ..< 12 { follower.follow(0, over: 1.0 / 60) }
+        TestSupport.expect(follower.value <= 0.2 && follower.value >= 0, "fall \(follower.value)")
+        TestSupport.expect(DotWave.LevelFollower.fall <= 0.15, "the fall is slow: \(DotWave.LevelFollower.fall)")
         // Out-of-range and missing levels, and odd clocks.
         follower.follow(5, over: 10)
         TestSupport.expect(follower.value <= 1, "overshoot \(follower.value)")
@@ -174,16 +186,93 @@ enum DictationIslandTests {
         TestSupport.expect(follower.value >= 0 && follower.value < 0.01, "not a number is not silence: \(follower.value)")
         follower.follow(0.5, over: .nan)
         TestSupport.expect(follower.value.isFinite, "a bad clock broke the level")
+        // Two syllables, as the host reports them: a level every 0.1 s.
+        let twoSyllables = trace(until: 1) { t in
+            let sample = (t * 10).rounded(.down) / 10
+            return (sample >= 0.2 && sample < 0.3) || (sample >= 0.5 && sample < 0.6) ? 1 : 0.05
+        }
+        let lifts = (0 ... 40).map { DotWave.lift(at: 1 - Double($0) / 40 * 0.9, trace: twoSyllables, now: 0.75) }
+        let first = lifts.firstIndex { $0 > 0.35 }, dips = lifts.indices.filter { index in
+            index > 0 && index < lifts.count - 1 && lifts[index] < lifts[index - 1] && lifts[index] <= lifts[index + 1]
+        }
+        TestSupport.expect(first != nil, "no pulse: \(lifts)")
+        TestSupport.expect(dips.contains { lifts[$0] < 0.6 * (lifts.max() ?? 0) }, "two syllables blur into one: \(lifts)")
+    }
+
+    /// No jaggedness or flicker: levels that arrive ten times a second (a step each 0.1 s) draw a row whose neighbours
+    /// differ by less than half the swell, and no dot changes size by more than a tenth of the swell from one 60 Hz frame
+    /// to the next.
+    private static func testTenLevelsASecondLookContinuous() {
+        let steps = trace(until: 2.5) { t in
+            let sample = (t * 10).rounded(.down)
+            return sample.truncatingRemainder(dividingBy: 3) == 0 ? 1 : 0.2
+        }
+        let swell = DotWave.fullRadius - DotWave.restRadius
+        var previous: [DotWave.Dot]?
+        for frame in 0 ..< 60 {
+            let now = 1.2 + Double(frame) / 60
+            let dots = DotWave.dots(trace: steps, now: now, width: width, height: height)
+            for (a, b) in zip(dots, dots.dropFirst()) {
+                TestSupport.expect(abs(a.radius - b.radius) < swell / 2, "a jagged step at \(now)")
+            }
+            if let previous {
+                for (a, b) in zip(previous, dots) {
+                    TestSupport.expect(abs(a.radius - b.radius) <= swell / 10 + 1e-9, "a dot jumps at \(now): \(a.radius) to \(b.radius)")
+                }
+            }
+            previous = dots
+        }
+    }
+
+    /// The row comes to rest in the mark's dot at the right: on the middle line past the row, inside the pill, swelling a
+    /// little with the voice.
+    private static func testStrandsSettleIntoTheMarksDot() {
+        for level in [0, 0.6, 1.0] {
+            let mark = DotWave.markDot(level: level, width: width, height: height)
+            TestSupport.expect(abs(mark.y - height / 2) < 1e-9, "the mark's dot is off the middle line")
+            TestSupport.expect(mark.x + mark.radius <= width + 1e-9 && mark.x - mark.radius >= 0, "the mark's dot is outside")
+            let last = held(level).max { $0.x < $1.x }!
+            TestSupport.expect(mark.x - mark.radius > last.x + last.radius + 1, "the mark's dot overlaps the row")
+        }
+        TestSupport.expect(DotWave.markDot(level: 1, width: width, height: height).radius
+            > DotWave.markDot(level: 0, width: width, height: height).radius, "the mark's dot ignores the voice")
+    }
+
+    /// Every dot and the mark's dot lie wholly inside the box, for any level, in boxes from the landscape bar's to the SE's;
+    /// a box with no room draws nothing.
+    private static func testWaveStaysInsideThePill() {
+        let loud = trace(until: 1) { _ in 1 }
+        for (w, h) in [(180.0, 24.0), (90, 20), (56, 24), (40, 12)] {
+            for level in [0, 0.4, 1, 7, -1, .nan, .infinity] {
+                let dots = held(level, width: w, height: h) + DotWave.dots(trace: loud, now: 1, width: w, height: h)
+                    + [DotWave.markDot(level: level, width: w, height: h)]
+                for dot in dots {
+                    TestSupport.expect(dot.x - dot.radius >= -1e-9 && dot.x + dot.radius <= w + 1e-9
+                        && dot.y - dot.radius >= -1e-9 && dot.y + dot.radius <= h + 1e-9, "outside \(w)x\(h): \(dot)")
+                    TestSupport.expect(dot.radius > 0 && dot.brightness >= 0 && dot.brightness <= 1, "bad dot \(dot)")
+                }
+            }
+        }
+        TestSupport.expect(held(1, width: 4, height: 24).isEmpty, "dots in no room")
+        TestSupport.expect(held(1, width: 100, height: 2).isEmpty, "dots in no room")
+        // Odd clocks and levels never break the trace.
+        var odd = DotWave.Trace()
+        for (level, time) in [(0.5, 0.0), (.nan, 0.1), (2, 0.05), (0.5, .nan), (1, 0.2)] { odd.record(level, at: time) }
+        for now in [0.2, -1, .nan, 1e9] {
+            let lift = DotWave.lift(at: 0.9, trace: odd, now: now)
+            TestSupport.expect(lift.isFinite && lift >= 0 && lift <= 1, "a bad trace lifts \(lift) at \(now)")
+        }
     }
 
     /// The wait's shimmer matches the wave: one row of dots on the middle line with a brighter, larger spot that moves
-    /// left to right as the sweep runs; inside the pill, and nothing in no room.
+    /// left to right as the sweep runs; inside the pill, and nothing in no room. Round 10 (Opus, round 9: 6 dots): the
+    /// wait's pill holds 8 or 9 of them on a phone.
     private static func testShimmerSweepsAlongTheRow() {
-        let w = 34.0, h = 24.0
+        let w = IslandLayout.processingWidth(controlHeight: KeyboardMetrics.barControlHeight) - 2 * DotWave.shimmerInset, h = 24.0
         var previous = -Double.infinity
         for sweep in [0.3, 0.5, 0.7] {
             let dots = DotWave.shimmer(sweep: sweep, width: w, height: h)
-            TestSupport.expect(dots.count >= 4, "no shimmer")
+            TestSupport.expect((8 ... 9).contains(dots.count), "\(dots.count) shimmer dots")
             TestSupport.expect(dots.allSatisfy { abs($0.y - h / 2) < 1e-9 }, "the shimmer leaves the row")
             let brightest = dots.max { $0.brightness < $1.brightness }!
             TestSupport.expect(brightest.x > previous, "the spot does not move right")
@@ -194,6 +283,8 @@ enum DictationIslandTests {
                     && dot.y - dot.radius >= -1e-9 && dot.y + dot.radius <= h + 1e-9, "outside: \(dot)")
             }
         }
+        let landscape = IslandLayout.processingWidth(controlHeight: KeyboardMetrics.compactBarControlHeight) - 2 * DotWave.shimmerInset
+        TestSupport.expect(DotWave.shimmer(sweep: 0.5, width: landscape, height: 20).count >= 6, "landscape's shimmer is short")
         // Before the spot enters, the row rests evenly.
         let resting = DotWave.shimmer(sweep: -1, width: w, height: h)
         TestSupport.expectEqual(Set(resting.map(\.brightness)).count, 1)
@@ -207,9 +298,9 @@ enum DictationIslandTests {
     private static let controlHeights = [38.0, 32]
     private static let forms: [IslandForm] = [.compact, .expanded, .processing]
 
-    private static func layout(_ bar: Double, _ height: Double, _ form: IslandForm) -> IslandLayout {
+    private static func layout(_ bar: Double, _ height: Double, _ form: IslandForm, leftHanded: Bool = false) -> IslandLayout {
         IslandLayout(barWidth: bar, controlHeight: height, startWidth: IslandLayout.startWidth(labelWidth: 36, controlHeight: height),
-                     form: form)
+                     form: form, leftHanded: leftHanded)
     }
 
     /// The island's right end never moves: Start, Stop and the wait all end at the bar's trailing padding, where the
@@ -309,8 +400,10 @@ enum DictationIslandTests {
     }
 
     /// The wait contracts the island to a short pill that holds only its shimmer, much shorter than the recording and no
-    /// wider than Start, so it reads as the recording winding down. The middle, between Cancel and the pill, names the
-    /// wait where the recording was.
+    /// wider than Start, so it reads as the recording winding down. Round 10 (Opus, round 9: 1.5 times its height held 6
+    /// dots beside a wide gap; the owner: the wait's words go): about 1.9 times its height, room for 8 or 9 dots
+    /// (`testShimmerSweepsAlongTheRow`). The middle, between Cancel and the pill, keeps room for a notice in two lines
+    /// (round 9 kept 80 points there for "Transcribing…", which no longer shows).
     private static func testProcessingIslandIsShort() {
         for bar in barWidths {
             for height in controlHeights {
@@ -318,10 +411,11 @@ enum DictationIslandTests {
                 TestSupport.expectEqual(waiting.island.width, IslandLayout.processingWidth(controlHeight: height))
                 TestSupport.expect(waiting.island.width < recording.island.width / 2, "the wait is not short")
                 TestSupport.expect(waiting.island.width <= layout(bar, height, .compact).island.width, "the wait is wider than Start")
-                TestSupport.expect(waiting.island.width >= height * 1.5, "the wait has no room for its shimmer")
+                TestSupport.expect(waiting.island.width >= height * 1.85 && waiting.island.width <= height * 2,
+                                   "the wait's pill is \(waiting.island.width / height) times its height")
                 TestSupport.expectEqual(waiting.middle.x, waiting.cancel!.maxX + IslandLayout.spacing)
                 TestSupport.expectEqual(waiting.middle.maxX + IslandLayout.spacing, waiting.island.x)
-                TestSupport.expect(waiting.middle.width >= 80, "no room to name the wait at \(bar): \(waiting.middle)")
+                TestSupport.expect(waiting.middle.width >= 60, "no room for a notice at \(bar): \(waiting.middle)")
             }
         }
     }
@@ -364,5 +458,84 @@ enum DictationIslandTests {
                 }
             }
         }
+    }
+
+    // MARK: Left-handed (round 10, owner)
+
+    /// The span reflected across the bar's middle.
+    private static func mirrored(_ span: IslandLayout.Span, in bar: Double) -> IslandLayout.Span {
+        IslandLayout.Span(x: bar - span.maxX, width: span.width)
+    }
+
+    /// Left-handed, the bar's parts are the right-handed ones reflected across its middle: Start and the island at the
+    /// left end, growing rightwards, Cancel on the island's right, the menu button at the right end, the middle between.
+    /// Off, the layout is exactly today's.
+    private static func testLeftHandedMirrorsTheDictationControls() {
+        for bar in barWidths + [120] {
+            for height in controlHeights {
+                for form in forms {
+                    let right = layout(bar, height, form), left = layout(bar, height, form, leftHanded: true)
+                    TestSupport.expectEqual(IslandLayout(barWidth: bar, controlHeight: height,
+                                                         startWidth: IslandLayout.startWidth(labelWidth: 36, controlHeight: height),
+                                                         form: form), right)
+                    TestSupport.expectEqual(left.menu, mirrored(right.menu, in: bar))
+                    TestSupport.expectEqual(left.island, mirrored(right.island, in: bar))
+                    TestSupport.expectEqual(left.middle, mirrored(right.middle, in: bar))
+                    TestSupport.expectEqual(left.cancel, right.cancel.map { mirrored($0, in: bar) })
+                    TestSupport.expectEqual(left.island.x, IslandLayout.padding)
+                    TestSupport.expectEqual(left.menu.maxX, bar - IslandLayout.padding)
+                }
+            }
+        }
+    }
+
+    /// Every round 9 contract holds mirrored: the recording island under half the bar, Cancel beside it in the bar's left
+    /// half (a left thumb's), a clear gap from Stop, in one place from starting through the wait, with its 44-point target
+    /// apart from Stop's and the menu's.
+    private static func testLeftHandedKeepsEveryContractMirrored() {
+        for bar in barWidths {
+            for compact in [false, true] {
+                let barHeight = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
+                let height = compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight
+                let top = (barHeight - height) / 2
+                let recording = layout(bar, height, .expanded, leftHanded: true)
+                let waiting = layout(bar, height, .processing, leftHanded: true)
+                TestSupport.expectEqual(layout(bar, height, .compact, leftHanded: true).cancel, nil)
+                guard let cancel = recording.cancel else {
+                    TestSupport.expect(false, "no Cancel while recording at \(bar)")
+                    continue
+                }
+                TestSupport.expect(recording.island.width < bar / 2, "the island is half the bar or more at \(bar)")
+                TestSupport.expectEqual(waiting.cancel, cancel)
+                TestSupport.expect(cancel.x + cancel.width / 2 < bar / 2, "Cancel is not in the left half at \(bar): \(cancel)")
+                TestSupport.expectEqual(cancel.x - recording.island.maxX, IslandLayout.cancelGap)
+                TestSupport.expect(cancel.x - waiting.island.maxX >= IslandLayout.cancelGap, "Cancel crowds the wait at \(bar)")
+                let circle = KeyRect(x: cancel.x, y: top + (height - cancel.width) / 2, width: cancel.width, height: cancel.width)
+                let area = KeyboardMetrics.cancelTapArea(circle: circle, barHeight: barHeight, compact: compact)
+                TestSupport.expectEqual(area.width, 44)
+                let island = KeyRect(x: recording.island.x, y: top, width: recording.island.width, height: height)
+                let stop = KeyboardMetrics.startTapArea(capsule: island, barHeight: barHeight, compact: compact, capturing: true)
+                TestSupport.expect(area.x - stop.maxX >= 8, "Cancel and Stop are \(area.x - stop.maxX) pt apart at \(bar)")
+                TestSupport.expect(stop.width < bar / 2, "Stop reaches across half the top row at \(bar)")
+                TestSupport.expect(area.maxX <= recording.menu.x - IslandLayout.spacing, "Cancel's area reaches the menu at \(bar)")
+                TestSupport.expect(recording.middle.width >= 100, "no room in the middle at \(bar)")
+            }
+        }
+    }
+
+    /// Left-handed, Stop's reach into the top row covers the keys under the mirrored island, at the bar's left, and no
+    /// others: the top row's right-hand keys type while recording.
+    private static func testLeftHandedStopReachesTheKeysUnderItsIsland() {
+        let width = 402.0, barHeight = KeyboardMetrics.barHeight, height = KeyboardMetrics.barControlHeight
+        let recording = layout(width, height, .expanded, leftHanded: true)
+        let island = KeyRect(x: recording.island.x, y: (barHeight - height) / 2, width: recording.island.width, height: height)
+        let stop = KeyboardMetrics.startTapArea(capsule: island, barHeight: barHeight, compact: false, capturing: true)
+        let metrics = KeyboardMetrics(width: width, height: KeyboardMetrics.regularHeight)
+        let keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: false)
+        let topRow = keys.filter { $0.frame.y == metrics.rowY(0) }
+        let reached = topRow.filter { KeyboardMetrics.keyPointGoesToStart(x: $0.frame.midX, y: $0.frame.midY, barHeight: barHeight, start: stop) }
+        TestSupport.expect(reached.contains { $0.label == "q" } && reached.contains { $0.label == "w" }, "Stop misses q and w: \(reached.map(\.label))")
+        TestSupport.expect(!reached.contains { $0.label == "p" } && !reached.contains { $0.label == "o" }, "Stop takes p or o")
+        TestSupport.expect(reached.allSatisfy { $0.frame.midX < width / 2 }, "Stop reaches the right half")
     }
 }

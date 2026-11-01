@@ -6,30 +6,18 @@ enum KeyboardMessages {
     static let openLocalFlow = "Open LocalFlow to start a session"
     static let noSpeech = "No speech detected"
     static let preparingModel = "Preparing model…"
-    /// `preparingModel` where the bar's middle, between Cancel and the wait's pill, has no room for it: the shimmer beside
-    /// it and the cold start's caption before it say what is prepared.
-    static let preparingShort = "Preparing…"
-
-    /// The short form of a line where one fits better beside Cancel, if it has one.
-    static func shortForm(of line: String) -> String? {
-        switch line {
-        case preparingModel: return preparingShort
-        case modelLoadingCaption: return modelLoadingShortCaption
-        default: return nil
-        }
-    }
     static let starting = "Starting…"
     /// Recording while the host prepares the model (`KeyboardPresenter.isModelPreparing`). Short enough for a
     /// 375-point phone beside Cancel and the labelled Stop capsule.
     static let listeningWhilePreparing = "Listening · model loads"
     /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
-    /// presentation"), nothing prepares it now.
+    /// presentation"), nothing prepares it now. VoiceOver's, after the session line (round 10: the bar shows no words).
     static let modelLoadsWhenDictating = "Model loads when you dictate"
-    /// In the bar's middle while recording as the host still prepares the model: the wave itself says "listening".
+    /// What VoiceOver hears after the time while recording as the host still prepares the model (round 9 showed it in
+    /// the bar's middle; round 10, owner: the wave says it is listening, and the wait will show it is busy).
     static let modelLoadingCaption = "Model loading"
-    /// `modelLoadingCaption` where the bar's middle has no room for it beside Cancel (a 375-point phone, large text): the
-    /// rest of the bar says it is a recording, so "Loading" is the model.
-    static let modelLoadingShortCaption = "Loading"
+    /// VoiceOver's words for Start with no session (round 10: the bar shows the ember dot instead of these words).
+    static let noSessionSpoken = "No session. Start opens LocalFlow"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
         + "your speech on this iPhone. Nothing leaves your phone."
@@ -71,16 +59,40 @@ enum KeyboardMessages {
         }
     }
 
-    /// What VoiceOver hears as the island's value while it is Stop: the mode, and the time while recording. Empty for Start
-    /// and the wait. Dictation's text (a notice, the cold start's caption, "Open LocalFlow to start a session") is the
-    /// middle's, which VoiceOver reaches on its own (round 9: the island no longer holds it).
-    static func islandAccessibilityValue(for mode: KeyboardMode, now: Date) -> String {
+    /// What VoiceOver hears as the island's value: while it is Stop, the mode and the time while recording, then any
+    /// `detail` (the model still loading); on Start, `detail`, the status the bar shows as Start's dot (round 10: the
+    /// session's time left, the model, no session; `spokenStatus`). Empty for the wait, whose label names it. A notice, an
+    /// error and "Open LocalFlow to start a session" are the middle's words, which VoiceOver reaches on its own.
+    static func islandAccessibilityValue(for mode: KeyboardMode, detail: String?, now: Date) -> String {
         switch mode {
         case .starting: return "Starting"
         case .recording(_, let startedAt):
             let seconds = max(0, Int(now.timeIntervalSince(startedAt)))
-            return "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
-        default: return ""
+            let time = "Recording, " + Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
+            return detail.map { time + ". " + $0 } ?? time
+        case .transcribing, .waitingForModel: return ""
+        default: return detail ?? ""
+        }
+    }
+
+    /// The status words the bar no longer shows (round 10, owner: "prefer intuitive icons to textual descriptions"),
+    /// for VoiceOver, only from a live host: the session's time left in the menu's words, the model loading when the user
+    /// dictates or preparing now, no session (Start opens LocalFlow), and the model still loading while recording. Nil
+    /// where the bar's own words or the island's label say it all.
+    static func spokenStatus(mode: KeyboardMode, status: HostStatus?, launcherFailed: Bool, now: Date) -> String? {
+        let live = status.flatMap { status -> HostStatus? in
+            status.schema == DictationProtocol.schema && status.session == .active
+                && DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now) ? status : nil
+        }
+        switch mode {
+        case .recording: return live?.model == .preparing ? modelLoadingCaption : nil
+        case .hostUnavailable: return launcherFailed ? nil : noSessionSpoken
+        case .ready, .preparingModel:
+            guard let live, isSessionReady(live, now: now) else { return nil }
+            let session = sessionSummary(for: live, now: now)
+            if mode == .preparingModel || live.model == .preparing { return "Preparing model. " + session }
+            return live.model == .notPrepared ? session + ". " + modelLoadsWhenDictating : session
+        default: return nil
         }
     }
 
@@ -135,24 +147,24 @@ enum KeyboardMessages {
         case .active: break
         }
         guard let expiresAt = status.sessionExpiresAt else { return "Session active" }
-        // The bar's words: short enough for one line at large text sizes.
+        // Short enough for one line at large text sizes.
         return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
     }
 
-    /// How the bar and the menu name the session's end, in the Live Activity's words ("ends in 2:15"): when it ends if
-    /// nothing is dictated, not at a fixed time.
+    /// How the menu and VoiceOver name the session's end, in the Live Activity's spoken words ("ends in 2:15"): when it
+    /// ends if nothing is dictated, not at a fixed time.
     static func idleTimeout(minutes: Int) -> String {
         "ends in \(minutes) min if idle"
     }
 
-    /// The minutes until `expiresAt`, to the nearest, so the bar agrees with the Live Activity's countdown (2:15 is 2
+    /// The minutes until `expiresAt`, to the nearest, so the menu agrees with the Live Activity's countdown (2:15 is 2
     /// minutes); never under one while the session runs.
     private static func minutesLeft(until expiresAt: Date, now: Date) -> Int {
         max(1, Int((expiresAt.timeIntervalSince(now) / 60).rounded()))
     }
 
     /// Dictation is ready to go: a live host runs a session and its model has not failed or gone missing (it may
-    /// still load when the user dictates). The idle bar then leads its line with the mark's dot.
+    /// still load when the user dictates). Start's mark's dot is then aurora (`SessionDot`).
     static func isSessionReady(_ status: HostStatus?, now: Date) -> Bool {
         guard let status, status.schema == DictationProtocol.schema, status.session == .active,
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
@@ -163,22 +175,18 @@ enum KeyboardMessages {
         }
     }
 
-    /// A small hint about the model or session, only from a live host: a dead host's last status
-    /// would otherwise claim "Preparing model…" forever.
+    /// The idle line's words about the model, only from a live host's session, and only for a model that cannot load
+    /// (round 10: the session's state is Start's dot, and a model that loads or is loading is VoiceOver's,
+    /// `spokenStatus`). A dead host's last status says nothing.
     static func hint(for status: HostStatus?, now: Date) -> String? {
-        guard let status, status.schema == DictationProtocol.schema,
+        guard let status, status.schema == DictationProtocol.schema, status.session == .active,
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
         else { return nil }
         switch status.model {
-        case .preparing: return preparingModel
         case .failed: return "Model failed to load"
         case .unavailable: return "Model missing"
-        case .notPrepared, .ready: break
+        case .notPrepared, .preparing, .ready: return nil
         }
-        guard status.session == .active else { return nil }
-        if status.model == .notPrepared { return modelLoadsWhenDictating }
-        guard let expiresAt = status.sessionExpiresAt else { return "Session on" }
-        return "Session " + idleTimeout(minutes: minutesLeft(until: expiresAt, now: now))
     }
 }
 
@@ -228,42 +236,59 @@ enum CapsuleContent: Equatable, Sendable {
     }
 }
 
-/// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): a notice whenever one is up; while
-/// recording, where the island shows the live wave, a caption only when it says something the user needs (the model
-/// still loading); while starting, nothing unless it is more than "Starting…" (the island's dimmed row says that);
-/// otherwise the one-line status (ready and idle: only the model or session hint, led by the mark's dot while the
-/// session is ready, `KeyboardMessages.isSessionReady`), unless a chip shows.
+/// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"). Round 10 (owner: "prefer intuitive icons
+/// to textual descriptions ... balance between these two poles"): words only where they earn their space. A notice
+/// whenever one is up; the words of what the user must act on (Full Access, a broken install or versions, "Open
+/// LocalFlow to start a session" after the launcher failed), of an error, and of a model that cannot load (`hint`);
+/// otherwise nothing: the island's motion says it is starting, recording or waiting, and Start's dot (`SessionDot`)
+/// whether a session is on. Nothing beside a chip but a notice.
 enum BarStatus: Equatable, Sendable {
     case notice(String)
-    case wave(caption: String?)
-    /// `attention`: an error or a state that keeps dictation from working. `ready`: idle with dictation ready, which
-    /// the dot shows; information, not a control.
-    case text(String, attention: Bool, ready: Bool = false)
+    /// `attention`: an error or a state that keeps dictation from working, led by the ember warning symbol.
+    case text(String, attention: Bool)
     case none
 
-    init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool, sessionReady: Bool = false) {
+    init(mode: KeyboardMode, title: String, hint: String?, notice: String?, chipsShown: Bool) {
         if let notice {
             self = .notice(notice)
             return
         }
-        if case .recording = mode {
-            self = .wave(caption: title == KeyboardMessages.listeningWhilePreparing ? KeyboardMessages.modelLoadingCaption : nil)
-            return
-        }
-        let line: String?
-        switch mode {
-        case .ready: line = hint
-        case .starting: line = title == KeyboardMessages.starting ? nil : title
-        default: line = title.isEmpty ? nil : title
-        }
-        guard let line, !chipsShown else {
+        guard !chipsShown else {
             self = .none
             return
         }
         switch mode {
-        case .error, .needsFullAccess, .configurationError, .incompatible: self = .text(line, attention: true)
-        case .ready: self = .text(line, attention: false, ready: sessionReady)
-        default: self = .text(line, attention: false)
+        case .error, .needsFullAccess, .configurationError, .incompatible:
+            self = title.isEmpty ? .none : .text(title, attention: true)
+        case .ready:
+            self = hint.map { .text($0, attention: true) } ?? .none
+        case .starting, .hostUnavailable:
+            self = title == KeyboardMessages.openLocalFlow ? .text(title, attention: false) : .none
+        case .recording, .transcribing, .waitingForModel, .preparingModel:
+            self = .none
         }
+    }
+}
+
+/// Start's mark's dot (round 10, owner: "an orange/yellow dot ... if a session is inactive ... and a green dot if the
+/// session is active"): the session at a glance, the one dot on the idle bar. Aurora while a live session can take a
+/// dictation, breathing while its model prepares; ember, a warm "not on yet", while none can.
+enum SessionDot: Equatable, Sendable {
+    case ready, preparing, off
+
+    init(mode: KeyboardMode, sessionReady: Bool) {
+        switch mode {
+        case .preparingModel: self = .preparing
+        // Start opens LocalFlow, or dictation cannot run here.
+        case .hostUnavailable, .needsFullAccess, .configurationError, .incompatible: self = .off
+        default: self = sessionReady ? .ready : .off
+        }
+    }
+
+    /// The dot pulses gently: the model is loading.
+    var breathes: Bool { self == .preparing }
+
+    func color(_ palette: BrandPalette) -> BrandPalette.RGB {
+        self == .off ? palette.noSession : palette.live
     }
 }

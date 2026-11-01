@@ -23,6 +23,7 @@ struct LocalFlowSettings {
         static let fieldLayoutOverrides = "fieldLayoutOverrides"
         static let softKeyEdgesEnabled = "softKeyEdgesEnabled"
         static let autocorrectEnabled = "autocorrectEnabled"
+        static let leftHanded = "leftHanded"
     }
 
     /// Remembered field layout choices, at most this many.
@@ -152,11 +153,18 @@ struct LocalFlowSettings {
         nonmutating set { defaults.set(newValue, forKey: Key.autocorrectEnabled) }
     }
 
+    /// Left-handed (round 10, owner): the keyboard's dictation controls mirrored to the bar's left. Off by default, the
+    /// one switch that is; the keyboard reads it when it appears.
+    var leftHanded: Bool {
+        get { defaults.object(forKey: Key.leftHanded) as? Bool ?? false }
+        nonmutating set { defaults.set(newValue, forKey: Key.leftHanded) }
+    }
+
     private static func isFingerprintKey(_ key: String) -> Bool {
         key.count == 16 && key.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
-    // Every boolean setting defaults to on.
+    // Every boolean setting but `leftHanded` defaults to on.
     private func bool(_ key: String) -> Bool {
         defaults.object(forKey: key) as? Bool ?? true
     }

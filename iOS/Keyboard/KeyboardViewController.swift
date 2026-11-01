@@ -155,6 +155,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         let settings = fieldSettings
         input.configureSoftKeyEdges(enabled: settings?.softKeyEdgesEnabled ?? false)
         input.configureAutocorrect(enabled: settings?.autocorrectEnabled ?? false)
+        // Left-handed mirrors the dictation controls (ARCHITECTURE.md, "Top row"); like the others, read on appearing.
+        let leftHanded = settings?.leftHanded ?? false
+        if chrome.leftHanded != leftHanded { chrome.leftHanded = leftHanded }
         // The words never to correct, from the App Group (read, like `fieldSettings`, only with Full Access).
         input.configureNeverCorrect(store: settings?.autocorrectEnabled == true
                                     ? LocalFlowConfiguration.main.flatMap(NeverCorrectStore.init(configuration:)) : nil)

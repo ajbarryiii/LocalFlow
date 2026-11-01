@@ -11,6 +11,7 @@ enum DictationSampleBufferTests {
             ("capsAtMaxDuration", testCapsAtMaxDuration),
             ("defaultCapIsFiveMinutes", testDefaultCapIsFiveMinutes),
             ("levelTracksSpeechAndStaysInRange", testLevelTracksSpeechAndStaysInRange),
+            ("levelFollowsSyllables", testLevelFollowsSyllables),
             ("finishDrainsAtomicallyUnderConcurrentAppends", testFinishDrainsAtomicallyUnderConcurrentAppends),
             ("streamReceivesExactlyTheRecording", testStreamReceivesExactlyTheRecording),
             ("staleRecordingNeverFeedsANewerStream", testStaleRecordingNeverFeedsANewerStream),
@@ -226,6 +227,26 @@ enum DictationSampleBufferTests {
         TestSupport.expect(buffer.level <= 1, "clipped input exceeded 1")
         _ = buffer.finish(requestID: Fixture.requestID)
         TestSupport.expectEqual(buffer.level, 0)
+    }
+
+    /// Round 10 (owner: the keyboard's wave "kind of slow, consistent"): the level falls with a syllable's end, within two
+    /// buffers (about 0.2 s; round 9's release kept 70% then, a 0.6 s fall), so the keyboard sees a gap between words;
+    /// and ordinary speech (-17 dBFS, the synthetic voice's level) sits clearly below the top, so a louder word still
+    /// shows louder.
+    private static func testLevelFollowsSyllables() {
+        let buffer = DictationSampleBuffer()
+        buffer.begin(requestID: Fixture.requestID)
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.3)) }
+        let speaking = buffer.level
+        buffer.append(tone(1_600, amplitude: 0.001))
+        buffer.append(tone(1_600, amplitude: 0.001))
+        TestSupport.expect(buffer.level <= 0.25 * speaking, "the level lingers after a syllable: \(buffer.level) of \(speaking)")
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.2)) }
+        let ordinary = buffer.level
+        TestSupport.expect(ordinary < 0.92, "ordinary speech is at the top: \(ordinary)")
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.5)) }
+        TestSupport.expect(buffer.level > ordinary + 0.05, "a louder word reads the same: \(buffer.level) vs \(ordinary)")
+        _ = buffer.finish(requestID: Fixture.requestID)
     }
 
     /// The audio tap appends from its own thread while the main thread finishes the request. Every

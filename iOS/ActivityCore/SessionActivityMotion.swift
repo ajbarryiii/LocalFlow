@@ -39,8 +39,14 @@ enum SessionActivityMotion {
 }
 
 extension SessionActivityState {
-    /// The words around a ready session's countdown, which the keyboard's bar and menu share
-    /// ("Session ends in 2 min if idle"; on the Lock Screen "Session ends in 2:15 if idle").
+    /// The words around a ready session's countdown, which the keyboard's menu and VoiceOver use ("Session ends in 2 min
+    /// if idle").
     static let countdownLead = "ends in"
     static let countdownTail = "if idle"
+    /// Round 10 (owner: glyphs, not words): the island and the Lock Screen show the countdown beside this SF Symbol,
+    /// "4:58" in the expanded island and "4:53 left" on the Lock Screen.
+    static let countdownSymbol = "timer"
+    static let lockScreenCountdownTail = "left"
+    /// What VoiceOver hears before the countdown there.
+    static let countdownSpokenLead = "Session ends if idle in"
 }

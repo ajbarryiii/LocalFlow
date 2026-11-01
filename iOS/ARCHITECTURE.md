@@ -391,8 +391,8 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 9. `ready`: the host is alive and `captureReady`, with any other model
    state. A model that is `notPrepared` (released after a memory warning)
    starts preparing when the tap is admitted ([Admission](#admission)), so
-   the recording already shows it; until then the status line's hint reads
-   "Model loads when you dictate" (`KeyboardMessages.hint`, with a live
+   the recording already shows it; until then Start's value tells VoiceOver
+   "Model loads when you dictate" (`KeyboardMessages.spokenStatus`, with a live
    session). `failed` and `unavailable` are reported by the hint and, on a
    tap, by the request's error.
 10. `hostUnavailable`: everything else. A mic tap bounces.
@@ -400,7 +400,8 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 `KeyboardPresenter.isModelPreparing(status:now:)` is true when the status is
 a `.value` of the current schema, the host is alive (as in 4) and
 `status.model` is `preparing`. While recording, the keyboard then reads
-"Listening · model loads". A dead host's last status never shows
+"Model loading" to VoiceOver after the recording's time (round 10: the bar
+shows no caption). A dead host's last status never shows
 preparation.
 
 **Stale-writer guard.** Right before writing `finish` or `cancel`, the
@@ -515,7 +516,7 @@ invalidated requests and the consumed requests.
 ### Shared settings (Shared/LocalFlowSettings.swift)
 
 The keyboard reads these, so they live in the App Group's `UserDefaults`
-suite. Every boolean defaults to on.
+suite. Every boolean but `leftHanded` defaults to on.
 
 | Setting | Values | Use |
 | --- | --- | --- |
@@ -530,6 +531,7 @@ suite. Every boolean defaults to on.
 | `fieldLayoutOverrides` | at most 64 fingerprint keys → `messages` or `fullWidth` | [Field profiles](#field-profiles) |
 | `softKeyEdgesEnabled` | Bool | [Soft key edges](#soft-key-edges) ("Soft key edges" on Home) |
 | `autocorrectEnabled` | Bool | [Word autocorrect](#word-autocorrect) ("Autocorrect" on Home) |
+| `leftHanded` | Bool; default off | the dictation controls mirrored to the bar's left ("Left-handed" on Home, [Top row](#top-row)) |
 
 Out-of-range or malformed values read as the default and are not written. No
 transcript history is stored. The words autocorrect must never correct are a
@@ -998,12 +1000,15 @@ no buttons.
   `DotWave.lift`, `DotWave.glow`; round 9): a calm row of equal dots when
   ready, the voice's swell while recording, and a glacier glint where the
   wait's shimmer is, in the middle while transcribing (on the left third
-  while the model prepares). `DotWave` is compiled into the extension.
+  while the model prepares); while recording the strip is one still moment
+  of the keyboard's voice row, three words of different loudness
+  (`DotWave.stillLift`, round 10). `DotWave` is compiled into the
+  extension.
   - Compact: the mark leading; trailing, a small strip, or the coral dot and
     the elapsed time while recording, so the island grows as recording starts
     and narrows as it stops. Minimal: the mark, or the coral dot while
-    recording. Expanded: the mark and "LocalFlow", the countdown ("ends in")
-    or the recording time, the strip and the phase's name. Lock Screen: the
+    recording. Expanded: the mark and "LocalFlow", the countdown beside a
+    timer glyph or the recording time, the strip and the phase's name. Lock Screen: the
     mark, the phase's name, one line of guidance or the countdown, the
     recording time, and the strip on its own dark background, in either
     appearance.
@@ -1016,9 +1021,13 @@ no buttons.
   Motion every change is opacity only: nothing grows, shrinks or slides,
   the dots keep one size and the strip's shape shows in brightness
   (`SessionActivityMotion`, pure, tested; round 8 council, Sol finding 2).
-  Timers are live (`Text(timerInterval:)`); a ready session reads "ends in
-  2:15" in the island and "Session ends in 2:15 if idle" on the Lock Screen,
-  the bar's words. Nothing animates in Always On.
+  Timers are live (`Text(timerInterval:)`). Round 10 (owner: glyphs, not
+  words): a ready session's countdown is a small timer glyph (SF Symbol
+  `timer`) with the time, "4:58" in the expanded island and "4:58 left" on
+  the Lock Screen under "Ready to dictate" (round 9: "ends in 4:58",
+  "Session ends in 4:58 if idle"); VoiceOver reads the glyph as "Session
+  ends if idle in", then the time (`SessionActivityState.countdownSymbol`,
+  `countdownSpokenLead`). Nothing animates in Always On.
 - **Build.** `LocalFlowActivity.appex` (`$(BUNDLE_ID).activity`), a
   `com.apple.widgetkit-extension` linked with the `_NSExtensionMain` entry
   point as Xcode links every extension; no entitlements beyond the signing
@@ -1121,9 +1130,27 @@ every other point of the bar
   padding.
   - **Start** (idle, errors, and where dictation cannot run): the compact
     island, the ridge mark beside "Start", as wide as its label needs and
-    never narrower than 2.4 times its height.
-  - **Recording.** A tap on Start grows the island leftwards with a spring,
-    and the whole island is Stop: the wave ([Keyboard look](#keyboard-look)),
+    never narrower than 2.4 times its height. The mark's dot is the
+    session's state (`SessionDot`, round 10, owner: "an orange/yellow dot
+    ... if a session is inactive ... and a green dot if the session is
+    active"), the one dot on the idle bar: aurora while a live session can
+    take a dictation, breathing (its opacity down to 35% and back every
+    1.2 s; steady with Reduce Motion) while its model prepares, ember (the
+    palette's warm yellow, `BrandPalette.noSession`) while none can or
+    dictation cannot run here. It changes colour with a 0.2 s cross-fade.
+    The dot leading the middle (round 4 to 9) was tried again in the
+    simulator and dropped: beside Start's own dot it made two, in
+    contradicting colours without a session.
+  - **Start without a session** (`hostUnavailable`) stays Start (round 10,
+    Opus round 9 finding 2): the tap pops the dot once, plays the press
+    haptic and asks iOS to open LocalFlow. While the request it bounced has
+    not reached the host, the keyboard shows Start
+    (`KeyboardPresenter.shownMode`), so a decline leaves Start at once
+    (round 9 held the dimmed recording form about 15 s) and a second tap
+    bounces again; when the user accepts, the host admits the request and
+    the recording shows as usual.
+  - **Recording.** A tap on Start grows the island towards the bar's middle
+    with a spring, and the whole island is Stop: the wave ([Keyboard look](#keyboard-look)),
     the elapsed time and a stop glyph. It stays under half the bar (round 9,
     owner: the speaking pill was too wide): as wide as leaves Cancel, beside
     it, in the bar's right half, and no wider than 200 pt
@@ -1131,19 +1158,21 @@ every other point of the bar
     402 pt Pro, 200 pt in landscape). Starting and recording are one view:
     while starting the wave's row is dimmed and the time's place is kept, so
     nothing in the island moves when the recording begins. VoiceOver hears
-    the mode and the time in the island's value
+    the mode and the time in the island's value, and "Model loading" after
+    them while the host still prepares the model
     (`KeyboardMessages.islandAccessibilityValue`).
   - **The wait** (transcribing, waiting for the model): Stop contracts it
-    into a short pill (1.5 times its height) holding only a cool shimmer,
-    which takes no taps; the middle, between Cancel and the pill, says what
-    it waits for ("Transcribing…", "Preparing model…", or "Preparing…" where
-    the full line does not fit), and VoiceOver hears it from the island's
-    label (`KeyboardMessages.capsuleAccessibilityLabel`). When the transcript
-    lands it opens back into Start, and Undo arrives in the middle.
+    into a short pill (1.9 times its height, 8 dots on a phone; round 10,
+    Opus: 1.5 times held 6) holding only a cool shimmer, which takes no
+    taps. Round 10 (owner): no words name the wait; the shimmer says it is
+    busy, and VoiceOver hears "Transcribing" or "Preparing model" from the
+    island's label (`KeyboardMessages.capsuleAccessibilityLabel`). When the
+    transcript lands it opens back into Start, and Undo arrives in the
+    middle.
   - **Cancel** (`lf.cancel`), a small circle (32 pt; 26 pt in landscape),
     shows from starting until the transcript arrives, beside the recording
     island in the bar's right half, in reach of a right thumb (round 9,
-    owner), a 12 pt gap from it: Cancel discards the dictation, so a near
+    owner; the left half left-handed), a 12 pt gap from it: Cancel discards the dictation, so a near
     miss for Stop must not reach it. Its place is the recording's, so no
     change of the island moves it (round 5): the wait leaves it where it
     was. Its tap area is 44 pt wide and never reaches into the keys
@@ -1152,7 +1181,20 @@ every other point of the bar
     (from `CapsuleStyle`). It is never replaced by the candidate strip, the
     chips or a notice. When dictation cannot run here (no Full Access,
     configuration, versions), Start is dimmed and explains why.
-- **Left:** a menu button (`lf.menu`) that opens a panel over the key area
+- **Left-handed** (`LocalFlowSettings.leftHanded`, "Left-handed" on Home,
+  off by default; round 10, owner, accessibility): every part of the bar is
+  reflected across its middle (`IslandLayout(leftHanded:)`): Start and the
+  island at the bar's left end, growing rightwards; Cancel on the island's
+  right, in a left thumb's reach; the menu button at the right end; the
+  middle between. Inside, the recording's order is mirrored too (the stop
+  glyph, the time, then the wave, which settles into the mark's dot beside
+  the time and moves away from it), so the stop glyph stays at the bar's
+  edge, under the thumb and away from Cancel; kept in order (tried in the
+  simulator) it sat beside Cancel. The keys, suggestions,
+  menu card and everything else stay as they are. Every round 9 contract
+  holds mirrored, and off the layout is exactly the right-handed one
+  (`DictationIslandTests`). The keyboard reads it when it appears.
+- **Left** (right, left-handed): a menu button (`lf.menu`) that opens a panel over the key area
   with the session status, "Open LocalFlow", the trackpad
   tip with the field's text width ("Full width" or "Chat bubble",
   [Field profiles](#field-profiles)), and details of anything that keeps
@@ -1180,47 +1222,74 @@ every other point of the bar
   come first ("Open LocalFlow", then the text-width choice), then the
   session status and the tip, which points above
   (`KeyboardMessages.menuItems`), so the first screen is never all status.
-  The session line is the bar's ("Session ends in 5 min if idle"); its
-  ridge mark is ink with the accent's dot, like every other mark
+  The session line keeps the time left ("Session ends in 5 min if idle",
+  which the bar shows only as Start's dot); its ridge mark is ink with the
+  accent's dot, like every other mark
   (`MenuPalette.markLine`, `markDot`). A tap outside the panel's card, or
   on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
   (`lf.insertLast`) when there is something to act on (neither while a
-  dictation is in progress, so the wait's line always shows), otherwise a one-line
-  status (model preparation, errors, notices): "Preparing model…" in
-  `preparingModel` and `waitingForModel` (`BarStatus`). Where it is depends
-  on the island's form (`IslandLayout`): beside Start; while starting and
-  recording between the menu and Cancel; while waiting between Cancel and
-  the pill. While a dictation runs it holds only plain text that invites no
-  tap: the cold start's caption ("Model loading", or "Loading" where it
-  does not fit), a notice, "Open LocalFlow to start a session" when the host
-  has not come up (nothing for a plain "Starting…": the island's dimmed row
-  says it), the wait's words; beside Cancel such text may take two lines. Idle with a ready session (a live host's active
-  session whose model has not failed or gone missing,
-  `KeyboardMessages.isSessionReady`), the status line is led by a small
-  aurora dot, the mark's: information, not a control. An
-  error or a state that keeps dictation from working leads its line with an
-  ember warning symbol. The candidate strip, after a
-  swipe ([Swipe typing](#swipe-typing)) or a commit key, while a word is
-  typed, or with the next words after a space
-  ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
-  The "Never correct" chip after an autocorrect revert replaces both while it
-  shows ([Word autocorrect](#word-autocorrect)). Neither covers dictation's
-  own UI (`BarMiddleContent`): while a dictation is starting, recording,
-  transcribing or waiting for the model, while a notice is up, or while its
-  Undo chip shows, the middle stays dictation's.
-- The status line describes and never instructs (owner decision: a tap on it
-  types the top-row key under it), e.g. "Start opens LocalFlow" with no
-  session. Its ink is the system's secondary text in dark mode (about 6:1);
-  on the light keyboard, where that measured 3.1:1 (#7E7F85 on #E1E3E7,
-  round 6, Opus finding 4), it is the menu's secondary grey
-  (`BrandPalette.statusInk`), 4.6:1 or better on the backdrop, deeper with
-  Increase Contrast, and well short of the candidates' black. The bar and the menu name the session's end alike, in the Live
-  Activity's words: "Session ends in N min if idle", to the nearest minute
-  (never under one), so the bar agrees with the activity's countdown
-  ("ends in 2:15" is 2 min; round 9, Opus). Bar text grows with Dynamic Type up to what one line of the
-  fixed-height bar holds, and shrinks at most to 85% (80% for the session
-  line beside its dot).
+  dictation is in progress), otherwise a one-line status (`BarStatus`).
+  Round 10 (owner: "prefer intuitive icons to textual descriptions ... be
+  careful to balance between these two poles"): words only where they earn
+  their space.
+  - **Words:** what the user must act on (Full Access, a broken install,
+    versions, "Open LocalFlow to start a session" after the launcher
+    failed or the user declined iOS's prompt), an error (why a dictation
+    was lost; the microphone permission), a model that cannot load
+    ("Model failed to load", "Model missing"), and a notice. An error or a
+    state that keeps dictation from working leads its line with an ember
+    warning symbol.
+  - **Nothing:** what the island's motion or Start's dot already says:
+    the session line ("Session ends in 5 min if idle", "Session on"),
+    "Model loads when you dictate", "Preparing model…" idle and in the
+    wait, "Transcribing…", the cold start's "Model loading" while
+    recording, and "Start opens LocalFlow".
+  - **VoiceOver** still hears every state in words: what the bar no longer
+    shows is the island's value (`KeyboardMessages.spokenStatus`), on Start
+    "Session ends in 5 min if idle" (". Model loads when you dictate"),
+    "Preparing model. Session ends in 5 min if idle", "No session. Start
+    opens LocalFlow"; while recording "Recording, 5 seconds. Model
+    loading"; the wait from the label.
+
+  | State | The bar shows | VoiceOver |
+  | --- | --- | --- |
+  | Ready, session on | Start, aurora dot | "Start dictation, Session ends in N min if idle" |
+  | Ready, model released | Start, aurora dot | "…if idle. Model loads when you dictate" |
+  | Model preparing (idle) | Start, aurora dot breathing | "Start dictation, Preparing model. Session ends in N min if idle" |
+  | No session | Start, ember dot | "Start dictation, No session. Start opens LocalFlow" |
+  | No session, launcher failed or declined | Start, ember dot; "Open LocalFlow to start a session" | the middle's words |
+  | Starting | dimmed recording row | "Stop dictation, Starting" |
+  | Recording | the wave and time | "Stop dictation, Recording, 5 seconds" (". Model loading") |
+  | Transcribing, waiting for the model | the shimmer pill | "Transcribing", "Preparing model" |
+  | Error | ember triangle and its words | the middle's words |
+  | Model failed or missing | ember dot; triangle and words | the middle's words |
+  | No Full Access, configuration, versions | Start dimmed, ember dot; triangle and words | the middle's words |
+
+  Where it is depends on the island's form (`IslandLayout`): beside Start;
+  while starting and recording between the menu and Cancel; while waiting
+  between Cancel and the pill. While a dictation runs it holds only plain
+  text that invites no tap (a notice, "Open LocalFlow to start a
+  session"); beside Cancel such text may take two lines. The candidate
+  strip, after a swipe ([Swipe typing](#swipe-typing)) or a commit key,
+  while a word is typed, or with the next words after a space
+  ([Word autocorrect](#word-autocorrect)), replaces the chips while it
+  shows. The "Never correct" chip after an autocorrect revert replaces both
+  while it shows ([Word autocorrect](#word-autocorrect)). Neither covers
+  dictation's own UI (`BarMiddleContent`): while a dictation is starting,
+  recording, transcribing or waiting for the model, while a notice is up,
+  or while its Undo chip shows, the middle stays dictation's.
+- The status line describes and never instructs (owner decision: a tap on
+  it types the top-row key under it). Its ink is the system's secondary
+  text in dark mode (about 6:1); on the light keyboard, where that measured
+  3.1:1 (#7E7F85 on #E1E3E7, round 6, Opus finding 4), it is the menu's
+  secondary grey (`BrandPalette.statusInk`), 4.6:1 or better on the
+  backdrop, deeper with Increase Contrast, and well short of the
+  candidates' black. The menu names the session's end in the Live
+  Activity's spoken words: "Session ends in N min if idle", to the nearest
+  minute (never under one), so it agrees with the activity's countdown
+  ("4:58" is 5 min; round 9, Opus). Bar text grows with Dynamic Type up to
+  what one line of the fixed-height bar holds, and shrinks at most to 85%.
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
@@ -1237,8 +1306,8 @@ every other point of the bar
   dark island, and deepens the light keyboard's accents further; Reduce
   Motion drops the bar's press shrink, the island's spring (it takes each
   form at once, cross-faded in 0.15 s), the chips' spring, the pill's glide,
-  the wave's drift and smoothing (it stands still at each level) and the
-  shimmer's sweep; key-press highlights stay.
+  the wave's motion and smoothing (the row stands still at each level),
+  the shimmer's sweep and the dot's breathing; key-press highlights stay.
 
 ### Keyboard look
 
@@ -1247,16 +1316,17 @@ Every control is monochrome (round 8, owner: the aurora buttons were very
 bright and jarring; the brand colours are for accents). LocalFlow's colours
 (`BrandPalette`, the app's `Theme`: aurora #6DFFA8, glacier #67E8F9, ember
 #F5C66B) mark only small things that show a state: aurora for the mark's
-dot (on Start, the readiness dot, the dot the wave settles into) and the
-menu's link, glacier for the wait's shimmer alone, ember for an error's
-symbol. On the light keyboard aurora and ember are too pale on the backdrop,
+dot (on Start while a session is ready, the dot the wave settles into) and
+the menu's link, glacier for the wait's shimmer alone, ember for an error's
+symbol and Start's dot while no session is. On the light keyboard aurora and ember are too pale on the backdrop,
 so there they take deeper variants of the same hues; on the island, dark in
 both modes, they stay bright. The contract (`KeyboardLookTests`), in light
 and dark mode, with and without Increase Contrast, against the backdrop
 measured on iOS 26.4: ink on every fill 4.5:1 or better; every fill 3:1
 against the backdrop, or an edge that is (a hairline, 0.5 pt, a full point
 with Increase Contrast); fills, inks, edges, the candidate pill and the
-swipe trace grey; accents on the backdrop and on the island 3:1 or better;
+swipe trace grey; accents on the backdrop and on the island (Start's
+aurora and ember dots included) 3:1 or better;
 the highlighted candidate's text 4.5:1 on its pill.
 
 - **The island** (Start, the recording, the wait) is near-black (#09090A)
@@ -1265,25 +1335,47 @@ the highlighted candidate's text 4.5:1 on its pill.
   the light keyboard it is graphite (#2B2B2E): black across the bar was the
   heaviest thing on the keyboard. Start carries the ridge mark (`RidgeMark`,
   the icon's W line and dot, drawn as a vector, 19 pt and 1.3 times the
-  icon's weight), its line white and its dot aurora. Start is dimmed to 45%
-  where dictation cannot run here.
+  icon's weight), its line white and its dot the session's colour
+  ([Top row](#top-row)). Start is dimmed to 45% where dictation cannot run
+  here.
 - **The recording wave** (`DotWave`, pure, tested): one row of white dots
-  5.4 pt apart along the island's middle line that swells with the voice:
-  its dots grow (1.2 to 2.45 pt radius, never touching) and brighten (half
-  to full) in a smooth hump that drifts slowly along the row (1.1 rad/s,
-  only while recording), rising out of the line at the left and settling
-  into the mark's aurora dot at the right, which swells a little with the
-  voice. In silence it is one calm row of equal dots. Round 9 (owner): the
-  braided strands over a dim dot field read as the reference video; the
-  swell was picked by looking at four forms at the real width in the
-  simulator (a swelling row, a single smooth strand, a dot-column meter, a
-  line echoing the ridge mark). The level it draws follows the latest the
-  keyboard reads, quick to rise (45 ms) and slow to fall (0.4 s)
-  (`DotWave.LevelFollower`). The keyboard keeps the last 72 levels; the
-  wave draws the latest.
+  6.2 pt apart along the island's middle line that shows the voice: each
+  dot grows (1.4 to 2.85 pt radius, never touching) and brightens (half to
+  full) with the level heard a moment ago, the newest beside the mark's
+  aurora dot at the right, which swells with the voice now. The row shows
+  the last `DotWave.span` (1.1 s): what was said moves left as it ages, so
+  a syllable is a pulse that crosses the row in 1.1 s, the wait shimmer's
+  sweep, and leaves it; the row rises out of the line at its left end. In
+  silence it is one calm row of equal dots. Round 10 (owner: "a tiny bit
+  bigger ... move faster and more with your voice"; round 9's hump drifted
+  at 1.1 rad/s, a cycle every 5.7 s, and Opus measured about 4% brightness
+  change over 2 s of speech): the dots are about 16% larger, the shape is
+  the voice's own rather than a drifting sine, and the level is sharper:
+  - The host's meter (`LevelMeter`, `DictationSampleBuffer`) falls in about
+    0.2 s (release 0.55 a 100 ms buffer, was 0.15, a 0.6 s fall) and tops
+    out at -12 dBFS (was -15, where ordinary speech already sat). The
+    app's level bars use it too and only look livelier.
+  - The keyboard follows it quickly both ways (`DotWave.LevelFollower`:
+    25 ms up, 90 ms down; was 45 ms and 0.4 s) and records it every frame
+    into a trace (`DotWave.Trace`), read back softened by a 60 ms
+    Gaussian, so levels that arrive ten times a second draw a smooth row
+    and no dot jumps between frames.
+  - `DotWave.voice` maps the level to the swell: nothing below 0.15 (a
+    background murmur), then faster than the level (a 1.5 power), so loud
+    and quiet words differ clearly.
+  - Measured on the simulator: a new level reaches the wave every 100 ms
+    (9.9 Hz, p90 101 ms, worst 168 ms), from the host's status
+    notifications; the host's 100 ms capture buffers set that rate, so a
+    faster status rate would add nothing and the host's rate is unchanged.
+    The synthetic voice is evenly loud; with pauses and quieter words
+    (`say` volume commands) the row rests between words and soft words
+    stay small. A real voice far from the phone may sit lower on the
+    meter and draw smaller swells.
+  With Reduce Motion the row stands still at each level. The Live
+  Activity's strip shows one still moment of it (`DotWave.stillLift`).
 - **The wait's shimmer** (`DotWave.shimmer`): the wave's row at rest, in a
   cool glacier white, with a brighter, larger spot sweeping along it every
-  1.1 s.
+  1.1 s (`DotWave.shimmerPeriod`).
 - **Drawing** (`DotFieldView`): each dot is a small Core Animation layer
   (a disc scaled to its radius), so the render server composites them; the
   view writes only the scale and opacity that changed. Every change of
@@ -1293,10 +1385,11 @@ the highlighted candidate's text 4.5:1 on its pill.
   view leaves its window. Round 8 drew both in a SwiftUI `Canvas` inside
   `TimelineView(.animation)`, which in some keyboard processes drew nothing
   for the rest of the process (round 8 council, finding 1; not reproduced
-  in round 9, cause not pinned down). Recording costs about 6% of a core
-  in the keyboard process on the simulator, against about 12% for round 8
-  measured the same way (CPU time over 1 s windows), most of it the bar's
-  SwiftUI updates per level, not the dots.
+  in round 9, cause not pinned down). Recording costs about 5% of a core
+  in the keyboard process on the simulator (round 10's trace; round 9's
+  drift measured about 6% and round 8's Canvas about 12% the same way, CPU
+  time over 1 s windows), most of it the bar's SwiftUI updates per level,
+  not the dots. Left-handed, the wave's dots are drawn mirrored.
 - **Action return keys** (send, go, search, and the others Apple tints) and
   **caps lock** take the accent: the label colour's side, a light grey key
   (#E6E6E8) with a dark caption on the dark keyboard and the island's
@@ -1323,12 +1416,14 @@ the highlighted candidate's text 4.5:1 on its pill.
   At every change of form what leaves goes first, in 0.06 s, and what
   arrives follows after it (`DictationBarView.handover`, round 8 council,
   Opus findings 2 and 3): the idle line before the island grows and Cancel
-  pops in, × and the wait's words before Undo and Start; the wait's words
-  wait 0.14 s, until the contracting island has left them room. A press
-  dims what the island holds. Cancel and the chips arrive with a short
-  spring from a little smaller. The middle cross-fades when what it holds
-  changes (the strip coming or going), never as its words change. Nothing
-  animates while idle. Nothing slow runs on Start's first frames: the
+  pops in, × and any words in the wait before Undo and Start; the middle's
+  words in the wait wait 0.14 s, until the contracting island has left
+  them room. A press dims what the island holds; a tap on Start without a
+  session also pops its dot once (a quick spring to 1.6 times and back).
+  Cancel and the chips arrive with a short spring from a little smaller.
+  The middle cross-fades when what it holds changes (the strip coming or
+  going), never as its words change. Nothing animates while idle but
+  Start's dot breathing while the model prepares. Nothing slow runs on Start's first frames: the
   intent's Darwin notification is posted after the frame that starts the
   grow, and a process's first live timer text (about 55 ms to resolve,
   profiled on the simulator) is resolved hidden while Start is idle.
@@ -1456,7 +1551,7 @@ The views are touchable ("Touchable backgrounds",
     32 pt circle typed a letter), from the bottom of the bar's controls up
     44 pt (to the bar's top in landscape), so it never reaches the strip
     below the controls or the keys. Between it and Stop's tap area the keys
-    keep at least 8 pt (12 pt in portrait).
+    keep at least 8 pt (12 pt in portrait), in either hand.
   - The controls are the menu button, the Cancel button, the island,
     the Undo and "Insert last" chips, the candidate strip and the "Never
     correct" chip. The bar reports their frames as they lay out and forgets
@@ -1475,7 +1570,9 @@ The views are touchable ("Touchable backgrounds",
     (`KeyboardMetrics.stopReachIntoKeys(compact:)`, 56 pt into the key area
     in portrait), at the same width: under the recording island, which is
     under half the bar, so only the top-row keys under it (round 9; it was
-    most of the top row). The key area leaves a touch there to
+    most of the top row); left-handed, the keys under the mirrored island
+    at the bar's left (q and w and their neighbours; round 10), and the
+    top row's right-hand keys type. The key area leaves a touch there to
     the bar (`KeyboardMetrics.keyPointGoesToStart`), judged against the
     island's frame now, never a lingering one; every other row, and the top
     row beside the island, types as before. While the menu panel is open

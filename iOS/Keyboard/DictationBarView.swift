@@ -7,6 +7,9 @@ final class KeyboardChrome: ObservableObject {
     @Published var isMenuOpen = false
     /// The layout profile the trackpad uses in this field, for the menu's text-width choice.
     @Published var layout = FieldLayoutParameters.standard.defaultLayout
+    /// Left-handed (`LocalFlowSettings.leftHanded`): the dictation controls mirrored to the bar's left. Read when the
+    /// keyboard appears.
+    @Published var leftHanded = false
 }
 
 /// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"), published
@@ -123,7 +126,7 @@ struct DictationBarView: View {
                                               dictationUndoShown: state.canUndo && !state.mode.isInProgress)
         GeometryReader { geometry in
             let layout = IslandLayout(barWidth: Double(geometry.size.width), controlHeight: Double(height),
-                                      startWidth: startWidth(height: Double(height)), form: form)
+                                      startWidth: startWidth(height: Double(height)), form: form, leftHanded: chrome.leftHanded)
             let centreY = CGFloat(barHeight) / 2
             ZStack(alignment: .topLeading) {
                 Button(action: onMenu) {
@@ -195,8 +198,8 @@ struct DictationBarView: View {
                         x: (cancel.x + cancel.width / 2) / max(Double(geometry.size.width), 1), y: 0.5)))
                 }
 
-                DictationIsland(client: client, state: state, height: height, compact: compact, onAction: onAction,
-                                onUnavailable: onMenu)
+                DictationIsland(client: client, state: state, height: height, compact: compact, leftHanded: chrome.leftHanded,
+                                onAction: onAction, onUnavailable: onMenu)
                     .frame(width: CGFloat(layout.island.width), height: height)
                     // With Reduce Motion the island never resizes in view: each form is its own island, cross-faded.
                     .id(reduceMotion ? AnyHashable(form) : AnyHashable(0))
@@ -250,13 +253,13 @@ private struct Middle: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var undoShown: Bool { state.canUndo && !state.mode.isInProgress }
-    /// Not while a dictation is in progress: the chip would hide the line that names the wait, which the island's
-    /// shimmer does not say.
+    /// Not while a dictation is in progress: the middle is dictation's then (a notice, "Open LocalFlow to start a
+    /// session").
     private var insertLastShown: Bool { state.canInsertLast && !state.mode.isInProgress }
 
     var body: some View {
         let status = BarStatus(mode: state.mode, title: state.title, hint: state.hint, notice: state.notice,
-                               chipsShown: undoShown || insertLastShown, sessionReady: state.sessionReady)
+                               chipsShown: undoShown || insertLastShown)
         // A chip settles in from a little smaller once what it replaces has gone: a short spring, with Reduce Motion a fade.
         let arrival = DictationBarView.handing(over: reduceMotion, scaleFrom: 0.88, anchor: .leading)
         // Beside Cancel the room is narrow: two short lines rather than a truncated one.
@@ -291,25 +294,8 @@ private struct Middle: View {
                     .lineLimit(lines)
                     .minimumScaleFactor(0.8)
                     .accessibilityIdentifier("lf.notice")
-            case .wave(let caption?):
-                // The cold start's caption while the island records: the full one where it fits, else the short one.
-                ViewThatFits(in: .horizontal) {
-                    statusText(caption, ink: statusInk)
-                    statusText(KeyboardMessages.modelLoadingShortCaption, ink: statusInk)
-                }
-            case .wave(nil):
-                // The island's wave says it is listening.
-                EmptyView()
-            case .text(let line, let attention, let ready):
+            case .text(let line, let attention):
                 HStack(spacing: 5) {
-                    if ready {
-                        // Dictation is ready: the mark's dot. Information, not a control.
-                        Circle()
-                            .fill(Color(palette.aurora))
-                            .frame(width: 6, height: 6)
-                            .padding(.trailing, 1)
-                            .accessibilityHidden(true)
-                    }
                     if attention {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 11, weight: .semibold))
@@ -317,12 +303,9 @@ private struct Middle: View {
                             .accessibilityHidden(true)
                     }
                     if lines > 1 {
-                        // Beside Cancel: the line whole where it fits, else its short form, else two lines.
+                        // Beside Cancel: the line whole where it fits, else two lines.
                         ViewThatFits(in: .horizontal) {
                             statusText(line, ink: attention ? AnyShapeStyle(.primary) : statusInk)
-                            if let short = KeyboardMessages.shortForm(of: line) {
-                                statusText(short, ink: attention ? AnyShapeStyle(.primary) : statusInk)
-                            }
                             Text(line)
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
@@ -335,13 +318,11 @@ private struct Middle: View {
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(attention ? AnyShapeStyle(.primary) : statusInk)
                             .lineLimit(1)
-                            // Beside the dot the session line may shrink a little further, so at the largest bar text
-                            // on a 375-point phone it still shows whole (never below the default size there).
-                            .minimumScaleFactor(ready ? 0.8 : 0.85)
+                            .minimumScaleFactor(0.85)
                             .accessibilityIdentifier("lf.status")
                     }
                 }
-                // A line that goes ("Transcribing…" as Undo arrives) gets out of the way at once, first.
+                // A line that goes (an error's as Undo arrives) gets out of the way at once, first.
                 .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(DictationBarView.handover)),
                                         removal: .opacity.animation(.easeOut(duration: DictationBarView.handover))))
             case .none:
@@ -524,21 +505,25 @@ private struct ChipLabel: View {
 }
 
 /// The dictation island (ARCHITECTURE.md, "Top row", "Keyboard look"): a near-black pill in both modes, in the spirit of
-/// the Dynamic Island. Idle it is Start, the ridge mark (its dot aurora) beside "Start". Starting and recording it is
-/// grown leftwards, under half the bar, and is Stop as a whole: the wave (`DotFieldRepresentable`), the time and a stop
-/// glyph; what dictation has to say is the middle's. Waiting for the transcript it is the short shimmer, which takes no
-/// taps; the middle names the wait and VoiceOver hears it from the label.
+/// the Dynamic Island. Idle it is Start, the ridge mark beside "Start", the mark's dot the session's state (`SessionDot`).
+/// Starting and recording it is grown towards the bar's middle, under half the bar, and is Stop as a whole: the wave
+/// (`DotFieldRepresentable`), the time and a stop glyph, mirrored left-handed so the stop glyph stays at the bar's edge.
+/// Waiting for the transcript it is the short shimmer, which takes no taps; VoiceOver hears the wait from the label.
 private struct DictationIsland: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
     let height: CGFloat
     let compact: Bool
+    let leftHanded: Bool
     let onAction: () -> Void
     /// Dictation cannot run here (no Full Access, configuration, versions): show why instead.
     let onUnavailable: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    /// Counts taps on Start without a session: each pops its dot once, the light acknowledgement while iOS asks to open
+    /// LocalFlow.
+    @State private var bounces = 0
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
@@ -546,6 +531,7 @@ private struct DictationIsland: View {
         Button {
             if state.mode.allowsDictation {
                 onAction()
+                if state.mode == .hostUnavailable { bounces += 1 }
                 client.micTapped()
             } else {
                 onUnavailable()
@@ -585,7 +571,11 @@ private struct DictationIsland: View {
         switch CapsuleContent(mode: state.mode) {
         case .start:
             HStack(spacing: 6) {
-                IslandMark(line: ink, dot: Color(palette.live), side: 19)
+                let dot = SessionDot(mode: state.mode, sessionReady: state.sessionReady)
+                IslandMark(line: ink, dot: Color(dot.color(palette)), side: 19, breathes: dot.breathes && !reduceMotion,
+                           pops: reduceMotion ? 0 : bounces)
+                    // The dot changes colour with a small, quick cross-fade.
+                    .animation(.easeOut(duration: 0.2), value: dot)
                 Text("Start").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
             // A process's first live timer text takes about 55 ms to resolve (round 9: Foundation's attribute-scope
@@ -603,7 +593,7 @@ private struct DictationIsland: View {
             recording(palette, startedAt: recordingStartedAt).transition(arrival)
         case .processing:
             DotFieldRepresentable(kind: .shimmer, level: 0, ink: palette.shimmer, mark: nil, reduceMotion: reduceMotion)
-                .padding(.horizontal, 11)
+                .padding(.horizontal, CGFloat(DotWave.shimmerInset))
                 .frame(height: waveHeight)
                 .accessibilityHidden(true)
                 .transition(arrival)
@@ -620,43 +610,54 @@ private struct DictationIsland: View {
     private var waveHeight: CGFloat { min(24, height - 12) }
 
     /// Starting and recording: the wave (its calm row, dimmed, until the recording begins), the time while recording, and
-    /// the stop glyph. Dictation's words are the middle's, beside Cancel.
+    /// the stop glyph. Left-handed the order is mirrored, so the stop glyph is at the bar's edge, under the thumb and far
+    /// from Cancel, and the wave settles into the mark's dot beside the time.
     private func recording(_ palette: BrandPalette, startedAt: Date?) -> some View {
         let ink = Color(palette.island.ink)
-        return HStack(spacing: 8) {
-            DotFieldRepresentable(kind: .wave(live: startedAt != nil), level: Double(state.levels.last ?? 0), ink: palette.island.ink,
-                                  mark: palette.live, reduceMotion: reduceMotion)
-                .frame(maxWidth: .infinity)
-                .frame(height: waveHeight)
-                .opacity(startedAt == nil ? 0.55 : 1)
-                .animation(.easeOut(duration: 0.15), value: startedAt == nil)
-                // VoiceOver hears the mode from Stop's value; the wave is decoration.
-                .accessibilityHidden(true)
-            // The time's room is kept from the start, so nothing in the island moves when the recording begins.
-            Group {
-                if let startedAt {
-                    Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
-                        .transition(.opacity.animation(.easeOut(duration: 0.15)))
-                } else {
-                    Text(verbatim: "0:00").hidden()
-                }
+        let mirrored = leftHanded
+        let wave = DotFieldRepresentable(kind: .wave(live: startedAt != nil), level: Double(state.levels.last ?? 0),
+                                         ink: palette.island.ink, mark: palette.live, reduceMotion: reduceMotion, mirrored: mirrored)
+            .frame(maxWidth: .infinity)
+            .frame(height: waveHeight)
+            .opacity(startedAt == nil ? 0.55 : 1)
+            .animation(.easeOut(duration: 0.15), value: startedAt == nil)
+            // VoiceOver hears the mode from Stop's value; the wave is decoration.
+            .accessibilityHidden(true)
+        // The time's room is kept from the start, so nothing in the island moves when the recording begins.
+        let time = Group {
+            if let startedAt {
+                Text(timerInterval: startedAt...Date.distantFuture, countsDown: false)
+                    .transition(.opacity.animation(.easeOut(duration: 0.15)))
+            } else {
+                Text(verbatim: "0:00").hidden()
             }
-            .font(.caption.weight(.semibold).monospacedDigit())
-            .foregroundStyle(ink.opacity(0.75))
-            .lineLimit(1)
-            .fixedSize()
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                .fill(ink)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 14)
+        .font(.caption.weight(.semibold).monospacedDigit())
+        .foregroundStyle(ink.opacity(0.75))
+        .lineLimit(1)
+        .fixedSize()
+        let stop = RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+            .fill(ink)
+            .frame(width: 10, height: 10)
+            .accessibilityHidden(true)
+        return HStack(spacing: 8) {
+            if mirrored {
+                stop
+                time
+                wave
+            } else {
+                wave
+                time
+                stop
+            }
+        }
+        .padding(.leading, mirrored ? 14 : 12)
+        .padding(.trailing, mirrored ? 12 : 14)
     }
 
-    /// The mode, and the time while recording.
+    /// The mode and the time while recording; on Start, the status its dot shows, in words.
     private var accessibilityValue: String {
-        KeyboardMessages.islandAccessibilityValue(for: state.mode, now: Date())
+        KeyboardMessages.islandAccessibilityValue(for: state.mode, detail: state.spokenStatus, now: Date())
     }
 
     private var accessibilityHint: String {
@@ -668,20 +669,41 @@ private struct DictationIsland: View {
     }
 }
 
-/// The ridge mark on the island: its line in the island's ink, its dot in aurora, `side` points across, a little larger
-/// and heavier than the icon's proportions so the W reads at this size.
+/// The ridge mark on the island: its line in the island's ink, its dot the session's colour (`SessionDot`), `side` points
+/// across, a little larger and heavier than the icon's proportions so the W reads at this size. While the model prepares
+/// the dot breathes; each change of `pops` (a tap on Start without a session) swells it once, quickly.
 private struct IslandMark: View {
     let line: Color
     let dot: Color
     let side: CGFloat
+    var breathes = false
+    var pops = 0
+    @State private var dim = false
 
     var body: some View {
         ZStack {
             RidgeMarkShape(weight: 1.3).stroke(line, style: RidgeMarkShape.style(side: side, weight: 1.3))
             RidgeMarkShape(dot: true, weight: 1.3).fill(dot)
+                .opacity(breathes && dim ? 0.35 : 1)
+                .keyframeAnimator(initialValue: 1.0, trigger: pops) { content, scale in
+                    content.scaleEffect(scale, anchor: RidgeMarkShape.dotAnchor(weight: 1.3))
+                } keyframes: { _ in
+                    SpringKeyframe(1.6, duration: 0.12, spring: .snappy)
+                    SpringKeyframe(1, duration: 0.3, spring: .smooth)
+                }
         }
         .frame(width: side, height: side)
         .accessibilityHidden(true)
+        .onAppear { if breathes { breathe() } }
+        .onChange(of: breathes) { _, now in
+            if now { breathe() } else { withAnimation(.easeOut(duration: 0.2)) { dim = false } }
+        }
+    }
+
+    /// A slow pulse, out and back every 1.2 s, for as long as it breathes.
+    private func breathe() {
+        dim = false
+        withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { dim = true }
     }
 }
 

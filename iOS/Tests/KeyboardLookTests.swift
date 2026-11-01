@@ -17,11 +17,10 @@ enum KeyboardLookTests {
             ("ridgeMarkIsTheIconsLineAndDot", testRidgeMarkIsTheIconsLineAndDot),
             ("ridgeMarkFitsItsBoxCentred", testRidgeMarkFitsItsBoxCentred),
             ("capsuleStyleFollowsTheMode", testCapsuleStyleFollowsTheMode),
-            ("barStatusShowsTheWaveWhileRecording", testBarStatusShowsTheWaveWhileRecording),
+            ("barStatusKeepsWordsWhereTheyEarnTheirSpace", testBarStatusKeepsWordsWhereTheyEarnTheirSpace),
             ("islandTakesItsFormFromTheMode", testIslandTakesItsFormFromTheMode),
-            ("idleLineShowsReadinessWithADot", testIdleLineShowsReadinessWithADot),
+            ("startsDotShowsTheSession", testStartsDotShowsTheSession),
             ("statusLineReadsAtAAOnTheBackdrop", testStatusLineReadsAtAAOnTheBackdrop),
-            ("loadingCaptionHasAShortForm", testLoadingCaptionHasAShortForm),
         ]
     }
 
@@ -326,32 +325,43 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Recording shows the live wave instead of "Listening", with a caption only while the model still loads; a notice
-    /// always shows; otherwise the one-line status, and nothing beside a chip.
-    private static func testBarStatusShowsTheWaveWhileRecording() {
+    /// Round 10 (owner: "prefer intuitive icons to textual descriptions ... balance between these two poles"): the middle
+    /// keeps words only where they earn their space: what the user must act on (Full Access, the microphone, a broken
+    /// install or versions, "Open LocalFlow to start a session" after the launcher failed), an error that says why a
+    /// dictation was lost, a model that cannot load, and a notice. Everything the island's own motion says, or Start's
+    /// dot, goes: the cold start's "Model loading" (round 9 showed it while recording), "Transcribing…" and "Preparing
+    /// model…" in the wait, "Preparing model…" idle, the session line and "Session on", "Model loads when you dictate", and
+    /// "Start opens LocalFlow". Nothing shows beside a chip but a notice.
+    private static func testBarStatusKeepsWordsWhereTheyEarnTheirSpace() {
         let recording = KeyboardMode.recording(level: 0.5, startedAt: Date())
         func status(_ mode: KeyboardMode, title: String = "", hint: String? = nil, notice: String? = nil, chips: Bool = false) -> BarStatus {
             BarStatus(mode: mode, title: title, hint: hint, notice: notice, chipsShown: chips)
         }
-        TestSupport.expectEqual(status(recording, title: "Listening"), .wave(caption: nil))
-        TestSupport.expectEqual(status(recording, title: KeyboardMessages.listeningWhilePreparing),
-                                .wave(caption: KeyboardMessages.modelLoadingCaption))
-        TestSupport.expectEqual(status(recording, title: "Listening", notice: "Couldn't reach LocalFlow"), .notice("Couldn't reach LocalFlow"))
-        TestSupport.expectEqual(status(recording, title: "Listening", chips: true), .wave(caption: nil))
-        // Round 9 (Opus, round 8: Cancel arrived over the outgoing line): while starting, the island's dimmed row says it
-        // is starting, and the middle, now beside it, stays empty rather than flash "Starting…" for a moment; only a
-        // line that says more shows.
-        TestSupport.expectEqual(status(.starting, title: "Starting…"), .none)
-        TestSupport.expectEqual(status(.starting, title: KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
-        TestSupport.expectEqual(status(.transcribing, title: "Transcribing…"), .text("Transcribing…", attention: false))
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: "Session on"), .text("Session on", attention: false))
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate"), .none)
+        // Words.
+        TestSupport.expectEqual(status(.needsFullAccess, title: "Allow Full Access to dictate"), .text("Allow Full Access to dictate", attention: true))
+        TestSupport.expectEqual(status(.configurationError, title: "LocalFlow is not installed correctly"),
+                                .text("LocalFlow is not installed correctly", attention: true))
+        TestSupport.expectEqual(status(.incompatible, title: "Update LocalFlow"), .text("Update LocalFlow", attention: true))
+        TestSupport.expectEqual(status(.error(.microphonePermissionDenied), title: "Allow microphone access in LocalFlow"),
+                                .text("Allow microphone access in LocalFlow", attention: true))
         TestSupport.expectEqual(status(.error(.modelFailed), title: "The speech model failed to load"),
                                 .text("The speech model failed to load", attention: true))
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: "Session on", chips: true), .none)
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: "Model failed to load"), .text("Model failed to load", attention: true))
+        TestSupport.expectEqual(status(.hostUnavailable, title: KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
+        TestSupport.expectEqual(status(.starting, title: KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
+        TestSupport.expectEqual(status(recording, title: "Listening", notice: "Couldn't reach LocalFlow"), .notice("Couldn't reach LocalFlow"))
         TestSupport.expectEqual(status(.ready, title: "", notice: "No speech detected", chips: true), .notice("No speech detected"))
-        // The caption is short enough for the SE beside Cancel and Stop.
-        TestSupport.expect(KeyboardMessages.modelLoadingCaption.count <= 14, KeyboardMessages.modelLoadingCaption)
+        // Nothing: the island's motion or Start's dot says it.
+        TestSupport.expectEqual(status(recording, title: "Listening"), .none)
+        TestSupport.expectEqual(status(recording, title: KeyboardMessages.listeningWhilePreparing), .none)
+        TestSupport.expectEqual(status(.starting, title: "Starting…"), .none)
+        TestSupport.expectEqual(status(.transcribing, title: "Transcribing…"), .none)
+        TestSupport.expectEqual(status(.waitingForModel, title: KeyboardMessages.preparingModel), .none)
+        TestSupport.expectEqual(status(.preparingModel, title: KeyboardMessages.preparingModel), .none)
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate"), .none)
+        TestSupport.expectEqual(status(.hostUnavailable, title: "Start opens LocalFlow"), .none)
+        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: "Model failed to load", chips: true), .none)
+        TestSupport.expectEqual(status(.error(.modelFailed), title: "The speech model failed to load", chips: true), .none)
     }
 
     /// Round 8 (owner): the island. Start is the compact island, holding the mark and "Start"; starting and recording
@@ -374,42 +384,29 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Round 4 council (Opus, visual 4): idle with a ready session, the status line is led by a dot (the mark's dot,
-    /// aurora since round 8, when the glacier went to the wait's shimmer alone). It shows only on the idle line, never on an error, a notice or another mode's line, and is information,
-    /// not a control (a tap there still types the key under it).
-    private static func testIdleLineShowsReadinessWithADot() {
-        func status(_ mode: KeyboardMode, title: String = "", hint: String? = nil, notice: String? = nil, chips: Bool = false,
-                    ready: Bool) -> BarStatus {
-            BarStatus(mode: mode, title: title, hint: hint, notice: notice, chipsShown: chips, sessionReady: ready)
+    /// Round 10 (owner: "an orange/yellow dot ... if a session is inactive ... and a green dot if the session is active"):
+    /// the session's state is the dot of Start's own mark, so there is one dot, not two (round 4 to 9 led the idle line
+    /// with a second, aurora dot). Aurora while a live session can take a dictation, breathing while its model prepares;
+    /// ember, the palette's warm yellow, while none can ("not on yet": an error keeps its triangle and its words). Both
+    /// read at 3:1 on the island in every appearance, and differ clearly from each other.
+    private static func testStartsDotShowsTheSession() {
+        let cases: [(KeyboardMode, Bool, SessionDot)] = [
+            (.ready, true, .ready), (.preparingModel, true, .preparing), (.preparingModel, false, .preparing),
+            (.ready, false, .off), (.hostUnavailable, false, .off), (.hostUnavailable, true, .off),
+            (.error(.transcriptionFailed), true, .ready), (.error(.sessionInactive), false, .off),
+            (.needsFullAccess, false, .off), (.configurationError, false, .off), (.incompatible, false, .off),
+        ]
+        for (mode, ready, dot) in cases {
+            TestSupport.expectEqual(SessionDot(mode: mode, sessionReady: ready), dot)
         }
-        let line = "Session ends in 5 min if idle"
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: true), .text(line, attention: false, ready: true))
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, ready: false), .text(line, attention: false, ready: false))
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, chips: true, ready: true), .none)
-        TestSupport.expectEqual(status(.ready, title: "Ready to dictate", hint: line, notice: "No speech detected", ready: true),
-                                .notice("No speech detected"))
-        TestSupport.expectEqual(status(.preparingModel, title: KeyboardMessages.preparingModel, ready: true),
-                                .text(KeyboardMessages.preparingModel, attention: false, ready: false))
-        TestSupport.expectEqual(status(.hostUnavailable, title: "Start opens LocalFlow", ready: true),
-                                .text("Start opens LocalFlow", attention: false, ready: false))
-        TestSupport.expectEqual(status(.error(.modelFailed), title: "The speech model failed to load", ready: true),
-                                .text("The speech model failed to load", attention: true, ready: false))
-    }
-
-    /// Sol, round 4: on a 375-point phone "Model loading" left the wave about 55 points. Round 9: the caption is the
-    /// middle's, beside Cancel; where the full caption does not fit there (the largest bar text), it is the short one,
-    /// which still names the wait. (Round 8's `captionedWaveWidth`, the wave's room beside the caption inside the island,
-    /// went with the caption's move.)
-    private static func testLoadingCaptionHasAShortForm() {
-        let short = KeyboardMessages.modelLoadingShortCaption, full = KeyboardMessages.modelLoadingCaption
-        TestSupport.expect(short.count < full.count, "\(short) is not shorter than \(full)")
-        TestSupport.expect(full.lowercased().contains(short.lowercased()), "\(short) says something else than \(full)")
-        TestSupport.expectEqual(KeyboardMessages.shortForm(of: full), short)
-        // Round 9: the wait's words sit between Cancel and the short pill; "Preparing model…" has a short form there too.
-        let preparing = KeyboardMessages.preparingModel
-        TestSupport.expectEqual(KeyboardMessages.shortForm(of: preparing), KeyboardMessages.preparingShort)
-        TestSupport.expect(preparing.hasPrefix(KeyboardMessages.preparingShort.dropLast()), "the short form says something else")
-        TestSupport.expect(KeyboardMessages.preparingShort.count < preparing.count, "the short form is not shorter")
-        TestSupport.expectEqual(KeyboardMessages.shortForm(of: "Transcribing…"), nil)
+        TestSupport.expect(SessionDot.preparing.breathes && !SessionDot.ready.breathes && !SessionDot.off.breathes, "breathing")
+        variants { palette, name in
+            TestSupport.expectEqual(SessionDot.ready.color(palette), palette.live)
+            TestSupport.expectEqual(SessionDot.preparing.color(palette), palette.live)
+            let off = SessionDot.off.color(palette)
+            TestSupport.expect(sameHue(off, BrandPalette.ember), "the no-session dot is not ember, \(name)")
+            TestSupport.expect(ratio(off, palette.island.color) >= 3, "the no-session dot is faint on the island, \(name)")
+            TestSupport.expect(abs(hue(off) - hue(palette.live)) > 60, "the dots' colours are alike, \(name)")
+        }
     }
 }

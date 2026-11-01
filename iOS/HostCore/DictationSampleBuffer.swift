@@ -167,13 +167,15 @@ final class DictationSampleBuffer: @unchecked Sendable {
     }
 }
 
-/// RMS in dBFS mapped onto a fixed speech window, with a fast attack and slow release so the
-/// keyboard's level bars rise with speech and settle smoothly.
+/// RMS in dBFS mapped onto a fixed speech window, with a fast attack and a release that still falls between
+/// syllables, so the keyboard's wave and the app's level bars follow the voice. Round 10 (owner: the wave was "slow,
+/// consistent"): the release was 0.15 a buffer (about 100 ms each, a 0.6 s fall) and the window topped out at -15
+/// dBFS, where ordinary speech already sat; now it falls in about 0.2 s and tops out at -12 dBFS.
 private struct LevelMeter {
     private static let floorDB: Float = -55
-    private static let ceilingDB: Float = -15
-    private static let attackBlend: Float = 0.5
-    private static let releaseBlend: Float = 0.15
+    private static let ceilingDB: Float = -12
+    private static let attackBlend: Float = 0.8
+    private static let releaseBlend: Float = 0.55
 
     private(set) var level: Float = 0
 

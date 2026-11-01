@@ -73,7 +73,7 @@ struct HomeView: View {
                 .tint(Theme.aurora)
 
                 Section {
-                    // The keyboard reads both when it next appears.
+                    // The keyboard reads these when it next appears.
                     SettingToggle(title: "Autocorrect",
                                   detail: "Fixes typos when you tap space or punctuation; Delete right after puts your word back. Needs Full Access.",
                                   isOn: $settings.autocorrectEnabled)
@@ -85,6 +85,9 @@ struct HomeView: View {
                     SettingToggle(title: "Typing haptics", detail: "A light tap as you press each key. Needs Full Access.",
                                   isOn: $settings.keyHapticsEnabled)
                         .accessibilityIdentifier("settings.keyHaptics")
+                    SettingToggle(title: "Left-handed", detail: "Puts Start and Cancel at the left of the keyboard's top row.",
+                                  isOn: $settings.leftHanded)
+                        .accessibilityIdentifier("settings.leftHanded")
                 } header: {
                     Text("Keyboard")
                 }

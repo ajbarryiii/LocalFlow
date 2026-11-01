@@ -4,14 +4,15 @@ import Foundation
 enum KeyboardMessagesTests {
     static var tests: [TestCase] {
         [
-            ("hintTellsWhenTheModelIsNotReady", testHintTellsWhenTheModelIsNotReady),
+            ("hintOnlyNamesAModelThatCannotLoad", testHintOnlyNamesAModelThatCannotLoad),
             ("hintNeedsALiveHost", testHintNeedsALiveHost),
             ("capsuleShowsOnlyAnIndicatorWhileWaiting", testCapsuleShowsOnlyAnIndicatorWhileWaiting),
             ("voiceOverReadsWhatTheIslandShows", testVoiceOverReadsWhatTheIslandShows),
+            ("voiceOverSpeaksEveryStateInWords", testVoiceOverSpeaksEveryStateInWords),
             ("sessionReadyNeedsALiveSessionAndAUsableModel", testSessionReadyNeedsALiveSessionAndAUsableModel),
             ("preparingTitles", testPreparingTitles),
             ("statusTextNeverInvitesATap", testStatusTextNeverInvitesATap),
-            ("barAndMenuNameTheIdleTimeoutAlike", testBarAndMenuNameTheIdleTimeoutAlike),
+            ("menuKeepsTheTimeLeft", testMenuKeepsTheTimeLeft),
             ("recordingWhileTheModelLoadsFitsASmallPhone", testRecordingWhileTheModelLoadsFitsASmallPhone),
             ("theLargestTextSizesPutTheMenusActionsFirst", testTheLargestTextSizesPutTheMenusActionsFirst),
             ("theWidthTipSaysWhatLandsOnTheWrongLine", testTheWidthTipSaysWhatLandsOnTheWrongLine),
@@ -25,16 +26,17 @@ enum KeyboardMessagesTests {
         return status
     }
 
-    /// The idle line (`ready` shows the hint) says the model is not ready: a released model loads when
-    /// the user dictates, nothing is preparing it now. A ready model shows only the session.
-    private static func testHintTellsWhenTheModelIsNotReady() {
+    /// Round 10 (owner: "prefer intuitive icons to textual descriptions"): the idle line's words are only for a model that
+    /// cannot load, which the user needs to know; the session's state is the dot on Start (`SessionDot`), a model that
+    /// loads when the user dictates or is preparing says so to VoiceOver only (`spokenStatus`). Round 4 to 9 showed "Model
+    /// loads when you dictate", "Preparing model…" and the session line here.
+    private static func testHintOnlyNamesAModelThatCannotLoad() {
         let now = Fixture.now
-        TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .notPrepared), now: now),
-                                KeyboardMessages.modelLoadsWhenDictating)
-        TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .preparing), now: now), KeyboardMessages.preparingModel)
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .failed), now: now), "Model failed to load")
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .unavailable), now: now), "Model missing")
-        TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .ready), now: now), "Session ends in 5 min if idle")
+        for model in [HostStatus.Model.notPrepared, .preparing, .ready] {
+            TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: model), now: now), nil)
+        }
         TestSupport.expect(KeyboardMessages.modelLoadsWhenDictating != KeyboardMessages.preparingModel,
                            "a released model claims to be preparing")
     }
@@ -62,24 +64,69 @@ enum KeyboardMessagesTests {
         let startedAt = Fixture.now, now = Fixture.now + 75
         let recording = KeyboardMode.recording(level: 0.4, startedAt: startedAt)
         let time = Duration.seconds(75).formatted(.units(allowed: [.minutes, .seconds], width: .wide))
-        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: recording, now: now), "Recording, \(time)")
-        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .starting, now: now), "Starting")
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: recording, detail: nil, now: now), "Recording, \(time)")
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .starting, detail: nil, now: now), "Starting")
         // A recording that started in the future (a clock step) never reads a negative time.
-        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .recording(level: 0, startedAt: now + 5), now: now),
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .recording(level: 0, startedAt: now + 5), detail: nil, now: now),
                                 "Recording, " + Duration.seconds(0).formatted(.units(allowed: [.minutes, .seconds], width: .wide)))
         for mode in [KeyboardMode.ready, .transcribing, .waitingForModel, .error(.modelFailed), .hostUnavailable, .needsFullAccess] {
-            TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: mode, now: now), "")
+            TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: mode, detail: nil, now: now), "")
         }
-        // The text the island used to hold is the middle's, which VoiceOver reads on its own.
+        // Round 10: the words the bar no longer shows are the island's value: the cold start's caption after the time,
+        // the idle status on Start. The wait names itself in the label.
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: recording, detail: KeyboardMessages.modelLoadingCaption, now: now),
+                                "Recording, \(time). Model loading")
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .ready, detail: "Session ends in 5 min if idle", now: now),
+                                "Session ends in 5 min if idle")
+        TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .transcribing, detail: "Session ends in 5 min if idle", now: now), "")
+        // Text the middle still shows is the middle's, which VoiceOver reads on its own.
         func status(_ mode: KeyboardMode, _ title: String, notice: String? = nil) -> BarStatus {
             BarStatus(mode: mode, title: title, hint: nil, notice: notice, chipsShown: false)
         }
-        TestSupport.expectEqual(status(recording, KeyboardMessages.listeningWhilePreparing),
-                                .wave(caption: KeyboardMessages.modelLoadingCaption))
         TestSupport.expectEqual(status(recording, "Listening", notice: KeyboardMessages.storeWriteFailed),
                                 .notice(KeyboardMessages.storeWriteFailed))
-        TestSupport.expectEqual(status(.starting, KeyboardMessages.openLocalFlow),
-                                .text(KeyboardMessages.openLocalFlow, attention: false))
+        TestSupport.expectEqual(status(.starting, KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
+    }
+
+    /// Round 10 (owner): the bar trades status words for marks, but VoiceOver still speaks every state in words. What
+    /// the bar no longer shows is Start's (or the recording's) value: the session's time left, a model that loads or is
+    /// loading, Start opening LocalFlow; the wait is the island's label; an error, a notice and "Open LocalFlow to start
+    /// a session" are still the middle's words. Every state has words somewhere.
+    private static func testVoiceOverSpeaksEveryStateInWords() {
+        let now = Fixture.now
+        func spoken(_ mode: KeyboardMode, _ model: HostStatus.Model = .ready, failed: Bool = false, host: Bool = true) -> String? {
+            KeyboardMessages.spokenStatus(mode: mode, status: host ? status(model: model) : nil, launcherFailed: failed, now: now)
+        }
+        let session = "Session ends in 5 min if idle"
+        TestSupport.expectEqual(spoken(.ready), session)
+        TestSupport.expectEqual(spoken(.ready, .notPrepared), session + ". " + KeyboardMessages.modelLoadsWhenDictating)
+        TestSupport.expectEqual(spoken(.preparingModel, .preparing), "Preparing model. " + session)
+        TestSupport.expectEqual(spoken(.hostUnavailable, host: false), "No session. Start opens LocalFlow")
+        TestSupport.expectEqual(spoken(.hostUnavailable, failed: true, host: false), nil)
+        TestSupport.expectEqual(spoken(.recording(level: 0.3, startedAt: now), .preparing), KeyboardMessages.modelLoadingCaption)
+        TestSupport.expectEqual(spoken(.recording(level: 0.3, startedAt: now)), nil)
+        // A dead host's last status says nothing about a session.
+        TestSupport.expectEqual(KeyboardMessages.spokenStatus(mode: .ready, status: status(model: .ready, heartbeatAt: now - 60),
+                                                              launcherFailed: false, now: now), nil)
+        // Every state: the middle's words, the island's label for the wait, or the spoken status.
+        let modes: [(KeyboardMode, HostStatus.Model, Bool)] = [
+            (.needsFullAccess, .ready, false), (.configurationError, .ready, false), (.incompatible, .ready, false),
+            (.starting, .ready, false), (.recording(level: 0.2, startedAt: now), .preparing, false), (.transcribing, .ready, false),
+            (.waitingForModel, .preparing, false), (.error(.modelFailed), .ready, false), (.preparingModel, .preparing, false),
+            (.ready, .ready, false), (.ready, .notPrepared, false), (.ready, .failed, false), (.hostUnavailable, .ready, false),
+            (.hostUnavailable, .ready, true),
+        ]
+        for (mode, model, failed) in modes {
+            let title = KeyboardMessages.title(for: mode, launcherFailed: failed)
+            let middle = BarStatus(mode: mode, title: title, hint: KeyboardMessages.hint(for: status(model: model), now: now),
+                                   notice: nil, chipsShown: false)
+            let shownWords: Bool
+            if case .text = middle { shownWords = true } else { shownWords = false }
+            let words = KeyboardMessages.islandAccessibilityValue(for: mode, detail: spoken(mode, model, failed: failed), now: now)
+            let label = KeyboardMessages.capsuleAccessibilityLabel(for: mode)
+            TestSupport.expect(shownWords || !words.isEmpty || label == "Transcribing" || label == "Preparing model",
+                               "\(mode) has no words for VoiceOver")
+        }
     }
 
     private static func testCapsuleShowsOnlyAnIndicatorWhileWaiting() {
@@ -87,9 +134,11 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(CapsuleContent(mode: .transcribing), .processing)
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .waitingForModel), "Preparing model")
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .transcribing), "Transcribing")
+        // Round 10 (owner): the wait shows only the shimmer pill; its words are the label's (round 9 named it in the middle).
         TestSupport.expectEqual(BarStatus(mode: .waitingForModel, title: KeyboardMessages.title(for: .waitingForModel, launcherFailed: false),
-                                          hint: nil, notice: nil, chipsShown: false),
-                                .text(KeyboardMessages.preparingModel, attention: false))
+                                          hint: nil, notice: nil, chipsShown: false), .none)
+        TestSupport.expectEqual(BarStatus(mode: .transcribing, title: KeyboardMessages.title(for: .transcribing, launcherFailed: false),
+                                          hint: nil, notice: nil, chipsShown: false), .none)
         let others: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .error(.modelFailed), .preparingModel, .ready,
                                       .hostUnavailable]
         for mode in others {
@@ -143,21 +192,20 @@ enum KeyboardMessagesTests {
         }
     }
 
-    /// The session ends after its idle time, not at a fixed moment: the bar and the menu say so in the same words. Round 9
-    /// (Opus, round 8): in the words of the Live Activity's countdown, "ends in", and to the nearest minute, so the bar and
-    /// the island agree (`SessionActivityTests.countdownSpeaksTheBarsWords`); "if idle" keeps the meaning that dictating
-    /// keeps the session going.
-    private static func testBarAndMenuNameTheIdleTimeoutAlike() {
+    /// The session ends after its idle time, not at a fixed moment, in the words of the Live Activity's countdown, "ends
+    /// in", to the nearest minute (round 9, `SessionActivityTests.countdownSpeaksTheBarsWords`). Round 10 (owner: "session
+    /// ends in 5 mins if idle" was wordy on the keyboard): the bar shows the session as the dot on Start; the menu keeps
+    /// the time left, and VoiceOver hears the same words from Start.
+    private static func testMenuKeepsTheTimeLeft() {
         let now = Fixture.now
         let live = status(model: .ready)
         let phrase = KeyboardMessages.idleTimeout(minutes: 5)
         TestSupport.expectEqual(phrase, "ends in 5 min if idle")
-        TestSupport.expect(KeyboardMessages.hint(for: live, now: now)?.hasSuffix(phrase) == true, "bar wording differs")
-        TestSupport.expect(KeyboardMessages.sessionSummary(for: live, now: now).hasSuffix(phrase), "menu wording differs")
-        // Round 1 council: the menu's line was long at the largest text sizes; it is now the bar's own line.
         TestSupport.expectEqual(KeyboardMessages.sessionSummary(for: live, now: now), "Session ends in 5 min if idle")
-        TestSupport.expect(!(KeyboardMessages.hint(for: live, now: now) ?? "").contains("left"), "bar reads as a countdown")
-        TestSupport.expect(phrase.count <= "ends after 5 min idle".count + 1, "the bar's line grew")
+        TestSupport.expectEqual(KeyboardMessages.spokenStatus(mode: .ready, status: live, launcherFailed: false, now: now),
+                                KeyboardMessages.sessionSummary(for: live, now: now))
+        TestSupport.expectEqual(BarStatus(mode: .ready, title: "Ready to dictate", hint: KeyboardMessages.hint(for: live, now: now),
+                                          notice: nil, chipsShown: false), .none)
     }
 
     /// Round 1 council: on a 375-point phone "Listening · preparing model" truncated beside Cancel and the labelled

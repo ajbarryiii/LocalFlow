@@ -4,9 +4,9 @@ import Foundation
 /// take the label colour's side (a light key on the dark keyboard, a graphite one on the light), and dictation lives in
 /// a dark island in both modes, in the spirit of the Dynamic Island: near-black on the dark keyboard, graphite on the
 /// light one, where a black slab across the bar was the heaviest thing on the keyboard. The Wilderness Labs colours of the app's
-/// `Theme` are accents only, in small things that mark a state: aurora for the mark's dot (on Start, the readiness dot,
-/// the dot the recording wave settles into) and the menu's link, glacier for the wait's shimmer alone, ember for an
-/// error's symbol. On the light keyboard the bright hues are too pale for glyphs on the backdrop, so those take deeper
+/// `Theme` are accents only, in small things that mark a state: aurora for the mark's dot (on Start while a session is
+/// ready, the dot the recording wave settles into) and the menu's link, glacier for the wait's shimmer alone, ember for
+/// an error's symbol and Start's dot while no session is. On the light keyboard the bright hues are too pale for glyphs on the backdrop, so those take deeper
 /// variants of the same hues; on the island, which is dark in both modes, they stay bright. As sRGB components so
 /// their contrast is testable (`MenuPalette`); the keyboard makes colours of them. Pure.
 struct BrandPalette: Equatable {
@@ -31,9 +31,12 @@ struct BrandPalette: Equatable {
     var island: Fill
     /// The mark's dot on the island (Start's mark, the dot the recording wave settles into): the app's aurora.
     var live: RGB
+    /// Start's mark's dot while no session can take a dictation (round 10, owner): the app's ember, a warm yellow,
+    /// bright on the island in both modes.
+    var noSession: RGB
     /// The wait's shimmer on the island: a cool glacier white, the keyboard's only glacier.
     var shimmer: RGB
-    /// Accents on the backdrop: the readiness dot (aurora) and an error's symbol (ember).
+    /// Accents on the backdrop: the menu's mark (aurora) and an error's symbol (ember).
     var aurora: RGB
     var ember: RGB
     /// "Open LocalFlow" in the menu.
@@ -99,6 +102,7 @@ struct BrandPalette: Equatable {
             trailAlpha = 0.5
         }
         live = Self.aurora
+        noSession = Self.ember
         shimmer = Self.blend(Self.glacier, alpha: 0.55, over: RGB(1, 1, 1))
         link = aurora
         edgeWidth = highContrast ? 1 : 0.5

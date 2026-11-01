@@ -26,7 +26,7 @@ struct TryItView: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 12) {
                     HowToRow(number: 1, text: "Tap a field, then switch to the LocalFlow keyboard with \(Image(systemName: "globe")).")
-                    HowToRow(number: 2, text: "Tap **Start** at the keyboard's top right, speak, then tap **Stop**.")
+                    HowToRow(number: 2, text: "Tap **Start** at the top of the keyboard, speak, then tap **Stop**.")
                     HowToRow(number: 3, text: "The text goes into the field you started in. If you have moved to another field by then, the keyboard offers **Insert last dictation** instead.")
                 }
                 .padding(18)
