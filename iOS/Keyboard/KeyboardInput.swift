@@ -95,7 +95,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         self.keyArea = keyArea
         document = ProxyDocument(controller: controller)
         let trackpad = TrackpadController(host: document)
-        editor = KeyboardEditor(document: document, trackpad: trackpad)
+        editor = KeyboardEditor(document: document, trackpad: trackpad, parking: Self.parking)
         driver = TrackpadDriver(controller: controller, trackpad: trackpad)
         editor.autocapitalization = { [weak self] in self?.autocapitalization ?? .sentences }
         editor.onStateChanged = { [weak self] in self?.editorStateChanged() }
@@ -134,18 +134,28 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     // MARK: Lifecycle
 
-    /// The keyboard appeared: start fresh in whatever field it serves.
+    /// Fields that ask for a number pad: the keyboard opens on its numbers layer there, and predicts no next words.
+    /// The word being typed when the keyboard hid, for the next controller in this process (ARCHITECTURE.md, "Word
+    /// autocorrect", Owned words). In memory only.
+    private static let parking = ParkedWordSlot()
+
+    private static let numericTypes: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
+
+    private var isNumericField: Bool { Self.numericTypes.contains(proxy?.keyboardType ?? .default) }
+
+    /// The keyboard appeared: start fresh in whatever field it serves (a word it was typing there may be its own again,
+    /// ARCHITECTURE.md, "Word autocorrect", Owned words).
     func reset() {
-        let numeric: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
-        editor.reset(numeric: numeric.contains(proxy?.keyboardType ?? .default))
+        editor.reset(numeric: isNumericField)
         stopUndoTimers()
         updateTouchModes()
     }
 
     /// The keyboard is hiding: end every gesture and held key and, synchronously, drop every copy of
     /// the field's context and identity (the trackpad snapshot and its layout, its unit, the undo text
-    /// and anchors, the typing tail). A probe still out is rolled back first. Every key typed has already
-    /// been applied.
+    /// and anchors, the typing tail), but the word being typed, kept in memory until the keyboard appears
+    /// again (ARCHITECTURE.md, "Word autocorrect", Owned words). A probe still out is rolled back first.
+    /// Every key typed has already been applied.
     func stop() {
         cancelHeldActions()
         editor.hide(now: now)
@@ -259,6 +269,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
             guard let self else { return }
             autocorrect = loaded.map { (params: $0.params, corrector: $0.corrector) }
             updateTouchModes()
+            editor.autocorrectChanged()
         }
     }
 
@@ -298,7 +309,8 @@ final class KeyboardInput: KeyAreaViewDelegate {
         return AutocorrectSetup(corrector: autocorrect.corrector, keys: keyArea.letterKeys,
                                 params: autocorrect.params,
                                 secureTextEntry: proxy?.isSecureTextEntry == true,
-                                autocorrectionDisabled: proxy?.autocorrectionType == .no, field: keyArea.field)
+                                autocorrectionDisabled: proxy?.autocorrectionType == .no, field: keyArea.field,
+                                numeric: isNumericField)
     }
 
     /// The candidate strip after a swipe or an autocorrect commit, or while a word is typed; nil when closed.

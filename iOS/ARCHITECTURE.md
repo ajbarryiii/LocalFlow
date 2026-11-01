@@ -1074,7 +1074,8 @@ every other point of the bar
   glacier dot, the mark's: information, not a control. An
   error or a state that keeps dictation from working leads its line with an
   ember warning symbol. The candidate strip, after a
-  swipe ([Swipe typing](#swipe-typing)) or a commit key
+  swipe ([Swipe typing](#swipe-typing)) or a commit key, while a word is
+  typed, or with the next words after a space
   ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
   The "Never correct" chip after an autocorrect revert replaces both while it
   shows ([Word autocorrect](#word-autocorrect)). Neither covers dictation's
@@ -1955,8 +1956,8 @@ back.
     is a never-correct word ("Never correct" below);
   - it is a common chat abbreviation or slang word
     (`WordAutocorrect.chatWords`: "lol", "omg", "idk", "ok", "gonna", "yeah",
-    "ur", "alot", ...), which the lexicon would otherwise turn into words
-    ("lol" → "lil", "ur" → "our", "alot" → "almost");
+    "ur", ...), which the lexicon would otherwise turn into words
+    ("lol" → "lil", "ur" → "our");
   - text is selected (the commit key replaces the selection);
   - the field is secure text entry, or turns autocorrection off
     (`autocorrectionType == .no`, as SwiftUI's `.autocorrectionDisabled()`
@@ -1967,7 +1968,7 @@ typed every character of it, in this keyboard appearance and this field,
 right after a space or commit key (any character other than a letter or
 apostrophe) it also typed. Nothing may come in between: no caret move,
 trackpad gesture, selection change, host-reported text change it did not
-make, swipe, dictation, undo, or hiding and showing.
+make, swipe, dictation, undo, or hiding and showing (except as below).
 
 - **Field start.** The start of a field counts as such a boundary only where
   the keyboard sees the field empty (nothing before or after the caret,
@@ -1989,6 +1990,34 @@ make, swipe, dictation, undo, or hiding and showing.
 - **Deletion.** Delete within the word removes its last characters. Deleting
   past the word's start, or any other edit, leaves no word owned until the
   keyboard's next own separator.
+- **Hiding** (round 5, Sol finding 2: "Accom", an app switch, and the strip
+  never came back). When the keyboard hides while it owns a word being typed
+  in an identified field, the proxy showing it before the caret and nothing
+  selected, the editor keeps that word's record, without its points (the keys
+  may move before it is typed on) and a digest of the proxy's text before and
+  after the caret (an in-process hash; the text itself is not kept). Its own
+  again, with its strip, only when the keyboard appears (or the host reports
+  something before any key) and the proxy serves an identified field the editor
+  has adopted, nothing is selected, and the text before and after the caret
+  hashes the same, so it still ends with exactly that word. The identifier
+  itself is not compared (measured below). Hosts report the field unchanged
+  just after the keyboard appears, a callback the editor cannot tell from an
+  outside edit, which forgets the word; the kept word is taken back after it,
+  as the text is unchanged. Dropped, never to come back, on
+  other text or a selection, and at the first key, swipe, dictation, undo,
+  gesture or strip tap after appearing; a proxy without an identity yet decides
+  nothing, and a callback reaching a hidden keyboard never takes it. iOS makes a new view controller (and editor) when the keyboard
+  comes back after an app switch, in the same process, so the word is kept in
+  a slot the process's editors share (`ParkedWordSlot`). Kept in memory only,
+  gone with the extension's process, never stored, logged or sent, and never a
+  word the keyboard did not type.
+  - **Measured** (iPhone 17 Pro simulator, iOS 26.4, round 5): after
+    switching to Safari and back, Messages and Reminders gave the field a new
+    `documentIdentifier` while the text around the caret was unchanged (the
+    digest matched). So the unchanged text is what identifies the place: a
+    different field holding exactly the same text before and after the caret
+    would take the word too, which only offers suggestions for the word that is
+    there.
 - **Owned and shown by the host.** A correction also needs the proxy's current
   `documentContextBeforeInput` to end with exactly the owned word, because a
   host may reject typed characters (HTML `maxlength`, a native length limit).
@@ -2031,7 +2060,13 @@ or a lexicon form.
 - **Fixed corrections.** "cant" → "can't" and "wont" → "won't"
   (`WordAutocorrect.fixedCorrections`) whatever the corrector says: both are
   lexicon words the margin keeps, but are almost always typed for the
-  contraction, as "dont" is. So are 58 very common misspellings known
+  contraction, as "dont" is. Two words typed run together
+  (`WordAutocorrect.runTogetherWords`, round 5, Opus finding 1: "abit" became
+  "habit") become the two words, as on Apple's keyboard: "abit" → "a bit",
+  "alot" → "a lot", "aswell" → "as well", "atleast" → "at least". The
+  replacement is one correction like any other (the strip, the revert, the
+  case below). Round 3 kept "alot" as typed among the chat words; round 5
+  replaced that contract. So are 58 very common misspellings known
   for certain (`WordAutocorrect.commonMisspellings`: "definately" →
   "definitely", "recieve" → "receive", "thier" → "their", ...; round 3),
   which the touch model never reaches because the letter typed is far from
@@ -2145,6 +2180,12 @@ autocorrect considered:
 - **Its words:** the typed word first, then the correction (if any), then the
   corrector's suggestions, up to three, each in the typed word's case with
   its trailing apostrophes. The word in the field is emphasized.
+- **Accented forms** (`WordAutocorrect.accentedForms`, round 5): 36 English
+  words that keep their accents ("café", "résumé", "naïve", "fiancé",
+  "cliché", "jalapeño", ...), by their plain lexicon form. Typed as the plain
+  word, the accented form is offered beside it, after a commit key and while
+  it is typed, in the typed word's case, as a spelling match is (it always has
+  a slot). Never a correction: Space keeps the word as typed.
 - **When:** only when there is a choice: a correction was made, or the
   corrector has plausible suggestions for the word kept (below the margin
   that would replace it, above the floor). A word typed as meant has none, so
@@ -2245,6 +2286,67 @@ finished, the strip shows up to three words for it
   17 Pro simulator (iOS 26.4, Messages, 157,373 forms), a whole key press:
   first letter of a word median 2.5 ms, other keys median 0.5 ms, p95 1.4 ms.
   Memory: one Double per form for the context (1.3 MB).
+- **Evaluation** (round 5, Sol finding 1: "Buy f" offered "followers"). 90
+  invented messages about shopping, plans, work and family, each cut after
+  one to three letters of a word (`Tests/CompletionEvaluation.swift`). On
+  bundle b34 the word meant is the first completion in 57 and among the three
+  in 70; the test runs with `LF_AUTOCORRECT_BUNDLE=<bundle>` and guards those
+  counts. Reweighing context against frequency did not do better on it: the
+  lexicon's frequencies added to the model's log probability (weights −0.75
+  to 2) at best matched it and fell to 22 and 35 at 2; context specificity
+  against the model's sentence-start read-out (0.1 to 0.7), a correction of
+  the model's register by the frequencies, and a linear mixture with the
+  frequency prior all stayed within ±2. The misses are mostly the model's own
+  ("pics", "follow" and "followers" from its social-media training text),
+  which only retraining changes, so the ranking is unchanged.
+
+**Next words** (round 5, Opus layout: Apple's users see these every day).
+After a finished word and a space, when no other strip shows, the strip
+offers up to three likely next words (`WordCorrecting.nextWords`):
+
+- **When:** the keyboard's own space was the last thing it typed (Space, a
+  punctuation mark typed over a tapped word's space, or the space a tapped
+  word brings), with only Shift and layer keys since, and the text before the
+  caret ends with that one space after something other than whitespace. Not
+  in an empty field, so the idle bar's status line still shows when the
+  keyboard comes up; after a sentence's end it predicts the sentence's first
+  word (only "I" passes the floor on the bundle's model). The bar's
+  precedence is unchanged (`BarMiddleContent`): a commit key's strip with a
+  choice, a swipe's strip and the strip of a word being typed come first,
+  and dictation (starting, recording, transcribing, waiting for the model),
+  notices and its Undo chip win over all of them.
+- **Where:** where suggestions show while typing (autocorrect on, Full
+  Access, a loaded model, not secure, not `autocorrectionType == .no`, not
+  URL or email fields), and not in number fields
+  (`AutocorrectSetup.predictsNextWords`).
+- **Words:** the forms the word model finds likeliest given the sentence so
+  far, from the same read-out the next word's completions use: each at least
+  1 in 40 likely (`Autocorrector.nextWordFloor`) and within 20 times the best
+  (`nextWordRatio`), no single letter but "a" and "I", never the sentence's
+  last word again, one form per spelling (the likelier; "cant" offered as
+  "can't"). Fewer, or none, rather than noise. Cased as a letter typed there
+  would be (`swipeShift`: the sentence's start, Shift, caps lock), the
+  pronoun I and day names with their capital; Shift or a layer key recases
+  them.
+- **A tap** puts the word in with one space (none before a space already
+  after the caret), as a tapped suggestion does, so punctuation typed next
+  goes before that space; the strip then predicts the word after it. Only in
+  the field the words were made for, with nothing edited since, the proxy
+  itself showing the space and the same text before the caret (its window and
+  the editor's bounded copy may each be the longer) and after it, and nothing
+  selected; otherwise the strip closes and nothing is typed (a proxy that lags
+  misses the tap).
+- **Model loading:** the strip follows when autocorrect's model finishes
+  loading (`KeyboardEditor.autocorrectChanged`), so a word taken back as the
+  keyboard appears gets its strip without another key.
+- **Closing:** any other key, a swipe, dictation, a caret move or outside
+  edit, the trackpad, another field and hiding.
+- **Cost** (bundle b34, optimized build on an M-series Mac, 110 word
+  boundaries of invented messages): at the space, the model's step, its
+  read-out of every form and the scan take median 1.47 ms (p95 1.66 ms); the
+  read-out is cached for the context (`WordCorrecting.forgetContext` drops it
+  on hiding), so the next word's first letter then takes 0.02 ms instead of
+  1.42 ms. The space adds about 0.08 ms to a word boundary, and no memory.
 
 **Never correct.** A revert offers to keep the word uncorrected for good, and
 nothing is stored unless the user accepts:
@@ -2353,10 +2455,13 @@ at most once at a time, like the soft key edges model (`ModelLoadSlot`,
 A correction runs on the main thread at the commit key.
 
 **Privacy.** The context (with the corrector's ranking of every form for the
-last one), the word, its points, the strip's words, the reverted words and a
-"Never correct" offer stay in the instance's memory. They
+last one), the word, its points, the strip's words (the next words
+included), the reverted words and a "Never correct" offer stay in the
+instance's memory. They
 are dropped when the keyboard hides (the reverted words when the instance
-ends), and are never logged, stored, sent or learned from, with one
+ends; the word being typed, without its points, and a digest of the text
+around it until the keyboard appears again, "Hiding" above), and are never
+logged, stored, sent or learned from, with one
 exception: a word the user taps "Never correct" for is stored on this iPhone
 only, in the never-correct store, until the user clears it in Diagnostics. The
 app reads only the count. The models are fixed.
@@ -2462,10 +2567,13 @@ app reads only the count. The models are fixed.
    `documentContextAfterInput`, `documentIdentifier` and whether text is
    selected in memory only, for spacing, result binding, shift, cursor
    movement, word deletion, Undo, swipe insertion, predicting the next letter
-   (soft key edges) and correcting the word before the caret (autocorrect).
-   It never stores, logs or transmits them, and drops them when the operation
-   ends or the keyboard hides. What it persists about fields is content-free:
-   trait fingerprints and layout choices.
+   (soft key edges), correcting the word before the caret and predicting the
+   next word (autocorrect). It never stores, logs or transmits them, and drops
+   them when the operation ends or the keyboard hides, except the word it was
+   typing, kept in memory across hiding with a digest of the text around it
+   until it appears again ("Word autocorrect", Owned
+   words). What it persists about fields is content-free: trait fingerprints
+   and layout choices.
 6. Capture requires a session started in the foreground. Recording requires a
    fresh keyboard intent that the host admits. Recording ends at the maximum
    duration or when the keyboard has been gone too long. Device lock cancels

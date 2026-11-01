@@ -25,6 +25,10 @@ protocol WordCorrecting: AnyObject {
     /// `limit` lexicon forms within the corrector's edit limit of it whatever the keys' distance, lowercase, fewest
     /// edits first, then by the word model in the context. Suggestions only: nothing corrects from them.
     func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String]
+    /// Next words (ARCHITECTURE.md, "Word autocorrect", Next words): after a finished word and a space, up to `limit` likely
+    /// next words given the sentence so far (`context`, normalized), lowercase, best first by the word model; only words
+    /// likely enough, and none far less likely than the best. None for a limit below 1.
+    func nextWords(context: String, limit: Int) -> [String]
     /// Drops every cache that holds context or words (the keyboard calls it when it hides). Results after it
     /// are the same as before.
     func forgetContext()

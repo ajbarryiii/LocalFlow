@@ -19,6 +19,8 @@ enum AutocorrectEditorTests {
             ("thePronounIIsCapitalized", testThePronounIIsCapitalized),
             ("thePronounIFollowsTheGates", testThePronounIFollowsTheGates),
             ("chatWordsAreKeptAsTyped", testChatWordsAreKeptAsTyped),
+            ("runTogetherWordsBecomeTwoWords", testRunTogetherWordsBecomeTwoWords),
+            ("accentedFormsAreOfferedNeverCorrected", testAccentedFormsAreOfferedNeverCorrected),
             ("dayAndMonthNamesTakeACapital", testDayAndMonthNamesTakeACapital),
             ("cantAndWontTakeTheirApostrophe", testCantAndWontTakeTheirApostrophe),
             ("commonMisspellingsAreCorrected", testCommonMisspellingsAreCorrected),
@@ -300,10 +302,11 @@ enum AutocorrectEditorTests {
 
     private static func testChatWordsAreKeptAsTyped() {
         // Common chat abbreviations and slang stay as typed in any case, without asking the corrector, even one that
-        // would change them (round 1 council: "lol " became "lil"; round 3: "ur" became "our", "alot" "almost").
+        // would change them (round 1 council: "lol " became "lil"; round 3: "ur" became "our"). Round 5 changed "alot":
+        // it is no chat word any more but becomes "a lot" (`testRunTogetherWordsBecomeTwoWords`).
         let chat = ["lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
                     "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
-                    "yep", "nope", "ur", "alot"]
+                    "yep", "nope", "ur"]
         var corrections = Dictionary(uniqueKeysWithValues: chat.map { ($0, "lil") })
         corrections["teh"] = "the"
         corrections["dont"] = "don't"
@@ -333,6 +336,123 @@ enum AutocorrectEditorTests {
         longer.tap("okk")
         longer.press(.space)
         TestSupport.expectEqual(longer.text, "lol ok ")
+    }
+
+    /// Round 4 council (Opus finding 1): "running abit late" went out as "running habit late". Four words typed run
+    /// together become two words, as on Apple's keyboard, whatever the corrector says: "abit", "alot", "aswell" and
+    /// "atleast". The replacement is one correction like any other: Space applies it, a Delete straight after puts the
+    /// typed word back (and remembers it), the strip offers the typed word, and the case follows the typed word. This
+    /// changes round 3's contract, which kept "alot" as typed as a chat word.
+    private static func testRunTogetherWordsBecomeTwoWords() {
+        TestSupport.expectEqual(WordAutocorrect.runTogetherWords, ["abit": "a bit", "alot": "a lot", "aswell": "as well",
+                                                                    "atleast": "at least"])
+        TestSupport.expect(!WordAutocorrect.chatWords.contains("alot"), "alot is still kept as a chat word")
+        let rig = AutocorrectRig("", corrections: ["abit": "habit", "alot": "almost"])
+        for word in ["running", "abit", "late", "alot", "aswell", "atleast"] {
+            rig.tap(word)
+            rig.press(.space)
+        }
+        TestSupport.expectEqual(rig.text, "running a bit late a lot as well at least ")
+        // The typed word's case: a capital first letter, or all capitals.
+        let cased = AutocorrectRig("", corrections: [:])
+        for word in ["Abit", "ALOT", "Atleast"] {
+            cased.tap(word)
+            cased.press(.space)
+        }
+        TestSupport.expectEqual(cased.text, "A bit A LOT At least ")
+        // Before punctuation too, which goes after the second word.
+        let marked = AutocorrectRig("", corrections: [:])
+        marked.tap("aswell")
+        marked.press(.character("."))
+        TestSupport.expectEqual(marked.text, "as well.")
+        // The strip after the space offers the typed word; a Delete straight after puts it back, and it is kept for the
+        // session.
+        let reverted = AutocorrectRig.typingASpace(after: "running", corrections: [:])
+        reverted.tap("abit")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "running a bit ")
+        TestSupport.expectEqual(reverted.strip, SwipeStrip(candidates: ["abit", "a bit"], inserted: 1))
+        reverted.heldDelete()
+        TestSupport.expectEqual(reverted.text, "running abit")
+        TestSupport.expectEqual(reverted.editor.revertedWords, ["abit"])
+        reverted.press(.space)
+        reverted.tap("abit")
+        reverted.press(.space)
+        TestSupport.expectEqual(reverted.text, "running abit abit ")
+        // Choosing the typed word on the strip is a revert too, and choosing the two words back undoes it.
+        let chosen = AutocorrectRig.typingASpace(after: "i", corrections: [:])
+        chosen.tap("alot")
+        chosen.press(.space)
+        TestSupport.expectEqual(chosen.text, "i a lot ")
+        chosen.choose(0)
+        TestSupport.expectEqual(chosen.text, "i alot ")
+        TestSupport.expectEqual(chosen.editor.revertedWords, ["alot"])
+        chosen.choose(1)
+        TestSupport.expectEqual(chosen.text, "i a lot ")
+        TestSupport.expectEqual(chosen.editor.revertedWords, [])
+        // While it is typed, the strip marks the two words beside the quoted word; a tap on them puts them in.
+        let live = AutocorrectRig("", corrections: [:])
+        live.tap("abit")
+        TestSupport.expectEqual(live.strip, SwipeStrip(candidates: ["abit", "a bit"], inserted: 1,
+                                                       live: SwipeStrip.Live(quoted: 0, marked: 1)))
+        live.choose(1)
+        TestSupport.expectEqual(live.text, "a bit ")
+        // Off with autocorrect, and where the field turns autocorrection off.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("abit")
+        off.press(.space)
+        TestSupport.expectEqual(off.text, "abit ")
+        let literal = AutocorrectRig("", corrections: [:])
+        literal.autocorrectionDisabled = true
+        literal.tap("alot")
+        literal.press(.space)
+        TestSupport.expectEqual(literal.text, "alot ")
+        // A longer word that starts like one is the corrector's.
+        let longer = AutocorrectRig("", corrections: [:])
+        longer.tap("abits")
+        longer.press(.space)
+        TestSupport.expectEqual(longer.text, "abits ")
+    }
+
+    /// Round 4 council (Opus layout): no accented suggestions. A small table of English words that keep their accents
+    /// ("café", "résumé", "naïve", ...) offers the accented form beside the plain word, while it is typed and after a
+    /// commit key, in the typed word's case. Never a correction: Space keeps the word as typed.
+    private static func testAccentedFormsAreOfferedNeverCorrected() {
+        let table = WordAutocorrect.accentedForms
+        TestSupport.expect(!table.isEmpty && table.count <= 40, "\(table.count) entries")
+        for (plain, accented) in table {
+            TestSupport.expect(WordAutocorrect.isCorrectable(plain) && plain == plain.lowercased(), "plain \(plain)")
+            TestSupport.expect(accented != plain && accented == accented.lowercased(), "accented \(accented)")
+            TestSupport.expectEqual(accented.folding(options: .diacriticInsensitive, locale: nil), plain)
+        }
+        for (plain, accented) in [("cafe", "café"), ("resume", "résumé"), ("naive", "naïve"), ("fiance", "fiancé"),
+                                  ("cliche", "cliché"), ("jalapeno", "jalapeño")] {
+            TestSupport.expectEqual(table[plain], accented)
+        }
+        // While typed: beside the word, which a space keeps.
+        let rig = AutocorrectRig.typingASpace(after: "the", corrections: [:])
+        rig.corrector.predicted = ["cafe": WordPredictions(words: ["cafes"], isWord: true)]
+        rig.tap("cafe")
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["cafe", "cafes", "café"], inserted: 0,
+                                                      live: SwipeStrip.Live(quoted: nil, marked: nil)))
+        rig.press(.space)
+        TestSupport.expectEqual(rig.text, "the cafe ")
+        // After the space: a choice, in the typed word's case.
+        TestSupport.expectEqual(rig.strip, SwipeStrip(candidates: ["cafe", "café"], inserted: 0))
+        rig.choose(1)
+        TestSupport.expectEqual(rig.text, "the café ")
+        let capital = AutocorrectRig("", corrections: [:])
+        capital.tap("Resume")
+        capital.press(.space)
+        TestSupport.expectEqual(capital.text, "Resume ")
+        TestSupport.expectEqual(capital.strip, SwipeStrip(candidates: ["Resume", "Résumé"], inserted: 0))
+        // Off with autocorrect.
+        let off = AutocorrectRig("", corrections: [:])
+        off.enabled = false
+        off.tap("cafe")
+        off.press(.space)
+        TestSupport.expectEqual(off.strip, nil)
     }
 
     private static func testDayAndMonthNamesTakeACapital() {
@@ -769,7 +889,8 @@ enum AutocorrectEditorTests {
     private static func testAGestureOrReappearingDisownsTheWord() {
         // Owned words (code review rounds 4 and 5): only a word this keyboard typed whole, after a separator it also
         // typed, is corrected; deleting it removes only those characters, wherever the host has the caret. A
-        // gesture, deleting past the word's start, or hiding and appearing again disowns the word.
+        // gesture, deleting past the word's start, or hiding and appearing again (anywhere but the same unchanged
+        // field) disowns the word.
         let harness = KeyboardHarness(FakeTextHost(text: "so teh", unit: .utf16))
         let corrector = FakeCorrector(["teh": "the", "tehx": "then", "tehxx": "then"])
         harness.editor.autocorrect = {
@@ -800,14 +921,17 @@ enum AutocorrectEditorTests {
         harness.press(.space)
         TestSupport.expectEqual(harness.document.text, "so tehxx ")
         TestSupport.expectEqual(corrector.calls.count, 1)
-        // Appearing again does not own the word before the caret (the field is not empty).
+        // Appearing again does not own the word before the caret (the field is not empty), unless this keyboard was
+        // typing it there and nothing changed while it was hidden (round 5: `KeyboardEditorTests`, "a parked word").
+        // Here the host app changed the field.
         harness.press(.character("t"))
         harness.hide()
+        harness.document.host.hostInsert("!", at: 0)
         harness.show()
         harness.press(.character("e"))
         harness.press(.character("h"))
         harness.press(.space)
-        TestSupport.expectEqual(harness.document.text, "so tehxx teh ")
+        TestSupport.expectEqual(harness.document.text, "!so tehxx teh ")
         TestSupport.expectEqual(corrector.calls.count, 1)
     }
 
@@ -1402,6 +1526,11 @@ final class FakeCorrector: WordCorrecting {
     private(set) var predictionCalls: [Call] = []
     /// The spelling matches, by word; none for any other.
     var spelled: [String: [String]] = [:]
+    /// The next words after a space, by the normalized context; none for any other.
+    var following: [String: [String]] = [:]
+    /// The next words for any other context.
+    var followingAny: [String] = []
+    private(set) var nextWordCalls: [(context: String, limit: Int)] = []
     private(set) var spellingCalls: [(context: String, word: String, limit: Int)] = []
 
     init(_ corrections: [String: String], alternatives: [String: [String]] = [:]) {
@@ -1432,6 +1561,11 @@ final class FakeCorrector: WordCorrecting {
         return Array((spelled[word] ?? []).prefix(limit))
     }
 
+    func nextWords(context: String, limit: Int) -> [String] {
+        nextWordCalls.append((context, limit))
+        return Array((following[context] ?? followingAny).prefix(limit))
+    }
+
     func forgetContext() {}
 }
 
@@ -1449,6 +1583,7 @@ final class AutocorrectRig {
     var secure = false
     var autocorrectionDisabled = false
     var field = KeyboardField.standard
+    var numeric = false
     var autocapitalization: AutocapitalizationMode = .none
     private var time: TimeInterval = 100
 
@@ -1459,18 +1594,18 @@ final class AutocorrectRig {
     }
 
     init(document: FakeDocument, corrections: [String: String], alternatives: [String: [String]] = [:],
-         editCallbackDelay: Int? = nil) {
+         editCallbackDelay: Int? = nil, parking: ParkedWordSlot = ParkedWordSlot()) {
         self.document = document
         document.editCallbackDelay = editCallbackDelay
         let trackpad = TrackpadController(host: document)
         trackpad.parameters = .flat
-        editor = KeyboardEditor(document: document, trackpad: trackpad)
+        editor = KeyboardEditor(document: document, trackpad: trackpad, parking: parking)
         corrector = FakeCorrector(corrections, alternatives: alternatives)
         editor.autocapitalization = { [unowned self] in self.autocapitalization }
         editor.autocorrect = { [unowned self] in
             guard self.enabled else { return nil }
             return AutocorrectSetup(corrector: self.corrector, keys: Self.keys, params: self.params, secureTextEntry: self.secure,
-                                    autocorrectionDisabled: self.autocorrectionDisabled, field: self.field)
+                                    autocorrectionDisabled: self.autocorrectionDisabled, field: self.field, numeric: self.numeric)
         }
         editor.reset(numeric: false)
     }
@@ -1507,6 +1642,15 @@ final class AutocorrectRig {
 
     func heldDelete(_ unit: DeleteRepeat.Unit = .character) {
         editor.heldDelete(unit, field: document.documentID, now: tick())
+    }
+
+    /// The keyboard hides (`KeyboardInput.stop`) and appears again (`KeyboardInput.reset`).
+    func hide() {
+        editor.hide(now: tick())
+    }
+
+    func show() {
+        editor.reset(numeric: false)
     }
 
     /// A tap on the strip's word `index`.

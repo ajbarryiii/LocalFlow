@@ -162,10 +162,7 @@ final class Autocorrector: WordCorrecting {
                 if logOdds >= floor { odds[scored.ids[index]] = max(odds[scored.ids[index]] ?? -.infinity, logOdds) }
             }
         }
-        if completionContext != words {
-            completionLogProbs = model.logProbs(context: words, allFormsOf: lexicon)
-            completionContext = words
-        }
+        readOut(words)
         // The best few completions only: the range may hold thousands of forms after one letter.
         var best: [(id: Int, logOdds: Double)] = []
         let own = known ? lexicon.formID(of: word) : nil
@@ -190,6 +187,53 @@ final class Autocorrector: WordCorrecting {
     /// autocorrect", Suggestions): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti" (1 in 1,200)
     /// but keeps "defiantly" for "defi" (1 in 220).
     static let suggestionRatio = 1000.0
+
+    // MARK: Next words
+
+    /// After a finished word and a space (ARCHITECTURE.md, "Word autocorrect", Next words): the forms the word model finds
+    /// likeliest next in the sentence, from the completions' read-out of the context (`completionLogProbs`; the word typed
+    /// next is ranked from the same one). Only forms of probability at least `nextWordFloor` and within `nextWordRatio` of
+    /// the best; no single letter but "a" and "i", never the sentence's last word again, one form per key (the likelier;
+    /// a fixed correction's target for its source, "cant" as "can't"; the last word is compared by its letters). Best
+    /// first, ties as `ranks`.
+    func nextWords(context: String, limit: Int) -> [String] {
+        guard limit > 0 else { return [] }
+        let words = Self.sentenceWords(context)
+        readOut(words)
+        let floor = log(Self.nextWordFloor)
+        var likely: [(id: Int, logOdds: Double)] = []
+        // At most 1 / floor forms pass the floor, so only those are looked at by name.
+        for id in completionLogProbs.indices where completionLogProbs[id] >= floor {
+            likely.append((id, completionLogProbs[id]))
+        }
+        likely.sort { ranks($0.logOdds, $0.id, before: $1) }
+        guard let best = likely.first?.logOdds else { return [] }
+        var shown: [String] = []
+        var keys: Set<String> = []
+        for item in likely where item.logOdds >= best - log(Self.nextWordRatio) && shown.count < limit {
+            let form = lexicon.form(at: item.id)
+            // The previous word again is compared by spelling, so "cant" after "can't" is a repeat too.
+            guard form.count > 1 || form == "a" || form == "i", words.last.map(Self.key(of:)) != Self.key(of: form),
+                  keys.insert(Self.key(of: form)).inserted else { continue }
+            shown.append(WordAutocorrect.fixedCorrection(form) ?? form)
+        }
+        return shown
+    }
+
+    /// The least probability of a next word offered: 1 in 40. Chosen on the bundle's model with invented messages
+    /// (ARCHITECTURE.md, "Word autocorrect", Next words): "Hi, " keeps "there" (0.036) but not "to" (0.020); after a
+    /// sentence's end only "I" (0.11) passes.
+    static let nextWordFloor = 0.025
+    /// The most by which a next word offered may be less likely than the best: "on my " offers "way" (0.72) alone, not
+    /// "phone" (0.026); "thanks so much " offers "for" (0.39) and "to" (0.027).
+    static let nextWordRatio = 20.0
+
+    /// The model's probability of every form in `words`' context, once per context (`completionLogProbs`).
+    private func readOut(_ words: [String]) {
+        guard completionContext != words else { return }
+        completionLogProbs = model.logProbs(context: words, allFormsOf: lexicon)
+        completionContext = words
+    }
 
     // MARK: Spelling matches
 
