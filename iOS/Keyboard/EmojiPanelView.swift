@@ -30,7 +30,6 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     private var recents = EmojiRecents(stored: UserDefaults.standard.stringArray(forKey: recentsKey) ?? [])
     private var sections: [Section] = []
     private var shownSection = 0
-    private let title = UILabel()
     private let flow = UICollectionViewFlowLayout()
     private lazy var grid = UICollectionView(frame: .zero, collectionViewLayout: flow)
     private let jumpBar = UIStackView()
@@ -40,10 +39,6 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
-        title.textColor = .secondaryLabel
-        title.isAccessibilityElement = false
-        addSubview(title)
         flow.scrollDirection = .horizontal
         flow.minimumLineSpacing = 0
         flow.minimumInteritemSpacing = 0
@@ -64,15 +59,13 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Places the grid (with the category name above it) and the jump bar, in the panel's coordinates.
+    /// Places the grid and the jump bar, in the panel's coordinates. No category name: the gap between sections and
+    /// the jump bar's highlighted symbol mark them, and the emoji get the height.
     func layout(grid gridFrame: CGRect, jumpBar jumpFrame: CGRect) {
         gridArea = gridFrame
         jumpArea = jumpFrame
-        let titleHeight: CGFloat = 20
-        title.frame = CGRect(x: gridFrame.minX + 12, y: gridFrame.minY + 2, width: gridFrame.width - 24, height: titleHeight - 2)
-        let gridRect = CGRect(x: gridFrame.minX, y: gridFrame.minY + titleHeight, width: gridFrame.width,
-                              height: max(gridFrame.height - titleHeight, 1))
-        // Square cells about 36 points tall: four rows in portrait, three in landscape.
+        let gridRect = CGRect(x: gridFrame.minX, y: gridFrame.minY, width: gridFrame.width, height: max(gridFrame.height, 1))
+        // Square cells about 40 points tall: four rows in portrait, three in landscape.
         let rows = max(2, Int(gridRect.height / 34))
         let side = floor(gridRect.height / CGFloat(rows))
         if flow.itemSize.width != side {
@@ -122,7 +115,6 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     }
 
     private func styleChrome() {
-        title.font = .systemFont(ofSize: 12, weight: bold ? .bold : .semibold)
         for case let button as UIButton in jumpBar.arrangedSubviews where sections.indices.contains(button.tag) {
             let configuration = UIImage.SymbolConfiguration(pointSize: 15, weight: bold ? .semibold : .regular)
             button.setImage(UIImage(systemName: sections[button.tag].symbol, withConfiguration: configuration), for: .normal)
@@ -144,7 +136,6 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
     private func show(section: Int) {
         guard sections.indices.contains(section) else { return }
         shownSection = section
-        title.text = sections[section].name.uppercased()
         styleChrome()
     }
 
@@ -187,7 +178,7 @@ final class EmojiPanelView: UIView, UICollectionViewDataSource, UICollectionView
         onEmojiPressCancelled?()
     }
 
-    /// The category name and jump bar follow the section at the grid's left edge.
+    /// The jump bar follows the section at the grid's left edge.
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let probe = CGPoint(x: scrollView.contentOffset.x + flow.sectionInset.left + flow.itemSize.width / 2,
                             y: flow.itemSize.height / 2)
