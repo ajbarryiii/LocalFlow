@@ -24,6 +24,7 @@ enum KeyboardPresenterTests {
             ("transcriptionWaitingForTheModelIsShown", testTranscriptionWaitingForTheModelIsShown),
             ("modelPreparingOnlyFromALiveHost", testModelPreparingOnlyFromALiveHost),
             ("staleWriterGuard", testStaleWriterGuard),
+            ("startWithoutASessionStaysStart", testStartWithoutASessionStaysStart),
         ]
     }
 
@@ -302,7 +303,7 @@ enum KeyboardPresenterTests {
         TestSupport.expectEqual(mode(other, Fixture.intent(.finish)), .preparingModel)
     }
 
-    /// `isModelPreparing` (the recording line's "preparing model") reads only a live host's status.
+    /// `isModelPreparing` (the recording line's "model loads") reads only a live host's status.
     private static func testModelPreparingOnlyFromALiveHost() {
         let recording = Fixture.dictation(.recording)
         TestSupport.expect(KeyboardPresenter.isModelPreparing(status: .value(status(model: .preparing, dictation: recording)),
@@ -322,6 +323,38 @@ enum KeyboardPresenterTests {
                            "another schema's status was read")
         for read in [StoreRead<HostStatus>.absent, .incompatible, .unreadable] {
             TestSupport.expect(!KeyboardPresenter.isModelPreparing(status: read, now: Fixture.now), "no status read")
+        }
+    }
+
+    /// Round 10 (Opus, round 9 finding 2): with no session, Start grew into the dimmed recording form (the stop square
+    /// and Cancel) while iOS asked to open LocalFlow, and stayed so about 15 s when the user declined. While the request
+    /// this keyboard bounced to LocalFlow has not reached the host, the keyboard shows Start as it was, so a decline
+    /// leaves Start at once and a second tap bounces again. Once the host picks the request up (the user accepted), it
+    /// shows as usual; a request another keyboard instance bounced (adopted after the swipe back) is unaffected.
+    private static func testStartWithoutASessionStaysStart() {
+        let intent = Fixture.intent(.record)
+        func shown(_ status: HostStatus?, bounced: UUID?, now: Date = Fixture.now) -> KeyboardMode {
+            let statusRead: StoreRead<HostStatus> = status.map { .value($0) } ?? .absent
+            let mode = KeyboardPresenter.mode(access: .fullAccess, status: statusRead, intent: .value(intent), now: now)
+            return KeyboardPresenter.shownMode(mode, bouncedRequestID: bounced, intent: .value(intent), status: statusRead)
+        }
+        // No host, or a host without a session, and this keyboard bounced the request: still Start.
+        TestSupport.expectEqual(shown(nil, bounced: Fixture.requestID), .hostUnavailable)
+        TestSupport.expectEqual(shown(Fixture.status(.inactive), bounced: Fixture.requestID), .hostUnavailable)
+        TestSupport.expectEqual(shown(Fixture.status(.starting, captureReady: false), bounced: Fixture.requestID), .hostUnavailable)
+        // Another instance's bounce, or none: the pending request shows as starting, as before.
+        TestSupport.expectEqual(shown(nil, bounced: nil), .starting)
+        TestSupport.expectEqual(shown(nil, bounced: Fixture.otherRequestID), .starting)
+        // The host has it: starting, then recording.
+        let admitted = Fixture.status(heartbeatAt: Fixture.now + 3, dictation: Fixture.dictation(.starting))
+        TestSupport.expectEqual(shown(admitted, bounced: Fixture.requestID, now: Fixture.now + 3), .starting)
+        let recording = Fixture.status(heartbeatAt: Fixture.now + 4, dictation: Fixture.dictation(.recording), level: 0.2)
+        TestSupport.expectEqual(shown(recording, bounced: Fixture.requestID, now: Fixture.now + 4),
+                                .recording(level: 0.2, startedAt: startedAt))
+        // Only a pending start changes: every other mode shows as it is.
+        for mode in [KeyboardMode.ready, .hostUnavailable, .transcribing, .error(.sessionInactive), .needsFullAccess] {
+            TestSupport.expectEqual(KeyboardPresenter.shownMode(mode, bouncedRequestID: Fixture.requestID, intent: .value(intent),
+                                                                status: .absent), mode)
         }
     }
 }

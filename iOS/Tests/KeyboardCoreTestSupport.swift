@@ -423,7 +423,13 @@ final class FakeDocument: TextDocument, TrackpadHost {
     }
 
     var text: String { host.text }
-    var contextBefore: String? { host.context.before.isEmpty ? nil : host.context.before }
+    /// While set, the proxy still shows this text before the caret (nil inside: none), not the host's: our own edits
+    /// shown late, with no callback, as UIKit was measured to do.
+    var lateBefore: String??
+    var contextBefore: String? {
+        if let lateBefore { return lateBefore }
+        return host.context.before.isEmpty ? nil : host.context.before
+    }
     var contextAfter: String? { host.context.after.isEmpty ? nil : host.context.after }
     var hasSelection: Bool { host.hasSelection }
 
@@ -629,5 +635,21 @@ extension TrackpadParameters {
         parameters.powerCoefficient = 1
         parameters.powerExponent = 0
         return parameters
+    }
+}
+
+extension KeyboardLayout {
+    /// The letters layer as the reference fixtures (tap and autocorrect vectors) were generated: before the emoji key
+    /// joined the bottom row, the space bar reached from the layer key (and the globe) to return. Every other key is
+    /// today's.
+    static func referenceLetterKeys(metrics: KeyboardMetrics, showsGlobe: Bool = false) -> [PlacedKey] {
+        var keys = KeyboardLayout.keys(for: .letters, metrics: metrics, showsGlobe: showsGlobe)
+        guard let emoji = keys.firstIndex(where: { $0.action == .layer(.emoji) }),
+              let space = keys.firstIndex(where: { $0.action == .space }) else { return keys }
+        let left = keys[emoji].frame.x
+        keys[space].frame.width += keys[space].frame.x - left
+        keys[space].frame.x = left
+        keys.remove(at: emoji)
+        return keys
     }
 }

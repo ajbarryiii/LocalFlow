@@ -37,6 +37,7 @@ contract.
 | "Microphone choice", "Media services reset ends the session" | [Capture](#capture) |
 | "Custom dictionary", "Find strength" | [Custom dictionary](#custom-dictionary) |
 | "App Store packaging" | [App Store packaging](#app-store-packaging) |
+| "Live Activity" | [Live Activity](#live-activity-activity-activitycore) |
 
 ## Goal
 
@@ -72,6 +73,10 @@ keyboards entirely. Those fields are out of scope.
    entitlement, which LocalFlow does not have.
 6. The encoder targets the `ios19` Core ML opset, so the deployment target is
    **iOS 26.0**.
+7. **A Live Activity starts only from the foreground**, and its views run in
+   a separate WidgetKit extension that cannot animate on its own: only content
+   updates (with transitions of at most two seconds) and live timers move it.
+   iOS leaves the Dynamic Island out of screenshots and screen recordings.
 
 These lead to the "Flow session" design:
 
@@ -104,18 +109,20 @@ iOS/
   KeyboardCore/            keyboard logic: keyboard and tests
   App/                     containing app (SwiftUI, AVFoundation, Core ML, UIKit lifecycle)
   Keyboard/                keyboard extension (UIKit key area, SwiftUI top row, Core ML swipe encoder)
+  ActivityCore/            the Live Activity's content state: app, Live Activity extension and tests
+  Activity/                Live Activity extension (WidgetKit, SwiftUI) and its ActivityKit attributes
   Tests/                   dependency-free executable tests run on the macOS host
   Config/                  Info.plist, entitlements and privacy manifest templates
   scripts/                 build helpers and the App Store bundle checker
 ```
 
-- `Shared/`, `HostCore/` and `KeyboardCore/` import only Foundation, plus
+- `Shared/`, `HostCore/`, `ActivityCore/` and `KeyboardCore/` import only Foundation, plus
   CoreFoundation for Darwin notifications in `Shared/` and Accelerate for the
   tap and word models in `KeyboardCore/`, so they compile for the macOS test
   runner. UIKit, SwiftUI, AVFoundation and Core ML belong in
   `App/` and `Keyboard/`.
-- The app is compiled from `App/`, `Shared/`, `HostCore/` and these macOS
-  sources:
+- The app is compiled from `App/`, `Shared/`, `HostCore/`, `ActivityCore/`,
+  `Activity/SessionActivityAttributes.swift` and these macOS sources:
   - `Sources/Parakeet/*.swift`: the model runtime (`LocalParakeetService`).
   - `Sources/Dictionary/*.swift`: the custom dictionary
     ([Custom dictionary](#custom-dictionary)).
@@ -125,22 +132,29 @@ iOS/
 - The keyboard is compiled from `Keyboard/`, `Shared/` and `KeyboardCore/`
   only. It never links Parakeet, the dictionary, `LocalDictationCore` or
   `HostCore`, and it never captures audio.
+- The Live Activity extension is compiled from `Activity/`, `ActivityCore/`
+  and `KeyboardCore/RidgeMark.swift` with `KeyboardCore/KeyboardLayout.swift`
+  (the ridge mark and its box) and `KeyboardCore/DotWave.swift` (the strip's
+  swell, the keyboard wave's) only. It reads no files, settings or App Group
+  ([Live Activity](#live-activity-activity-activitycore)).
 
 ## Identifiers
 
-The Makefile injects these into both Info.plists:
+The Makefile injects these into the Info.plists:
 
 | Variable | Default (`CHANNEL=dev`) | `CHANNEL=appstore` |
 | --- | --- | --- |
 | `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | `com.ajbarryiii.localflow.ios` |
 | keyboard bundle ID | `$(BUNDLE_ID).keyboard` | `$(BUNDLE_ID).keyboard` |
+| Live Activity bundle ID | `$(BUNDLE_ID).activity` | `$(BUNDLE_ID).activity` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | `group.$(BUNDLE_ID)` |
 | `URL_SCHEME` | `localflow-dev` | `localflow` |
 | `UNIVERSAL_LINK` | empty | `https://wildernesslabs.ai/localflow/dictate` |
 | `DISPLAY_NAME` | `LocalFlow Dev` | `LocalFlow` |
 
-Both Info.plists carry `LocalFlowAppGroupIdentifier` and `LocalFlowURLScheme`,
-and `LocalFlowUniversalLink` when `UNIVERSAL_LINK` is set.
+The app's and the keyboard's Info.plists carry `LocalFlowAppGroupIdentifier`
+and `LocalFlowURLScheme`, and `LocalFlowUniversalLink` when `UNIVERSAL_LINK`
+is set. The Live Activity extension's carries none of them.
 `LocalFlowConfiguration.main` (Shared) reads them and rejects an empty value,
 an unexpanded `$(VARIABLE)` and an invalid URL scheme, so no Swift file
 hardcodes an identifier.
@@ -153,7 +167,7 @@ hardcodes an identifier.
   when one is set, else `<scheme>://dictate`.
 - **Signing.** With `UNIVERSAL_LINK` set, only the app is signed with
   `com.apple.developer.associated-domains` = `["applinks:<host>"]`; the
-  keyboard gets nothing new. Device builds stop unless the app's profile
+  keyboard and the Live Activity get nothing new. Device builds stop unless the app's profile
   grants Associated Domains (`*` or that entry). Empty, the bundles have no
   key and no entitlement.
 - **Channels.** `CHANNEL=appstore` refuses an empty or non-https value. Dev,
@@ -377,8 +391,8 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 9. `ready`: the host is alive and `captureReady`, with any other model
    state. A model that is `notPrepared` (released after a memory warning)
    starts preparing when the tap is admitted ([Admission](#admission)), so
-   the recording already shows it; until then the status line's hint reads
-   "Model loads when you dictate" (`KeyboardMessages.hint`, with a live
+   the recording already shows it; until then Start's value tells VoiceOver
+   "Model loads when you dictate" (`KeyboardMessages.spokenStatus`, with a live
    session). `failed` and `unavailable` are reported by the hint and, on a
    tap, by the request's error.
 10. `hostUnavailable`: everything else. A mic tap bounces.
@@ -386,7 +400,8 @@ of `fullAccess`, `noFullAccess` or `containerUnavailable`. The modes, in order:
 `KeyboardPresenter.isModelPreparing(status:now:)` is true when the status is
 a `.value` of the current schema, the host is alive (as in 4) and
 `status.model` is `preparing`. While recording, the keyboard then reads
-"Listening · preparing model". A dead host's last status never shows
+"Model loading" to VoiceOver after the recording's time (round 10: the bar
+shows no caption). A dead host's last status never shows
 preparation.
 
 **Stale-writer guard.** Right before writing `finish` or `cancel`, the
@@ -501,7 +516,7 @@ invalidated requests and the consumed requests.
 ### Shared settings (Shared/LocalFlowSettings.swift)
 
 The keyboard reads these, so they live in the App Group's `UserDefaults`
-suite. Every boolean defaults to on.
+suite. Every boolean but `leftHanded` defaults to on.
 
 | Setting | Values | Use |
 | --- | --- | --- |
@@ -516,6 +531,7 @@ suite. Every boolean defaults to on.
 | `fieldLayoutOverrides` | at most 64 fingerprint keys → `messages` or `fullWidth` | [Field profiles](#field-profiles) |
 | `softKeyEdgesEnabled` | Bool | [Soft key edges](#soft-key-edges) ("Soft key edges" on Home) |
 | `autocorrectEnabled` | Bool | [Word autocorrect](#word-autocorrect) ("Autocorrect" on Home) |
+| `leftHanded` | Bool; default off | the dictation controls mirrored to the bar's left ("Left-handed" on Home, [Top row](#top-row)) |
 
 Out-of-range or malformed values read as the default and are not written. No
 transcript history is stored. The words autocorrect must never correct are a
@@ -871,7 +887,8 @@ transcripts or other user data.
   `willEnterForeground`, `didBecomeActive`, `didEnterBackground`, the
   protected-data notifications and memory warnings; and mirrors the core's
   state into SwiftUI. It decides when the bounce screen shows and plays the
-  bounce screen's recording haptic.
+  bounce screen's recording haptic, and it drives the session's Live Activity
+  ([Live Activity](#live-activity-activity-activitycore)).
 - **`MicrophoneCapture`** implements `HostCapture` with one `AVAudioEngine`
   input tap for the whole session ([Capture](#capture)).
   - It requests a 0.2 s (else 0.1 s) I/O buffer, a 16 kHz sample rate, mono
@@ -930,6 +947,93 @@ transcripts or other user data.
     and never constructs real capture. It does not prove background audio
     behavior; only a device test can.
 
+## Live Activity (Activity/, ActivityCore/)
+
+The Flow session shows as a Live Activity: in the Dynamic Island (compact,
+minimal and expanded) and on the Lock Screen. Tapping it opens the app; it has
+no buttons.
+
+- **Content.** `SessionActivityAttributes` (`Activity/`, compiled into the app
+  and the extension) has no fixed attributes. Its content state,
+  `SessionActivityState` (`ActivityCore/`), holds only the phase and the dates
+  its timers need, never text, audio or levels:
+
+  | Phase | Host state | Dates |
+  | --- | --- | --- |
+  | `ready` | session `active`, no dictation in progress | `endsAt`: `sessionExpiresAt` |
+  | `recording` | dictation `starting` or `recording` | `since`: the dictation's `startedAt` (admission) |
+  | `transcribing` | dictation `transcribing`, model not preparing | none |
+  | `preparing` | dictation `transcribing` while the model prepares | none |
+
+  A `starting` or `inactive` session shows nothing. A transcription that
+  outlives its session is not shown.
+- **Decisions** (`HostCore/SessionActivity.swift`; pure, tested with a fake
+  backend). `SessionActivityPolicy` maps the host state to a phase and a stale
+  date; `SessionActivityDriver` starts, updates and ends the activity through
+  `SessionActivityBackend`, which `LiveActivityBackend` (App) implements with
+  ActivityKit and nothing else. The controller calls `sync` after every status
+  change and on every tick.
+  - **Launch.** Every activity an earlier run left is ended at once, before a
+    session can start.
+  - **Start.** Only with the app active (ActivityKit's rule), the user's Live
+    Activities switch on, and a session `active`. A start the system refuses
+    is not asked again for that session. The app never prompts or explains
+    when Live Activities are off; iOS asks the user itself on the first
+    activity.
+  - **Update.** Only when the phase or a date changes: never for levels,
+    heartbeats or the model state while recording. Updates carry no alert, so
+    they never sound or wake the screen. A wait (`transcribing`,
+    `preparing`) shows at least `minimumWaitDisplay` (0.5 s) before giving
+    way to anything but `recording`, so a fast transcription reads as a beat
+    rather than a flicker; a new recording and a session's end are never held.
+  - **End.** The moment the session ends for any reason, or a different
+    session is current, with the immediate dismissal policy.
+  - **Stale date.** `ready`: `endsAt` plus `staleGrace` (30 s); `recording`:
+    `since` plus `maxDictationDuration` plus `staleGrace`; waits and a ready
+    state without an expiry: 5 minutes from the update. A killed app's
+    activity therefore turns stale soon after its session would have ended,
+    and then reads "Session ended" with no timers; the next launch ends it.
+- **Look.** Monochrome, as the keyboard's island: white ink on a near-black
+  pill, the ridge mark (`RidgeMark`) with its dot in the phase's accent
+  (aurora ready, coral recording, glacier waiting), a coral recording dot
+  beside the timer, and a strip of dots in the keyboard wave's form (one row,
+  `DotWave.lift`, `DotWave.glow`; round 9): a calm row of equal dots when
+  ready, the voice's swell while recording, and a glacier glint where the
+  wait's shimmer is, in the middle while transcribing (on the left third
+  while the model prepares); while recording the strip is one still moment
+  of the keyboard's voice row, three words of different loudness
+  (`DotWave.stillLift`, round 10). `DotWave` is compiled into the
+  extension.
+  - Compact: the mark leading; trailing, a small strip, or the coral dot and
+    the elapsed time while recording, so the island grows as recording starts
+    and narrows as it stops. Minimal: the mark, or the coral dot while
+    recording. Expanded: the mark and "LocalFlow", the countdown beside a
+    timer glyph or the recording time, the strip and the phase's name. Lock Screen: the
+    mark, the phase's name, one line of guidance or the countdown, the
+    recording time, and the strip on its own dark background, in either
+    appearance.
+- **Motion.** Every phase change animates with one quick spring
+  (`snappy`, 0.28 s, no overshoot): each dot of the strip moves its size,
+  brightness and colour, so the row swells and settles back; changed words
+  push up and blur in; the trailing side swaps between the strip and the
+  timer, growing out of the island's edge; the minimal view's recording dot
+  pops in; the mark's dot swells a little while recording. With Reduce
+  Motion every change is opacity only: nothing grows, shrinks or slides,
+  the dots keep one size and the strip's shape shows in brightness
+  (`SessionActivityMotion`, pure, tested; round 8 council, Sol finding 2).
+  Timers are live (`Text(timerInterval:)`). Round 10 (owner: glyphs, not
+  words): a ready session's countdown is a small timer glyph (SF Symbol
+  `timer`) with the time, "4:58" in the expanded island and "4:58 left" on
+  the Lock Screen under "Ready to dictate" (round 9: "ends in 4:58",
+  "Session ends in 4:58 if idle"); VoiceOver reads the glyph as "Session
+  ends if idle in", then the time (`SessionActivityState.countdownSymbol`,
+  `countdownSpokenLead`). Nothing animates in Always On.
+- **Build.** `LocalFlowActivity.appex` (`$(BUNDLE_ID).activity`), a
+  `com.apple.widgetkit-extension` linked with the `_NSExtensionMain` entry
+  point as Xcode links every extension; no entitlements beyond the signing
+  identity's, no App Group, no push, no resources. The app's Info.plist sets
+  `NSSupportsLiveActivities`.
+
 ## Keyboard extension (Keyboard/)
 
 - **`KeyboardViewController`** (`UIInputViewController`, principal class
@@ -941,17 +1045,28 @@ transcripts or other user data.
     in compact height, with its controls 38 pt and 32 pt tall, centred in
     it; the key area is 216 pt and 162 pt. The top row's hosting view also
     reaches `KeyboardMetrics.stopReachIntoKeys(compact:)` down behind the key
-    area, for the Stop capsule's tap area
+    area, for Stop's tap area
     ([Reach and touch regions](#reach-and-touch-regions)); it draws only the
     top row.
+  - **The band above the keyboard.** In most hosts (Messages, Safari,
+    Contacts, Reminders, and LocalFlow itself once the keyboard has been
+    restored after an app switch), iOS 26 draws the host's keyboard backdrop
+    17 pt above the top row: the gap it leaves between the host's input
+    accessory slot and the keyboard, laid out in the host's process. The
+    extension's view, window and safe area are the same with or without it,
+    and a taller view moves the backdrop up by the same amount, so the
+    keyboard can neither detect nor remove the band. Only a first show in a
+    freshly launched LocalFlow lacks it. Measured on iOS 26.4, October 2026.
   - Its input view adopts `UIInputViewAudioFeedback`, so key presses play the
     system click, which follows the user's Keyboard Clicks setting.
   - It sets `hasDictationKey = true` in `viewDidAppear`, so iOS drops its own
     dictation microphone from the bar below the keyboard on Face ID iPhones.
   - **Touchable backgrounds.** The key area, the top row's hosting view and
     the menu panel's hosting view use `KeyAreaView.touchableBackground`, grey
-    at 2% alpha, because in a keyboard extension iOS ignores touches on fully
-    transparent points. A tap in a gap reaches the key area, whose nearest-key
+    at 1/255 alpha, because in a keyboard extension iOS ignores touches on
+    fully transparent points. It is the least alpha an 8-bit colour keeps: at
+    2% the keyboard's area was a shade off the system backdrop, a faint seam
+    under the band iOS 26 draws above it in most hosts. A tap in a gap reaches the key area, whose nearest-key
     hit testing covers every point, and a tap in the bar outside its controls
     goes to the keys ([Reach and touch regions](#reach-and-touch-regions)).
 - **`KeyboardDictationClient`** runs the keyboard's side of the protocol while
@@ -1004,36 +1119,365 @@ transcripts or other user data.
 ### Top row
 
 `DictationBarView` (SwiftUI) renders `KeyboardDictationClient.state`, the
-candidate strip and the "Never correct" offer only, so typing never
-re-renders it. It reports its controls' frames to the key area, which takes
+candidate strip and the "Never correct" offer only, so typing re-renders it
+only when the strip's words change (suggestions while a word is typed). It reports its controls' frames to the key area, which takes
 every other point of the bar
 ([Reach and touch regions](#reach-and-touch-regions)).
 
-- **Right:** a "Start" capsule with a waveform glyph (`lf.mic`), the primary
-  dictation control. While starting or recording it is a red "Stop" capsule
-  with live level bars and the elapsed time, with a small cancel button
-  (`lf.cancel`) beside it. While transcribing it shows a spinner; while
-  waiting for the model, a spinner labelled "Preparing"
-  (`KeyboardMessages.capsuleCaption`). The capsule is never replaced by the
-  candidate strip, the chips or a notice, so the wait is explained whatever
-  holds the middle. When dictation cannot run here (no Full Access,
-  configuration, versions), it explains why.
-- **Left:** a menu button (`lf.menu`) that opens a panel over the key area
-  with the session status, "Open LocalFlow", the field's layout and a Switch
-  ([Field profiles](#field-profiles)), the trackpad tip, the field's
-  content-free fingerprint, and details of anything that keeps dictation from
-  working. A tap outside the panel's card, or on the button, closes it.
+- **Right: the island** (`lf.mic`), the dictation control: a dark pill in
+  the spirit of the Dynamic Island, whose parts go where `IslandLayout`
+  puts them (pure, tested), its right end always at the bar's trailing
+  padding.
+  - **Start** (idle, errors, and where dictation cannot run): the compact
+    island, the ridge mark beside "Start", as wide as its label needs and
+    never narrower than 2.4 times its height. The mark is always the
+    brand's, its dot aurora; the session shows in the dot's motion
+    (`SessionDot`, `SessionMark`; round 11, owner: round 10's amber dot for
+    "no session" made the logo look worse, and iOS's own orange microphone
+    dot means a session is on). It is a quiet cue, not the primary signal
+    (iOS's microphone indicator and the Live Activity say a session is on),
+    so it errs towards subtle:
+    - **A session ready: a heartbeat.** A soft aurora ring ripples out from
+      the dot's edge, 4.5 pt beyond it over 1 s, ease-out, fading from 0.6
+      opacity, then rests; every 3 s, the first 0.4 s after the mark
+      appears (`SessionDot.Heartbeat`, every constant in one place).
+      `HeartbeatRingView` runs each ripple as a Core Animation group at
+      most 30 frames a second, started by a main-thread timer once per
+      period, only while it is in a window, so between ripples nothing
+      animates (a repeating group spanning the rest kept the render server
+      compositing: about 9% of a core on the simulator, now about 4%; the
+      keyboard process itself idles at about 1%, measured over 10 s).
+    - **Its model preparing:** breathing (its opacity down to 35% and back
+      every 1.2 s), no heartbeat.
+    - **No session, or dictation cannot run here:** the same dot, still.
+    - **Reduce Motion:** nothing moves, so the dot is lit while a session
+      is on (ready or preparing) and unlit while none is: a dim grey dot
+      of the same size and place (`BrandPalette.unlitDot`, like an LED that
+      is off). A hollow grey ring was tried in the simulator and dropped: at
+      phone size its hole nearly closed and it read as a degree sign.
+    - Colour no longer carries the state, so Differentiate Without Colour
+      needs no case of its own. The dot changes with a 0.2 s cross-fade.
+    The dot leading the middle (round 4 to 9) was tried again in the
+    simulator and dropped: beside Start's own dot it made two.
+  - **Start without a session** (`hostUnavailable`) stays Start (round 10,
+    Opus round 9 finding 2): the tap pops the dot once, plays the press
+    haptic and asks iOS to open LocalFlow. While the request it bounced has
+    not reached the host, the keyboard shows Start
+    (`KeyboardPresenter.shownMode`), so a decline leaves Start at once
+    (round 9 held the dimmed recording form about 15 s) and a second tap
+    bounces again; when the user accepts, the host admits the request and
+    the recording shows as usual.
+  - **Recording.** A tap on Start grows the island towards the bar's middle
+    with a spring, and the whole island is Stop: the wave ([Keyboard look](#keyboard-look)),
+    the elapsed time and a stop glyph. It stays under half the bar (round 9,
+    owner: the speaking pill was too wide): as wide as leaves Cancel, beside
+    it, in the bar's right half, and no wider than 200 pt
+    (`IslandLayout.expandedWidth`: 147 pt on a 375 pt phone, 161 pt on the
+    402 pt Pro, 200 pt in landscape). Starting and recording are one view:
+    while starting the wave's row is dimmed and the time's place is kept, so
+    nothing in the island moves when the recording begins. VoiceOver hears
+    the mode and the time in the island's value, and "Model loading" after
+    them while the host still prepares the model
+    (`KeyboardMessages.islandAccessibilityValue`).
+  - **The wait** (transcribing, waiting for the model): Stop contracts it
+    into a pill exactly Start's width (round 11, owner: "the same width as
+    the start dictation button"; round 10's was 1.9 times its height), 10
+    to 12 dots on a phone, holding only a cool shimmer, which takes no
+    taps; the landing changes only what it holds, never its width. Round 10 (owner): no words name the wait; the shimmer says it is
+    busy, and VoiceOver hears "Transcribing" or "Preparing model" from the
+    island's label (`KeyboardMessages.capsuleAccessibilityLabel`). When the
+    transcript lands it opens back into Start, and Undo arrives in the
+    middle.
+  - **Cancel** (`lf.cancel`), a small circle (32 pt; 26 pt in landscape),
+    shows from starting until the transcript arrives, beside the island in
+    the bar's right half, in reach of a right thumb (round 9, owner; the
+    left half left-handed), a 12 pt gap from it: Cancel discards the
+    dictation, so a near miss for Stop must not reach it. Starting and
+    recording are one form, so it never moves while a thumb may be aiming
+    at it (round 5). At Stop it slides in with the contracting island, in
+    the same spring, to the same 12 pt gap beside the wait's pill, and
+    stays there through the wait (round 11, owner: "stay the same distance
+    away from the shimmer pill"; round 10 left it about 100 pt from the
+    pill, Opus). It slides into what was Stop a moment before, so for
+    0.45 s after the recording ends (a tap on Stop, or the host's
+    five-minute cap) it ignores taps and the island's former area takes
+    none ([Reach and touch regions](#reach-and-touch-regions)). Its
+    tap area is 44 pt wide and never reaches into the keys.
+  - What it holds for a mode is `CapsuleContent`, its form `IslandForm`
+    (from `CapsuleStyle`). It is never replaced by the candidate strip, the
+    chips or a notice. When dictation cannot run here (no Full Access,
+    configuration, versions), Start is dimmed and explains why.
+- **Left-handed** (`LocalFlowSettings.leftHanded`, "Left-handed" on Home,
+  off by default; round 10, owner, accessibility): every part of the bar is
+  reflected across its middle (`IslandLayout(leftHanded:)`): Start and the
+  island at the bar's left end, growing rightwards; Cancel on the island's
+  right, in a left thumb's reach; the menu button at the right end; the
+  middle between, its content starting beside the menu button (round 11,
+  owner: Undo landed beside Start; `IslandLayout.middleStart`,
+  `leftToRight(fromMenu:)`): Undo, then "Insert last", then the status
+  line, from the right, a true mirror. Inside, the recording's order is mirrored too (the stop
+  glyph, the time, then the wave, which settles into the mark's dot beside
+  the time and moves away from it), so the stop glyph stays at the bar's
+  edge, under the thumb and away from Cancel; kept in order (tried in the
+  simulator) it sat beside Cancel. The keys, suggestions,
+  menu card and everything else stay as they are. Every round 9 contract
+  holds mirrored, and off the layout is exactly the right-handed one
+  (`DictationIslandTests`). The keyboard reads it when it appears.
+- **Left** (right, left-handed): a menu button (`lf.menu`) that opens a panel over the key area
+  with the session status, "Open LocalFlow", the trackpad
+  tip with the field's text width ("Full width" or "Chat bubble",
+  [Field profiles](#field-profiles)), and details of anything that keeps
+  dictation from working. The open menu is one calm layer (`MenuCover`): the
+  keys and the bar's controls other than the menu button fade alike to 35%,
+  the bar's middle goes (the card says the same), and the system backdrop is
+  never tinted (a tint over the keyboard's area shows a seam under the band
+  iOS draws above it). The card lies over the keys with none peeking out: it
+  reaches 2 pt past their outer edges, its corners rounded to the keys' own
+  radius plus that, over the three rows above the bottom row when its
+  content fits there, otherwise over all four. Content shorter than the card
+  spreads to fill it (`MenuCover.dividerSpace`, round 6, Opus finding 7: about
+  45 pt of empty card under the width choice at the default size): the space
+  left over goes half above and half below the divider, so the session part
+  sits at the card's top and the tip with its choice at its bottom. The tip
+  reads "Hold space to move the cursor. If it lands on the wrong line,
+  switch this field to:" (round 6: "Wrong line?" did not say what lands
+  there). Its text follows Dynamic Type,
+  the text-width choice included (two segments, stacked when they do not fit
+  side by side), and reads at WCAG AA (4.5:1 or
+  better) in light and dark mode (`MenuPalette`: a white card in light
+  mode, a dark grey one in dark mode, "Open LocalFlow" and the session line's
+  ridge mark in the brand's accent, `BrandPalette.link`). When it does not fit (landscape, the largest sizes) it
+  scrolls inside its rounded corners. At the accessibility sizes the actions
+  come first ("Open LocalFlow", then the text-width choice), then the
+  session status and the tip, which points above
+  (`KeyboardMessages.menuItems`), so the first screen is never all status.
+  The session line keeps the time left ("Session ends in 5 min if idle",
+  which the bar shows only as Start's dot); its ridge mark is ink with the
+  accent's dot, like every other mark (`MenuPalette.markLine`, `markDot`),
+  and shows the session as Start's does: the same `SessionMark` from the
+  same state, heartbeat, breathing, still or (with Reduce Motion) unlit in
+  the card's grey (`MenuPalette.unlitDot`; round 11, Opus: it sat green
+  beside "No session running" under round 10's amber Start). A tap outside the panel's card, or
+  on the button, closes it.
 - **Middle:** chips for Undo (`lf.undo`) and "Insert last dictation"
-  (`lf.insertLast`) when there is something to act on, otherwise a one-line
-  status (model preparation, errors, notices): "Preparing model…" in
-  `preparingModel` and `waitingForModel`. The candidate strip, after a
-  swipe ([Swipe typing](#swipe-typing)) or a commit key
-  ([Word autocorrect](#word-autocorrect)), replaces the chips while it shows.
-  The "Never correct" chip after an autocorrect revert replaces both while it
-  shows ([Word autocorrect](#word-autocorrect)).
+  (`lf.insertLast`) when there is something to act on (neither while a
+  dictation is in progress), otherwise a one-line status (`BarStatus`).
+  Round 10 (owner: "prefer intuitive icons to textual descriptions ... be
+  careful to balance between these two poles"): words only where they earn
+  their space.
+  - **Words:** what the user must act on (Full Access, a broken install,
+    versions, "Open LocalFlow to start a session" after the launcher
+    failed or the user declined iOS's prompt), an error (why a dictation
+    was lost; the microphone permission), a model that cannot load
+    ("Model failed to load", "Model missing"), and a notice. An error or a
+    state that keeps dictation from working leads its line with an ember
+    warning symbol.
+  - **Nothing:** what the island's motion or Start's dot already says:
+    the session line ("Session ends in 5 min if idle", "Session on"),
+    "Model loads when you dictate", "Preparing model…" idle and in the
+    wait, "Transcribing…", the cold start's "Model loading" while
+    recording, and "Start opens LocalFlow".
+  - **VoiceOver** still hears every state in words: what the bar no longer
+    shows is the island's value (`KeyboardMessages.spokenStatus`), on Start
+    "Session ends in 5 min if idle" (". Model loads when you dictate"),
+    "Preparing model. Session ends in 5 min if idle", "No session. Start
+    opens LocalFlow"; while recording "Recording, 5 seconds. Model
+    loading"; the wait from the label.
+
+  | State | The bar shows | VoiceOver |
+  | --- | --- | --- |
+  | Ready, session on | Start, heartbeat (lit with Reduce Motion) | "Start dictation, Session ends in N min if idle" |
+  | Ready, model released | Start, heartbeat (lit) | "…if idle. Model loads when you dictate" |
+  | Model preparing (idle) | Start, dot breathing (lit) | "Start dictation, Preparing model. Session ends in N min if idle" |
+  | No session | Start, dot still (unlit) | "Start dictation, No session. Start opens LocalFlow" |
+  | No session, launcher failed or declined | Start, dot still (unlit); "Open LocalFlow to start a session" | the middle's words |
+  | Starting | dimmed recording row | "Stop dictation, Starting" |
+  | Recording | the wave and time | "Stop dictation, Recording, 5 seconds" (". Model loading") |
+  | Transcribing, waiting for the model | the shimmer pill | "Transcribing", "Preparing model" |
+  | Error | ember triangle and its words | the middle's words |
+  | Model failed or missing | Start's dot as above; triangle and words | the middle's words |
+  | No Full Access, configuration, versions | Start dimmed, dot still (unlit); triangle and words | the middle's words |
+
+  Where it is depends on the island's form (`IslandLayout`): beside Start;
+  while a dictation runs (starting, recording, the wait) between the menu
+  and Cancel. Its content starts beside the menu button, in either hand. While a dictation runs it holds only plain
+  text that invites no tap (a notice, "Open LocalFlow to start a
+  session"); beside Cancel such text may take two lines. The candidate
+  strip, after a swipe ([Swipe typing](#swipe-typing)) or a commit key,
+  while a word is typed, or with the next words after a space
+  ([Word autocorrect](#word-autocorrect)), replaces the chips while it
+  shows. The "Never correct" chip after an autocorrect revert replaces both
+  while it shows ([Word autocorrect](#word-autocorrect)). Neither covers
+  dictation's own UI (`BarMiddleContent`): while a dictation is starting,
+  recording, transcribing or waiting for the model, while a notice is up,
+  or while its Undo chip shows, the middle stays dictation's.
+- The status line describes and never instructs (owner decision: a tap on
+  it types the top-row key under it). Its ink is the system's secondary
+  text in dark mode (about 6:1); on the light keyboard, where that measured
+  3.1:1 (#7E7F85 on #E1E3E7, round 6, Opus finding 4), it is the menu's
+  secondary grey (`BrandPalette.statusInk`), 4.6:1 or better on the
+  backdrop, deeper with Increase Contrast, and well short of the
+  candidates' black. The menu names the session's end in the Live
+  Activity's spoken words: "Session ends in N min if idle", to the nearest
+  minute (never under one), so it agrees with the activity's countdown
+  ("4:58" is 5 min; round 9, Opus). Bar text grows with Dynamic Type up to
+  what one line of the fixed-height bar holds, and shrinks at most to 85%.
 - The space bar reads "LocalFlow".
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
+- **Appearance and accessibility.** The keyboard follows its window's
+  traits, which iOS keeps with the host's keyboard backdrop: dark in an app
+  that is always dark (LocalFlow) under a light system, and live switches
+  included. `keyboardAppearance` is never pinned. The proxy reports the
+  host's appearance as of its last traits, so a host that missed a switch in
+  the background (LocalFlow in front with the keyboard up, dark to light,
+  back to Messages) still reports `.dark` while its backdrop is light; dark
+  keys pinned from it sat on light glass (simulator, iOS 26.4). Bold Text
+  makes key captions and bar text bold; Increase Contrast gives the keys a
+  lighter fill in dark mode and a visible edge, a full-point edge on the
+  dark island, and deepens the light keyboard's accents further; Reduce
+  Motion drops the bar's press shrink, the island's spring (it takes each
+  form at once, cross-faded in 0.15 s), the chips' spring, the pill's glide,
+  the wave's motion and smoothing (the row stands still at each level),
+  the shimmer's sweep and the dot's breathing; key-press highlights stay.
+
+### Keyboard look
+
+The keys stay as calm as Apple's: one neutral fill, no colour on letters.
+Every control is monochrome (round 8, owner: the aurora buttons were very
+bright and jarring; the brand colours are for accents). LocalFlow's colours
+(`BrandPalette`, the app's `Theme`: aurora #6DFFA8, glacier #67E8F9, ember
+#F5C66B) mark only small things that show a state: aurora for the mark's
+dot (always on Start, with the session's heartbeat, and the dot the wave
+settles into) and the menu's link, glacier for the wait's shimmer alone,
+ember for an error's symbol (round 11: no longer a dot; with Reduce Motion
+no session is the dot unlit, a neutral grey). On the light keyboard aurora and ember are too pale on the backdrop,
+so there they take deeper variants of the same hues; on the island, dark in
+both modes, they stay bright. The contract (`KeyboardLookTests`), in light
+and dark mode, with and without Increase Contrast, against the backdrop
+measured on iOS 26.4: ink on every fill 4.5:1 or better; every fill 3:1
+against the backdrop, or an edge that is (a hairline, 0.5 pt, a full point
+with Increase Contrast); fills, inks, edges, the candidate pill and the
+swipe trace grey; accents on the backdrop and on the island (Start's
+aurora dot included) 3:1 or better, the unlit dot a grey short of them;
+the highlighted candidate's text 4.5:1 on its pill.
+
+- **The island** (Start, the recording, the wait) is near-black (#09090A)
+  with white text on the dark keyboard, darker than the backdrop like the
+  Dynamic Island on a dark screen, with a grey hairline that sets it off; on
+  the light keyboard it is graphite (#2B2B2E): black across the bar was the
+  heaviest thing on the keyboard. Start carries the ridge mark (`RidgeMark`,
+  the icon's W line and dot, drawn as a vector, 19 pt and 1.3 times the
+  icon's weight), its line white and its dot aurora, with the session in
+  its motion ([Top row](#top-row)). Start is dimmed to 45% where dictation cannot run
+  here.
+- **The recording wave** (`DotWave`, pure, tested): one row of white dots
+  6.2 pt apart along the island's middle line that shows the voice: each
+  dot grows (1.4 to 2.85 pt radius, never touching) and brightens (half to
+  full) with the level heard a moment ago, the newest beside the mark's
+  aurora dot at the right, which swells with the voice now. The row shows
+  the last `DotWave.span` (0.75 s; round 11, owner: "travel across faster
+  still? say about 0.75s", since at the shimmer's 1.1 s sweep the wider
+  island still read slower): what was said moves left as it ages, so a
+  syllable is a pulse that crosses the row in 0.75 s and leaves it; the row rises out of the line at its left end. In
+  silence it is one calm row of equal dots. Round 10 (owner: "a tiny bit
+  bigger ... move faster and more with your voice"; round 9's hump drifted
+  at 1.1 rad/s, a cycle every 5.7 s, and Opus measured about 4% brightness
+  change over 2 s of speech): the dots are about 16% larger, the shape is
+  the voice's own rather than a drifting sine, and the level is sharper:
+  - The host's meter (`LevelMeter`, `DictationSampleBuffer`) falls in about
+    0.2 s (release 0.55 a 100 ms buffer, was 0.15, a 0.6 s fall). Round 11
+    (Opus: round 10's fixed window, -55 to -12 dBFS, tuned on `say`'s loud
+    voice, left a quiet phrase at -32 dBFS flat; a real voice at arm's
+    length often sits at -35 to -25): the window follows the speaker. Its
+    top is the recording's recent loudest 100 ms (a peak that holds 1.2 s,
+    then sinks 6 dB a second, never below -30 dBFS); its bottom is 27 dB
+    under that, never below an absolute noise gate at -45 dBFS. Soft,
+    normal and loud speakers (-32, -22, -12 dBFS) all reach the top on
+    their syllables and dip between them; a quiet room (-55 to -50 dBFS)
+    stays at 0; one loud moment shrinks the next words for a moment, as a
+    louder word should, and they look active again within 3 s. Measured on
+    the simulator with one invented sentence scaled to the three levels,
+    room noise between phrases. The app's level bars use it too and follow
+    a soft voice the same way.
+  - The keyboard follows it quickly both ways (`DotWave.LevelFollower`:
+    25 ms up, 90 ms down; was 45 ms and 0.4 s) and records it every frame
+    into a trace (`DotWave.Trace`), read back softened by a 60 ms
+    Gaussian, so levels that arrive ten times a second draw a smooth row
+    and no dot jumps between frames. The row reads the trace 45 ms ago at
+    its newest end (`DotWave.readDelay`), so the softening has samples on
+    both sides there too (round 11: read at the newest moment, the dot
+    beside the mark's jumped as each level arrived).
+  - `DotWave.voice` maps the level to the swell: nothing below 0.15 (a
+    background murmur), then faster than the level (a 1.5 power), so loud
+    and quiet words differ clearly.
+  - Measured on the simulator: a new level reaches the wave every 100 ms
+    (9.9 Hz, p90 101 ms, worst 168 ms), from the host's status
+    notifications; the host's 100 ms capture buffers set that rate, so a
+    faster status rate would add nothing and the host's rate is unchanged.
+    The synthetic voice is evenly loud. A real voice has a wider spread
+    within a phrase than the scaled `say` sentence; a whisper below about
+    -40 dBFS stays small (the peak's -30 dBFS floor), and a room louder
+    than the -45 dBFS gate (a café) moves the row a little.
+  With Reduce Motion the row stands still at each level. The Live
+  Activity's strip shows one still moment of it (`DotWave.stillLift`).
+- **The wait's shimmer** (`DotWave.shimmer`): the wave's row at rest, in a
+  cool glacier white, with a brighter, larger spot sweeping along it every
+  1.1 s (`DotWave.shimmerPeriod`).
+- **Drawing** (`DotFieldView`): each dot is a small Core Animation layer
+  (a disc scaled to its radius), so the render server composites them; the
+  view writes only the scale and opacity that changed. Every change of
+  size, level or colour draws a frame at once, and a `CADisplayLink` moves
+  the dots only while the view is in a window, shown and animating (the
+  live wave, the shimmer), at most 60 frames a second; it stops when the
+  view leaves its window. Round 8 drew both in a SwiftUI `Canvas` inside
+  `TimelineView(.animation)`, which in some keyboard processes drew nothing
+  for the rest of the process (round 8 council, finding 1; not reproduced
+  in round 9, cause not pinned down). Recording costs about 5% of a core
+  in the keyboard process on the simulator (round 10's trace; round 9's
+  drift measured about 6% and round 8's Canvas about 12% the same way, CPU
+  time over 1 s windows), most of it the bar's SwiftUI updates per level,
+  not the dots. Left-handed, the wave's dots are drawn mirrored.
+- **Action return keys** (send, go, search, and the others Apple tints) and
+  **caps lock** take the accent: the label colour's side, a light grey key
+  (#E6E6E8) with a dark caption on the dark keyboard and the island's
+  graphite with a white caption on the light one, as Apple marks a locked
+  shift; a plain or disabled Return stays neutral, and shift once shows only
+  the filled arrow. The press-and-hold alternates highlight their pick in
+  the accent.
+- **The highlighted candidate** (the one Space puts in) sits on a neutral
+  pill: a soft white veil (14%) with a faint white edge on the dark
+  keyboard, the keys' white with a thin grey edge on the light one. When
+  the pick moves within the same strip the pill glides to it (0.18 s); the
+  words never animate.
+- **Chips** (Undo, "Insert last", "Never correct") are key-coloured capsules
+  with the keys' shadow, their symbol in the label colour and a little
+  heavier. The emoji jump bar's shown category is the label colour, the
+  others secondary.
+- **The swipe trace** is the label colour's grey, fading towards its tail
+  ([Swipe typing](#swipe-typing)), 3:1 at the finger against the keys it
+  crosses as well as the backdrop (white at 72%, 80% with Increase
+  Contrast, on the dark keyboard; round 9, Opus: it was nearly invisible
+  on the grey keys).
+- **Motion** is quick and never delays a tap: the island grows and shrinks
+  with a spring (response 0.26 s, damping 0.88; the grow is about 0.2 s).
+  At every change of form what leaves goes first, in 0.06 s, and what
+  arrives follows after it (`DictationBarView.handover`, round 8 council,
+  Opus findings 2 and 3): the idle line before the island grows and Cancel
+  pops in, × and any words in the wait before Undo and Start; the middle's
+  words in the wait wait 0.14 s, until the contracting island has left
+  them room. A press dims what the island holds; a tap on Start without a
+  session also pops its dot once (a quick spring to 1.6 times and back).
+  Cancel and the chips arrive with a short spring from a little smaller.
+  The middle cross-fades when what it holds changes (the strip coming or
+  going), never as its words change. Nothing animates while idle but
+  Start's dot breathing while the model prepares. Nothing slow runs on Start's first frames: the
+  intent's Darwin notification is posted after the frame that starts the
+  grow, and a process's first live timer text (about 55 ms to resolve,
+  profiled on the simulator) is resolved hidden while Start is idle.
+  Reduce Motion: [Top row](#top-row), appearance and accessibility.
+- The keyboard draws no backdrop of its own and no glass
+  ([Touchable backgrounds](#keyboard-extension-keyboard)).
 
 ## Keyboard core (KeyboardCore/)
 
@@ -1046,10 +1490,26 @@ keyboard hides.
 
 ### Layout and keys (KeyboardLayout, KeyTouchModel)
 
-- Three layers: letters (QWERTY with shift and delete), `123` and `#+=`. The
-  bottom row has the layer key, the globe (only when
-  `needsInputModeSwitchKey`, which also handles the input-mode list), space and
-  return. The return key's label follows `returnKeyType`.
+- Three layers: letters (QWERTY with shift and delete), `123` and `#+=`, and
+  the emoji panel ([Emoji panel](#emoji-panel)). The bottom row has the layer
+  key, the globe (only when `needsInputModeSwitchKey`, which also handles the
+  input-mode list), the emoji key (`.layer(.emoji)`), space and return. The
+  return key's label follows `returnKeyType`.
+- **Field keys** (`KeyboardField`, from `keyboardType`; owner decision: small
+  field-specific differences only). Email fields: "@" and "." (letter-key
+  wide) between a narrower space bar and return. URL fields: ".", "/" and
+  ".com" sharing the space bar's room (no space bar, as on Apple's URL
+  keyboard; holding ".com" offers .org, .net, .edu and .us). Web search fields
+  (a browser's address bar): "." beside the space bar. Only the letters
+  layer's bottom row differs; email and URL fields have no emoji key, on any
+  layer. Every other row, the height and the key shapes are the same in every
+  field. "@" and "." there are not letters: they never swipe and are never
+  soft taps.
+- **Return key** (`ReturnKeyRule`): in a field with
+  `enablesReturnKeyAutomatically`, Return is drawn dimmed (and without the
+  accent, [Keyboard look](#keyboard-look)) and
+  types nothing while the field has no text: neither the proxy's `hasText`
+  nor text the keyboard typed that the proxy does not show yet.
 - `KeyTouchModel` tracks every touch: one view, nearest-key hit testing, no
   dead gaps. Keys are tracked by action, never by index; a rebuild (layer,
   shift or size change) remaps held function-key and slide fingers onto the
@@ -1057,7 +1517,65 @@ keyboard hides.
   on.
 - Key callouts show a character from its touch-down while the finger is down;
   a swipe shows none.
-- `IsASCIICapable` is false, because dictation emits non-ASCII text.
+- `IsASCIICapable` is true: the letters layer types ASCII, which is all the
+  flag declares (iOS may then offer the keyboard in fields that ask for an
+  ASCII-capable one). Dictation, alternates and emoji may still insert other
+  text; the flag does not restrict that.
+
+### Press-and-hold alternates (KeyAlternates)
+
+- Holding a key that has alternates for `KeyAlternates.holdDelay` (0.4 s),
+  uncommitted and not a swipe, opens a row above it: the key's own character
+  first, centred over the key, then its alternates (accented letters for a e i
+  o u c n s y z l; dashes, ellipsis, curly quotes, currencies, inverted marks
+  and similar for punctuation; other domains for ".com"), running towards the
+  keyboard's middle and kept inside its sides. In a web search field
+  (Safari's address bar) the letters layer's "." offers the domains (".com",
+  ".org", ".net", ".edu", ".us") instead of the ellipsis; a tap still types
+  ".". A row with a domain has cells `KeyAlternates.domainCellWidth` (44 pt)
+  wide, so it starts over its key on a 375-point phone rather than being
+  pushed off it by cells as wide as the ".com" key.
+- Its callout gives way to the row. Sliding sideways picks the cell under the
+  finger once it has moved `KeyAlternates.moveSlop` (6 pt), the lift's own
+  position included; the lift (or a rollover) types the pick. A finger that never moved that far types what a
+  tap would, soft-tap decision included. A cancelled touch types nothing; a
+  rebuild under an open row closes it.
+- VoiceOver reaches them as the key's custom actions
+  (`KeyAlternates.accessibilityActions`): one per alternate, in the row's
+  order, named as the key shows it, each typing it as the row would.
+- Fast typing never sees a row: a key released or committed by the next
+  finger before the timer fires types at once. A drag that becomes a swipe
+  first stays a swipe, and an open row never becomes one. Space (the
+  trackpad), delete repeat and function keys are unchanged.
+
+### Emoji panel
+
+- The emoji key switches the key area to the emoji layer, at the same height:
+  a horizontally scrolling grid above the bottom row (`emojiGridFrame`) and a
+  jump bar between the bottom row's
+  "ABC" key (and the globe) and delete (`emojiJumpBarFrame`). The bottom
+  keys act as on the letters layer; a high tap in the bar does not reach the
+  panel.
+- Recents ("Frequently Used") come first when there are any, then Unicode's
+  categories (`EmojiCatalog`, generated by `scripts/generate-emoji-catalog.py`
+  from emoji-test.txt: fully-qualified emoji without skin-tone variants). There
+  is no search and no skin-tone picker yet. No category name is shown: the
+  gap between sections and the jump bar's symbol in the accent mark them, and
+  the grid takes the height, four rows of 41 pt cells in portrait and three
+  of 40 pt in landscape. An emoji is drawn at 0.74 of its cell; text wider
+  than the cell (a sequence the system font draws as two glyphs) shrinks to
+  fit it, to 70% at the least, rather than being clipped. The half-drawn 🫡
+  (round 6, Opus finding 6) is the iOS 26.4 simulator's emoji font: Messages'
+  own text field draws it cut at the same place, so no cell layout fixes it.
+- An emoji's press binds to its field like a held key's: adopted when the
+  field is identified, dropped when another identified field becomes current,
+  the menu opens, the keyboard hides or the grid scrolls, and typed first
+  when a key touches down while it is held (rollover).
+- A tap types the emoji like a key and moves it to the front of the recents
+  (`EmojiRecents`: newest first, each once, at most 30, only catalog emoji).
+  The recents live in the keyboard's own `UserDefaults`, which needs no Full
+  Access; nothing else about typing is stored. The grid keeps its order until
+  the panel is shown again.
 
 ### Reach and touch regions
 
@@ -1076,30 +1594,49 @@ The views are touchable ("Touchable backgrounds",
   (`KeyboardMetrics.barPointGoesToKeys(x:y:barHeight:compact:controls:)`, in
   the bar's own coordinates; a point on a frame's edge is the control's). It
   types the top-row key nearest it.
-  - The controls are the menu button, the Cancel button, the Start capsule,
+  - **Cancel's tap area** is `KeyboardMetrics.cancelTapArea`: 44 pt wide
+    about its circle (`cancelHitSize`; round 8, Opus: a tap 2 pt beside its
+    32 pt circle typed a letter), from the bottom of the bar's controls up
+    44 pt (to the bar's top in landscape), so it never reaches the strip
+    below the controls or the keys. Between it and Stop's tap area the keys
+    keep at least 8 pt (12 pt in portrait), in either hand.
+  - The controls are the menu button, the Cancel button, the island,
     the Undo and "Insert last" chips, the candidate strip and the "Never
     correct" chip. The bar reports their frames as they lay out and forgets
     them as they go (`BarControlFrames`).
   - Each control's tap area is exactly the rectangle it reports
     (`contentShape(Rectangle())`), so every point of the bar is a control's
     or the keys'.
-  - The Start/Stop capsule's tap area, and the frame it reports, is
+  - The island's tap area, and the frame it reports, is
     `KeyboardMetrics.startTapArea(capsule:barHeight:compact:capturing:)`: its
     frame inset by `KeyboardMetrics.startHitInset` (6 pt) at the sides and
     bottom, reaching up to the bar's top. It looks the same, and the keys take
     the ring beside and below it.
   - **Stop reaches into the top row.** While dictation is starting or
-    recording, the capsule's tap area instead reaches down through the top
+    recording, the island's tap area instead reaches down through the top
     row of keys, to half the row gap below it
     (`KeyboardMetrics.stopReachIntoKeys(compact:)`, 56 pt into the key area
-    in portrait), at the same width. The key area leaves a touch there to
+    in portrait), at the same width: under the recording island, which is
+    under half the bar, so only the top-row keys under it (round 9; it was
+    most of the top row); left-handed, the keys under the mirrored island
+    at the bar's left (q and w and their neighbours; round 10), and the
+    top row's right-hand keys type. The key area leaves a touch there to
     the bar (`KeyboardMetrics.keyPointGoesToStart`), judged against the
-    capsule's frame now, never a lingering one; every other row, and the top
-    row beside the capsule, types as before. While the menu panel is open
+    island's frame now, never a lingering one; every other row, and the top
+    row beside the island, types as before. While the menu panel is open
     the key area leaves it nothing.
+  - **Just after Stop** (round 11): Cancel slides into what was Stop a
+    moment before, so for `BarControlRegions.stopGuard` (0.45 s) after the
+    recording ends (from the tap on Stop, before the bar moves, or as the
+    bar learns the host ended it) the island's former area, Stop's tap area as it was widened
+    to the island's frame and with its reach into the top row, takes no
+    tap: the bar keeps it from the keys, the key area leaves a touch there
+    to the bar, where nothing acts on it, and Cancel ignores taps. A double
+    tap on Stop, or a second tap the user thought did not register, neither
+    cancels nor types (`DictationIslandTests`, both hands, portrait and
+    landscape). After the guard Cancel, settled, takes taps as usual.
   - Two places inside a control's frame take no tap: the 1 pt dividers
-    between candidates, and the Start capsule while it shows the transcribing
-    spinner.
+    between candidates, and the island while it shows the wait's shimmer.
   - Until the bar has reported any frame, only the reach above the keys goes
     to them.
   - **Linger.** A control that moves or goes also keeps its previous frame
@@ -1160,9 +1697,10 @@ The views are touchable ("Touchable backgrounds",
   running swipe.
 - Keys are ignored while the trackpad runs or a swipe that is not a skid is
   in progress ([Swipe typing](#swipe-typing)).
-- The only predictions are soft key edges' and autocorrect's, from fixed
-  models ([Soft key edges](#soft-key-edges),
-  [Word autocorrect](#word-autocorrect)). Nothing is learned from typing.
+- The only predictions are soft key edges' and autocorrect's (its
+  suggestions while typing included), from fixed models
+  ([Soft key edges](#soft-key-edges), [Word autocorrect](#word-autocorrect)).
+  Nothing is learned from typing.
 
 ### Shift, caps lock and spacing (TypingRules)
 
@@ -1426,7 +1964,10 @@ widths (`FieldLayoutParameters`):
   with Messages' measured trait signature, in a field not learned as grapheme
   (WebKit), gets Messages, but only in portrait at the measured widths 390,
   393, 402, 420 and 440 pt (±1). Everything else gets full width.
-- **Manual choice.** The menu shows the layout and a Switch. With Full Access
+- **Manual choice.** The menu offers the two as "Full width" and "Chat
+  bubble", after "Hold space to move the cursor. If it lands on the wrong
+  line, switch this field to:" (at the accessibility text sizes the choice
+  comes first, then "... switch this field above."). With Full Access
   the choice is remembered per fingerprint in `fieldLayoutOverrides` (at most
   64 entries); without it, it holds for the keyboard instance only. Only the
   keyboard writes `fieldLayoutOverrides`; it reads them from the App Group
@@ -1534,18 +2075,41 @@ load through their own `BundleModelLoader`, in parallel.
 
 **Candidate strip.** After a swipe, the middle of the top row shows up to
 three candidates, cased the same way, the inserted word emphasized.
-Autocorrect shows its choices in the same strip after a commit key
-([Word autocorrect](#word-autocorrect)).
+Autocorrect shows its choices in the same strip after a commit key, and its
+suggestions while a word is typed ([Word autocorrect](#word-autocorrect)).
+
+- **Layout** (`CandidateStripLayout`, rounds 3 and 5): equal slots, each
+  word on one line, all at one text size: the largest at which every shown
+  word fits its slot, never above full size and no less than 0.8 of it (round
+  4 council: each word shrank on its own, so "yesterday's" showed smaller
+  than "yesterday"). When the words do not all fit at 0.8, the least useful go
+  (the last that is neither the emphasized nor the quoted word) until the
+  rest fit; only those two may shrink further (to 0.6). The 1 pt dividers sit between shown candidates, but none beside the
+  emphasized candidate's pill ([Keyboard look](#keyboard-look)).
 
 - Tapping another candidate replaces the inserted word, but only while the
   text before the caret still ends with it and nothing else has edited the
   field (the edit generation). Otherwise the tap does nothing and the strip
   closes.
+- **A tapped word ends with one space** (owner, round 2), the caret after it:
+  a choice after a swipe puts the word in followed by a space, and tapping
+  the swiped word itself adds the space. None is added where a space already
+  follows the caret, so it is never doubled; the caret then stays before that
+  space, and a letter typed next gets a space of its own first, as after a
+  swiped word, so it never joins the chosen word. Punctuation (`. , ! ? ; :`)
+  typed right after a choice's own space goes before it ("word, "), as on
+  Apple's keyboard; Shift and layer keys keep that, any other key ends it.
+  A space a choice adds is a space: the numbers layer goes back to letters,
+  as after the space key.
+  After a choice, Delete deletes the space, then characters, as usual.
 - The strip closes on any other key action, a dictation insert, a field
   change, the trackpad, an outside text change, or hiding.
 - While the strip shows after a swipe, the first deletion (a tap, or a held
   delete's first deletion) removes the whole swiped word, leaving the space
-  before it. Repeats continue as usual.
+  before it. Repeats continue as usual. When what is left before the caret is
+  a word and a space, the next words show as after that space (round 7, Opus
+  finding 3; "Next words" in [Word autocorrect](#word-autocorrect)). The word
+  typed next is not the keyboard's own until its next separator, as before.
 
 **Swipe anchors** (`KeyboardEditor`, `ExpectedDocument`). The edit that put
 the swiped word in (an insertion, or a candidate's replacement) is recorded
@@ -1566,8 +2130,12 @@ Autocorrect's commits use the same record ("Commit record",
 
 **Swipe trace** (`SwipeTrail`). While a touch is a swipe, the key area draws
 a trail of the last 0.15 s of samples (at least the last two), above the keys
-and taking no touches: a round-capped stroke in the tint color that tapers
-from 8 pt at the finger to nothing and fades from 45% opacity to transparent.
+and taking no touches: a round-capped stroke that tapers from 8 pt at the
+finger to nothing, fades from the palette's opacity (50%,
+`BrandPalette.trailAlpha`) to transparent, in the label colour's grey
+(`BrandPalette.trail`: white on the dark keyboard, black on the light one). The finger's round end replaces the last segment under
+it rather than doubling it. Its drawing is bounded as before: only the area
+the trace covered and covers is redrawn.
 It follows every move, and fades out over about 0.15 s when the swipe ends or
 is cancelled (at once with Reduce Motion). It is drawn from the samples in
 memory only.
@@ -1584,8 +2152,10 @@ centre always types that key.
 - **When.** On while `softKeyEdgesEnabled` is on (default on;
   [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
   bundle has a valid `tap` section whose default model has loaded. The
-  keyboard reads the switch when it appears. Without Full Access it cannot
-  read settings, and soft key edges are off. They are also off in secure
+  keyboard reads the switch when it appears. Without Full Access the keyboard
+  does not read the settings (iOS would let it read the App Group, though
+  not write it; these typing features stay with Full Access by decision), and
+  soft key edges are off. They are also off in secure
   text entry. While they are off, a tap types its nearest key.
 - **Which taps.** Only a character tap on the letters layer by a finger that
   touched down on a letter key (`Role.character`, not a slide). A skid is a
@@ -1720,8 +2290,9 @@ back.
 - **When.** On while `autocorrectEnabled` is on (default on;
   [Shared settings](#shared-settings-sharedlocalflowsettingsswift)) and the
   bundle has a valid `autocorrect` section whose default model has loaded.
-  The keyboard reads the switch when it appears. Without Full Access it
-  cannot read settings, and autocorrect is off. Until the model has loaded,
+  The keyboard reads the switch when it appears. Without Full Access the
+  keyboard does not read the settings (by decision, as for soft key edges),
+  and autocorrect is off. Until the model has loaded,
   words commit as typed.
 - **Commit keys.** Space, Return, or one of `. , ! ? ; :` (from any layer).
 - **The word** is the keyboard's own ("Owned words" below): the run of letters
@@ -1733,6 +2304,10 @@ back.
   - it holds a character other than a–z, A–Z and apostrophes;
   - it was reverted earlier in this keyboard instance ("Revert" below), or it
     is a never-correct word ("Never correct" below);
+  - it is a common chat abbreviation or slang word
+    (`WordAutocorrect.chatWords`: "lol", "omg", "idk", "ok", "gonna", "yeah",
+    "ur", ...), which the lexicon would otherwise turn into words
+    ("lol" → "lil", "ur" → "our");
   - text is selected (the commit key replaces the selection);
   - the field is secure text entry, or turns autocorrection off
     (`autocorrectionType == .no`, as SwiftUI's `.autocorrectionDisabled()`
@@ -1743,7 +2318,7 @@ typed every character of it, in this keyboard appearance and this field,
 right after a space or commit key (any character other than a letter or
 apostrophe) it also typed. Nothing may come in between: no caret move,
 trackpad gesture, selection change, host-reported text change it did not
-make, swipe, dictation, undo, or hiding and showing.
+make, swipe, dictation, undo, or hiding and showing (except as below).
 
 - **Field start.** The start of a field counts as such a boundary only where
   the keyboard sees the field empty (nothing before or after the caret,
@@ -1764,7 +2339,65 @@ make, swipe, dictation, undo, or hiding and showing.
   would restore. Points are never rebased.
 - **Deletion.** Delete within the word removes its last characters. Deleting
   past the word's start, or any other edit, leaves no word owned until the
-  keyboard's next own separator.
+  keyboard's next own separator, with one exception:
+- **Deleting back into the word just finished** (round 7, Opus finding 1:
+  "ok see you at the " then Delete fell back to the status line, and "them"
+  typed on showed nothing; Apple's keyboard brings the suggestions back as
+  soon as the caret is in the word). A space the keyboard typed right after
+  an owned word holding a letter (the space key, or the space a tapped
+  suggestion, next word or strip choice brings) finishes it, and the record
+  keeps that word (`WordTapRecord.finished`). A Delete of exactly that space,
+  with nothing before it but the keyboard's own letters typed after the space
+  and deleted again, makes the word the record again, with its points and the
+  separator it began after, but only where the proxy then shows exactly that
+  word before the caret (`isShown`) and the same text after the caret as when
+  its space was typed (kept as an in-process digest, never the text, and
+  dropped with the word; own typing never changes it; a caret the host moved
+  after an earlier copy of the word, not reported yet, has other text after
+  it; Sol review, round 7); otherwise nothing is owned. A strip
+  choice that replaces the word and its space at once (another word chosen
+  after a commit key) goes on within it the same way, so the word it puts in
+  is finished by its space in turn. Its strip
+  shows; further Deletes and letters continue it as if it had never been
+  finished, and a commit key corrects it as usual, with every tap's point
+  (the keys have not moved: a layout change forgets the finished word's
+  points too, and hiding forgets the word). Once only: deleting past that
+  word's start leaves nothing owned. Not after another separator (a
+  punctuation mark, Return, a double space's period), a swiped word, or a
+  word the keyboard did not type, and anything that clears the record in
+  between (a caret move, a host edit, dictation, the trackpad, another field,
+  hiding) ends it. Right after an autocorrection a Delete still reverts it,
+  and right after a swiped word it still removes the whole word; a held
+  Delete deletes as before (the strip follows each of its character
+  deletions, as within any owned word).
+- **Hiding** (round 5, Sol finding 2: "Accom", an app switch, and the strip
+  never came back). When the keyboard hides while it owns a word being typed
+  in an identified field, the proxy showing it before the caret and nothing
+  selected, the editor keeps that word's record, without its points (the keys
+  may move before it is typed on) and a digest of the proxy's text before and
+  after the caret (an in-process hash; the text itself is not kept). Its own
+  again, with its strip, only when the keyboard appears (or the host reports
+  something before any key) and the proxy serves an identified field the editor
+  has adopted, nothing is selected, and the text before and after the caret
+  hashes the same, so it still ends with exactly that word. The identifier
+  itself is not compared (measured below). Hosts report the field unchanged
+  just after the keyboard appears, a callback the editor cannot tell from an
+  outside edit, which forgets the word; the kept word is taken back after it,
+  as the text is unchanged. Dropped, never to come back, on
+  other text or a selection, and at the first key, swipe, dictation, undo,
+  gesture or strip tap after appearing; a proxy without an identity yet decides
+  nothing, and a callback reaching a hidden keyboard never takes it. iOS makes a new view controller (and editor) when the keyboard
+  comes back after an app switch, in the same process, so the word is kept in
+  a slot the process's editors share (`ParkedWordSlot`). Kept in memory only,
+  gone with the extension's process, never stored, logged or sent, and never a
+  word the keyboard did not type.
+  - **Measured** (iPhone 17 Pro simulator, iOS 26.4, round 5): after
+    switching to Safari and back, Messages and Reminders gave the field a new
+    `documentIdentifier` while the text around the caret was unchanged (the
+    digest matched). So the unchanged text is what identifies the place: a
+    different field holding exactly the same text before and after the caret
+    would take the word too, which only offers suggestions for the word that is
+    there.
 - **Owned and shown by the host.** A correction also needs the proxy's current
   `documentContextBeforeInput` to end with exactly the owned word, because a
   host may reject typed characters (HTML `maxlength`, a native length limit).
@@ -1803,7 +2436,81 @@ or a lexicon form.
   lexicon word, `marginApostrophe` when the best is the same word with
   apostrophes ("cant" → "can't"). An infinite margin never replaces.
 - **Keep.** A result equal to the typed word ignoring case keeps the word,
-  except the pronoun I below.
+  except the pronoun I and the names below.
+- **Fixed corrections.** "cant" → "can't", "wont" → "won't", "whats" →
+  "what's" and "hows" → "how's" (`WordAutocorrect.fixedCorrections`; the
+  last two round 6) whatever the corrector says: all are lexicon words the
+  margin keeps, but are almost always typed for the contraction, as "dont"
+  is. On bundle b34 every other apostrophe-less form checked ("dont", "im",
+  "youre", "didnt", "isnt", "thats", "theyre", "ive", "youll", "theres",
+  "hes", "shes", "wouldve", "arent", "itll", "whos", "heres", ...) is
+  outside the lexicon and corrected by the corrector. At a sentence's start
+  only (the context holds no word of the sentence yet: the field's start, a
+  new line, or after ".", "!" or "?"), "lets" → "let's"
+  (`WordAutocorrect.sentenceStartCorrections`; round 7, Opus finding 2:
+  "Lets go" stayed "Lets"): with no subject before it "lets" can't be the
+  verb. Within a sentence it is left to the corrector and the apostrophe
+  twins below ("she lets me" keeps "lets", "let's" offered). No other word
+  is as unambiguous there: "its" is not ("Its battery is low"). Two words typed run together
+  (`WordAutocorrect.runTogetherWords`, round 5, Opus finding 1: "abit" became
+  "habit") become the two words, as on Apple's keyboard: "abit" → "a bit",
+  "alot" → "a lot", "aswell" → "as well", "atleast" → "at least". The
+  replacement is one correction like any other (the strip, the revert, the
+  case below). Round 3 kept "alot" as typed among the chat words; round 5
+  replaced that contract. So are 58 very common misspellings known
+  for certain (`WordAutocorrect.commonMisspellings`: "definately" →
+  "definitely", "recieve" → "receive", "thier" → "their", ...; round 3),
+  which the touch model never reaches because the letter typed is far from
+  the one meant. Every target is a lexicon word and no source is one.
+- **Archaic forms** (`Autocorrector.archaicForms`, round 6, Opus finding 2:
+  "neer" offered "ne'er"): twelve poetic contractions ("ne'er", "e'er",
+  "o'er", "e'en", "howe'er", "where'er", "whate'er", "whene'er", "whoe'er",
+  "tis", "twas", "twere"; the lexicon drops a leading apostrophe) are never a
+  candidate, a suggestion, a completion, a spelling match or a next word,
+  however likely the model finds them. A word typed as one is kept as typed.
+  The reference has no such list; the generated fixtures hold none of them.
+- **Vowel rivals** (`WordCorrecting.vowelRival`, round 6, Opus finding 2:
+  "best pizza neer" became "never", and "near" was not offered). The touch
+  model scores a vowel typed for one far from its key as a far miss, yet
+  people misspell vowels, so "near" lost to "never" (an omitted "v") on touch
+  alone. For a word outside the lexicon of at least four letters
+  (`vowelRivalLength`) that the corrector would replace, a vowel rival is a
+  lexicon form, of another key than the correction's and not archaic, that
+  differs from the word by one vowel (a, e, i, o, u) typed for another vowel
+  on a key not beside it in the letters layout (so "i" for "o" or "u" is a
+  slip the touch model already weighs), and that the word model finds at
+  least 1 in 8 as likely as the correction given the sentence's words
+  (`vowelRivalRatio`); the likeliest. With one, the commit keeps the word as
+  typed and offers the correction and the rival after it ("neer" →
+  `neer / never / near`); while it is typed no correction is pending and the
+  strip shows the same three. Fixed corrections never ask. On bundle b34 the
+  ratios that set it: "best pizza neer" "near" against "never" 1 in 3.5
+  (1 in 7 after "thx so much ill best pizza", 1 in 5 after "best coffee",
+  both missed at 1 in 4 on the simulator), "Let's get lanch" "lunch" against "launch" 173 to 1, "Can you sind" "send"
+  against "find" 1 in 1.5, while "I'm at the stor" leaves "star" (1 in 28
+  against "store") out. The cost, measured on generated typos below: some
+  right corrections become a one-tap choice.
+- **Evaluation of corrections** (round 6, `Tests/CorrectionEvaluation.swift`):
+  36 invented messages ending in a vowel slip, a near miss or a word with an
+  apostrophe twin, each with what should happen (corrected to the word meant,
+  or kept with it offered), run through the whole commit
+  (`WordAutocorrect.review`) with taps at the key centres. On bundle b34: 36
+  as expected and none changed to a wrong word (34 before the sentence-start
+  "lets", round 7; 27 of the first 30 and three
+  wrong, "neer" → "never", "lanch" → "launch", "sind" → "find", before vowel
+  rivals and the archaic list; "were" at a sentence's start became "we're"
+  before apostrophe twins); the test runs with
+  `LF_AUTOCORRECT_BUNDLE=<bundle>` and guards those counts. The completion
+  evaluation (57 and 70) and the 58 common misspellings are unchanged. A
+  sweep of generated typos of the lexicon's 317 commonest words of four
+  letters or more (every seventh, four invented contexts, centre taps):
+  neighbour-key slips 440 of 1,056 corrected right before, 429 after (11
+  kept with the right word offered first), wrong corrections 54 → 49;
+  omitted letters 156 of 212 → 145 (11 kept), wrong 28 → 27; far vowels
+  wrong 37 of 370 → 17 (20 now kept with the word meant offered), right 39
+  → 37. Of the 50 words kept, the correction was meant in 24, the rival in
+  20, neither in 6, about evenly at every ratio tried (1 in 8 to 1 to 1): the
+  rule trades silent meaning changes for one-tap choices, not accuracy.
 - **Case.** The result is lowercased, then takes the typed word's case: all
   capitals (two letters or more) → all capitals; a capital first letter →
   capital first letter; otherwise lowercase.
@@ -1815,6 +2522,10 @@ or a lexicon form.
   apostrophe stays curly). It is autocorrect like any other correction: off
   with the switch and in the same fields, revertible, and offered in the
   strip ("i", "I").
+- **Day and month names** (`WordAutocorrect.capitalizedNames`, also with
+  "'s") take a capital first letter the same way, kept or corrected
+  ("friday" → "Friday"). "may" and "march" are left out: they are as often
+  ordinary words.
 
 **Word models** (`WordModel`; reference: `tap/wordlm.py`, `tap/wordlstm.py`).
 All give log P(word | the sentence's previous words) over the lexicon's forms
@@ -1909,22 +2620,221 @@ autocorrect considered:
 - **Its words:** the typed word first, then the correction (if any), then the
   corrector's suggestions, up to three, each in the typed word's case with
   its trailing apostrophes. The word in the field is emphasized.
-- **When:** only when there is a choice: a correction was made, or the word
-  is outside the lexicon and has suggestions. A lexicon word kept as typed
-  shows no strip, so ordinary typing keeps the chips.
-- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms ranked
-  exactly as the correction ranks its candidates (channel + `lmWeight` ×
-  model log probability; ties to the higher frequency, then the first form),
-  with no margin. None for a lexicon word, or where the corrector keeps the
-  word without looking. The best suggestion is the correction whenever there
-  is one.
+- **Accented forms** (`WordAutocorrect.accentedForms`, round 5): 36 English
+  words that keep their accents ("café", "résumé", "naïve", "fiancé",
+  "cliché", "jalapeño", ...), by their plain lexicon form. Typed as the plain
+  word, the accented form is offered beside it, after a commit key and while
+  it is typed, in the typed word's case, as a spelling match is (it always has
+  a slot). Never a correction: Space keeps the word as typed.
+- **Apostrophe forms** (`WordAutocorrect.apostropheForms`, round 6, Opus
+  finding 5: "ill be back" kept "ill" with no "I'll"): ten real words
+  commonly typed for a contraction ("ill" → "I'll", "id" → "I'd", "well" →
+  "we'll", "were" → "we're", "wed" → "we'd", "hell" → "he'll", "shell" →
+  "she'll", "shed" → "she'd", "its" → "it's", "lets" → "let's") offer the
+  contraction beside the word as the accented forms do, whatever the
+  context. Never a correction from this table (the corrector's own
+  apostrophe margin still applies, as below; "lets" at a sentence's start is
+  a fixed correction, above).
+- **Apostrophe twins** (`WordCorrecting.keepsWordOverTwin`, round 6, the
+  lead: at a sentence's start "Were you there?" went out as "We're you
+  there?"). A lexicon word and its twin, the same letters with an apostrophe,
+  share a key, so the corrector picks between them by the word model alone,
+  and before the next word is typed a sentence's start can't tell them apart.
+  The commit replaces a lexicon word with its twin only when the twin is at
+  least six times as likely given the sentence's words
+  (`Autocorrector.twinRatio`); otherwise it keeps the word and offers the twin
+  after it, and while the word is typed no correction is pending. On bundle
+  b34, at a sentence's start, "we're" is 4.7 times "were" (kept), "I'll" 7
+  times "ill", "I'd" 10 times "id" and "she'll" 12 times "shell" (corrected);
+  after "Yes", "I hope" or "I think" "we're" is 22 to 58 times "were"
+  (corrected), and after "Where" 1 in 25 (kept, as before). "its", "lets",
+  "well" and "hell" were already kept there (under 2.5 times). Fixed
+  corrections never ask.
+- **When:** only when there is a choice: a correction was made, or the
+  corrector has plausible suggestions for the word kept (below the margin
+  that would replace it, above the floor). A word typed as meant has none, so
+  ordinary typing keeps the status line.
+- **Suggestions** (`WordCorrecting.suggestions`): the lexicon forms other than
+  the word, ranked exactly as the correction ranks its candidates (channel +
+  `lmWeight` × model log probability; ties to the higher frequency, then the
+  first form), with no margin but a floor: posterior odds of at least 1 in 10
+  against keeping the word (`Autocorrector.suggestionFloor`, the mirror of
+  the bundle's known-word margin of 10), lexicon words included. None where
+  the corrector keeps the word without looking. The best suggestion is the
+  correction whenever there is one. Chosen on the bundle's model with
+  invented sentences and centre taps: about 310 words of ordinary text showed
+  two strips ("our" → "your" 0.12, "we're" → "were" 1.9); near misses pass
+  ("too" → "to" 0.16, "its" → "it's" 1.9, "were" → "we're" 0.9).
 - **A choice** replaces the word and puts the commit key's text back after
-  it, while the commit record holds; otherwise the tap does nothing and the
+  it, then one space if the key's text does not end with one ("the," → "teh,
+  "), while the commit record holds; otherwise the tap does nothing and the
   strip closes. Choosing the typed word over a correction is a revert (it is
   remembered as one); choosing the correction back undoes that. A choice ends
   the pending revert. The next word is still the keyboard's own.
 - **Closing:** any key closes it, as after a swipe. Delete deletes one
   character (or reverts a correction), never the whole word.
+
+**Suggestions while typing** (owner, round 2: as on Apple's prediction bar,
+from the models already shipped). From a word's first letter until it is
+finished, the strip shows up to three words for it
+(`WordAutocorrect.typingStrip`, `WordCorrecting.predictions`):
+
+- **Sources:** completions of the word so far (the forms that start with it,
+  a range of form ids since ids follow code point order:
+  `WordLexicon.formRange`), ranked by the word model in the sentence's
+  context; and the corrector's typo-tolerant matches at the suggestion floor
+  (from `minLength` letters). Both are scored as odds against keeping the
+  word, so they merge on one scale: a completion's channel is the typed
+  letters matched exactly, the same as keeping, so its odds are its weighted
+  model probability against keep's.
+- **Layout:** when a commit key would correct the word (`review`'s rules,
+  "cant" → "can't" and day names' capitals included), the word as typed in
+  quotes (a tap keeps it), the correction emphasized, then the best other.
+  Otherwise the word as typed when it is a lexicon word (or a word kept: a
+  reverted, never-correct or chat word, which never gets a pending
+  correction), then the best others; a typed word that is not a word is left
+  out when something else is offered. Nothing but the typed word: no strip,
+  and the status line shows. Apostrophes after the word so far ("don'") are
+  the middle of a contraction: the completions start with them ("don't"),
+  and no correction is marked. Caps lock (or a field that capitalizes every
+  character) makes one capital letter all capitals.
+- **A tap** replaces the word from its start and ends with one space ("A
+  tapped word ends with one space", [Swipe typing](#swipe-typing)), only
+  while the word is still the keyboard's own and the proxy shows it, as at a
+  commit key, and only in the field it was typed in, with the text after
+  the caret unchanged since the strip first showed for the word (a proxy that
+  switched fields,
+  or a caret moved after another copy of the word, before either was
+  reported, changes nothing); otherwise the strip closes. A strip hidden
+  because the proxy showed something else (our own edit, late) comes back
+  when it shows the word, without another key. The
+  quoted word kept over a pending
+  correction is remembered as a revert would be (and offered to never
+  correct). A tap commits nothing else: no correction runs.
+- **Where:** where autocorrect runs (its switch, Full Access, a loaded model,
+  not secure, not `autocorrectionType == .no`), never in URL or email
+  fields, and only for the keyboard's own word. The bar's precedence is
+  unchanged: dictation, notices and Undo win (`BarMiddleContent`).
+- **When it updates:** after every key, from the word's record; a commit key
+  ends the word (its own strip, if any, follows), as do a caret move, an
+  outside edit, a swipe, dictation, a field change and hiding. A Delete of
+  the space that finished it brings the word and its strip back ("Deleting
+  back into the word just finished", Owned words).
+- **Fewer, likelier words** (round 3): a form whose odds are less than 1 in
+  1000 (`Autocorrector.suggestionRatio`) of the strip's first word (the typed
+  word when it is a lexicon word, else the best form) is not offered: "hey"
+  no longer offers "heyday" (1 in 3,300) or "meeti" "meetinghouse" (1 in
+  1,200), while "defi" keeps "defiantly" (1 in 220). On 636 keystrokes of
+  invented messages the strip showed on 565 instead of 601; the ones lost
+  are mostly a finished common word whose completions were all unlikely
+  ("and" → "andy", "bread" → "breadth").
+- **Spelling matches** (`WordCorrecting.spellingMatches`, round 3): the touch
+  model makes a letter typed for one three keys away almost impossible, so
+  "egss" offered "eggs" only in some contexts and "definately" nothing. For
+  a word outside the lexicon, the corrector also lists the lexicon forms
+  within its edit limit (`maxEditsShort` up to `shortLength` letters, else
+  `maxEdits`; an insertion, deletion, substitution or swap of neighbours
+  each), whatever the keys' distance: fewest edits first, then the word
+  model in the context, then frequency. They are suggestions only, never a
+  correction. While typing they join for a word that is no word, not kept,
+  not a contraction's middle, and that nothing offered completes, after the
+  word as typed when nothing else is offered; after a commit key they join
+  any word outside the lexicon. The best always has a slot (the last when
+  the strip is full), never over the typed word or the correction. The
+  search is the corrector's bounded trie walk, and the model probabilities
+  come from the context's completion read-out when it has one: about 0.3 ms
+  a word on an M-series Mac (optimized build, bundle b34).
+- **Cost:** the word model reads out every form once per sentence context
+  (`WordModel.logProbs(context:allFormsOf:)`: the LSTM's one read-out, kept by
+  the corrector for the last context only and dropped with
+  `forgetContext`), not per key. Each key then scans the prefix's id range
+  for the best few and runs the corrector's search. Measured in the iPhone
+  17 Pro simulator (iOS 26.4, Messages, 157,373 forms), a whole key press:
+  first letter of a word median 2.5 ms, other keys median 0.5 ms, p95 1.4 ms.
+  Memory: one Double per form for the context (1.3 MB).
+- **Evaluation** (round 5, Sol finding 1: "Buy f" offered "followers"). 90
+  invented messages about shopping, plans, work and family, each cut after
+  one to three letters of a word (`Tests/CompletionEvaluation.swift`). On
+  bundle b34 the word meant is the first completion in 57 and among the three
+  in 70; the test runs with `LF_AUTOCORRECT_BUNDLE=<bundle>` and guards those
+  counts. Reweighing context against frequency did not do better on it: the
+  lexicon's frequencies added to the model's log probability (weights −0.75
+  to 2) at best matched it and fell to 22 and 35 at 2; context specificity
+  against the model's sentence-start read-out (0.1 to 0.7), a correction of
+  the model's register by the frequencies, and a linear mixture with the
+  frequency prior all stayed within ±2. The misses are mostly the model's own
+  ("pics", "follow" and "followers" from its social-media training text),
+  which only retraining changes, so the ranking is unchanged.
+
+**Next words** (round 5, Opus layout: Apple's users see these every day).
+After a finished word and a space, when no other strip shows, the strip
+offers up to three likely next words (`WordCorrecting.nextWords`):
+
+- **When:** the keyboard's own space was the last thing it typed (Space, a
+  punctuation mark typed over a tapped word's space, or the space a tapped
+  word brings), with only Shift and layer keys since, and the text before the
+  caret ends with that one space after something other than whitespace. Not
+  in an empty field, so the idle bar's status line still shows when the
+  keyboard comes up; after a sentence's end it predicts the sentence's first
+  word. Also (round 7, Opus finding 3):
+  - after a Return the keyboard typed right after text (not whitespace),
+    once the proxy itself shows that line break before the caret (perhaps
+    alone, in a window of the line; shown late, with no callback, the strip
+    comes when it is): the host took it as one (a field whose Return sends,
+    goes or moves on takes none) and the field is still the one it went to. The line's first words
+    show, as after a sentence's end. Not after a Return that follows a line
+    break or a space, and not in an empty field. Unlike a commit key's strip,
+    which Return never shows because its choices delete text, a tapped next
+    word only inserts, as a key typed then would;
+  - after Delete removed a swiped word whole, when a word and a space are
+    left before the caret. The bar's
+  precedence is unchanged (`BarMiddleContent`): a commit key's strip with a
+  choice, a swipe's strip and the strip of a word being typed come first,
+  and dictation (starting, recording, transcribing, waiting for the model),
+  notices and its Undo chip win over all of them.
+- **Where:** where suggestions show while typing (autocorrect on, Full
+  Access, a loaded model, not secure, not `autocorrectionType == .no`, not
+  URL or email fields), and not in number fields
+  (`AutocorrectSetup.predictsNextWords`).
+- **Words:** the forms the word model finds likeliest given the sentence so
+  far, from the same read-out the next word's completions use: each at least
+  1 in 40 likely (`Autocorrector.nextWordFloor`; 1 in 100 at a sentence's
+  start, `sentenceStartFloor`) and within 20 times the best
+  (`nextWordRatio`), no single letter but "a" and "I", no archaic form, never
+  the sentence's last word again, one form per spelling (the likelier;
+  "cant" offered as "can't"). Fewer, or none, rather than noise.
+- **A sentence's start** (round 6, Opus finding 1: after "...before the
+  weekend. " the strip showed only a centred "I", which in SF Pro reads as a
+  stray bar or a second caret, and made the whole middle an "I" button).
+  There the model spreads its probability over many first words, so the
+  floor is lower: on bundle b34 the read-out after any sentence's end (".",
+  "!" and "?" all end one) is "i" 0.114, "i'm" 0.022, "my" 0.015, "the"
+  0.015, "just" 0.014, ..., "so" 0.010, and the strip offers "I", "I'm",
+  "My". A strip whose only word is a single letter never shows
+  (`KeyboardEditor.refreshNextWords`): after an unknown word ("aloalot ")
+  only "I" (0.049) passes, so the status line stays. Cased as a letter typed there
+  would be (`swipeShift`: the sentence's start, Shift, caps lock), the
+  pronoun I and day names with their capital; Shift or a layer key recases
+  them.
+- **A tap** puts the word in with one space (none before a space already
+  after the caret), as a tapped suggestion does, so punctuation typed next
+  goes before that space; the strip then predicts the word after it. Only in
+  the field the words were made for, with nothing edited since, the proxy
+  itself showing the space and the same text before the caret (its window and
+  the editor's bounded copy may each be the longer) and after it, and nothing
+  selected; otherwise the strip closes and nothing is typed (a proxy that lags
+  misses the tap).
+- **Model loading:** the strip follows when autocorrect's model finishes
+  loading (`KeyboardEditor.autocorrectChanged`), so a word taken back as the
+  keyboard appears gets its strip without another key.
+- **Closing:** any other key, a swipe, dictation, a caret move or outside
+  edit, the trackpad, another field and hiding.
+- **Cost** (bundle b34, optimized build on an M-series Mac, 110 word
+  boundaries of invented messages): at the space, the model's step, its
+  read-out of every form and the scan take median 1.47 ms (p95 1.66 ms); the
+  read-out is cached for the context (`WordCorrecting.forgetContext` drops it
+  on hiding), so the next word's first letter then takes 0.02 ms instead of
+  1.42 ms. The space adds about 0.08 ms to a word boundary, and no memory.
 
 **Never correct.** A revert offers to keep the word uncorrected for good, and
 nothing is stored unless the user accepts:
@@ -2032,10 +2942,14 @@ at most once at a time, like the soft key edges model (`ModelLoadSlot`,
 [Soft key edges](#soft-key-edges)).
 A correction runs on the main thread at the commit key.
 
-**Privacy.** The context, the word, its points, the strip's words, the
-reverted words and a "Never correct" offer stay in the instance's memory. They
+**Privacy.** The context (with the corrector's ranking of every form for the
+last one), the word, its points, the strip's words (the next words
+included), the reverted words and a "Never correct" offer stay in the
+instance's memory. They
 are dropped when the keyboard hides (the reverted words when the instance
-ends), and are never logged, stored, sent or learned from, with one
+ends; the word being typed, without its points, and a digest of the text
+around it until the keyboard appears again, "Hiding" above), and are never
+logged, stored, sent or learned from, with one
 exception: a word the user taps "Never correct" for is stored on this iPhone
 only, in the never-correct store, until the user clears it in Diagnostics. The
 app reads only the count. The models are fixed.
@@ -2043,38 +2957,42 @@ app reads only the count. The models are fixed.
 ## Build and targets (iOS/Makefile)
 
 - `make -C iOS` builds `iOS/build/<platform>/LocalFlow.app` with
-  `PlugIns/LocalFlowKeyboard.appex`. The default platform is the arm64
-  simulator; `PLATFORM=device` builds for arm64 devices.
-  - Both are compiled for `arm64-apple-ios26.0[-simulator]` with
+  `PlugIns/LocalFlowKeyboard.appex` and `PlugIns/LocalFlowActivity.appex`.
+  The default platform is the arm64 simulator; `PLATFORM=device` builds for
+  arm64 devices.
+  - All three are compiled for `arm64-apple-ios26.0[-simulator]` with
     `-Xcc -DACCELERATE_NEW_LAPACK`, because the iOS 26 SDK deprecates the
     CBLAS interface the shared decoder uses.
   - The keyboard is compiled with `-application-extension`, the
-    `_NSExtensionMain` entry point and module `LocalFlowKeyboard`.
+    `_NSExtensionMain` entry point and module `LocalFlowKeyboard`; the Live
+    Activity likewise, as module `LocalFlowActivity`.
   - Simulator builds embed the entitlements in each executable's
-    `__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The `.appex` is
-    signed before the app.
+    `__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The extensions
+    are signed before the app.
   - Every build compiles the app icon into `Assets.car` with `actool`,
     records Xcode's build metadata (`DTXcode`, `DTSDKBuild` and the rest) in
-    both Info.plists, and copies each target's privacy manifest.
+    every Info.plist, and copies each target's privacy manifest.
 - `PARAKEET_BUNDLE_DIR` copies the model into `LocalFlow.app/Parakeet/` and
   relabels it with `scripts/label-localflow-model.py`; repeat builds keep an
   unchanged copy. `SWIPE_BUNDLE_DIR` adds swipe typing
   ([Swipe typing](#swipe-typing)).
 - `make -C iOS check` runs:
   1. a simulator type-check, with `-warnings-as-errors`, of the app, the app's
-     self-test variant and the keyboard;
+     self-test variant, the keyboard and the Live Activity;
   2. the host tests ([Testing and verification](#testing-and-verification));
   3. lint: `plutil -lint` of the plists, entitlements and privacy manifests,
      and `sh -n` of `scripts/*.sh`.
 - `make PLATFORM=device binaries` compiles and links without signing. Device
-  builds need `CODESIGN_IDENTITY`, `TEAM_ID` and two provisioning profiles
-  with the App Group; the build checks each profile's App ID and App Group,
-  and with `UNIVERSAL_LINK` set the app profile's Associated Domains
+  builds need `CODESIGN_IDENTITY`, `TEAM_ID` and three provisioning profiles:
+  `APP_PROFILE` and `KEYBOARD_PROFILE` with the App Group, and
+  `ACTIVITY_PROFILE` for `$(BUNDLE_ID).activity`, which needs no capability.
+  The build checks each profile's App ID, the app's and the keyboard's App
+  Group, and with `UNIVERSAL_LINK` set the app profile's Associated Domains
   ([Identifiers](#identifiers), README).
 - The app declares the `audio` background mode, is iPhone-only
   (`UIDeviceFamily` 1) and arm64-only. The keyboard is universal (1 and 2),
   because App Review requires every extension to be universal, and requests
-  Full Access (`RequestsOpenAccess`).
+  Full Access (`RequestsOpenAccess`). The Live Activity is universal too.
 - The repository's CI runs the macOS `make check` only. The iOS checks run
   locally.
 
@@ -2093,21 +3011,22 @@ app reads only the count. The models are fixed.
   `["applinks:wildernesslabs.ai"]` for the universal link
   ([Identifiers](#identifiers)), signed with an Apple Distribution identity.
 - **Versions.** `CFBundleShortVersionString` stays in the Info.plist
-  templates, the same for app and keyboard. `BUILD_NUMBER` sets
-  `CFBundleVersion` for both and must grow with each upload.
+  templates, the same for every bundle. `BUILD_NUMBER` sets
+  `CFBundleVersion` for all three and must grow with each upload.
 - **Metadata.** `ITSAppUsesNonExemptEncryption` is false: the only
-  cryptography is SHA-256 for model verification. Both executables require
+  cryptography is SHA-256 for model verification. Every executable requires
   `arm64` in `UIRequiredDeviceCapabilities`.
 - **Icon.** The build flattens the production icon source, a full-bleed
   square in `Resources/` ([Resources/ICON.md](Resources/ICON.md)), and scales
   it to one opaque 1024-pixel image.
 - **Privacy manifests** (`Config/*-PrivacyInfo.xcprivacy`, one per target):
   no tracking, no tracking domains, no collected data. Required-reason APIs:
-  UserDefaults (`CA92.1` for the app's own preferences, `1C8F.1` for the App
-  Group settings; the keyboard declares only `1C8F.1`), system boot time
+  UserDefaults (`CA92.1` for each target's own preferences, the keyboard's
+  being its emoji recents; `1C8F.1` for the App Group settings), system boot time
   (`35F9.1`, elapsed-time measurement) and file timestamps (`C617.1`,
   expiring the App Group's dictation files and the never-correct store's
-  leftover staging files). A new use of a required-reason
+  leftover staging files). The Live Activity's manifest declares no
+  required-reason API, because it calls none. A new use of a required-reason
   API must be added to the manifest and to the checker's required reasons.
 - **Packaging.** `make ipa` zips exactly the signed app under `Payload/`.
   `make appstore-check` runs `scripts/check-appstore-bundle.sh` on the app
@@ -2141,10 +3060,13 @@ app reads only the count. The models are fixed.
    `documentContextAfterInput`, `documentIdentifier` and whether text is
    selected in memory only, for spacing, result binding, shift, cursor
    movement, word deletion, Undo, swipe insertion, predicting the next letter
-   (soft key edges) and correcting the word before the caret (autocorrect).
-   It never stores, logs or transmits them, and drops them when the operation
-   ends or the keyboard hides. What it persists about fields is content-free:
-   trait fingerprints and layout choices.
+   (soft key edges), correcting the word before the caret and predicting the
+   next word (autocorrect). It never stores, logs or transmits them, and drops
+   them when the operation ends or the keyboard hides, except the word it was
+   typing, kept in memory across hiding with a digest of the text around it
+   until it appears again ("Word autocorrect", Owned
+   words). What it persists about fields is content-free: trait fingerprints
+   and layout choices.
 6. Capture requires a session started in the foreground. Recording requires a
    fresh keyboard intent that the host admits. Recording ends at the maximum
    duration or when the keyboard has been gone too long. Device lock cancels
@@ -2158,13 +3080,17 @@ app reads only the count. The models are fixed.
    for, in the never-correct store on this iPhone until the user clears it;
    the app reads only their count ("Never correct",
    [Word autocorrect](#word-autocorrect)).
+10. The Live Activity shows on the Lock Screen and in the Dynamic Island, so
+    it carries only the session's phase and its timer dates: never a
+    transcript, audio, a level or anything about the app being dictated into
+    ([Live Activity](#live-activity-activity-activitycore)).
 
 ## Testing and verification
 
 ### Host tests (`make -C iOS test`)
 
 - The host test binary is compiled for macOS from `Shared/`, `HostCore/`,
-  `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
+  `ActivityCore/`, `KeyboardCore/`, `Keyboard/SwipeEngine.swift` (with a fake encoder),
   `Keyboard/AutocorrectLoader.swift`, `Keyboard/KeyboardMessages.swift`,
   `Sources/Dictionary/*.swift`, `Sources/Parakeet/LocalParakeetCore.swift`,
   `Sources/Parakeet/ParakeetSilenceCompactor.swift` and `Tests/`. Every pure
@@ -2226,6 +3152,12 @@ merge (AGENTS.md).
   cancelled at lock, dictation from another app after unlock without opening
   LocalFlow, a session that idles out while locked, then the first bounce
   after unlock starting a new session).
+- **Live Activity:** the compact, minimal and expanded island and the Lock
+  Screen while ready, recording, transcribing and preparing, in dark and
+  light; the morph as recording starts and stops; the activity going at End
+  session, idle expiry and an interruption; none left after a relaunch; a
+  killed app's activity turning "Session ended"; nothing shown with Live
+  Activities off, and no prompt from the app.
 - **Resources:** background transcription latency and peak memory, Neural
   Engine against CPU (CPU through the self-test); no jetsam in the
   background; battery over 30 minutes, idle session against no session
@@ -2243,7 +3175,7 @@ merge (AGENTS.md).
 - **Swipe typing:** recognition, the candidate strip, the trace, and spacing
   around tapped words.
 - **Touch regions:** fast taps on the top and bottom rows, and taps in the bar
-  outside its controls, type without dropped letters; the Start capsule and
+  outside its controls, type without dropped letters; the island and
   the chips still take their taps, Start also from the bar above it, and
   while dictating Stop also from the top-row keys under it (other keys
   still type); a quick skid types its key; a low tap

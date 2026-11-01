@@ -11,6 +11,10 @@ enum DictationSampleBufferTests {
             ("capsAtMaxDuration", testCapsAtMaxDuration),
             ("defaultCapIsFiveMinutes", testDefaultCapIsFiveMinutes),
             ("levelTracksSpeechAndStaysInRange", testLevelTracksSpeechAndStaysInRange),
+            ("levelFollowsSyllables", testLevelFollowsSyllables),
+            ("softNormalAndLoudVoicesAllLookActive", testSoftNormalAndLoudVoicesAllLookActive),
+            ("roomNoiseAndPausesRestFlat", testRoomNoiseAndPausesRestFlat),
+            ("aLoudMomentDoesNotSilenceTheNextWords", testALoudMomentDoesNotSilenceTheNextWords),
             ("finishDrainsAtomicallyUnderConcurrentAppends", testFinishDrainsAtomicallyUnderConcurrentAppends),
             ("streamReceivesExactlyTheRecording", testStreamReceivesExactlyTheRecording),
             ("staleRecordingNeverFeedsANewerStream", testStaleRecordingNeverFeedsANewerStream),
@@ -226,6 +230,115 @@ enum DictationSampleBufferTests {
         TestSupport.expect(buffer.level <= 1, "clipped input exceeded 1")
         _ = buffer.finish(requestID: Fixture.requestID)
         TestSupport.expectEqual(buffer.level, 0)
+    }
+
+    /// Round 10 (owner: the keyboard's wave "kind of slow, consistent"): the level falls with a syllable's end, within two
+    /// buffers (about 0.2 s; round 9's release kept 70% then, a 0.6 s fall), so the keyboard sees a gap between words;
+    /// and ordinary speech (-17 dBFS, the synthetic voice's level) sits clearly below the top, so a louder word still
+    /// shows louder.
+    private static func testLevelFollowsSyllables() {
+        let buffer = DictationSampleBuffer()
+        buffer.begin(requestID: Fixture.requestID)
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.3)) }
+        let speaking = buffer.level
+        buffer.append(tone(1_600, amplitude: 0.001))
+        buffer.append(tone(1_600, amplitude: 0.001))
+        TestSupport.expect(buffer.level <= 0.25 * speaking, "the level lingers after a syllable: \(buffer.level) of \(speaking)")
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.2)) }
+        let ordinary = buffer.level
+        TestSupport.expect(ordinary < 0.92, "ordinary speech is at the top: \(ordinary)")
+        for _ in 0..<8 { buffer.append(tone(1_600, amplitude: 0.5)) }
+        TestSupport.expect(buffer.level > ordinary + 0.05, "a louder word reads the same: \(buffer.level) vs \(ordinary)")
+        _ = buffer.finish(requestID: Fixture.requestID)
+    }
+
+    // MARK: Real voices (round 11)
+
+    /// 100 ms of a tone whose RMS is `dBFS`.
+    private static func buffer(at dBFS: Double) -> [Float] {
+        tone(1_600, amplitude: Float(2.0.squareRoot() * pow(10, dBFS / 20)))
+    }
+
+    /// 100 ms of invented room noise (a fixed pseudo-random hiss) whose RMS is `dBFS`.
+    private static func noise(at dBFS: Double, seed: inout UInt64) -> [Float] {
+        let amplitude = Float(3.0.squareRoot() * pow(10, dBFS / 20))
+        return (0..<1_600).map { _ in
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return amplitude * (Float(seed >> 40) / Float(1 << 24) * 2 - 1)
+        }
+    }
+
+    /// A phrase of invented speech at `dBFS` (its RMS): syllables a little above it with 100 ms gaps 18 dB down between, 100 ms a
+    /// buffer, for `seconds`. Returns the level after each buffer.
+    private static func speak(_ buffer: DictationSampleBuffer, at dBFS: Double, seconds: Double) -> [Float] {
+        let pattern = [dBFS + 3, dBFS + 1, dBFS - 18]
+        return (0..<Int(seconds * 10)).map { index in
+            buffer.append(Self.buffer(at: pattern[index % pattern.count]))
+            return buffer.level
+        }
+    }
+
+    /// Round 11 (Opus, round 10: the wave was tuned on `say`'s loud voice, and a quiet phrase at about -32 dBFS left the
+    /// row flat; a real voice at arm's length often sits around -35 to -25 dBFS): a soft, a normal and a loud speaker
+    /// (-32, -22 and -12 dBFS) all look clearly active. Each one's syllables reach near the top of the level, where the
+    /// keyboard's wave swells (`DotWave.voice`), and dip clearly between syllables, from the first second of speech.
+    private static func testSoftNormalAndLoudVoicesAllLookActive() {
+        var peaks: [Float] = []
+        for dBFS in [-32.0, -22, -12] {
+            let buffer = DictationSampleBuffer()
+            buffer.begin(requestID: Fixture.requestID)
+            let levels = speak(buffer, at: dBFS, seconds: 3)
+            let first = levels.prefix(10), all = levels.dropFirst(3)
+            TestSupport.expect(first.max()! >= 0.85, "a voice at \(dBFS) dBFS starts flat: \(levels)")
+            TestSupport.expect(all.max()! >= 0.85, "a voice at \(dBFS) dBFS reads quiet: \(levels)")
+            TestSupport.expect(all.max()! - all.min()! >= 0.35, "syllables at \(dBFS) dBFS blur together: \(levels)")
+            TestSupport.expect(DotWave.voice(Double(all.max()!)) >= 0.75, "the wave barely swells at \(dBFS) dBFS")
+            peaks.append(all.max()!)
+            _ = buffer.finish(requestID: Fixture.requestID)
+        }
+        TestSupport.expect(peaks.min()! >= 0.85 * peaks.max()!, "soft and loud speakers look different: \(peaks)")
+    }
+
+    /// Silence and a quiet room (invented hiss at -55 and -50 dBFS) rest flat: before anyone speaks, in a pause after a
+    /// soft speaker (within 0.3 s), and long after a loud one. The wave draws nothing below its dead zone.
+    private static func testRoomNoiseAndPausesRestFlat() {
+        var seed: UInt64 = 7
+        for room in [-55.0, -50] {
+            for speaker in [nil, -32.0, -12] {
+                let buffer = DictationSampleBuffer()
+                buffer.begin(requestID: Fixture.requestID)
+                for _ in 0..<20 {
+                    buffer.append(noise(at: room, seed: &seed))
+                    if speaker == nil { TestSupport.expect(buffer.level <= 0.03, "a \(room) dBFS room moves the level: \(buffer.level)") }
+                }
+                guard let speaker else { continue }
+                _ = speak(buffer, at: speaker, seconds: 2)
+                var pause: [Float] = []
+                for _ in 0..<60 {
+                    buffer.append(noise(at: room, seed: &seed))
+                    pause.append(buffer.level)
+                }
+                TestSupport.expect(pause.dropFirst(3).allSatisfy { DotWave.voice(Double($0)) == 0 },
+                                   "a pause after \(speaker) dBFS in a \(room) dBFS room swells the wave: \(pause)")
+                TestSupport.expect(pause.dropFirst(3).allSatisfy { $0 <= 0.08 }, "the pause is not flat: \(pause)")
+                TestSupport.expect(pause.suffix(20).allSatisfy { $0 <= 0.03 }, "the room creeps up after \(speaker) dBFS: \(pause)")
+                _ = buffer.finish(requestID: Fixture.requestID)
+            }
+        }
+    }
+
+    /// The level follows the speaker's recent loudest, so one loud moment (a laugh, a bump, at -6 dBFS) shrinks what
+    /// follows for a moment, as a louder word should, but ordinary words at -22 dBFS look active again within 3 s.
+    private static func testALoudMomentDoesNotSilenceTheNextWords() {
+        let buffer = DictationSampleBuffer()
+        buffer.begin(requestID: Fixture.requestID)
+        _ = speak(buffer, at: -22, seconds: 1)
+        buffer.append(Self.buffer(at: -6))
+        buffer.append(Self.buffer(at: -6))
+        let next = speak(buffer, at: -22, seconds: 3.6)
+        TestSupport.expect(next.prefix(4).max()! < 0.95, "the loud moment changes nothing: \(next)")
+        TestSupport.expect(next.suffix(6).max()! >= 0.85, "ordinary words stay small after a loud moment: \(next)")
+        _ = buffer.finish(requestID: Fixture.requestID)
     }
 
     /// The audio tap appends from its own thread while the main thread finishes the request. Every

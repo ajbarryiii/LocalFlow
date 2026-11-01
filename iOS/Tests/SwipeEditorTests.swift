@@ -107,7 +107,7 @@ enum SwipeEditorTests {
         rig.swipe([])
         TestSupport.expectEqual(rig.editor.swipeStrip?.candidates ?? [], ["there", "these"])
         rig.choose(1)
-        TestSupport.expectEqual(rig.text, "Hi these")
+        TestSupport.expectEqual(rig.text, "Hi these ")
     }
 
     private static func testAutomaticShiftCapitalizesAndIsConsumed() {
@@ -577,24 +577,25 @@ enum SwipeEditorTests {
         let rig = SwipeRig("x")
         rig.swipe(["word", "ward", "wired"])
         TestSupport.expectEqual(rig.text, "x word")
+        // A chosen word ends with one space (round 2, owner: "a tapped suggestion ends with one space").
         rig.choose(1)
-        TestSupport.expectEqual(rig.text, "x ward")
+        TestSupport.expectEqual(rig.text, "x ward ")
         TestSupport.expectEqual(rig.editor.swipeStrip, SwipeStrip(candidates: ["word", "ward", "wired"], inserted: 1))
         rig.choose(2)
-        TestSupport.expectEqual(rig.text, "x wired")
+        TestSupport.expectEqual(rig.text, "x wired ")
         rig.choose(0)
-        TestSupport.expectEqual(rig.text, "x word")
+        TestSupport.expectEqual(rig.text, "x word ")
         // Tapping the word already inserted changes nothing.
         rig.choose(0)
-        TestSupport.expectEqual(rig.text, "x word")
+        TestSupport.expectEqual(rig.text, "x word ")
         TestSupport.expect(rig.editor.swipeStrip != nil, "the strip closed on the inserted word")
         // Out of range: nothing.
         rig.choose(7)
-        TestSupport.expectEqual(rig.text, "x word")
-        // The next key types after the replacement, which ended where the word did (punctuation attaches).
+        TestSupport.expectEqual(rig.text, "x word ")
+        // Punctuation typed next goes before the choice's space, which follows it.
         rig.choose(1)
         rig.press(.character("."))
-        TestSupport.expectEqual(rig.text, "x ward.")
+        TestSupport.expectEqual(rig.text, "x ward. ")
     }
 
     private static func testTapAfterAnOutsideEditDoesNothing() {
@@ -678,12 +679,12 @@ enum SwipeEditorTests {
         rig.pump()
         TestSupport.expect(rig.editor.swipeStrip != nil, "an echo of the swipe closed the strip")
         rig.choose(1)
-        TestSupport.expectEqual(rig.text, "x ward")
+        TestSupport.expectEqual(rig.text, "x ward ")
         rig.pump()
         rig.pump()
         TestSupport.expect(rig.editor.swipeStrip != nil, "an echo of the replacement closed the strip")
         rig.choose(0)
-        TestSupport.expectEqual(rig.text, "x word")
+        TestSupport.expectEqual(rig.text, "x word ")
     }
 
     private static func testStripClosesOnAnyOtherKey() {
@@ -812,12 +813,22 @@ enum SwipeEditorTests {
     }
 
     private static func testDeleteRemovesAReplacedWordWhole() {
+        // A chosen word ends with its space (round 2): Delete takes the space, then deletes as usual.
         let rig = SwipeRig("a")
         rig.swipe(["cat", "chart"])
         rig.choose(1)
+        TestSupport.expectEqual(rig.text, "a chart ")
+        rig.heldDelete()
         TestSupport.expectEqual(rig.text, "a chart")
         rig.heldDelete()
-        TestSupport.expectEqual(rig.text, "a ")
+        TestSupport.expectEqual(rig.text, "a char")
+        // Before a space already there, the chosen word adds none, and is still deleted whole.
+        let before = SwipeRig("a  b", caret: 2)
+        before.swipe(["cat", "chart"])
+        before.choose(1)
+        TestSupport.expectEqual(before.text, "a chart b")
+        before.heldDelete()
+        TestSupport.expectEqual(before.text, "a  b")
     }
 
     private static func testDeleteAfterTheStripClosedDeletesOneCharacter() {
@@ -856,7 +867,8 @@ enum SwipeEditorTests {
         func expectRecorded(_ rig: SwipeRig, _ count: Int, file: StaticString = #filePath, line: UInt = #line) {
             TestSupport.expectEqual(rig.editor.swipeEditCount, count, file: file, line: line)
         }
-        // Swipe, choose a candidate, Shift closes the strip (the space stays pending), tap a letter.
+        // Swipe, choose a candidate (its space added: punctuation would go before it), Shift closes the strip (that
+        // stays), tap a letter.
         let chosen = watched("so")
         chosen.swipe(["word", "ward"])
         expectRecorded(chosen, 1)

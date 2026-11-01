@@ -33,8 +33,14 @@ struct KeyboardViewState: Equatable {
     var canUndo = false
     /// For the menu panel: whether a session runs and how long it stays idle.
     var sessionSummary = ""
+    /// A live session can take a dictation now (`KeyboardMessages.isSessionReady`): Start's dot is aurora.
+    var sessionReady = false
+    /// The status the bar shows as a mark rather than words, for VoiceOver (`KeyboardMessages.spokenStatus`).
+    var spokenStatus: String?
     /// Recent input levels while recording, oldest first.
     var levels: [Float] = []
+    /// How many levels this recording has heard, the newest's number (the wave keeps each level on its side by it).
+    var levelSerial = 0
 }
 
 /// The keyboard side of the protocol in ARCHITECTURE.md. While visible it polls and observes the
@@ -43,7 +49,8 @@ struct KeyboardViewState: Equatable {
 @MainActor
 final class KeyboardDictationClient: ObservableObject {
     static let pollInterval: TimeInterval = 0.2
-    static let levelHistoryCount = 20
+    /// Enough for the recording wave to span a landscape bar.
+    static let levelHistoryCount = 72
     private static let noticeDuration: TimeInterval = 4
 
     @Published private(set) var state = KeyboardViewState()
@@ -68,10 +75,12 @@ final class KeyboardDictationClient: ObservableObject {
     private var shownStatus = StoreRead<HostStatus>.absent
     private var manualInsertID: UUID?
     private var launcherFailed = false
-    /// A record request whose bounce failed; it waits for the user to open LocalFlow.
-    private var unlaunchedRequestID: UUID?
+    /// The record request this instance last bounced to LocalFlow: until the host picks it up, Start stays Start
+    /// (`KeyboardPresenter.shownMode`).
+    private var bouncedRequestID: UUID?
     private var notice: (text: String, until: Date)?
     private var levels: [Float] = []
+    private var levelSerial = 0
     private var levelSampledAt: Date?
 
     private var notifier: DarwinNotifier? { configuration.map(DarwinNotifier.init(configuration:)) }
@@ -124,6 +133,7 @@ final class KeyboardDictationClient: ObservableObject {
         observations.forEach { $0.cancel() }
         observations = []
         levels = []
+        levelSerial = 0
         levelSampledAt = nil
         // No field identity outlives the keyboard being visible: a request bound to a field is never
         // auto-inserted after hiding (it stays available as "Insert last dictation").
@@ -229,10 +239,12 @@ final class KeyboardDictationClient: ObservableObject {
         // Started in this field, so bound to it: a host auto-finish lands here if the keyboard stays
         // visible in this field.
         ledger.bindRecord(requestID: requestID, documentID: target?.documentID)
-        unlaunchedRequestID = nil
+        bouncedRequestID = openingHost ? requestID : nil
         playHaptic(.press)
         guard openingHost else {
-            notifier?.post(.intent)
+            // After the frame that starts the island's grow: the host's start (capture, the Live Activity) then runs
+            // beside the spring rather than ahead of its first frames (round 8 council, Opus finding 2).
+            DispatchQueue.main.async { [notifier] in notifier?.post(.intent) }
             return
         }
         // No `.intent` post: a background host without a session would reject the request before
@@ -240,15 +252,14 @@ final class KeyboardDictationClient: ObservableObject {
         var attempted = false
         if let url = configuration?.dictateURL, let target {
             attempted = target.openContainingApp(url) { [weak self] opened in
-                if !opened { self?.launchFailed(requestID) }
+                if !opened { self?.launchFailed() }
             }
         }
-        if !attempted { launchFailed(requestID) }
+        if !attempted { launchFailed() }
     }
 
-    private func launchFailed(_ requestID: UUID) {
+    private func launchFailed() {
         launcherFailed = true
-        unlaunchedRequestID = requestID
         playHaptic(.failure)
         refresh()
     }
@@ -261,7 +272,6 @@ final class KeyboardDictationClient: ObservableObject {
                                    issuedAt: Date()), to: store)
         else { return }
         if action == .finish { ledger.bindFinish(requestID: requestID, documentID: target?.documentID) }
-        if unlaunchedRequestID == requestID { unlaunchedRequestID = nil }
         notifier?.post(.intent)
         playHaptic(.press)
     }
@@ -306,7 +316,8 @@ final class KeyboardDictationClient: ObservableObject {
             intent = store.readIntent()
         }
         // Displaying a request never binds it, so a new instance in another app cannot auto-insert it.
-        let mode = KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now)
+        let mode = KeyboardPresenter.shownMode(KeyboardPresenter.mode(access: access, status: status, intent: intent, now: now),
+                                               bouncedRequestID: bouncedRequestID, intent: intent, status: status)
         ledger.prune(now: now, keeping: Set([intent.value?.requestID, shownIntent.value?.requestID].compactMap { $0 }))
         if access == .fullAccess { deliverResults(status: status, documentID: documentID, now: now) }
         shownIntent = intent
@@ -355,6 +366,7 @@ final class KeyboardDictationClient: ObservableObject {
     private func sampleLevel(of mode: KeyboardMode, status: StoreRead<HostStatus>) {
         guard case .recording(let level, _) = mode else {
             levels = []
+            levelSerial = 0
             levelSampledAt = nil
             return
         }
@@ -363,15 +375,13 @@ final class KeyboardDictationClient: ObservableObject {
         guard sampledAt != levelSampledAt else { return }
         levelSampledAt = sampledAt
         levels.append(level)
+        levelSerial += 1
         levels.removeFirst(max(0, levels.count - Self.levelHistoryCount))
     }
 
     private func publish(_ mode: KeyboardMode, intent: StoreRead<KeyboardIntent>, status: StoreRead<HostStatus>,
                          now: Date) {
         var title = KeyboardMessages.title(for: mode, launcherFailed: launcherFailed)
-        if mode == .starting, let pending = unlaunchedRequestID, intent.value?.requestID == pending {
-            title = KeyboardMessages.openLocalFlow
-        }
         if case .recording = mode, KeyboardPresenter.isModelPreparing(status: status, now: now) {
             title = KeyboardMessages.listeningWhilePreparing
         }
@@ -382,7 +392,10 @@ final class KeyboardDictationClient: ObservableObject {
                                      canInsertLast: manualInsertID != nil,
                                      canUndo: target?.canUndoLastDictation == true,
                                      sessionSummary: KeyboardMessages.sessionSummary(for: status.value, now: now),
-                                     levels: levels)
+                                     sessionReady: KeyboardMessages.isSessionReady(status.value, now: now),
+                                     spokenStatus: KeyboardMessages.spokenStatus(mode: mode, status: status.value,
+                                                                                 launcherFailed: launcherFailed, now: now),
+                                     levels: levels, levelSerial: levelSerial)
         guard next != state else { return }
         if mode.phase != state.mode.phase {
             if case .recording = mode { playHaptic(.listening) }

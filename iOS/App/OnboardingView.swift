@@ -107,7 +107,7 @@ struct OnboardingView: View {
         VStack(spacing: 22) {
             HeroSymbol(systemName: "keyboard.fill").padding(.top, 16)
             StepTitle(title: "Add the LocalFlow keyboard",
-                      detail: "Dictate anywhere you type: switch to the LocalFlow keyboard with the globe key and tap the microphone.")
+                      detail: "Dictate anywhere you type: switch to the LocalFlow keyboard with the globe key, tap Start, speak, then tap Stop.")
             KeyboardSetupSteps { host.keyboardHasFullAccess }
         }
     }

@@ -27,14 +27,15 @@ make -C iOS SWIPE_BUNDLE_DIR=/path/to/swipe-bundle  # with swipe typing in Local
 make -C iOS check                # simulator type-check, host tests, plutil -lint
 ```
 
-The app contains `PlugIns/LocalFlowKeyboard.appex`. Repeat builds keep an
-unchanged copy of the 330 MB model instead of copying it again.
+The app contains `PlugIns/LocalFlowKeyboard.appex` and
+`PlugIns/LocalFlowActivity.appex` (the session's Live Activity). Repeat builds
+keep an unchanged copy of the 330 MB model instead of copying it again.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CHANNEL` | `dev` | `appstore` presets the production identifiers, icon and a device build (see [App Store build](#app-store-build)) |
 | `PLATFORM` | `simulator` | `simulator` or `device` (arm64 only) |
-| `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | app ID; the keyboard is `$(BUNDLE_ID).keyboard` |
+| `BUNDLE_ID` | `com.ajbarryiii.localflow.ios.dev` | app ID; the keyboard is `$(BUNDLE_ID).keyboard`, the Live Activity `$(BUNDLE_ID).activity` |
 | `APP_GROUP` | `group.$(BUNDLE_ID)` | shared container for app and keyboard |
 | `URL_SCHEME` | `localflow-dev` | `<scheme>://dictate` |
 | `UNIVERSAL_LINK` | empty | https URL the keyboard opens instead of the scheme (see [Universal link](#universal-link)) |
@@ -45,8 +46,8 @@ unchanged copy of the 330 MB model instead of copying it again.
 | `BUILD_DIR` | `build/$(PLATFORM)` | output directory |
 | `SWIFT_FLAGS` | empty | extra compiler flags, e.g. `-D LOCALFLOW_SELFTEST` |
 | `SWIFT_JOBS` | the Mac's active cores | parallel compiler jobs for every build, type-check and test compile |
-| `BUILD_NUMBER` | empty | `CFBundleVersion` for both bundles; empty keeps the template's `1` |
-| `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE` | `-` on the simulator | device signing |
+| `BUILD_NUMBER` | empty | `CFBundleVersion` for all three bundles; empty keeps the template's `1` |
+| `CODESIGN_IDENTITY`, `TEAM_ID`, `APP_PROFILE`, `KEYBOARD_PROFILE`, `ACTIVITY_PROFILE` | `-` on the simulator | device signing |
 
 Source lists (`APP_SWIFT_SOURCES`, `KEYBOARD_SWIFT_SOURCES`, `SHARED_SOURCES`, `KEYBOARDCORE_SOURCES`,
 `HOSTCORE_SOURCES`, `TEST_SOURCES`, `KEYBOARD_TEST_SOURCES`, `PARAKEET_SOURCES`, `DICTIONARY_SOURCES`) can be
@@ -182,14 +183,17 @@ launch, taking about 72 s and 840 MB.
 ## Device
 
 Device builds need the App Group capability, so they need explicit App IDs
-and development provisioning profiles on a paid team.
+and development provisioning profiles on a paid team: one for the app, one for
+the keyboard and one for the Live Activity extension (`$(BUNDLE_ID).activity`,
+which needs no capability).
 
 ### Getting profiles
 
 Make a throwaway Xcode project outside the repository; it must never be
-committed. Give it automatic signing on the team: an app target and a
+committed. Give it automatic signing on the team: an app target, a
 `com.apple.keyboard-service` extension target, each with the App Group in its
-entitlements. Build it once:
+entitlements, and a Widget Extension target with the Live Activity bundle ID
+and no capabilities. Build it once:
 
 ```bash
 xcodebuild -project SigningHelper.xcodeproj -scheme SigningHelper -allowProvisioningUpdates \
@@ -214,15 +218,16 @@ space.
 P="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
 SIGN=(PLATFORM=device CODESIGN_IDENTITY="Apple Development: Name (XXXXXXXXXX)" TEAM_ID=XXXXXXXXXX
       APP_PROFILE="$P/<app-uuid>.mobileprovision" KEYBOARD_PROFILE="$P/<keyboard-uuid>.mobileprovision"
-      PARAKEET_BUNDLE_DIR=/path/to/bundle)
+      ACTIVITY_PROFILE="$P/<activity-uuid>.mobileprovision" PARAKEET_BUNDLE_DIR=/path/to/bundle)
 make -C iOS all "${SIGN[@]}"                              # Terminal.app: builds and signs
 make -C iOS install-device "${SIGN[@]}" DEVICE=<name or id> # installs, does not launch
 make -C iOS smoke-device "${SIGN[@]}" DEVICE=<name or id> [SMOKE_DEVICE_INSTALL=0] [SMOKE_COMPUTE=cpuOnly]
 ```
 
-- The build checks that each profile matches its App ID and grants the App
-  Group. It embeds the profiles, adds `application-identifier`, the team
-  identifier and `get-task-allow`, and signs the extension before the app.
+- The build checks that each profile matches its App ID, and that the app's
+  and the keyboard's grant the App Group. It embeds the profiles, adds
+  `application-identifier`, the team identifier and `get-task-allow`, and
+  signs the extensions before the app.
 - The phone needs Developer Mode, a pairing with the Mac, and to stay
   unlocked during `smoke-device`. `install-device` and `smoke-device` stop with
   a clear message when the phone is locked.
@@ -243,7 +248,7 @@ Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
 ## App Store build
 
 `CHANNEL=appstore` builds the production app: `com.ajbarryiii.localflow.ios`
-(keyboard `.keyboard`), App Group `group.com.ajbarryiii.localflow.ios`, URL
+(keyboard `.keyboard`, Live Activity `.activity`), App Group `group.com.ajbarryiii.localflow.ios`, URL
 scheme `localflow`, universal link
 `https://wildernesslabs.ai/localflow/dictate`, display name "LocalFlow" and
 the production icon, into `build/appstore/`. It always builds for the device,
@@ -252,13 +257,15 @@ the model, and accepts only App Store distribution profiles.
 
 One-time setup in the Apple Developer account, on the Mac:
 
-1. Register the production App IDs and App Group, for example with the
+1. Register the production App IDs (app, keyboard and
+   `com.ajbarryiii.localflow.ios.activity`) and App Group, for example with the
    signing helper above set to the production identifiers, and enable the
    **Associated Domains** capability on the app's App ID
    `com.ajbarryiii.localflow.ios` (not the keyboard's).
 2. Create an **Apple Distribution** certificate (Xcode → Settings → Accounts →
    Manage Certificates) and an **App Store** provisioning profile for the app
-   and for the keyboard, each with the App Group. The app's profile must
+   and for the keyboard, each with the App Group, and one for the Live
+   Activity, with no capability. The app's profile must
    include Associated Domains (`applinks:wildernesslabs.ai`); regenerate it
    after enabling the capability, or the build stops naming it.
 3. Create the app record in App Store Connect, and an App Store Connect API key
@@ -272,7 +279,7 @@ Then, in Terminal.app (signing needs the unlocked keychain):
 P="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
 STORE=(CHANNEL=appstore CODESIGN_IDENTITY="Apple Distribution: Name (XXXXXXXXXX)" TEAM_ID=XXXXXXXXXX
        APP_PROFILE="$P/<app-store-app-uuid>.mobileprovision" KEYBOARD_PROFILE="$P/<app-store-keyboard-uuid>.mobileprovision"
-       PARAKEET_BUNDLE_DIR=/path/to/bundle BUILD_NUMBER=<n>)
+       ACTIVITY_PROFILE="$P/<app-store-activity-uuid>.mobileprovision" PARAKEET_BUNDLE_DIR=/path/to/bundle BUILD_NUMBER=<n>)
 make -C iOS ipa appstore-check "${STORE[@]}"          # build/appstore/LocalFlow.ipa, checked locally
 make -C iOS appstore-validate "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<issuer id>   # Apple's checks
 make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<issuer id>     # to App Store Connect
@@ -282,18 +289,20 @@ make -C iOS appstore-upload "${STORE[@]}" ASC_KEY_ID=<key id> ASC_ISSUER_ID=<iss
   (`CFBundleShortVersionString`, in `Config/*-Info.plist`).
 - `appstore-check` (`scripts/check-appstore-bundle.sh`) reads only the build,
   and checks the app inside the `.ipa`. It checks:
-  - the identifiers and matching versions of both bundles, and a universal
-    keyboard
+  - the identifiers and matching versions of all three bundles, a universal
+    keyboard and Live Activity, exactly those two extensions, the
+    WidgetKit extension point and `NSSupportsLiveActivities`
   - the compiled, opaque 1024-pixel icon
-  - both privacy manifests, with only reasons Apple defines
+  - the three privacy manifests, with only reasons Apple defines
   - the Xcode build metadata and export compliance
   - the model, and that no self-test code is present
   - the distribution signature, and unexpired App Store profiles that
     authorize the signing certificate
   - the entitlements: no `get-task-allow`, `beta-reports-active` for
-    TestFlight, the App Group, and Associated Domains
-    `applinks:wildernesslabs.ai` on the app only, granted by its profile
-  - `LocalFlowUniversalLink` in both Info.plists
+    TestFlight, the App Group (none on the Live Activity), and Associated
+    Domains `applinks:wildernesslabs.ai` on the app only, granted by its
+    profile
+  - `LocalFlowUniversalLink` in the app's and the keyboard's Info.plists
   - the `.ipa` layout
 - `appstore-validate` and `appstore-upload` send the `.ipa` to Apple. They run
   `appstore-check` first, and nothing else ever runs them.
@@ -332,6 +341,11 @@ dev builds.
     hide the keyboard, or 30 s pass.
   - It removes text only as far as the visible context proves it was the
     dictation.
+  - Start's dot shows the session: green while one is on, amber while none
+    is (Start then opens LocalFlow).
+  - **Left-handed** (Home → Keyboard, off by default; applies the next time
+    the keyboard appears) puts Start, the recording and Cancel at the bar's
+    left and the menu at its right.
 - **Typing:** a basic QWERTY layer with `123` and `#+=`. It has Apple-style
   shift (double-tap for caps lock), auto-capitalization and the double-space
   period. Keys play a light haptic (Typing haptics, on by default; needs Full
@@ -359,6 +373,18 @@ dev builds.
   and cannot be replaced. Turning off Settings → General → Keyboard → Enable
   Dictation hides Apple's microphone system-wide.
 
+## The session in the Dynamic Island
+
+While a session is on, it shows as a Live Activity in the Dynamic Island and
+on the Lock Screen: ready with the time left, recording with its elapsed time,
+then transcribing (or preparing the model), and gone the moment the session
+ends. Tapping it opens LocalFlow. It carries only the session's phase and its
+timer dates, never a transcript, audio or anything about the app you dictate
+into, and the app sends it nothing over the network. iOS asks once whether to
+allow Live Activities from LocalFlow; with them off (Settings → LocalFlow →
+Live Activities) the session works the same and the app never asks again.
+ARCHITECTURE.md, "Live Activity", has the rules.
+
 ## Reporting a bug
 
 Open **Report a bug** on the app's home screen, then **Write email** to open a
@@ -385,15 +411,18 @@ Setup and session:
 - [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Try it, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
 - [ ] Universal-link bounce (TestFlight, or a dev build with `UNIVERSAL_LINK=https://wildernesslabs.ai/localflow-dev/dictate`): Start in another app opens LocalFlow, never Safari, from a cold launch and from the background; the menu's "Open LocalFlow" does too. With the association file unreachable or the app not associated (for example a fresh install before iOS fetches it), the keyboard shows "Open LocalFlow" and nothing else opens. Tapping the link in Notes opens LocalFlow without recording.
+- [ ] Live Activity (iPhone with a Dynamic Island, and one without, for the Lock Screen and the banner): starting a session shows the mark in the island; Start on the keyboard in another app grows the coral dot and the elapsed time, Stop gives way to the transcribing glyph (preparing first after a restart) and then back to ready, each change quick and calm; long-press shows the expanded view with the timer glyph and the time left, or the recording time; with another app's Live Activity running, the minimal view; the Lock Screen view in dark and light; it goes at End session, idle expiry and a phone call; after force-quitting LocalFlow the activity reads "Session ended" once its time is past, and the next launch removes it; with Live Activities off, nothing shows and LocalFlow never asks. No sound or screen wake on any change. Simulator verification (iPhone 17 Pro, iOS 26.4, synthetic microphone, recorded with `simctl io recordVideo`, since screenshots leave out the island) passed on 2026-11-01 for the compact and expanded island, the Lock Screen in dark and light, End session, idle expiry, a killed app's "Session ended" and its removal at the next launch. Not yet checked: the minimal view (no other Live Activity source in the simulator), a phone call, Live Activities turned off, and a device.
 - [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
-- [ ] Model readiness: start a session, then Diagnostics → Release model now; the model stays "Not prepared yet" while idle, and the keyboard's idle line reads "Model loads when you dictate". Swipe to another app and tap Start: the bar reads "Listening · preparing model" while preparation runs, and after Stop the Start capsule shows a spinner labelled "Preparing" (also with a swipe candidate strip or the Insert last chip showing) until the transcript inserts (brief on a warm model; long after a cold preparation). Tapping Start right after the session starts shows "Preparing model…" before the tap. Release the model again during a dictation: it is released only after the dictation ends.
+- [ ] Model readiness: start a session, then Diagnostics → Release model now; the model stays "Not prepared yet" while idle, and the keyboard's Start keeps its aurora dot (VoiceOver: "Model loads when you dictate"). Swipe to another app and tap Start: the recording island records while preparation runs (VoiceOver: "Model loading"), and after Stop the wait's shimmer pill shows (also with a swipe candidate strip or the Insert last chip showing) until the transcript inserts (brief on a warm model; long after a cold preparation). While the model prepares with the keyboard idle, Start's dot breathes. Release the model again during a dictation: it is released only after the dictation ends.
+- [ ] Status glyphs: with a session, Start's mark dot is aurora and the bar's middle is empty; with none it is ember, and Start stays Start while iOS asks to open LocalFlow (declining leaves it as it was, with "Open LocalFlow to start a session"); VoiceOver reads the session's time left from Start.
+- [ ] Left-handed (Home → Keyboard, off by default; applies the next time the keyboard appears): Start and the recording island at the bar's left, Cancel on the island's right in reach of the left thumb, the menu at the right; Stop's reach takes q and w while recording and p still types; Cancel and Undo work; off, the bar is as before.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
 - [ ] Headphones notice: with AirPods connected and Use iPhone microphone on, the bounce's Listening screen reads "Recording from your iPhone, not your headphones"; with it off, "Recording through your headphones"; with no headphones, no notice. Connecting or disconnecting them while Listening updates it. On an SE-size iPhone while the model prepares, Stop and Cancel stay on screen and the rest scrolls. Simulator verification (synthetic route, `E2E_HEADPHONES`, iPhone 17 Pro and iPhone SE) passed on 2026-10-29; device check pending.
 - [ ] Field binding: dictate into Try it field A, switch to field B mid-request; no auto-insert into B, and the chip appears.
 - [ ] Undo: removes exactly the dictation; disappears after typing, cursor moves, 30 s, or hiding the keyboard.
 - [ ] Kill LocalFlow during recording: the request reports interrupted and never restarts; no result file remains.
 - [ ] Battery: 30 min idle session vs no session (and vs Wispr Flow if installed).
-- [ ] Device lock: with a session open, lock; the orange indicator stays on the lock screen. Unlock and dictate from another app without opening LocalFlow. Lock during a dictation: it is cancelled and the keyboard shows "Dictation stopped when iPhone locked". Leave it locked past the session length: the session ends and the indicator disappears. Then unlock and tap the microphone in another app: the first bounce starts a new session, with no "iPhone was locked" screen. Swipe back during a dictation, let it finish, then open LocalFlow from the Home Screen: it shows Home, not the old bounce screen.
+- [ ] Device lock: with a session open, lock; the orange indicator stays on the lock screen. Unlock and dictate from another app without opening LocalFlow. Lock during a dictation: it is cancelled and the keyboard shows "Dictation stopped when iPhone locked". Leave it locked past the session length: the session ends and the indicator disappears. Then unlock and tap Start on the keyboard in another app: the first bounce starts a new session, with no "iPhone was locked" screen. Swipe back during a dictation, let it finish, then open LocalFlow from the Home Screen: it shows Home, not the old bounce screen.
 - [ ] Peak memory during a 5-minute dictation; no jetsam in the background.
 
 Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practice):
@@ -410,3 +439,10 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
 - [ ] Haptics only with Full Access; Typing haptics on key-down, off when the setting is off; VoiceOver labels; dark mode; landscape; SE-size layout.
 - [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.
+- [ ] Same height everywhere: the keyboard's top edge sits at the same height in Try it (fresh, and after visiting other apps), Messages, Safari (address bar and a page field), Notes and Contacts, in portrait and landscape, with no band above the top row.
+- [ ] Field keys: "@" and "." beside a narrower space bar in an email field (Contacts → new contact → email); ".", "/" and ".com" in a URL field (Contacts → URL), holding ".com" offers .org/.net/.edu/.us; "." beside space in Safari's address bar. No emoji key in email and URL fields.
+- [ ] Press-and-hold: holding e, a, o, n, s, c, - . ' " $ ? ! shows the choices; sliding picks, lifting types; lifting without moving types the key itself. Fast typing, swipes, the callout, held delete and the space-bar trackpad are unchanged.
+- [ ] Emoji: the face key opens the panel at the same height; recents first after use, the jump bar scrolls to a category, a tap inserts, delete and ABC work, recents survive a keyboard restart without Full Access.
+- [ ] Return key: in a field with `enablesReturnKeyAutomatically` (Messages, Safari's address bar) Return looks disabled and does nothing while empty, and enables with the first character, typed or dictated.
+- [ ] Menu: the keys dim under it, a tap outside the card closes it; it fits or scrolls in landscape and at the largest accessibility text sizes; "Full width" / "Chat bubble" switches the cursor's text width for this kind of field.
+- [ ] Appearance and accessibility: a field asking for a dark keyboard gets one, others follow the system (Safari's address bar stays dark in dark mode); Bold Text, Increase Contrast and Reduce Motion as in ARCHITECTURE.md ("Top row").

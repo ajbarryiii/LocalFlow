@@ -1,7 +1,20 @@
 import Foundation
 
 enum KeyboardLayer: Equatable, Sendable {
-    case letters, numbers, symbols
+    /// `emoji` is the emoji panel: its grid and jump bar are drawn by the keyboard, and its only keys are the
+    /// bottom row's (`KeyboardLayout.keys`).
+    case letters, numbers, symbols, emoji
+}
+
+/// The kind of field, from its keyboard type. Only the bottom row differs (ARCHITECTURE.md, "Layout and keys"):
+/// email fields get "@" and "." beside a narrower space bar, URL fields ".", "/" and ".com" in place of the space
+/// bar, as on Apple's keyboard, and web search fields a "." beside the space bar. Everything else is `standard`.
+enum KeyboardField: Equatable, Sendable {
+    case standard, email, url, webSearch
+
+    /// The bottom row has the emoji key everywhere but in email and URL fields, where an emoji is never wanted and
+    /// the field's own keys need the room.
+    var showsEmojiKey: Bool { self == .standard || self == .webSearch }
 }
 
 enum KeyAction: Hashable, Sendable {
@@ -63,6 +76,9 @@ struct KeyboardMetrics: Equatable, Sendable {
     var keyGap: Double
     var sideMargin: Double
 
+    /// The keys' corner radius, in points.
+    static let keyCornerRadius: Double = 8.5
+
     /// Portrait key-area height (Apple's keys without the predictive bar).
     static let regularHeight: Double = 216
     static let compactHeight: Double = 162
@@ -107,6 +123,19 @@ struct KeyboardMetrics: Equatable, Sendable {
         return KeyRect(x: capsule.x + startHitInset, y: 0, width: max(capsule.width - 2 * startHitInset, 0), height: max(bottom, 0))
     }
 
+    /// Cancel's tap area is this wide, and as tall where the bar has room (Opus, round 8: a tap 2 points beside its
+    /// 32-point circle typed a letter).
+    static let cancelHitSize: Double = 44
+
+    /// Cancel's tap area, in the bar's coordinates, from its circle there: `cancelHitSize` wide about the circle, and as
+    /// tall up to the bottom of the bar's controls, above the strip that goes to the keys (`reachAboveKeys`), so it never
+    /// reaches into the keys. ARCHITECTURE.md, "Reach and touch regions".
+    static func cancelTapArea(circle: KeyRect, barHeight: Double, compact: Bool) -> KeyRect {
+        let bottom = barHeight - reachAboveKeys(compact: compact)
+        let top = max(0, bottom - cancelHitSize)
+        return KeyRect(x: circle.midX - cancelHitSize / 2, y: top, width: cancelHitSize, height: bottom - top)
+    }
+
     /// Whether a touch at (x, y) in the key area's coordinates is the Start capsule's: inside `start`, its tap area
     /// in the bar's coordinates, which reaches into the keys only while capturing (an edge is the capsule's).
     static func keyPointGoesToStart(x: Double, y: Double, barHeight: Double, start: KeyRect?) -> Bool {
@@ -139,12 +168,20 @@ enum KeyboardLayout {
     static let numberRows = ["1234567890", "-/:;()$&@\"", ".,?!'"]
     static let symbolRows = ["[]{}#%^*+=", "_\\|~<>€£¥•", ".,?!'"]
 
-    static func keys(for layer: KeyboardLayer, metrics: KeyboardMetrics, showsGlobe: Bool) -> [PlacedKey] {
+    /// The URL field's key that types a whole domain ending; holding it offers others (`KeyAlternates`).
+    static let dotCom = ".com"
+
+    /// Every key of `layer` for a field of kind `field`. The letter, number and symbol rows are the same in every
+    /// field; only the bottom row differs (`KeyboardField`). The emoji layer has the bottom row's layer key, the
+    /// globe and delete; its grid and jump bar fill the rest (`emojiGridFrame`, `emojiJumpBarFrame`).
+    static func keys(for layer: KeyboardLayer, metrics: KeyboardMetrics, showsGlobe: Bool,
+                     field: KeyboardField = .standard) -> [PlacedKey] {
         let rows: [String]
         switch layer {
         case .letters: rows = letterRows
         case .numbers: rows = numberRows
         case .symbols: rows = symbolRows
+        case .emoji: return emojiKeys(metrics: metrics, showsGlobe: showsGlobe)
         }
         let m = metrics
         var keys: [PlacedKey] = []
@@ -189,10 +226,63 @@ enum KeyboardLayout {
             add(.nextKeyboard, "", x: x, row: 3, width: m.wideWidth)
             x += m.wideWidth + m.keyGap
         }
+        if field.showsEmojiKey {
+            add(.layer(.emoji), "", x: x, row: 3, width: m.wideWidth)
+            x += m.wideWidth + m.keyGap
+        }
         let returnX = m.width - m.sideMargin - m.returnWidth
-        add(.space, "space", x: x, row: 3, width: max(returnX - m.keyGap - x, 1))
+        let end = returnX - m.keyGap
+        // The field's own keys, right of the space bar (or in its place), on the letters layer only.
+        let fieldKeys: [String]
+        switch (layer, field) {
+        case (.letters, .email): fieldKeys = ["@", "."]
+        case (.letters, .webSearch): fieldKeys = ["."]
+        case (.letters, .url): fieldKeys = [".", "/", dotCom]
+        default: fieldKeys = []
+        }
+        if layer == .letters, field == .url {
+            // No space bar, as on Apple's URL keyboard: the three keys share its room.
+            let count = Double(fieldKeys.count)
+            let width = (end - x - (count - 1) * m.keyGap) / count
+            for (index, text) in fieldKeys.enumerated() {
+                add(.character(text), text, x: x + Double(index) * (width + m.keyGap), row: 3, width: width)
+            }
+        } else {
+            let fieldWidth = Double(fieldKeys.count) * (m.letterWidth + m.keyGap)
+            add(.space, "space", x: x, row: 3, width: max(end - fieldWidth - x, 1))
+            for (index, text) in fieldKeys.enumerated() {
+                add(.character(text), text, x: end - fieldWidth + m.keyGap + Double(index) * (m.letterWidth + m.keyGap),
+                    row: 3, width: m.letterWidth)
+            }
+        }
         add(.returnKey, "", x: returnX, row: 3, width: m.returnWidth)
         return keys
+    }
+
+    /// The emoji panel's keys: the layer key back to letters ("ABC") and the globe at the left of the bottom row and
+    /// delete at its right, where they are on the letters layer.
+    private static func emojiKeys(metrics m: KeyboardMetrics, showsGlobe: Bool) -> [PlacedKey] {
+        func key(_ action: KeyAction, _ label: String, x: Double) -> PlacedKey {
+            PlacedKey(action: action, frame: KeyRect(x: x, y: m.rowY(3), width: m.wideWidth, height: m.rowHeight), label: label)
+        }
+        var keys = [key(.layer(.letters), "ABC", x: m.sideMargin)]
+        if showsGlobe { keys.append(key(.nextKeyboard, "", x: m.sideMargin + m.wideWidth + m.keyGap)) }
+        keys.append(key(.delete, "", x: m.width - m.sideMargin - m.wideWidth))
+        return keys
+    }
+
+    /// The emoji panel's scrolling grid: the whole key area above the bottom row, to half the row gap above it.
+    static func emojiGridFrame(metrics m: KeyboardMetrics) -> KeyRect {
+        KeyRect(x: 0, y: 0, width: m.width, height: m.rowY(3) - m.rowGap / 2)
+    }
+
+    /// The emoji panel's category jump bar: between its left keys and delete, from the grid down to the bottom, so
+    /// no point of the panel goes to a key far from it.
+    static func emojiJumpBarFrame(metrics m: KeyboardMetrics, showsGlobe: Bool) -> KeyRect {
+        let left = m.sideMargin + Double(showsGlobe ? 2 : 1) * (m.wideWidth + m.keyGap)
+        let right = m.width - m.sideMargin - m.wideWidth - m.keyGap
+        let top = emojiGridFrame(metrics: m).maxY
+        return KeyRect(x: left, y: top, width: max(right - left, 0), height: m.height - top)
     }
 
     /// The distance between neighbouring top-row letter (a–z) centres, or nil without two of them: on the letters

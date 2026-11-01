@@ -12,6 +12,7 @@ enum LocalFlowSettingsTests {
             ("cursorTouchRateIsRecordedAsNumbersOnly", testCursorTouchRateIsRecordedAsNumbersOnly),
             ("fieldLayoutChoicesAreContentFreeAndBounded", testFieldLayoutChoicesAreContentFreeAndBounded),
             ("typingSwitchesAreOnByDefaultAndStoreOff", testTypingSwitchesAreOnByDefaultAndStoreOff),
+            ("leftHandedIsOffByDefaultAndStoresOn", testLeftHandedIsOffByDefaultAndStoresOn),
         ]
     }
 
@@ -186,6 +187,25 @@ enum LocalFlowSettingsTests {
             defaults.set("on", forKey: "softKeyEdgesEnabled")
             TestSupport.expect(settings.autocorrectEnabled, "autocorrect invalid value")
             TestSupport.expect(settings.softKeyEdgesEnabled, "soft key edges invalid value")
+        }
+    }
+
+    /// Round 10 (owner, accessibility): "Left-handed" mirrors the keyboard's dictation controls. Unlike every other switch
+    /// it is off by default; it is stored in the App Group beside the keyboard's other settings, where the keyboard reads
+    /// it, and a stray non-Bool value reads as off.
+    private static func testLeftHandedIsOffByDefaultAndStoresOn() {
+        withSettings { settings, defaults in
+            TestSupport.expect(!settings.leftHanded, "left-handed is on by default")
+            settings.leftHanded = true
+            TestSupport.expect(LocalFlowSettings(defaults: defaults).leftHanded, "left-handed not stored")
+            TestSupport.expectEqual(defaults.object(forKey: "leftHanded") as? Bool, true)
+            // Independent of the other switches.
+            TestSupport.expect(settings.softKeyEdgesEnabled && settings.autocorrectEnabled && settings.keyHapticsEnabled,
+                               "left-handed changed another setting")
+            settings.leftHanded = false
+            TestSupport.expect(!LocalFlowSettings(defaults: defaults).leftHanded, "left-handed not stored off")
+            defaults.set("yes", forKey: "leftHanded")
+            TestSupport.expect(!settings.leftHanded, "a string reads as on")
         }
     }
 }

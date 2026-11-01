@@ -24,7 +24,7 @@ endif
 else ifneq ($(CHANNEL),dev)
 $(error CHANNEL must be dev or appstore)
 endif
-# Optional CFBundleVersion for both bundles, which App Store Connect requires to
+# Optional CFBundleVersion for every bundle, which App Store Connect requires to
 # grow with every upload of a version; empty keeps the template's.
 BUILD_NUMBER ?=
 ifneq ($(strip $(BUILD_NUMBER)),)
@@ -36,6 +36,7 @@ endif
 PLATFORM ?= simulator
 BUNDLE_ID ?= com.ajbarryiii.localflow.ios.dev
 KEYBOARD_BUNDLE_ID = $(BUNDLE_ID).keyboard
+ACTIVITY_BUNDLE_ID = $(BUNDLE_ID).activity
 APP_GROUP ?= group.$(BUNDLE_ID)
 URL_SCHEME ?= localflow-dev
 # The https URL the keyboard opens instead of <scheme>://dictate, universal-links-only, so iOS opens
@@ -52,6 +53,7 @@ SWIPE_BUNDLE_DIR ?=
 TEAM_ID ?=
 APP_PROFILE ?=
 KEYBOARD_PROFILE ?=
+ACTIVITY_PROFILE ?=
 BUILD_DIR ?= build/$(PLATFORM)
 SWIFT_FLAGS ?=
 # Optional keychain holding the signing identity (device builds signed over SSH).
@@ -112,6 +114,14 @@ BUILD_MACHINE_OS_BUILD := $(shell sw_vers -buildVersion 2>/dev/null)
 swift_sources = $(shell find $(1) -name '*.swift' -type f 2>/dev/null | LC_ALL=C sort)
 APP_SWIFT_SOURCES ?= $(call swift_sources,App)
 KEYBOARD_SWIFT_SOURCES ?= $(call swift_sources,Keyboard)
+# The session's Live Activity (ARCHITECTURE.md, "Live Activity"): the widget extension's views in Activity/, the
+# content state in ActivityCore/ (also the app's and the tests'), and the attributes, which the app requests.
+ACTIVITY_SWIFT_SOURCES ?= $(call swift_sources,Activity)
+ACTIVITYCORE_SOURCES ?= $(call swift_sources,ActivityCore)
+ACTIVITY_ATTRIBUTES_SOURCES ?= Activity/SessionActivityAttributes.swift
+# The ridge mark, drawn as the keyboard draws it; KeyboardLayout has its box type; DotWave the swell the strip shares with
+# the keyboard's wave. All are Foundation only.
+ACTIVITY_KEYBOARDCORE_SOURCES ?= KeyboardCore/RidgeMark.swift KeyboardCore/KeyboardLayout.swift KeyboardCore/DotWave.swift
 SHARED_SOURCES ?= $(call swift_sources,Shared)
 HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
@@ -132,16 +142,21 @@ DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenN
 # Fits a dictation to the text around the cursor, shared with the macOS app; Shared's
 # TextInsertionFormatter uses it, so the app, the keyboard and the host tests compile it.
 INSERTION_CONTEXT_SOURCES ?= ../Sources/InsertionContextFormatter.swift
-APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES)
+APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES) \
+	$(ACTIVITYCORE_SOURCES) $(ACTIVITY_ATTRIBUTES_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(KEYBOARDCORE_SOURCES)
+ACTIVITY_SOURCES = $(ACTIVITY_SWIFT_SOURCES) $(ACTIVITYCORE_SOURCES) $(ACTIVITY_KEYBOARDCORE_SOURCES)
 
 OBJ_DIR = $(BUILD_DIR)/obj
 APP_BUNDLE = $(BUILD_DIR)/LocalFlow.app
 APPEX_BUNDLE = $(APP_BUNDLE)/PlugIns/LocalFlowKeyboard.appex
+ACTIVITY_APPEX_BUNDLE = $(APP_BUNDLE)/PlugIns/LocalFlowActivity.appex
 APP_BINARY = $(OBJ_DIR)/LocalFlow
 KEYBOARD_BINARY = $(OBJ_DIR)/LocalFlowKeyboard
+ACTIVITY_BINARY = $(OBJ_DIR)/LocalFlowActivity
 APP_ENTITLEMENTS = $(OBJ_DIR)/LocalFlow.xcent
 KEYBOARD_ENTITLEMENTS = $(OBJ_DIR)/LocalFlowKeyboard.xcent
+ACTIVITY_ENTITLEMENTS = $(OBJ_DIR)/LocalFlowActivity.xcent
 APP_SIGNATURE = $(APP_BUNDLE)/_CodeSignature/CodeResources
 ICON_CATALOG = $(OBJ_DIR)/Assets.xcassets
 IPA = $(BUILD_DIR)/LocalFlow.ipa
@@ -164,6 +179,10 @@ SWIFT_PARALLEL_FLAGS = -j$(SWIFT_JOBS)
 SWIFT_COMMON_FLAGS = -swift-version 5 -parse-as-library -target $(TARGET) -sdk "$(SDK_PATH)" $(ACCELERATE_FLAGS) $(SWIFT_PARALLEL_FLAGS) $(SWIFT_FLAGS)
 KEYBOARD_SWIFT_FLAGS = -module-name LocalFlowKeyboard -application-extension
 KEYBOARD_LINK_FLAGS = -Xlinker -e -Xlinker _NSExtensionMain
+# A WidgetKit extension. As Xcode links every app extension, the entry point is _NSExtensionMain, which starts the
+# @main widget bundle; with the bundle's own main as the entry, the process exits as soon as WidgetKit launches it.
+ACTIVITY_SWIFT_FLAGS = -module-name LocalFlowActivity -application-extension
+ACTIVITY_LINK_FLAGS = $(KEYBOARD_LINK_FLAGS)
 
 ifeq ($(PLATFORM),simulator)
 # The simulator reads entitlements from these sections, as Xcode arranges for
@@ -172,18 +191,27 @@ embedded_entitlements = -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlem
 	-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$(1).der"
 LINKED_APP_ENTITLEMENTS = $(APP_ENTITLEMENTS)
 LINKED_KEYBOARD_ENTITLEMENTS = $(KEYBOARD_ENTITLEMENTS)
+LINKED_ACTIVITY_ENTITLEMENTS = $(ACTIVITY_ENTITLEMENTS)
 SIGNED_APP_ENTITLEMENTS =
 SIGNED_KEYBOARD_ENTITLEMENTS =
+SIGNED_ACTIVITY_ENTITLEMENTS =
 else
 embedded_entitlements =
 LINKED_APP_ENTITLEMENTS =
 LINKED_KEYBOARD_ENTITLEMENTS =
+LINKED_ACTIVITY_ENTITLEMENTS =
 SIGNED_APP_ENTITLEMENTS = --entitlements "$(APP_ENTITLEMENTS)"
 SIGNED_KEYBOARD_ENTITLEMENTS = --entitlements "$(KEYBOARD_ENTITLEMENTS)"
+SIGNED_ACTIVITY_ENTITLEMENTS = --entitlements "$(ACTIVITY_ENTITLEMENTS)"
 endif
 
-# $(1): template, $(2): output, $(3): bundle identifier.
-info_plist = cp "$(1)" "$(2)" && \
+# $(1): template, $(2): output, $(3): bundle identifier. The activity extension's (info_plist_base) has no
+# LocalFlow keys: it reads neither the App Group nor the scheme.
+info_plist = $(call info_plist_base,$(1),$(2),$(3)) && \
+	plutil -replace LocalFlowAppGroupIdentifier -string "$(APP_GROUP)" "$(2)" && \
+	$(if $(strip $(UNIVERSAL_LINK)),plutil -replace LocalFlowUniversalLink -string "$(UNIVERSAL_LINK)" "$(2)" &&) \
+	plutil -replace LocalFlowURLScheme -string "$(URL_SCHEME)" "$(2)"
+info_plist_base = cp "$(1)" "$(2)" && \
 	plutil -replace CFBundleIdentifier -string "$(3)" "$(2)" && \
 	plutil -replace CFBundleDisplayName -string "$(DISPLAY_NAME)" "$(2)" && \
 	plutil -replace CFBundleSupportedPlatforms -json '["$(SUPPORTED_PLATFORM)"]' "$(2)" && \
@@ -197,19 +225,16 @@ info_plist = cp "$(1)" "$(2)" && \
 	plutil -replace DTCompiler -string com.apple.compilers.llvm.clang.1_0 "$(2)" && \
 	plutil -replace BuildMachineOSBuild -string "$(BUILD_MACHINE_OS_BUILD)" "$(2)" && \
 	$(if $(strip $(BUILD_NUMBER)),plutil -replace CFBundleVersion -string "$(BUILD_NUMBER)" "$(2)" &&) \
-	plutil -replace MinimumOSVersion -string "$(DEPLOYMENT_TARGET)" "$(2)" && \
-	plutil -replace LocalFlowAppGroupIdentifier -string "$(APP_GROUP)" "$(2)" && \
-	$(if $(strip $(UNIVERSAL_LINK)),plutil -replace LocalFlowUniversalLink -string "$(UNIVERSAL_LINK)" "$(2)" &&) \
-	plutil -replace LocalFlowURLScheme -string "$(URL_SCHEME)" "$(2)"
+	plutil -replace MinimumOSVersion -string "$(DEPLOYMENT_TARGET)" "$(2)"
 
 .PHONY: all binaries check typecheck test lint install-sim run-sim smoke-sim clean configuration parakeet-selection swipe-selection signing-requirements FORCE
 
 all: signing-requirements $(APP_SIGNATURE)
 
-binaries: $(APP_BINARY) $(KEYBOARD_BINARY)
+binaries: $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY)
 
 # Rebuild when identifiers, flags, signing inputs or source lists change.
-CONFIGURATION = $(CHANNEL)|$(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(UNIVERSAL_LINK)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)
+CONFIGURATION = $(CHANNEL)|$(PLATFORM)|$(BUNDLE_ID)|$(APP_GROUP)|$(URL_SCHEME)|$(UNIVERSAL_LINK)|$(DISPLAY_NAME)|$(DEPLOYMENT_TARGET)|$(SDK_PATH)|$(SWIFT_OPTIMIZATION)|$(SWIFT_FLAGS)|$(CODESIGN_IDENTITY)|$(TEAM_ID)|$(APP_PROFILE)|$(KEYBOARD_PROFILE)|$(ACTIVITY_PROFILE)|$(ICON_SOURCE)|$(XCODE_BUILD)|$(SDK_BUILD)|$(BUILD_NUMBER)|$(APP_SOURCES)|$(KEYBOARD_SOURCES)|$(ACTIVITY_SOURCES)
 configuration:
 	@mkdir -p "$(OBJ_DIR)"
 	@printf '%s\n' "$(CONFIGURATION)" > "$(CONFIG_STAMP).tmp"
@@ -247,11 +272,11 @@ FORCE:
 
 signing-requirements:
 ifeq ($(PLATFORM),device)
-	@if [ -z "$(TEAM_ID)" ] || [ -z "$(APP_PROFILE)" ] || [ -z "$(KEYBOARD_PROFILE)" ] || [ -z "$(CODESIGN_IDENTITY)" ] || [ "$(CODESIGN_IDENTITY)" = "-" ]; then \
-		echo "PLATFORM=device needs CODESIGN_IDENTITY, TEAM_ID, APP_PROFILE and KEYBOARD_PROFILE (see iOS/README.md)." >&2; \
+	@if [ -z "$(TEAM_ID)" ] || [ -z "$(APP_PROFILE)" ] || [ -z "$(KEYBOARD_PROFILE)" ] || [ -z "$(ACTIVITY_PROFILE)" ] || [ -z "$(CODESIGN_IDENTITY)" ] || [ "$(CODESIGN_IDENTITY)" = "-" ]; then \
+		echo "PLATFORM=device needs CODESIGN_IDENTITY, TEAM_ID, APP_PROFILE, KEYBOARD_PROFILE and ACTIVITY_PROFILE (see iOS/README.md)." >&2; \
 		echo "Use 'make PLATFORM=device binaries' to compile and link without signing." >&2; exit 1; \
 	fi
-	@for profile in "$(APP_PROFILE)" "$(KEYBOARD_PROFILE)"; do \
+	@for profile in "$(APP_PROFILE)" "$(KEYBOARD_PROFILE)" "$(ACTIVITY_PROFILE)"; do \
 		[ -f "$$profile" ] || { echo "Provisioning profile not found: $$profile" >&2; exit 1; }; \
 	done
 endif
@@ -259,6 +284,9 @@ ifeq ($(CHANNEL),appstore)
 	@[ -n "$(strip $(PARAKEET_BUNDLE_DIR))" ] || { echo "CHANNEL=appstore needs PARAKEET_BUNDLE_DIR (the model ships in the app)." >&2; exit 1; }
 endif
 
+# The app and the keyboard share the App Group; the activity extension has no capability at all.
+$(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS): ENTITLED_APP_GROUP = $(APP_GROUP)
+$(ACTIVITY_ENTITLEMENTS): ENTITLED_APP_GROUP =
 $(APP_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(BUNDLE_ID)
 $(APP_ENTITLEMENTS): ENTITLED_PROFILE = $(APP_PROFILE)
 $(APP_ENTITLEMENTS): $(wildcard $(APP_PROFILE))
@@ -268,11 +296,17 @@ $(KEYBOARD_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(KEYBOARD_BUNDLE_ID)
 $(KEYBOARD_ENTITLEMENTS): ENTITLED_PROFILE = $(KEYBOARD_PROFILE)
 $(KEYBOARD_ENTITLEMENTS): $(wildcard $(KEYBOARD_PROFILE))
 $(KEYBOARD_ENTITLEMENTS): ENTITLED_DOMAIN =
+$(ACTIVITY_ENTITLEMENTS): ENTITLED_BUNDLE_ID = $(ACTIVITY_BUNDLE_ID)
+$(ACTIVITY_ENTITLEMENTS): ENTITLED_PROFILE = $(ACTIVITY_PROFILE)
+$(ACTIVITY_ENTITLEMENTS): $(wildcard $(ACTIVITY_PROFILE))
+$(ACTIVITY_ENTITLEMENTS): ENTITLED_DOMAIN =
 
 $(OBJ_DIR)/%.xcent: Config/%.entitlements $(CONFIG_STAMP) Makefile | signing-requirements
 	@mkdir -p "$(@D)"
 	@cp "$<" "$@.tmp"
-	@/usr/libexec/PlistBuddy -c "Set :com.apple.security.application-groups:0 $(APP_GROUP)" "$@.tmp"
+	@if [ -n "$(ENTITLED_APP_GROUP)" ]; then \
+		/usr/libexec/PlistBuddy -c "Set :com.apple.security.application-groups:0 $(ENTITLED_APP_GROUP)" "$@.tmp"; \
+	fi
 	@if [ -n "$(ENTITLED_DOMAIN)" ]; then \
 		/usr/libexec/PlistBuddy -c "Add :com.apple.developer.associated-domains array" \
 			-c "Add :com.apple.developer.associated-domains:0 string $(ENTITLED_DOMAIN)" "$@.tmp"; \
@@ -284,8 +318,10 @@ ifeq ($(PLATFORM),device)
 	expected="$(TEAM_ID).$(ENTITLED_BUNDLE_ID)"; \
 	actual=$$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$$profile" 2>/dev/null); \
 	[ "$$actual" = "$$expected" ] || { echo "$(ENTITLED_PROFILE) is for '$$actual', expected '$$expected'." >&2; exit 1; }; \
-	/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" "$$profile" 2>/dev/null | tr -d ' ' | grep -Fqx "$(APP_GROUP)" || \
-		{ echo "$(ENTITLED_PROFILE) does not grant App Group $(APP_GROUP)." >&2; exit 1; }; \
+	if [ -n "$(ENTITLED_APP_GROUP)" ]; then \
+		/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.security.application-groups" "$$profile" 2>/dev/null | tr -d ' ' | grep -Fqx "$(ENTITLED_APP_GROUP)" || \
+			{ echo "$(ENTITLED_PROFILE) does not grant App Group $(ENTITLED_APP_GROUP)." >&2; exit 1; }; \
+	fi; \
 	if [ -n "$(ENTITLED_DOMAIN)" ]; then \
 		/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.developer.associated-domains" "$$profile" 2>/dev/null | tr -d ' ' | \
 			grep -Fqx -e "$(ENTITLED_DOMAIN)" -e '*' || \
@@ -326,23 +362,32 @@ $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITL
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_LINK_FLAGS) \
 		$(call embedded_entitlements,$(KEYBOARD_ENTITLEMENTS)) -o "$@" $(KEYBOARD_SOURCES)
 
-$(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS) Makefile \
-		Config/LocalFlow-Info.plist Config/LocalFlowKeyboard-Info.plist $(ICON_SOURCE) $(PARAKEET_STAMP) \
-		Config/LocalFlow-PrivacyInfo.xcprivacy Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy \
+$(ACTIVITY_BINARY): $(ACTIVITY_SOURCES) $(CONFIG_STAMP) $(LINKED_ACTIVITY_ENTITLEMENTS) Makefile
+	@mkdir -p "$(@D)"
+	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) $(ACTIVITY_SWIFT_FLAGS) $(ACTIVITY_LINK_FLAGS) \
+		$(call embedded_entitlements,$(ACTIVITY_ENTITLEMENTS)) -o "$@" $(ACTIVITY_SOURCES)
+
+$(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY) $(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS) \
+		$(ACTIVITY_ENTITLEMENTS) Makefile Config/LocalFlow-Info.plist Config/LocalFlowKeyboard-Info.plist \
+		Config/LocalFlowActivity-Info.plist $(ICON_SOURCE) $(PARAKEET_STAMP) Config/LocalFlow-PrivacyInfo.xcprivacy \
+		Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy Config/LocalFlowActivity-PrivacyInfo.xcprivacy \
 		$(wildcard ../Resources/Parakeet/*) ../scripts/label-localflow-model.py \
 		$(SWIPE_STAMP) $(wildcard ../Resources/Swipe/*)
-	@rm -rf "$(APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision"
-	@mkdir -p "$(APPEX_BUNDLE)"
+	@rm -rf "$(APPEX_BUNDLE)" "$(ACTIVITY_APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision"
+	@mkdir -p "$(APPEX_BUNDLE)" "$(ACTIVITY_APPEX_BUNDLE)"
 	@cp "$(APP_BINARY)" "$(APP_BUNDLE)/LocalFlow"
 	@cp "$(KEYBOARD_BINARY)" "$(APPEX_BUNDLE)/LocalFlowKeyboard"
+	@cp "$(ACTIVITY_BINARY)" "$(ACTIVITY_APPEX_BUNDLE)/LocalFlowActivity"
 	@$(call info_plist,Config/LocalFlow-Info.plist,$(APP_BUNDLE)/Info.plist,$(BUNDLE_ID))
 	@plutil -replace CFBundleURLTypes.0.CFBundleURLName -string "$(BUNDLE_ID)" "$(APP_BUNDLE)/Info.plist"
 	@plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes -json '["$(URL_SCHEME)"]' "$(APP_BUNDLE)/Info.plist"
 	@$(call info_plist,Config/LocalFlowKeyboard-Info.plist,$(APPEX_BUNDLE)/Info.plist,$(KEYBOARD_BUNDLE_ID))
-	@! grep -l '\$$(' "$(APP_BUNDLE)/Info.plist" "$(APPEX_BUNDLE)/Info.plist" || { echo "Unexpanded Info.plist placeholder" >&2; exit 1; }
+	@$(call info_plist_base,Config/LocalFlowActivity-Info.plist,$(ACTIVITY_APPEX_BUNDLE)/Info.plist,$(ACTIVITY_BUNDLE_ID))
+	@! grep -l '\$$(' "$(APP_BUNDLE)/Info.plist" "$(APPEX_BUNDLE)/Info.plist" "$(ACTIVITY_APPEX_BUNDLE)/Info.plist" || { echo "Unexpanded Info.plist placeholder" >&2; exit 1; }
 	@printf 'APPL????' > "$(APP_BUNDLE)/PkgInfo"
 	@cp Config/LocalFlow-PrivacyInfo.xcprivacy "$(APP_BUNDLE)/PrivacyInfo.xcprivacy"
 	@cp Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy "$(APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
+	@cp Config/LocalFlowActivity-PrivacyInfo.xcprivacy "$(ACTIVITY_APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
 	@# The icon source is a full-bleed square (Resources/ICON.md); iOS applies its
 	@# own mask. The App Store rejects an icon with an alpha channel, so it is
 	@# flattened (through JPEG at the best quality) before scaling to the single
@@ -408,9 +453,11 @@ endif
 ifeq ($(PLATFORM),device)
 	@cp "$(APP_PROFILE)" "$(APP_BUNDLE)/embedded.mobileprovision"
 	@cp "$(KEYBOARD_PROFILE)" "$(APPEX_BUNDLE)/embedded.mobileprovision"
+	@cp "$(ACTIVITY_PROFILE)" "$(ACTIVITY_APPEX_BUNDLE)/embedded.mobileprovision"
 endif
-	@# The extension is sealed inside the app, so it must be signed first.
+	@# The extensions are sealed inside the app, so they must be signed first.
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_KEYBOARD_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APPEX_BUNDLE)"
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_ACTIVITY_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(ACTIVITY_APPEX_BUNDLE)"
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_KEYCHAIN_FLAG) $(SIGNED_APP_ENTITLEMENTS) --timestamp=none --generate-entitlement-der "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
@@ -454,9 +501,11 @@ typecheck:
 	echo "Type-checking the app (self-test variant)"; \
 	xcrun --sdk iphonesimulator swiftc $$flags -D LOCALFLOW_SELFTEST -module-name LocalFlow $(APP_SOURCES); \
 	echo "Type-checking the keyboard"; \
-	xcrun --sdk iphonesimulator swiftc $$flags $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_SOURCES)
+	xcrun --sdk iphonesimulator swiftc $$flags $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_SOURCES); \
+	echo "Type-checking the Live Activity"; \
+	xcrun --sdk iphonesimulator swiftc $$flags $(ACTIVITY_SWIFT_FLAGS) $(ACTIVITY_SOURCES)
 
-# Shared, HostCore, KeyboardCore and the shared dictionary are Foundation-only, so their tests run on the Mac.
+# Shared, HostCore, ActivityCore, KeyboardCore and the shared dictionary are Foundation-only, so their tests run on the Mac.
 test:
 ifeq ($(strip $(TEST_SOURCES)),)
 	@echo "No iOS host tests yet; skipping."
@@ -464,7 +513,7 @@ else
 	@mkdir -p "$(HOST_BUILD_DIR)"
 	xcrun --sdk macosx swiftc -swift-version 5 -parse-as-library -warnings-as-errors $(SWIFT_PARALLEL_FLAGS) \
 		-sdk "$$(xcrun --sdk macosx --show-sdk-path)" -target $(HOST_TARGET) -module-name LocalFlowiOSTests \
-		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
+		-o "$(HOST_BUILD_DIR)/LocalFlowiOSTests" $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(ACTIVITYCORE_SOURCES) $(DICTIONARY_TEST_SOURCES) $(KEYBOARDCORE_SOURCES) $(KEYBOARD_TEST_SOURCES) $(TEST_SOURCES)
 	@"$(HOST_BUILD_DIR)/LocalFlowiOSTests"
 endif
 
