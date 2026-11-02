@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum HomeRoute: Hashable {
-    case tryIt, keyboardSetup, dictionary, diagnostics, reportBug
+    case keyboardSetup, dictionary, diagnostics, reportBug
 }
 
 struct HomeView: View {
@@ -15,7 +15,7 @@ struct HomeView: View {
         NavigationStack(path: $path) {
             List {
                 Section {
-                    SessionCard()
+                    SessionCard(transcriber: transcriber)
                 }
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
@@ -26,91 +26,85 @@ struct HomeView: View {
                 .listRowBackground(Theme.cardBackground)
 
                 Section {
-                    NavigationLink(value: HomeRoute.tryIt) {
-                        RowLabel(title: "Try it", detail: "Dictate into two test fields", symbol: "text.cursor")
-                    }
-                    .accessibilityIdentifier("home.tryIt")
                     NavigationLink(value: HomeRoute.keyboardSetup) {
-                        RowLabel(title: "Keyboard setup", detail: "Enable the keyboard and Full Access", symbol: "keyboard")
+                        RowLabel(title: "Keyboard setup", symbol: "keyboard")
                     }
+                    NavigationLink(value: HomeRoute.dictionary) {
+                        RowLabel(title: "Dictionary", symbol: "character.book.closed")
+                    }
+                    .accessibilityIdentifier("home.dictionary")
                 }
                 .listRowBackground(Theme.cardBackground)
 
                 Section {
-                    NavigationLink(value: HomeRoute.dictionary) {
-                        RowLabel(title: "Dictionary", detail: "Names and terms LocalFlow should recognize",
-                                 symbol: "character.book.closed")
+                    Picker("Session length", selection: $settings.sessionMinutes) {
+                        ForEach(LocalFlowSettings.sessionMinuteOptions, id: \.self) { Text("\($0) min").tag($0) }
                     }
-                    .accessibilityIdentifier("home.dictionary")
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Session length").font(.body)
-                        Picker("Session length", selection: $settings.sessionMinutes) {
-                            ForEach(LocalFlowSettings.sessionMinuteOptions, id: \.self) { Text("\($0) min").tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .accessibilityIdentifier("settings.sessionLength")
-                        Text("A session ends after this long without dictation.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    SettingToggle(title: "Spoken punctuation", detail: "Say “open paren … close paren” or “quote … end quote”.",
-                                  isOn: $settings.spokenDelimitersEnabled)
-                    SettingToggle(title: "Numbers as digits", detail: "“Twenty three percent” becomes “23%”.",
-                                  isOn: $settings.spokenNumbersEnabled)
-                    SettingToggle(title: "Press enter", detail: "End a dictation with “press enter” to send it.",
-                                  isOn: $settings.pressEnterEnabled)
-                    SettingToggle(title: "Haptics", detail: "Feedback when recording starts and stops.",
-                                  isOn: $settings.hapticsEnabled)
-                    SettingToggle(title: "Use iPhone microphone",
-                                  detail: "Keeps AirPods in high-quality audio and avoids Bluetooth delay, even with headphones connected.",
-                                  isOn: Binding(get: { preferences.useBuiltInMicrophone }, set: { host.setUseBuiltInMicrophone($0) }))
+                    .accessibilityHint("A session ends after this long without dictation")
+                    .accessibilityIdentifier("settings.sessionLength")
+                    // Its value stays secondary ink; only the switches take the section's tint.
+                    .tint(Theme.secondaryInk)
+                    Toggle("Spoken quotes and brackets", isOn: $settings.spokenDelimitersEnabled)
+                    Toggle("Numbers as digits", isOn: $settings.spokenNumbersEnabled)
+                    Toggle("Say “press enter” to send", isOn: $settings.pressEnterEnabled)
+                    Toggle("Haptics", isOn: $settings.hapticsEnabled)
+                    Toggle("Use iPhone microphone",
+                           isOn: Binding(get: { preferences.useBuiltInMicrophone }, set: { host.setUseBuiltInMicrophone($0) }))
                         .accessibilityIdentifier("settings.useBuiltInMicrophone")
                 } header: {
                     Text("Dictation")
                 }
                 .listRowBackground(Theme.cardBackground)
-                .tint(Theme.aurora)
+                .tint(Theme.toggle)
 
                 Section {
                     // The keyboard reads these when it next appears.
-                    SettingToggle(title: "Autocorrect",
-                                  detail: "Fixes typos when you tap space or punctuation; Delete right after puts your word back. Needs Full Access.",
-                                  isOn: $settings.autocorrectEnabled)
+                    FullAccessToggle(title: "Autocorrect", isOn: $settings.autocorrectEnabled)
                         .accessibilityIdentifier("settings.autocorrect")
-                    SettingToggle(title: "Soft key edges",
-                                  detail: "A tap near a key’s edge types the letter that fits what you’re writing. Needs Full Access.",
-                                  isOn: $settings.softKeyEdgesEnabled)
+                    FullAccessToggle(title: "Soft key edges", isOn: $settings.softKeyEdgesEnabled)
                         .accessibilityIdentifier("settings.softKeyEdges")
-                    SettingToggle(title: "Typing haptics", detail: "A light tap as you press each key. Needs Full Access.",
-                                  isOn: $settings.keyHapticsEnabled)
+                    FullAccessToggle(title: "Typing haptics", isOn: $settings.keyHapticsEnabled)
                         .accessibilityIdentifier("settings.keyHaptics")
-                    SettingToggle(title: "Left-handed", detail: "Puts Start and Cancel at the left of the keyboard's top row, and the menu and Undo at the right.",
-                                  isOn: $settings.leftHanded)
+                    Toggle("Left-handed", isOn: $settings.leftHanded)
                         .accessibilityIdentifier("settings.leftHanded")
                 } header: {
                     Text("Keyboard")
+                } footer: {
+                    // The app cannot tell whether Full Access is off, so the lock marks what needs it.
+                    Label("Needs Full Access", systemImage: "lock.fill")
+                        .labelStyle(FootnoteLabelStyle())
                 }
                 .listRowBackground(Theme.cardBackground)
-                .tint(Theme.aurora)
+                .tint(Theme.toggle)
 
                 Section {
                     NavigationLink(value: HomeRoute.diagnostics) {
-                        RowLabel(title: "Diagnostics", detail: "Measurements and cursor tuning", symbol: "gauge.with.dots.needle.67percent")
+                        RowLabel(title: "Diagnostics", symbol: "gauge.with.dots.needle.67percent")
                     }
                     .accessibilityIdentifier("home.diagnostics")
                     NavigationLink(value: HomeRoute.reportBug) {
-                        RowLabel(title: "Report a bug", detail: "Send feedback by email", symbol: "envelope")
+                        RowLabel(title: "Report a bug", symbol: "envelope")
                     }
                     .accessibilityIdentifier("home.reportBug")
                     Link(destination: URL(string: "https://ajbarryiii.github.io/LocalFlow/privacy.html")!) {
-                        RowLabel(title: "Privacy policy", detail: "Read how LocalFlow handles your data in your browser", symbol: "hand.raised")
+                        HStack {
+                            RowLabel(title: "Privacy policy", symbol: "hand.raised")
+                            Spacer(minLength: 8)
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Theme.secondaryInk)
+                                .accessibilityHidden(true)
+                        }
+                        .foregroundStyle(.white)
                     }
+                    .accessibilityHint("Opens in your browser")
                     .accessibilityIdentifier("home.privacyPolicy")
                 } footer: {
-                    Text("LocalFlow \(AppIdentity.version) · Nothing you say leaves this iPhone.")
+                    // No lock here: on Home the lock means "needs Full Access".
+                    Text("LocalFlow \(AppIdentity.version)")
                         .frame(maxWidth: .infinity)
                         .padding(.top, 8)
+                        .accessibilityLabel("LocalFlow \(AppIdentity.version). Nothing you say leaves this iPhone.")
                 }
                 .listRowBackground(Theme.cardBackground)
             }
@@ -119,7 +113,6 @@ struct HomeView: View {
             .navigationTitle("LocalFlow")
             .navigationDestination(for: HomeRoute.self) { route in
                 switch route {
-                case .tryIt: TryItView()
                 case .keyboardSetup: KeyboardSetupScreen()
                 case .dictionary: DictionaryView(dictionary: host.dictionary)
                 case .diagnostics: DiagnosticsView(transcriber: transcriber)
@@ -127,171 +120,242 @@ struct HomeView: View {
                 }
             }
         }
-        .tint(Theme.aurora)
+        .tint(.white)
     }
 }
 
-/// Start or end the Flow session; while it runs, how long it stays and what the orange dot means.
+/// The Flow session, as the Live Activity's Lock Screen shows it (`SessionCardState`): with no session, the Start pill
+/// with the mark, on the background; during one, a card with the mark and the state's dot, the state, the time left or
+/// recorded, the input's glyph and End. With the microphone off, Open Settings is the only action. At accessibility
+/// sizes the glyphs share one line and the words get the card's full width.
 private struct SessionCard: View {
     @EnvironmentObject private var host: HostSessionController
+    @ObservedObject var transcriber: ParakeetTranscriber
+    /// Read so the card looks at the microphone permission again on the way back from Settings.
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .headline) private var markSide: CGFloat = 30
+    @ScaledMetric(relativeTo: .body) private var pillMarkSide: CGFloat = 22
+
+    private var state: SessionCardState {
+        SessionCardState(session: host.session, permission: host.microphonePermission, sessionError: host.sessionError,
+                         dictation: host.dictation?.phase, dictationInProgress: host.isDictationInProgress,
+                         model: transcriber.modelState)
+    }
 
     var body: some View {
+        let state = state
+        let isCard = state.title != nil
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                switch host.session {
-                case .inactive:
-                    Circle().fill(Color.secondary.opacity(0.5)).frame(width: 10, height: 10)
-                    Text("No session").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                case .starting:
-                    ProgressView().controlSize(.small)
-                    Text("Starting…").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                case .active:
-                    PulsingDot(color: Theme.live)
-                    Text("Session on").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.live)
+            if let title = state.title {
+                if typeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 14) {
+                            mark(state)
+                            input(state)
+                        }
+                        words(title, state)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 12) {
+                        mark(state)
+                        words(title, state)
+                        Spacer(minLength: 0)
+                        input(state)
+                    }
                 }
-                Spacer()
-                if host.session == .active { remaining }
             }
 
-            if host.session == .active, let problem = host.microphoneRouting.problem {
+            if state.isSessionOn, let problem = host.microphoneRouting.problem {
                 // The choice could not be honored; dictation goes on with the other input.
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(Theme.ember)
-                    .accessibilityIdentifier("session.input")
-            } else if host.session == .active, let input = host.currentInput {
-                Label("Input: \(input.label)", systemImage: input == .builtInMic ? "iphone" : "headphones")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("session.input")
+                    .accessibilityIdentifier("session.inputProblem")
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.title2.bold()).fontDesign(.rounded)
-                Text(detail).font(.subheadline).foregroundStyle(.secondary)
-            }
-
-            if host.dictation?.phase == .recording, host.session == .active {
-                LevelBars(level: host.level).frame(maxWidth: .infinity)
-            }
-
-            if host.session == .active {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "mic.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(Theme.onAccent)
-                        .frame(width: 22, height: 22)
-                        .background(Theme.live, in: Circle())
-                    Text("iOS shows the orange microphone indicator while a session is on. Between dictations, audio is dropped the moment it arrives; nothing is kept or saved.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .background(Theme.live.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            if let error = host.sessionError, host.session == .inactive {
+            if state == .off, let error = host.sessionError {
                 Label(error.message, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(Theme.ember)
             }
 
-            switch host.session {
-            case .inactive:
-                Button {
-                    host.startSession()
-                } label: {
-                    Label("Start session", systemImage: "mic.fill")
+            action(state)
+        }
+        // No session: the pill sits on the background, as the keyboard's Start sits on its bar.
+        .padding(isCard ? 16 : 0)
+        .background(isCard ? Theme.cardBackground : .clear, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    /// The mark with the state's dot, or the microphone-off glyph; it stops growing at the largest sizes.
+    @ViewBuilder
+    private func mark(_ state: SessionCardState) -> some View {
+        let side = min(markSide, 40)
+        if let accent = state.accent {
+            RidgeMarkView(dot: Theme.color(accent), side: side)
+                .animation(.snappy(duration: 0.28), value: accent)
+        } else {
+            Image(systemName: "mic.slash.fill")
+                .font(.title3)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .foregroundStyle(Theme.ember)
+                .frame(width: side, height: side)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func words(_ title: String, _ state: SessionCardState) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.headline)
+            if state.reservesDetailLine {
+                detail(state)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(Theme.secondaryInk)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("session.state")
+    }
+
+    @ViewBuilder
+    private func input(_ state: SessionCardState) -> some View {
+        if state.isSessionOn, let input = host.currentInput {
+            Image(systemName: input == .builtInMic ? "iphone" : "headphones")
+                .font(.body)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .foregroundStyle(Theme.secondaryInk)
+                .accessibilityLabel("Input: \(input.label)")
+                .accessibilityIdentifier("session.input")
+        }
+    }
+
+    /// One line under the state, kept while a session runs so the card keeps its height (`reservesDetailLine`).
+    @ViewBuilder
+    private func detail(_ state: SessionCardState) -> some View {
+        switch state {
+        case .ready:
+            if let expiresAt = host.sessionExpiresAt {
+                // Spoken as one sentence (`SessionCountdown`), brought up to date each second.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    HStack(spacing: 5) {
+                        Image(systemName: SessionActivityState.countdownSymbol)
+                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        Text("\(Text(timerInterval: min(Date.now, expiresAt) ... expiresAt, countsDown: true, showsHours: false)) \(SessionActivityState.lockScreenCountdownTail)")
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(SessionCountdown.spoken(
+                        secondsLeft: Int(expiresAt.timeIntervalSince(context.date).rounded(.down))))
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .accessibilityIdentifier("session.start")
-                if host.sessionError == .microphonePermissionDenied || host.microphonePermission == .denied {
-                    Button("Open Settings") { AppIdentity.openSettings() }.buttonStyle(SecondaryButtonStyle())
+            } else {
+                Text(verbatim: " ")
+            }
+        case .listening:
+            if host.dictation?.phase == .recording, let startedAt = host.dictation?.startedAt {
+                HStack(spacing: 6) {
+                    Circle().fill(Theme.coral).frame(width: 7, height: 7).accessibilityHidden(true)
+                    Text(timerInterval: startedAt ... Date.distantFuture, countsDown: false)
                 }
-            case .starting:
-                Button("Starting…") {}.buttonStyle(PrimaryButtonStyle()).disabled(true)
-            case .active:
-                Button {
-                    host.endSession()
-                } label: {
+            } else {
+                Text(verbatim: " ")
+            }
+        default:
+            Text(verbatim: " ").accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func action(_ state: SessionCardState) -> some View {
+        switch state {
+        case .off, .starting:
+            Button {
+                host.startSession()
+            } label: {
+                // The words take the width first: the glyph goes where both don't fit on one line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        RidgeMarkView(dot: Theme.aurora, side: min(pillMarkSide, 30))
+                        Text("Start session")
+                    }
+                    Text("Start session")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(state == .starting)
+            .accessibilityIdentifier("session.start")
+        case .microphoneOff:
+            Button {
+                AppIdentity.openSettings()
+            } label: {
+                ViewThatFits(in: .horizontal) {
+                    Label("Open Settings", systemImage: "gear")
+                    Text("Open Settings")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .accessibilityIdentifier("session.openSettings")
+        case .ready, .listening, .transcribing, .preparing:
+            Button {
+                host.endSession()
+            } label: {
+                ViewThatFits(in: .horizontal) {
                     Label("End session", systemImage: "stop.fill")
-                }
-                .buttonStyle(SecondaryButtonStyle(tint: Theme.coral))
-                .accessibilityIdentifier("session.end")
-            }
-        }
-        .padding(20)
-        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .animation(.snappy, value: host.session)
-    }
-
-    private var title: String {
-        switch (host.session, host.dictation?.phase, host.isDictationInProgress) {
-        case (_, .recording?, true): return "Listening…"
-        case (_, .transcribing?, true): return "Transcribing…"
-        case (.active, _, _): return "Ready when you are"
-        case (.starting, _, _): return "Starting the microphone"
-        default: return "Start a Flow session"
-        }
-    }
-
-    private var detail: String {
-        switch host.session {
-        case .inactive:
-            return "A session keeps the microphone ready, so you can dictate from the LocalFlow keyboard in any app without coming back here."
-        case .starting:
-            return "Getting the microphone ready…"
-        case .active:
-            return "Switch to any app, choose the LocalFlow keyboard and tap Start."
-        }
-    }
-
-    private var remaining: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Group {
-                if let expiresAt = host.sessionExpiresAt {
-                    let seconds = max(0, Int(expiresAt.timeIntervalSince(context.date).rounded(.up)))
-                    Text("Ends in \(Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond)))")
-                } else {
-                    Text("Dictating")
+                    Text("End session")
                 }
             }
-            .font(.footnote.weight(.medium))
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
+            .buttonStyle(PrimaryButtonStyle())
+            .accessibilityIdentifier("session.end")
         }
     }
 }
 
+/// A row's glyph and title. At accessibility sizes the glyph stops growing beside the wrapping title, and gives the
+/// title its width where a word would otherwise break.
 private struct RowLabel: View {
     var title: String
-    var detail: String
     var symbol: String
 
     var body: some View {
-        HStack(spacing: 14) {
-            SymbolTile(systemName: symbol)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.body)
-                Text(detail).font(.footnote).foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                SymbolTile(systemName: symbol)
+                WordWidth {
+                    Text(title)
+                    ForEach(Array(title.split(separator: " ").enumerated()), id: \.offset) { Text($0.element).hidden() }
+                }
             }
+            Text(title)
         }
         .padding(.vertical, 2)
     }
 }
 
-private struct SettingToggle: View {
+/// Its first view at the width offered, which ideally asks only for the width of its widest other view (the title's
+/// words), so `ViewThatFits` keeps the row's glyph while the title wraps between words.
+private struct WordWidth: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        let width = proposal.width ?? subviews.dropFirst().map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        return text.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        for word in subviews.dropFirst() { word.place(at: bounds.origin, proposal: .zero) }
+    }
+}
+
+/// A keyboard setting that works only with Full Access: a small lock after its title, inside its text, so it wraps
+/// with the words at accessibility sizes rather than taking their width.
+private struct FullAccessToggle: View {
     var title: String
-    var detail: String
     @Binding var isOn: Bool
 
     var body: some View {
         Toggle(isOn: $isOn) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail).font(.footnote).foregroundStyle(.secondary)
-            }
+            Text("\(title) \(Text(Image(systemName: "lock.fill")).font(.caption2).foregroundStyle(Theme.secondaryInk))")
         }
+        .accessibilityLabel(title)
+        .accessibilityHint("Needs Full Access")
     }
 }
 

@@ -75,7 +75,7 @@ enum MicrophoneRouting: Equatable, Sendable {
         case .other?, .builtInMic?: using = "Using another microphone"
         case nil: using = "No microphone available"
         }
-        return "\(using): couldn't switch to iPhone microphone"
+        return "\(using): couldn’t switch to iPhone microphone"
     }
 }
 

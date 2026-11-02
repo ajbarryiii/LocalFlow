@@ -150,7 +150,7 @@ it on `LocalFlow-E2E` (`E2E_SIM_DEVICE`). It generates the invented
 real-time-paced synthetic source. The Mac microphone is never used, and a
 requested but unusable synthetic source fails closed rather than falling back
 to the real microphone. `E2E_SCREEN` accepts `onboarding`,
-`onboarding-microphone|keyboard|model`, `home`, `tryit`, `keyboard-setup` and
+`onboarding-microphone|keyboard|model`, `home`, `keyboard-setup` and
 `diagnostics`. `E2E_HEADPHONES` sets the route the synthetic microphone
 reports: `bluetooth` stands in for AirPods, with the input following "Use
 iPhone microphone" as iOS routes them, and `none` for the iPhone microphone
@@ -408,7 +408,7 @@ Setup and session:
 - [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
 - [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
 - [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
-- [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Try it, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
+- [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
 - [ ] Universal-link bounce (TestFlight, or a dev build with `UNIVERSAL_LINK=https://wildernesslabs.ai/localflow-dev/dictate`): Start in another app opens LocalFlow, never Safari, from a cold launch and from the background; the menu's "Open LocalFlow" does too. With the association file unreachable or the app not associated (for example a fresh install before iOS fetches it), the keyboard shows "Open LocalFlow" and nothing else opens. Tapping the link in Notes opens LocalFlow without recording.
 - [ ] Live Activity (iPhone with a Dynamic Island, and one without, for the Lock Screen and the banner): starting a session shows the mark in the island; Start on the keyboard in another app grows the coral dot and the elapsed time, Stop gives way to the transcribing glyph (preparing first after a restart) and then back to ready, each change quick and calm; long-press shows the expanded view with the timer glyph and the time left, or the recording time; with another app's Live Activity running, the minimal view; the Lock Screen view in dark and light; it goes at End session, idle expiry and a phone call; after force-quitting LocalFlow the activity reads "Session ended" once its time is past, and the next launch removes it; with Live Activities off, nothing shows and LocalFlow never asks. No sound or screen wake on any change. Simulator verification (iPhone 17 Pro, iOS 26.4, synthetic microphone, recorded with `simctl io recordVideo`, since screenshots leave out the island) passed on 2026-11-01 for the compact and expanded island, the Lock Screen in dark and light, End session, idle expiry, a killed app's "Session ended" and its removal at the next launch. Not yet checked: the minimal view (no other Live Activity source in the simulator), a phone call, Live Activities turned off, and a device.
@@ -418,14 +418,14 @@ Setup and session:
 - [ ] Left-handed (Home → Keyboard, off by default; applies the next time the keyboard appears): Start and the recording island at the bar's left, Cancel on the island's right in reach of the left thumb, the menu, Undo and "Insert last dictation" at the right; Stop's reach takes q and w while recording and p still types; Cancel and Undo work; off, the bar is as before.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
 - [ ] Headphones notice: with AirPods connected and Use iPhone microphone on, the bounce's Listening screen reads "Recording from your iPhone, not your headphones"; with it off, "Recording through your headphones"; with no headphones, no notice. Connecting or disconnecting them while Listening updates it. On an SE-size iPhone while the model prepares, Stop and Cancel stay on screen and the rest scrolls. Simulator verification (synthetic route, `E2E_HEADPHONES`, iPhone 17 Pro and iPhone SE) passed on 2026-10-29; device check pending.
-- [ ] Field binding: dictate into Try it field A, switch to field B mid-request; no auto-insert into B, and the chip appears.
+- [ ] Field binding: dictate into Reminders' title, switch to its notes mid-request; no auto-insert into the notes, and the chip appears.
 - [ ] Undo: removes exactly the dictation; disappears after typing, cursor moves, 30 s, or hiding the keyboard.
 - [ ] Kill LocalFlow during recording: the request reports interrupted and never restarts; no result file remains.
 - [ ] Battery: 30 min idle session vs no session (and vs Wispr Flow if installed).
 - [ ] Device lock: with a session open, lock; the orange indicator stays on the lock screen. Unlock and dictate from another app without opening LocalFlow. Lock during a dictation: it is cancelled and the keyboard shows "Dictation stopped when iPhone locked". Leave it locked past the session length: the session ends and the indicator disappears. Then unlock and tap Start on the keyboard in another app: the first bounce starts a new session, with no "iPhone was locked" screen. Swipe back during a dictation, let it finish, then open LocalFlow from the Home Screen: it shows Home, not the old bounce screen.
 - [ ] Peak memory during a 5-minute dictation; no jetsam in the background.
 
-Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practice):
+Keyboard (compare side by side with Apple's keyboard in a note with soft-wrapped, short and blank lines):
 - [ ] Hold-to-trackpad delay feels the same as Apple's.
 - [ ] Slow drags land between each pair of letters; fast swipes travel similar distances.
 - [ ] Vertical moves across soft-wrapped lines, short lines and blank lines keep the column.
@@ -439,7 +439,7 @@ Keyboard (compare side by side with Apple's keyboard in Try it → Cursor practi
 - [ ] Notes, Messages, Mail and Safari fields: trackpad units, context windows, undo.
 - [ ] Haptics only with Full Access; Typing haptics on key-down, off when the setting is off; VoiceOver labels; dark mode; landscape; SE-size layout.
 - [ ] iPad (the keyboard is universal; the app runs in iPhone compatibility mode): the keyboard lays out and types in portrait and landscape, and dictation works through the bounce.
-- [ ] Same height everywhere: the keyboard's top edge sits at the same height in Try it (fresh, and after visiting other apps), Messages, Safari (address bar and a page field), Notes and Contacts, in portrait and landscape, with no band above the top row.
+- [ ] Same height everywhere: the keyboard's top edge sits at the same height in Notes (fresh, and after visiting other apps), Messages, Safari (address bar and a page field) and Contacts, in portrait and landscape, with no band above the top row.
 - [ ] Field keys: "@" and "." beside a narrower space bar in an email field (Contacts → new contact → email); ".", "/" and ".com" in a URL field (Contacts → URL), holding ".com" offers .org/.net/.edu/.us; "." beside space in Safari's address bar. No emoji key in email and URL fields.
 - [ ] Press-and-hold: holding e, a, o, n, s, c, - . ' " $ ? ! shows the choices; sliding picks, lifting types; lifting without moving types the key itself. Fast typing, swipes, the callout, held delete and the space-bar trackpad are unchanged.
 - [ ] Emoji: the face key opens the panel at the same height; recents first after use, the jump bar scrolls to a category, a tap inserts, delete and ABC work, recents survive a keyboard restart without Full Access.

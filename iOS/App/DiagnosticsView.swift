@@ -110,7 +110,7 @@ private struct CursorTuningSection: View {
         } header: {
             Text("Cursor")
         } footer: {
-            Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple's keyboard in Try it's practice field: touch and hold the space bar with each and match the feel. Changes apply to the next gesture. The step scale makes each touch event count as a 60 Hz one would (2× at 120 Hz).")
+            Text("Sensitivity scales cursor travel at every speed; acceleration scales how much faster swipes go. Compare with Apple’s keyboard in Notes: touch and hold the space bar with each and match the feel. Changes apply to the next gesture. The step scale makes each touch event count as a 60 Hz one would (2× at 120 Hz).")
         }
         .listRowBackground(Theme.cardBackground)
         .onAppear {
@@ -150,6 +150,7 @@ private struct NeverCorrectSection: View {
                 Self.store?.clear()
                 load()
             }
+            .foregroundStyle(Theme.coral)
             .disabled(Self.store == nil)
             .accessibilityIdentifier("diagnostics.autocorrectForgetNeverCorrect")
         } header: {

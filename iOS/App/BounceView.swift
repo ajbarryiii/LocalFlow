@@ -1,223 +1,400 @@
 import SwiftUI
 
-/// Shown when the keyboard opened the app to start a dictation. "Starting…" until input buffers flow
-/// (the dictation is `recording`), then "Listening — swipe back to your app", saying which microphone
-/// records while Bluetooth headphones are connected.
+/// Shown when the keyboard opened the app to start a dictation: the keyboard's island, large, with the phase in one word
+/// and the way back to the app the person came from. "Starting" until input buffers flow (the dictation is
+/// `recording`), then "Listening" with the voice's wave, the recording dot and the time (`BouncePhase`).
 struct BounceView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Scrolls only when it does not fit (a small iPhone with the preparation card), so the buttons
-            // always stay on screen. Anchored at the bottom: the top margin gives way first.
-            GeometryReader { proxy in
+        GeometryReader { proxy in
+            let cue = SwipeBackCue(bottomSafeAreaInset: Double(proxy.safeAreaInsets.bottom))
+            VStack(spacing: 0) {
+                if cue == .statusBarLink {
+                    StatusBarLinkCue(visible: phase.showsReturnCue)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                }
+                // Anchored at the top, so what arrives below (the preparing line, the route) never moves the island or
+                // the word. Scrolls only when it does not fit (large text on a small iPhone).
                 ScrollView {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 56)
-                        content
-                            .padding(.horizontal, 28)
-                            .frame(maxWidth: .infinity)
-                            .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                            .id(phaseKey)
-                        Spacer(minLength: 12)
-
-                        if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt, inProgress {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Preparing the speech model", systemImage: "cpu").font(.subheadline.weight(.semibold))
-                                Text(phase == .transcribing ? "Your dictation will be transcribed as soon as it is ready."
-                                     : "Your dictation will be transcribed as soon as it is ready. You can keep talking.")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
-                            }
-                            .padding(16)
-                            .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
-                        }
+                    VStack(spacing: 22) {
+                        island(width: min(proxy.size.width - 56, 340))
+                        word
+                        details(width: min(proxy.size.width - 56, 340))
                     }
-                    .frame(minHeight: proxy.size.height)
+                    .padding(.horizontal, 28)
+                    .padding(.top, Self.islandTop(height: proxy.size.height, cue: cue))
+                    .frame(maxWidth: .infinity)
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                .defaultScrollAnchor(.bottom)
-            }
 
-            buttons
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
+                buttons
+                    .padding(.horizontal, 24)
+                    .padding(.top, 8)
+                    .padding(.bottom, cue == .bottomEdgeSwipe ? 14 : 16)
+                if cue == .bottomEdgeSwipe {
+                    BottomSwipeCue(visible: phase.showsReturnCue)
+                        .padding(.bottom, 2)
+                }
+            }
         }
-        .background(background.ignoresSafeArea())
-        .animation(.snappy, value: phaseKey)
+        .background(Theme.screenBackground.ignoresSafeArea())
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .snappy(duration: 0.28), value: phase)
         .accessibilityIdentifier("bounce")
     }
 
-    private var phase: DictationStatus.Phase? { host.dictation?.phase }
-    private var inProgress: Bool { host.isDictationInProgress }
-    private var phaseKey: String { phase?.rawValue ?? "none" }
+    /// The space above the island, which `HandoffSurface` shares, so the island arrives where its mark already is.
+    static func islandTop(height: CGFloat, cue: SwipeBackCue) -> CGFloat {
+        max(16, height * (cue == .statusBarLink ? 0.14 : 0.24))
+    }
 
+    private var phase: BouncePhase { BouncePhase(host.dictation?.phase) }
+    private var preparing: Bool { transcriber.modelState == .preparing && host.isDictationInProgress }
+
+    // MARK: Island
+
+    private func island(width: CGFloat) -> some View {
+        ZStack {
+            switch phase {
+            case .starting, .listening:
+                // One view from starting to listening: the dimmed row brightens and the time arrives, nothing blinks.
+                HStack(spacing: 12) {
+                    IslandWave(level: host.level, live: phase == .listening, accent: Theme.coral)
+                        .frame(height: 26)
+                    Group {
+                        if phase == .listening, let startedAt = host.dictation?.startedAt {
+                            Text(timerInterval: startedAt ... Date.distantFuture, countsDown: false)
+                        } else {
+                            Text(verbatim: "0:00").hidden()
+                        }
+                    }
+                    .font(.body.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .fixedSize()
+                }
+                .padding(.horizontal, 22)
+                .transition(Self.outThenIn)
+            case .transcribing:
+                IslandShimmer()
+                    .frame(height: 26)
+                    .padding(.horizontal, 22)
+                    .transition(Self.outThenIn)
+            case .done, .cancelled, .stopped:
+                RidgeMarkView(dot: phase.accent.map(Theme.color) ?? Theme.neutralDot, side: 34)
+                    .transition(Self.outThenIn)
+            }
+        }
+        // A fixed size, as the keyboard's island: the time stays at one size at large text.
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .frame(width: width, height: 64)
+        .islandSurface()
+        .accessibilityHidden(true)
+    }
+
+    /// One phase at a time, in the word and in the island: the old one fades out, then the new one fades in, so the two
+    /// never paint over each other.
+    private static let outThenIn = AnyTransition.asymmetric(
+        insertion: .opacity.animation(.easeOut(duration: 0.1).delay(0.1)),
+        removal: .opacity.animation(.easeOut(duration: 0.1)))
+
+    private var word: some View {
+        ZStack {
+            Text(phase.word)
+                .font(.display(.largeTitle))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .id(phase)
+                .transition(Self.outThenIn)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("bounce.phase")
+        }
+    }
+
+    /// At most a short line under the word: why it stopped, the microphone prompt, the route, the model preparing. The
+    /// route comes first, so it stays put when the preparing line leaves.
     @ViewBuilder
-    private var content: some View {
-        switch phase {
-        case .recording?:
-            VStack(spacing: 20) {
-                ZStack {
-                    Circle().fill(Theme.live.opacity(0.12)).frame(width: 150, height: 150)
-                        .scaleEffect(1 + CGFloat(host.level) * 0.18)
-                        .animation(.easeOut(duration: 0.15), value: host.level)
-                    LevelBars(level: host.level)
-                }
-                VStack(spacing: 8) {
-                    Text("Listening").font(.largeTitle.bold()).fontDesign(.rounded)
-                    subtitle("Swipe back to your app and keep talking.")
-                }
-                if let notice = host.headphonesNotice {
-                    HeadphonesNoticeLabel(notice: notice)
-                }
-                SwipeBackHint()
+    private func details(width: CGFloat) -> some View {
+        VStack(spacing: 14) {
+            if phase == .starting, host.session == .starting, host.microphonePermission == .undetermined {
+                note("Allow the microphone to start.")
             }
-        case .transcribing?:
-            VStack(spacing: 22) {
-                HeroSymbol(systemName: "text.bubble.fill", size: 88)
-                ProgressView().controlSize(.large)
-                Text("Transcribing…").font(.title.bold()).fontDesign(.rounded)
-                subtitle("Swipe back to your app; the text is inserted there.")
+            if phase == .cancelled || phase == .stopped, let error = host.dictation?.error {
+                note(error.message)
             }
-        case .completed?:
-            VStack(spacing: 18) {
-                HeroSymbol(systemName: "checkmark", tint: AnyShapeStyle(Theme.aurora), size: 88)
-                Text("Done").font(.largeTitle.bold()).fontDesign(.rounded)
-                subtitle("Swipe back to your app to insert the text.")
-                SwipeBackHint()
+            if let notice = host.headphonesNotice, phase == .starting || phase == .listening {
+                Label(notice.shortLabel, systemImage: notice.symbol)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.secondaryInk)
+                    .transition(.opacity)
+                    .accessibilityLabel(notice.message)
+                    .accessibilityIdentifier("bounce.headphones")
             }
-        case .failed?, .cancelled?:
-            VStack(spacing: 18) {
-                HeroSymbol(systemName: phase == .cancelled && host.dictation?.error == nil ? "xmark" : "exclamationmark",
-                           tint: AnyShapeStyle(Theme.ember), size: 88)
-                Text(phase == .cancelled ? "Dictation cancelled" : "Dictation stopped")
-                    .font(.title.bold()).fontDesign(.rounded)
-                if let error = host.dictation?.error {
-                    subtitle(error.message)
-                }
-            }
-        case .starting?, nil:
-            VStack(spacing: 22) {
-                HeroSymbol(systemName: "mic.fill", size: 88)
-                ProgressView().controlSize(.large)
-                Text("Starting…").font(.largeTitle.bold()).fontDesign(.rounded)
-                subtitle(host.session == .starting && host.microphonePermission == .undetermined
-                         ? "Allow the microphone to start dictating." : "Getting the microphone ready.")
+            if preparing, let started = transcriber.preparationStartedAt {
+                PreparingLine(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
+                    .frame(width: width)
+                    .transition(.opacity)
             }
         }
     }
 
-    private func subtitle(_ text: String) -> some View {
+    private func note(_ text: String) -> some View {
         Text(text)
-            .font(.title3)
-            .foregroundStyle(.secondary)
+            .font(.body)
+            .foregroundStyle(Theme.secondaryInk)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    // MARK: Buttons
+
     @ViewBuilder
     private var buttons: some View {
         switch phase {
-        case .recording?:
-            HStack(spacing: 12) {
-                Button("Cancel") { host.cancelDictation() }
-                    .buttonStyle(SecondaryButtonStyle(tint: .secondary))
-                    .accessibilityIdentifier("bounce.cancel")
+        case .starting, .listening, .transcribing:
+            // Cancel and Stop keep their places from start to finish; Stop works only while there is something to stop.
+            HStack(spacing: 14) {
+                Button {
+                    host.cancelDictation()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(RoundIslandButtonStyle())
+                .accessibilityLabel("Cancel")
+                .accessibilityIdentifier("bounce.cancel")
                 Button {
                     host.stopDictation()
                 } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
                 .buttonStyle(PrimaryButtonStyle())
+                .disabled(phase != .listening)
                 .accessibilityIdentifier("bounce.stop")
             }
-        case .starting?, .transcribing?:
-            Button("Cancel") { host.cancelDictation() }
-                .buttonStyle(SecondaryButtonStyle(tint: .secondary))
-                .accessibilityIdentifier("bounce.cancel")
-        default:
+        case .done, .cancelled, .stopped:
             Button("Close") { host.bounceVisible = false }
                 .buttonStyle(PrimaryButtonStyle())
                 .accessibilityIdentifier("bounce.close")
         }
     }
-
-    private var background: some View {
-        ZStack {
-            Theme.screenBackground
-            RadialGradient(colors: [(phase == .recording ? Theme.live : Theme.aurora).opacity(0.16), .clear],
-                           center: .top, startRadius: 20, endRadius: 520)
-        }
-    }
 }
 
-/// Which microphone hears the user while Bluetooth headphones are connected.
-private struct HeadphonesNoticeLabel: View {
-    var notice: HeadphonesNotice
+/// The start-session screen with nothing on it yet but the mark where the island sits. It covers the app in the
+/// background (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start is this, and the island
+/// arrives on it.
+struct HandoffSurface: View {
+    /// Off on a sheet, where the mark could not sit where the island will.
+    var showsMark = true
 
     var body: some View {
-        Label(notice.message, systemImage: notice == .iPhoneMicrophone ? "iphone" : "headphones")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(Theme.glacier)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Theme.glacier.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .accessibilityIdentifier("bounce.headphones")
-    }
-}
-
-/// Where to swipe: the system "◀ App" control at the top left, or the home indicator.
-struct SwipeBackHint: View {
-    @State private var animate = false
-
-    var body: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 2)
-                VStack {
-                    HStack(spacing: 2) {
-                        Image(systemName: "chevron.left")
-                        Text("Your app")
+        GeometryReader { proxy in
+            let cue = SwipeBackCue(bottomSafeAreaInset: Double(proxy.safeAreaInsets.bottom))
+            VStack(spacing: 0) {
+                if showsMark {
+                    if cue == .statusBarLink {
+                        StatusBarLinkCue(visible: false)
+                            .padding(.top, 4)
                     }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Theme.glacier)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Theme.glacier.opacity(0.12), in: Capsule())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Spacer()
-                    ZStack {
-                        Capsule().fill(Color.secondary.opacity(0.55)).frame(width: 70, height: 5)
-                        Circle()
-                            .fill(Theme.aurora.opacity(0.45))
-                            .frame(width: 24, height: 24)
-                            .offset(x: animate ? 48 : -48)
-                            .opacity(animate ? 0.2 : 1)
-                        Image(systemName: "arrow.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(Theme.aurora)
-                            .offset(x: 52, y: -16)
-                    }
+                    RidgeMarkView(side: 34)
+                        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64)
+                        .padding(.top, BounceView.islandTop(height: proxy.size.height, cue: cue))
                 }
-                .padding(12)
+                Spacer(minLength: 0)
             }
-            .frame(width: 150, height: 100)
-            Text("Tap \(Image(systemName: "chevron.left")) at the top left, or swipe right along the bottom edge.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: false)) { animate = true }
+        .background(Theme.screenBackground.ignoresSafeArea())
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// Covers this with `HandoffSurface` while the app is in the background (`BackgroundCover`); `bounceShown` keeps it
+    /// under the start-session screen until that screen goes.
+    func backgroundCover(bounceShown: Bool = false) -> some View {
+        modifier(BackgroundCoverModifier(bounceShown: bounceShown, showsMark: true))
+    }
+
+    /// An app sheet's content under the start-session hand-off: the same cover in the background, without the mark,
+    /// kept until the sheet closes for the start-session screen (`StartSessionSheets`).
+    func sheetBackgroundCover() -> some View {
+        modifier(SheetBackgroundCoverModifier())
+    }
+
+    /// Closes this view's sheets at once, without animation, when the keyboard's Start asks for the start-session
+    /// screen (`StartSessionSheets`), so that screen shows at once.
+    func closesSheetsForStartSession(_ close: @escaping () -> Void) -> some View {
+        modifier(StartSessionSheetsModifier(close: close))
+    }
+}
+
+private struct BackgroundCoverModifier: ViewModifier {
+    var bounceShown: Bool
+    var showsMark: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var covered = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if covered { HandoffSurface(showsMark: showsMark).transition(.opacity) }
+            }
+            .onChange(of: scenePhase) { update() }
+            .onChange(of: bounceShown) { update() }
+    }
+
+    private func update() {
+        let next = BackgroundCover.covers(scene: BackgroundCover.Scene(scenePhase), bounceShown: bounceShown, covered: covered)
+        guard next != covered else { return }
+        if next {
+            // At once: iOS takes its snapshot right after the app enters the background.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { covered = true }
+        } else {
+            withAnimation(.easeOut(duration: 0.12)) { covered = false }
         }
-        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct SheetBackgroundCoverModifier: ViewModifier {
+    @EnvironmentObject private var host: HostSessionController
+
+    func body(content: Content) -> some View {
+        content.modifier(BackgroundCoverModifier(bounceShown: host.bounceVisible, showsMark: false))
+    }
+}
+
+private struct StartSessionSheetsModifier: ViewModifier {
+    var close: () -> Void
+    @EnvironmentObject private var host: HostSessionController
+
+    func body(content: Content) -> some View {
+        content.onChange(of: host.bounceVisible) { wasShown, shown in
+            guard StartSessionSheets.close(bounceWasShown: wasShown, bounceShown: shown) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, close)
+        }
+    }
+}
+
+extension BackgroundCover.Scene {
+    init(_ phase: ScenePhase) {
+        switch phase {
+        case .background: self = .background
+        case .inactive: self = .inactive
+        default: self = .active
+        }
+    }
+}
+
+/// The model preparing while a dictation waits: the CPU glyph, a glacier progress line and the time so far.
+private struct PreparingLine: View {
+    var startedAt: Date
+    var estimate: Double?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            HStack(spacing: 10) {
+                Image(systemName: "cpu").foregroundStyle(Theme.secondaryInk)
+                GlacierBar(fraction: estimate.map { min(elapsed / $0, 0.95) })
+                Text(Duration.seconds(Int(elapsed)).formatted(.time(pattern: .minuteSecond)))
+                    .foregroundStyle(Theme.secondaryInk)
+                    .monospacedDigit()
+            }
+            .font(.subheadline)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Preparing the speech model")
+            .accessibilityValue(Duration.seconds(Int(elapsed)).formatted(.units(allowed: [.minutes, .seconds], width: .wide)))
+        }
+        .accessibilityIdentifier("bounce.preparing")
+    }
+}
+
+/// Where to swipe on an iPhone without a Home button: right along the bottom edge, just above it. A dot shows the
+/// swipe once, then rests at the right (`SwipeBackCue.demonstrations`); with Reduce Motion it is still.
+private struct BottomSwipeCue: View {
+    var visible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var travelled = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("Swipe back")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+            HStack(spacing: 6) {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.3)).frame(width: 84, height: 4)
+                    Circle().fill(Color.white).frame(width: 9, height: 9)
+                        .offset(x: travelled ? 77 : -2)
+                }
+                Image(systemName: "arrow.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Theme.secondaryInk)
+            }
+            .frame(height: 12)
+        }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+        .opacity(visible ? 1 : 0)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SwipeBackCue.bottomEdgeSwipe.spoken)
+        .accessibilityHidden(!visible)
+        .accessibilityIdentifier("bounce.swipeCue")
+        .onAppear { if visible { demonstrate() } }
+        .onChange(of: visible) { _, now in if now { demonstrate() } }
+    }
+
+    private func demonstrate() {
+        guard SwipeBackCue.demonstrations(reduceMotion: reduceMotion) > 0, !travelled else {
+            travelled = true
+            return
+        }
+        withAnimation(.snappy(duration: 0.55).delay(0.3)) { travelled = true }
+    }
+}
+
+/// Where to tap on an iPhone with a Home button: the status bar's "◀ App" link above. Its arrow nudges up once, then
+/// rests; with Reduce Motion it is still.
+private struct StatusBarLinkCue: View {
+    var visible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Counts the nudges to show: each change plays one.
+    @State private var nudges = 0
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.up")
+                .font(.footnote.weight(.bold))
+                .keyframeAnimator(initialValue: 0.0, trigger: nudges) { content, lift in
+                    content.offset(y: lift)
+                } keyframes: { _ in
+                    LinearKeyframe(0, duration: 0.3)
+                    SpringKeyframe(-5, duration: 0.2, spring: .snappy)
+                    SpringKeyframe(0, duration: 0.3, spring: .snappy)
+                }
+            Text("\(Image(systemName: "chevron.left")) Back to your app")
+                .font(.subheadline.weight(.semibold))
+        }
+        .foregroundStyle(.white.opacity(0.85))
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+        .opacity(visible ? 1 : 0)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SwipeBackCue.statusBarLink.spoken)
+        .accessibilityHidden(!visible)
+        .accessibilityIdentifier("bounce.swipeCue")
+        .onAppear { if visible { nudge() } }
+        .onChange(of: visible) { _, now in if now { nudge() } }
+    }
+
+    private func nudge() {
+        guard SwipeBackCue.demonstrations(reduceMotion: reduceMotion) > 0, nudges == 0 else { return }
+        nudges += 1
     }
 }

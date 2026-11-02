@@ -24,10 +24,10 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var headphonesNotice: HeadphonesNotice?
     /// Whether "Use iPhone microphone" is in effect; Home shows `microphoneRouting.problem` when it is not.
     @Published private(set) var microphoneRouting = MicrophoneRouting.systemChoice
-    /// The bounce screen: a dictation was admitted while the app was in front (outside "Try it").
+    /// The bounce screen: a dictation was admitted while the app was in front (`HostSessionPolicy.showsBounce`).
     @Published var bounceVisible = false
-    /// "Try it" has the keyboard in this app, so an admission there must not cover it.
-    var tryItVisible = false
+    /// When the app last became active after the background, nil until then (`HostSessionPolicy.showsBounce`).
+    private var activeSince: Date?
 
     let configuration: LocalFlowConfiguration?
     let preferences = AppPreferences()
@@ -234,11 +234,15 @@ final class HostSessionController: ObservableObject {
         set(\.level, core.level)
         set(\.isDictationInProgress, core.isDictationInProgress)
         // A request admitted while the app is in front came from the bounce (the keyboard opened the
-        // app), unless the keyboard is in "Try it", where a cover would hide the text field.
+        // app), unless Start was tapped in the Dictionary editor, where a cover would close its sheet.
         let isForeground = UIApplication.shared.applicationState != .background
         if let current = core.current, core.isDictationInProgress, current.requestID != lastAdmittedRequestID {
             lastAdmittedRequestID = current.requestID
-            if isForeground, !tryItVisible { bounceVisible = true }
+            // Read in the pass that admitted it, so the intent is still its record.
+            let issuedAt = store.flatMap { HostSessionPolicy.recordIssuedAt($0.readIntent().value, requestID: current.requestID) }
+            if HostSessionPolicy.showsBounce(isForeground: isForeground, issuedAt: issuedAt, activeSince: activeSince) {
+                bounceVisible = true
+            }
         }
         if bounceVisible, !HostSessionPolicy.keepsBounce(isForeground: isForeground,
                                                          isDictationInProgress: core.isDictationInProgress) {
@@ -266,10 +270,18 @@ final class HostSessionController: ObservableObject {
             })
         }
         on(UIApplication.willEnterForegroundNotification) { $0.core?.appWillEnterForeground() }
-        // Arriving in the foreground reconciles; that is what admits a request after a URL open.
-        on(UIApplication.didBecomeActiveNotification) { $0.core?.appDidBecomeActive() }
+        // Arriving in the foreground reconciles; that is what admits a request after a URL open. Noted before the
+        // core's pass; only the first activation after the background counts, as Control Center or an iOS prompt
+        // make the app inactive without leaving.
+        on(UIApplication.didBecomeActiveNotification) {
+            if $0.activeSince == nil { $0.activeSince = Date() }
+            $0.core?.appDidBecomeActive()
+        }
         // Also hides the bounce once nothing is in progress (`refresh`, `HostSessionPolicy.keepsBounce`).
-        on(UIApplication.didEnterBackgroundNotification) { $0.core?.foregroundChanged() }
+        on(UIApplication.didEnterBackgroundNotification) {
+            $0.activeSince = nil
+            $0.core?.foregroundChanged()
+        }
         on(UIApplication.protectedDataWillBecomeUnavailableNotification) { $0.core?.deviceWillLock() }
         on(UIApplication.protectedDataDidBecomeAvailableNotification) { $0.core?.deviceDidUnlock() }
         on(UIApplication.didReceiveMemoryWarningNotification) { $0.core?.memoryWarning() }

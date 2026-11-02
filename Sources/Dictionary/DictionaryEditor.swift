@@ -28,7 +28,7 @@ enum DictionaryEditError: Error, Equatable {
 /// here. Each call returns the proposed state; the caller persists it before
 /// publishing it. Loading never needs this (it preserves saved data as is).
 struct DictionaryEditor {
-    static let unavailableMessage = "The dictionary needs the speech model, which isn't available."
+    static let unavailableMessage = "The dictionary needs the speech model, which isn’t available."
 
     let encoder: BPEEncoder?
 

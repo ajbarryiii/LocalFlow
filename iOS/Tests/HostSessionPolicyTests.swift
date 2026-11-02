@@ -16,6 +16,8 @@ enum HostSessionPolicyTests {
             ("sessionErrors", testSessionErrors),
             ("onlyALateIntentProvesAnUnlock", testOnlyALateIntentProvesAnUnlock),
             ("bounceClosesInTheBackgroundOnceIdle", testBounceClosesInTheBackgroundOnceIdle),
+            ("bounceShowsOnlyForAStartMadeInAnotherApp", testBounceShowsOnlyForAStartMadeInAnotherApp),
+            ("recordIssuedAt", testRecordIssuedAt),
             ("statusCaptureReadyAndLevel", testStatusCaptureReadyAndLevel),
             ("admissionFailsOnlyForAMissingOrBackingOffModel", testAdmissionFailsOnlyForAMissingOrBackingOffModel),
         ]
@@ -151,6 +153,40 @@ enum HostSessionPolicyTests {
         TestSupport.expect(HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: true), "dictating elsewhere")
         TestSupport.expect(!HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: false),
                            "in the background once the dictation ended")
+    }
+
+    /// A Start tapped in this app's own field (the Dictionary editor) keeps its field, but a Start tapped in another app
+    /// opens LocalFlow on the start-session screen, even with the editor left on screen. A request issued before the app
+    /// was active came from another app; one whose issue time is unknown raises the screen.
+    private static func testBounceShowsOnlyForAStartMadeInAnotherApp() {
+        func shows(foreground: Bool = true, issuedAt: Date?, activeSince: Date?) -> Bool {
+            HostSessionPolicy.showsBounce(isForeground: foreground, issuedAt: issuedAt, activeSince: activeSince)
+        }
+        TestSupport.expect(!shows(issuedAt: now, activeSince: now - 30), "the Dictionary editor in front, a Start made in it")
+        TestSupport.expect(!shows(issuedAt: now, activeSince: now - 0.2), "the editor, a Start made in it right after a return")
+        TestSupport.expect(shows(issuedAt: now, activeSince: nil), "Home, admitted before the return is active")
+        TestSupport.expect(shows(issuedAt: nil, activeSince: now - 30), "Home, the request's time unknown")
+        for activeSince in [now, nil] {
+            TestSupport.expect(shows(issuedAt: now - 2, activeSince: activeSince), "Home, from another app")
+        }
+        for activeSince in [now - 30, now, nil] {
+            TestSupport.expect(!shows(foreground: false, issuedAt: now - 2, activeSince: activeSince), "in the background")
+        }
+    }
+
+    /// When the record intent for a request was issued; nil for another request, a finish or cancel, another schema
+    /// or nothing.
+    private static func testRecordIssuedAt() {
+        let id = Fixture.requestID
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.record, at: now - 3), requestID: id), now - 3)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.record), requestID: Fixture.otherRequestID),
+                                nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.finish), requestID: id), nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.cancel), requestID: id), nil)
+        var other = Fixture.intent(.record)
+        other.schema = DictationProtocol.schema + 1
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(other, requestID: id), nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(nil, requestID: id), nil)
     }
 
     private static func testSessionErrors() {

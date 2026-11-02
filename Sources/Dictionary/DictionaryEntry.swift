@@ -29,7 +29,7 @@ enum DictionaryEntryError: String, Error, Equatable {
         case .tooManyWords: return "Use at most \(DictionaryValidation.maxWords) words."
         case .tooLong: return "Use at most \(DictionaryValidation.maxScalars) characters."
         case .noLetter: return "Include at least one letter."
-        case .unencodable: return "This text contains characters the speech model can't produce."
+        case .unencodable: return "This text contains characters the speech model can’t produce."
         case .invalidStrength: return "Choose a strength between ×0.25 and ×8."
         }
     }

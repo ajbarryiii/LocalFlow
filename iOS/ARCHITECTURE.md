@@ -907,27 +907,79 @@ transcripts or other user data.
   onboarding completion, "Use iPhone microphone", and the last model
   preparation's duration (for a progress estimate). None holds user content.
 - **UI (SwiftUI):**
-  - Onboarding: the privacy promise, microphone permission, enabling the
-    keyboard and Full Access, and model preparation with progress and an
-    estimate from the last preparation; the user can finish onboarding while
-    it continues.
-  - Home: the session card (start or end, idle time left, the
-    microphone-indicator explanation), model state, session length, the
-    dictation settings, "Use iPhone microphone", a "Keyboard" section with
-    "Autocorrect", "Soft key edges" and "Typing haptics", and links to Try
-    it, keyboard setup, Dictionary, Diagnostics, Report a bug and the public
+  - Look: the keyboard island's language ([Keyboard look](#keyboard-look)).
+    Actions are near-black pills (#09090A) with a grey hairline and white
+    ink; row glyphs are plain; a switch that is on is aurora green; the brand
+    colours mark state only, on small dots and glyphs (aurora ready, coral
+    recording, glacier waiting, ember warning). The ridge mark (`RidgeMark`)
+    and the recording wave (`DotWave`) are compiled into the app. Geist Serif
+    Regular (`Resources/Fonts`, SIL OFL 1.1, its license beside it in the
+    app) is the display face, for Home's and Dictionary's large titles, the
+    onboarding headlines and the bounce screen's phase word, scaled with
+    Dynamic Type; everything else is the system font, and without the font
+    the display text falls back to it. Descriptions give way to glyphs:
+    toggles have titles only. Decorative glyphs stop growing at the largest
+    text sizes, and give the words their width where a word would break;
+    pills wrap to a second line rather than truncate. What
+    each screen shows for a state is in `HostCore/AppScreens.swift` (pure,
+    tested).
+  - Onboarding: the privacy promise as three glyphs, microphone permission,
+    enabling the keyboard and Full Access, and model preparation with
+    progress and an estimate from the last preparation; the user can finish
+    onboarding while it continues. One line under each headline; no step
+    glyph on a small iPhone or at accessibility sizes. The main pill sits at
+    one height on every step. Finishing cross-fades to Home.
+  - Home: the session card as the Live Activity's Lock Screen shows a
+    session (with no session, the Start pill with the mark on the
+    background; during one, a card with the state, the idle time left beside
+    a timer glyph (spoken as one sentence, `SessionCountdown`), the input's
+    glyph, and End; with the microphone denied, "Microphone off" and Open
+    Settings only; at accessibility sizes the glyphs share a line and the
+    words get the full width, and a pill's glyph gives way where its words
+    would not fit on one line), the speech model
+    with a state dot or a check once ready and its preparation progress
+    inside the row, links to keyboard setup and
+    Dictionary, session length, the dictation settings, "Use iPhone
+    microphone", a "Keyboard" section with "Autocorrect", "Soft key edges"
+    and "Typing haptics" (a lock marks those that need Full Access, at the
+    end of the title's text so it wraps with the words, and in the section's
+    footer) and
+    "Left-handed", and links to Diagnostics, Report a bug and the public
     privacy policy (opened in the browser only on a tap).
-  - Try it: two plain text fields for the destination-binding test and a
-    multi-line cursor practice field with invented text. The text lives in
-    view state only.
-  - Bounce screen: "Starting…" until the dictation is `recording` (input is
-    flowing), then "Listening — swipe back to your app", with Stop and
-    Cancel, and with Bluetooth headphones connected which microphone records
-    (see "Microphone choice"). Above the buttons it scrolls when it does not
-    fit (a small iPhone while the model prepares), anchored at the bottom so
-    the top gives way first and the buttons stay on screen. It stays up after the swipe back only while its dictation is in
+  - Bounce screen: the keyboard's island, large, with the phase in one word
+    (`BouncePhase`): "Starting" until the dictation is `recording` (input is
+    flowing), then "Listening" with the voice's wave, the coral recording dot
+    and the time, with Stop and Cancel (Stop stays, dimmed, while
+    transcribing); with Bluetooth headphones connected, which microphone
+    records (see "Microphone choice"); under it, while the model prepares, a
+    glacier progress line with the time so far. Each phase fades out before
+    the next fades in, so two words never overlap; a cancelled dictation's
+    mark has a neutral dot. One cue shows the way
+    back (`SwipeBackCue`): the swipe along the bottom edge, or the status
+    bar's back link on an iPhone with a Home button; it shows its motion
+    once, never with Reduce Motion. It appears without sliding up over Home,
+    opaque from its first frame. While the app is in the background, its
+    empty surface with the mark where the island sits covers the app
+    (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start
+    (and the app switcher's card) never shows Home; only the background
+    raises it, not the inactive state of iOS's own prompts. A sheet left
+    open (Add word, Edit word, Find strength) shows the same surface, without
+    the mark, and closes at once, without animation, when the screen is
+    requested (`StartSessionSheets`), so the screen is never hidden behind it;
+    Find strength's recording has already stopped when the app left the
+    screen, and the word's field has put the keyboard away.
+    Anchored at the top, so nothing moves as the preparing line or the route
+    arrives; it scrolls when it does not fit (large text on a small iPhone)
+    while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
-    It is not shown while Try it has the keyboard.
+    It is not shown for a Start tapped in the app's own field (the
+    Dictionary editor), where it would close the editor and lose its draft;
+    a Start in another app shows it even with the editor left on screen:
+    a request issued before the app was last active came from another
+    app, and one whose issue time is unknown shows it
+    (`HostSessionPolicy.showsBounce`).
+  - Motion is quick (short springs); with Reduce Motion every change is a
+    cross-fade or instant, and nothing loops.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the
     keyboard's measured touch rate, the compute units in use (read-only),
     "Release model now", the last preparation, and the last dictations'
@@ -3018,7 +3070,8 @@ app reads only the count. The models are fixed.
     are signed before the app.
   - Every build compiles the app icon into `Assets.car` with `actool`,
     records Xcode's build metadata (`DTXcode`, `DTSDKBuild` and the rest) in
-    every Info.plist, and copies each target's privacy manifest.
+    every Info.plist, copies each target's privacy manifest, and copies the
+    display face and its license into the app's `Fonts/` (`UIAppFonts`).
 - `PARAKEET_BUNDLE_DIR` copies the model into `LocalFlow.app/Parakeet/` and
   relabels it with `scripts/label-localflow-model.py`; repeat builds keep an
   unchanged copy. `SWIPE_BUNDLE_DIR` adds swipe typing
@@ -3171,8 +3224,8 @@ app reads only the count. The models are fixed.
   and fresh and stale URL hints. The Mac microphone is never used.
 - With the synthetic microphone, Sol through computer use or a person at the
   simulator covers: enabling the keyboard and Full Access, first-run
-  onboarding, the bounce and adoption, field binding (Try it field A, then
-  field B mid-request; another app opened mid-request), cancel, the host
+  onboarding, the bounce and adoption, field binding (Reminders' title, then
+  its notes mid-request; another app opened mid-request), cancel, the host
   terminated during recording, and idle expiry.
 - The simulator has no Neural Engine; it runs the encoder on the CPU and
   prepares it on every cold launch (about 72 s and 840 MB), so simulator
@@ -3189,9 +3242,9 @@ merge (AGENTS.md).
   through the universal link in an App Store or opted-in dev build (it opens
   LocalFlow, never Safari, and with the association missing the keyboard
   shows "Open LocalFlow");
-  session keep-alive and idle expiry; field binding (dictate into Try it field
-  A, switch to field B mid-request: no auto-insert into B, and the chip
-  appears; start in one app, open another before the transcript is ready: no
+  session keep-alive and idle expiry; field binding (dictate into Reminders'
+  title, switch to its notes mid-request: no auto-insert into the notes, and
+  the chip appears; start in one app, open another before the transcript is ready: no
   auto-insert there, only the chip; let a dictation reach the maximum
   duration in one field: it lands there); kill during recording; a
   phone-call interruption; a Bluetooth
@@ -3209,8 +3262,8 @@ merge (AGENTS.md).
   Engine against CPU (CPU through the self-test); no jetsam in the
   background; battery over 30 minutes, idle session against no session
   (and against Wispr Flow if installed); result cleanup after a forced kill.
-- **Keyboard** (side by side with Apple's keyboard in Try it → Cursor
-  practice): hold-to-trackpad delay; slow drags landing between each pair of
+- **Keyboard** (side by side with Apple's keyboard in Notes, in a note with
+  soft-wrapped, short and blank lines): hold-to-trackpad delay; slow drags landing between each pair of
   letters and fast swipes travelling similar distances; vertical moves across
   soft-wrapped, short and blank lines keeping the column; held delete
   switching to words; shift, caps lock, auto-capitalization, the double-space
