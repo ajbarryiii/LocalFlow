@@ -41,6 +41,10 @@ struct KeyboardViewState: Equatable {
     var levels: [Float] = []
     /// How many levels this recording has heard, the newest's number (the wave keeps each level on its side by it).
     var levelSerial = 0
+    /// The dictation shown (the intent's request), and the last one this keyboard put into a field: Cancel's bud
+    /// becomes Undo only when they are the same (`IslandBud.target`). Random identifiers, in memory only.
+    var dictationRequestID: UUID?
+    var lastInsertedRequestID: UUID?
 }
 
 /// The keyboard side of the protocol in ARCHITECTURE.md. While visible it polls and observes the
@@ -81,6 +85,7 @@ final class KeyboardDictationClient: ObservableObject {
     private var notice: (text: String, until: Date)?
     private var levels: [Float] = []
     private var levelSerial = 0
+    private var lastInsertedRequestID: UUID?
     private var levelSampledAt: Date?
 
     private var notifier: DarwinNotifier? { configuration.map(DarwinNotifier.init(configuration:)) }
@@ -358,6 +363,7 @@ final class KeyboardDictationClient: ObservableObject {
             return
         }
         target.insert(text)
+        lastInsertedRequestID = result.requestID
         // The proxy may not reflect the insertion yet, and a following result's spacing needs it.
         context = (context ?? "") + text
         playHaptic(.success)
@@ -395,7 +401,8 @@ final class KeyboardDictationClient: ObservableObject {
                                      sessionReady: KeyboardMessages.isSessionReady(status.value, now: now),
                                      spokenStatus: KeyboardMessages.spokenStatus(mode: mode, status: status.value,
                                                                                  launcherFailed: launcherFailed, now: now),
-                                     levels: levels, levelSerial: levelSerial)
+                                     levels: levels, levelSerial: levelSerial, dictationRequestID: intent.value?.requestID,
+                                     lastInsertedRequestID: lastInsertedRequestID)
         guard next != state else { return }
         if mode.phase != state.mode.phase {
             if case .recording = mode { playHaptic(.listening) }

@@ -44,6 +44,9 @@ struct IslandLayout: Equatable, Sendable {
     /// beside it in either hand (round 11, owner: left-handed, Undo goes on the right too).
     private(set) var middleStart = End.left
 
+    /// The island's end that faces the bar's middle: the end it grows from and Cancel buds off (`IslandBud`).
+    var growsTowards: End { middleStart }
+
     /// The middle's `items`, listed outwards from the menu button, in left-to-right order.
     func leftToRight<Item>(fromMenu items: [Item]) -> [Item] {
         middleStart == .left ? items : items.reversed()

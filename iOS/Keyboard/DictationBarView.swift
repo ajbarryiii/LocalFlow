@@ -105,9 +105,21 @@ struct DictationBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.legibilityWeight) private var legibilityWeight
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.displayScale) private var displayScale
+    /// Cancel's × and Undo's label as the island's body draws them (`IslandBody`).
+    @State private var budImages = BudImages()
+    /// Cancel's × is on its way to become Undo: the chip waits for it.
+    @State private var undoInFlight = false
+    /// The dictation the island shows (its request): when this keyboard puts it in, Cancel's bud becomes its Undo.
+    @State private var shown = IslandBud.Shown()
+    @State private var cancelPressed = false
 
     /// The island's grow and shrink: quick and firm, a touch of give and no wobble (owner, round 8: smooth, never slow).
-    static let islandSpring = Animation.spring(response: 0.26, dampingFraction: 0.88)
+    /// The island's body (`IslandBody`) moves with the same spring, so the two keep step.
+    static let islandSpring = Animation.spring(response: IslandBud.Motion.island.response,
+                                               dampingFraction: IslandBud.Motion.island.dampingFraction)
     /// What leaves at a change of form goes first, this quickly; what arrives waits as long (Opus, round 8: Undo arrived
     /// over the outgoing × and "Transcribing…").
     static let handover = 0.06
@@ -134,11 +146,31 @@ struct DictationBarView: View {
         let middle = BarMiddleContent.resolve(neverCorrectOffer: neverCorrect.offer != nil, candidates: swipe.strip != nil,
                                               dictationInProgress: state.mode.isInProgress, notice: state.notice != nil,
                                               dictationUndoShown: state.canUndo && !state.mode.isInProgress)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        let images = budImages.images(for: BudImages.Key(size: min(dynamicTypeSize, .xxLarge), weight: legibilityWeight,
+                                                         scale: displayScale, ink: palette.island.ink,
+                                                         chipHeight: height - 8))
+        let undoShown = state.canUndo && !state.mode.isInProgress
         GeometryReader { geometry in
             let layout = IslandLayout(barWidth: Double(geometry.size.width), controlHeight: Double(height),
                                       startWidth: startWidth(height: Double(height)), form: form, leftHanded: chrome.leftHanded)
             let centreY = CGFloat(barHeight) / 2
             ZStack(alignment: .topLeading) {
+                // Behind the controls: the island's pill, and Cancel's × as a bud of it, which becomes Undo.
+                IslandBody(island: layout.island,
+                           target: IslandBud.target(
+                               cancel: layout.cancel.map(IslandBud.Body.circle),
+                               undo: undoShown && !menuOpen ? undoChip(layout, label: images.label, height: Double(height - 8)) : nil,
+                               dictationInserted: shown.isInserted(lastInserted: state.lastInsertedRequestID)),
+                           form: form, side: layout.growsTowards, controlHeight: Double(height), reduceMotion: reduceMotion,
+                           look: IslandBody.Look(fill: UIColor(palette.island.color), edge: palette.island.edge.map { UIColor($0) },
+                                                 edgeWidth: palette.edgeWidth, glyph: images.glyph, label: images.label),
+                           pressed: cancelPressed, onFlight: { undoInFlight = $0 })
+                    .frame(width: geometry.size.width, height: CGFloat(barHeight))
+                    .opacity((menuOpen ? MenuCover.dimmedAlpha : 1) * (style == .unavailable ? 0.45 : 1))
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
                 Button(action: onMenu) {
                     Image(systemName: chrome.isMenuOpen ? "xmark" : "line.3.horizontal")
                         .font(.system(size: 18, weight: .medium))
@@ -169,7 +201,7 @@ struct DictationBarView: View {
                     } else {
                         // While a dictation runs this is plain text: the cold start's caption, a notice.
                         Middle(client: client, state: state, height: height - 8, controls: controls, layout: layout,
-                               onAction: onAction)
+                               undoArriving: undoInFlight, onAction: onAction)
                     }
                 }
                 // What it holds starts beside the menu button, in either hand.
@@ -192,25 +224,18 @@ struct DictationBarView: View {
                         onAction()
                         client.cancelTapped()
                     } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.primary)
+                        // The island's body draws it, budding out of the island (`IslandBody`); this takes the taps.
+                        Color.clear
                             .frame(width: CGFloat(cancel.width), height: CGFloat(cancel.width))
-                            .background(Circle().fill(Color(uiColor: KeyPalette.fill)))
                             .contentShape(CancelTapShape(compact: compact))
                     }
-                    .buttonStyle(PressableStyle())
+                    .buttonStyle(PressReportingStyle(pressed: $cancelPressed))
                     .accessibilityLabel("Cancel dictation")
                     .accessibilityIdentifier("lf.cancel")
                     .barControl("cancel", in: controls) {
                         KeyboardMetrics.cancelTapArea(circle: $0, barHeight: barHeight, compact: compact)
                     }
-                    .opacity(menuOpen ? MenuCover.dimmedAlpha : 1)
                     .position(x: CGFloat(cancel.x + cancel.width / 2), y: centreY)
-                    // It pops in after what leaves has gone, the scale about its own centre; at Stop it slides with the
-                    // contracting island to the same gap beside the wait's pill, in the island's spring.
-                    .transition(Self.handing(over: reduceMotion, scaleFrom: 0.6, anchor: UnitPoint(
-                        x: (cancel.x + cancel.width / 2) / max(Double(geometry.size.width), 1), y: 0.5)))
                 }
 
                 DictationIsland(client: client, state: state, height: height, compact: compact, leftHanded: chrome.leftHanded,
@@ -236,6 +261,9 @@ struct DictationBarView: View {
         .onChange(of: form) { old, new in
             if old == .expanded, new == .processing { controls.captureEnded() }
         }
+        // From the bar's first appearance, which may come mid-dictation (back from LocalFlow).
+        .onChange(of: form, initial: true) { _, form in shown.observe(form: form, request: state.dictationRequestID) }
+        .onChange(of: state.dictationRequestID, initial: true) { _, request in shown.observe(form: form, request: request) }
         // The island grows and shrinks with a short spring, and its contents hand over with it; with Reduce Motion
         // nothing moves or resizes: the parts take their places at once and the island cross-fades.
         .animation(reduceMotion ? nil : Self.islandSpring, value: form)
@@ -245,6 +273,14 @@ struct DictationBarView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: menuOpen)
         // The bar's height is fixed: its text grows to what one line holds there.
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+    }
+
+    /// Undo's chip, where the middle starts beside the menu button, as wide as its symbol and words (`label`).
+    private func undoChip(_ layout: IslandLayout, label: UIImage?, height: Double) -> IslandBud.Body? {
+        guard let label else { return nil }
+        let width = Double(label.size.width)
+        let x = layout.middleStart == .left ? layout.middle.x : layout.middle.maxX - width
+        return IslandBud.Body(minX: x, maxX: x + width, height: height)
     }
 
     /// Start's width at the bar's text size: its label's width, the mark and the padding (`IslandLayout.startWidth`).
@@ -268,6 +304,8 @@ private struct Middle: View {
     let controls: BarControlFrames
     /// Where the bar's parts are: the middle's items run outwards from the menu button (`IslandLayout.leftToRight`).
     let layout: IslandLayout
+    /// Cancel's × is on its way here to become Undo (`IslandBody`): the chip shows when it lands.
+    let undoArriving: Bool
     let onAction: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -304,6 +342,7 @@ private struct Middle: View {
                     .accessibilityLabel("Undo last dictation")
                     .accessibilityIdentifier("lf.undo")
                     .barControl("undo", in: controls)
+                    .opacity(undoArriving ? 0 : 1)
                     .transition(arrival)
                 case .insertLast:
                     Chip(title: "Insert last", symbol: "text.insert", height: height) {
@@ -490,7 +529,8 @@ private struct NeverCorrectChip: View {
 
     var body: some View {
         Button(action: action) {
-            ChipLabel(title: "Never correct \u{201C}\(word)\u{201D}", symbol: "text.badge.checkmark", height: height)
+            ChipLabel(title: "Never correct \u{201C}\(word)\u{201D}", symbol: "text.badge.checkmark", height: height,
+                      look: .key)
                 .truncationMode(.middle)
                 .minimumScaleFactor(0.8)
         }
@@ -516,11 +556,50 @@ private struct Chip: View {
     }
 }
 
-/// A bar chip: a key-coloured capsule with the key's shadow, its symbol a little heavier than its words.
+/// A bar chip, its symbol a little heavier than its words. Dictation's, Undo and "Insert last dictation", are capsules
+/// in the island's fill, edge and ink (round 12, owner: Undo, which Cancel's × becomes, looks like the island; "Insert
+/// last" matches it); "Never correct" is key-coloured, with the key's shadow.
 private struct ChipLabel: View {
+    enum Look { case island, key }
+
     let title: String
     let symbol: String
     let height: CGFloat
+    var look = Look.island
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        switch look {
+        case .island:
+            ChipContent(title: title, symbol: symbol, height: height, ink: Color(palette.island.ink))
+                .background {
+                    Capsule()
+                        .fill(Color(palette.island.color))
+                        .overlay {
+                            if let edge = palette.island.edge {
+                                Capsule().strokeBorder(Color(edge), lineWidth: CGFloat(palette.edgeWidth))
+                            }
+                        }
+                }
+                .contentShape(Rectangle())
+        case .key:
+            ChipContent(title: title, symbol: symbol, height: height, ink: .primary)
+                .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
+                .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
+                .contentShape(Rectangle())
+        }
+    }
+}
+
+/// A chip's symbol and words in its padding, without its capsule: as the chip draws them, and as Cancel's bud draws
+/// Undo's while it travels there (`BudImages`).
+private struct ChipContent: View {
+    let title: String
+    let symbol: String
+    let height: CGFloat
+    let ink: Color
 
     var body: some View {
         Label {
@@ -531,12 +610,41 @@ private struct ChipLabel: View {
         }
         .font(.footnote.weight(.medium))
         .lineLimit(1)
-        .foregroundStyle(.primary)
+        .foregroundStyle(ink)
         .padding(.horizontal, 11)
         .frame(height: height)
-        .background(Capsule().fill(Color(uiColor: KeyPalette.fill)))
-        .shadow(color: .black.opacity(0.2), radius: 0, y: 1)
-        .contentShape(Rectangle())
+    }
+}
+
+/// Cancel's × and Undo's symbol and words as images, for the island's body to draw on its bud (`IslandBody`): rendered
+/// by SwiftUI as the controls draw them, once per text size, weight, scale and ink.
+@MainActor
+private final class BudImages {
+    struct Key: Equatable {
+        var size: DynamicTypeSize
+        var weight: LegibilityWeight?
+        var scale: CGFloat
+        var ink: BrandPalette.RGB
+        var chipHeight: CGFloat
+    }
+
+    private var key: Key?
+    private var rendered: (glyph: UIImage?, label: UIImage?) = (nil, nil)
+
+    func images(for key: Key) -> (glyph: UIImage?, label: UIImage?) {
+        guard key != self.key else { return rendered }
+        self.key = key
+        let glyph = ImageRenderer(content: Image(systemName: "xmark")
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color(key.ink)))
+        glyph.scale = key.scale
+        let label = ImageRenderer(content: ChipContent(title: "Undo", symbol: "arrow.uturn.backward", height: key.chipHeight,
+                                                       ink: Color(key.ink))
+            .environment(\.dynamicTypeSize, key.size)
+            .environment(\.legibilityWeight, key.weight))
+        label.scale = key.scale
+        rendered = (glyph.uiImage, label.uiImage)
+        return rendered
     }
 }
 
@@ -584,18 +692,12 @@ private struct DictationIsland: View {
                 .contentShape(StartTapShape(compact: compact, capturing: state.mode.isActiveCapture))
         }
         .buttonStyle(IslandPressStyle())
-        // The pill itself is drawn outside the button's label, so its grow and shrink follow the bar's spring.
-        .background {
-            Capsule()
-                .fill(Color(island.color))
-                .overlay {
-                    if let edge = island.edge { Capsule().strokeBorder(Color(edge), lineWidth: CGFloat(palette.edgeWidth)) }
-                }
-        }
+        // The pill itself is the bar's `IslandBody`, behind it, which moves in the same spring.
         // While the island grows, what it will hold stays inside it.
         .clipShape(Capsule())
         // Not `.disabled`, which would dim the shimmer; the client ignores taps it cannot act on.
         .allowsHitTesting(!state.mode.isWaitingForTranscript)
+        // Its pill (`IslandBody`) dims with it.
         .opacity(CapsuleStyle(mode: state.mode) == .unavailable ? 0.45 : 1)
         .accessibilityLabel(KeyboardMessages.capsuleAccessibilityLabel(for: state.mode))
         .accessibilityValue(accessibilityValue)
@@ -995,6 +1097,16 @@ struct MenuPanelView: View {
 }
 
 /// A press dims the control; it also shrinks it a little, unless Reduce Motion is on.
+/// No look of its own (`IslandBody` draws Cancel); it tells the body while Cancel is held down.
+private struct PressReportingStyle: ButtonStyle {
+    @Binding var pressed: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, now in pressed = now }
+    }
+}
+
 private struct PressableStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

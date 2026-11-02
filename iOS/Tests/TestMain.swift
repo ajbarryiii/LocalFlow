@@ -56,6 +56,7 @@ struct LocalFlowIOSTests {
             ("MenuPalette", MenuPaletteTests.tests),
             ("KeyboardLook", KeyboardLookTests.tests),
             ("DictationIsland", DictationIslandTests.tests),
+            ("IslandBud", IslandBudTests.tests),
             ("KeyAlternates", KeyAlternatesTests.tests),
             ("LFBinaryFile", LFBinaryFileTests.tests),
             ("SwipeCore", SwipeCoreTests.tests),

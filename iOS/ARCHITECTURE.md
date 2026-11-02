@@ -1209,6 +1209,43 @@ every other point of the bar
     five-minute cap) it ignores taps and the island's former area takes
     none ([Reach and touch regions](#reach-and-touch-regions)). Its
     tap area is 44 pt wide and never reaches into the keys.
+  - **Cancel buds off the island** (round 12, owner: "have the cancel
+    dictation x ... bubble out from the speaking pill when you open it, and
+    then bubble across to the undo key location"; the stretch, A, of two
+    demos). The × is drawn as a bud of the island, in its fill, edge and
+    ink (`IslandBud`, `IslandBodyView`): the island, the bud and the neck
+    joining them are one body with one outline. At Start the bud swells out
+    of the island's end that faces the middle (the left; the right
+    left-handed), joined by a metaball neck that thins to nothing as the gap
+    opens to 9 pt, under Cancel's 12 pt gap, so it pinches free (within
+    0.3 s) and never rests joined; its × fades in as it parts. It lags the
+    island a touch (spring 0.34 s, damping 0.74) and overshoots by a few
+    points, never into the middle. At Stop it slides with the island in
+    the island's spring, keeping its gap. When the text lands and Undo
+    arrives for it (only when this keyboard put in the very dictation the
+    island showed, by its request, `KeyboardViewState.lastInsertedRequestID`
+    against `IslandBud.Shown`, which the bar feeds from its first appearance,
+    so also for a dictation it first saw midway, back from LocalFlow: an
+    earlier dictation's Undo keeps its chip; `IslandBud.target`) it
+    travels to Undo's place, its leading edge first (0.28 s,
+    0.76) and the trailing edge 0.02 s later and softer (0.34 s, 0.82), so
+    it stretches on the way and gathers into the chip; the × fades in
+    0.08 s and Undo's symbol and words fade in from 0.2 s; within under a
+    pixel of the chip it hands over to the real chip, which stays hidden
+    until then, and fades over it in 0.1 s. With no text (nothing heard,
+    an error), on Cancel, or with the menu open, the island takes it back:
+    its × fades in 0.06 s and it slips into the island's end. A change the
+    bar does not animate (a turn, the hand) places it, on Undo's new place
+    if it was on its way there; a press dims its × and, without Reduce
+    Motion, shrinks it a little. Reduce Motion turned on midway settles
+    everything at once (`IslandBud.Model.settle`). Reduce Motion
+    places everything and cross-fades it in 0.15 s, as the island's
+    content. Every timing is in `IslandBud.Motion`; the island's drawn pill
+    and SwiftUI's island content share its spring
+    (`DictationBarView.islandSpring`), so they keep step. It is drawn with
+    Core Animation from a display link that runs only while something
+    moves; what takes taps is unchanged (`IslandLayout`), Cancel's button
+    drawing nothing itself.
   - What it holds for a mode is `CapsuleContent`, its form `IslandForm`
     (from `CapsuleStyle`). It is never replaced by the candidate strip, the
     chips or a notice. When dictation cannot run here (no Full Access,
@@ -1343,7 +1380,8 @@ every other point of the bar
   lighter fill in dark mode and a visible edge, a full-point edge on the
   dark island, and deepens the light keyboard's accents further; Reduce
   Motion drops the bar's press shrink, the island's spring (it takes each
-  form at once, cross-faded in 0.15 s), the chips' spring, the pill's glide,
+  form at once, cross-faded in 0.15 s), Cancel's budding and travel to Undo
+  (it is simply there, cross-faded), the chips' spring, the pill's glide,
   the wave's motion and smoothing (the row stands still at each level),
   the shimmer's sweep and the dot's breathing; key-press highlights stay.
 
@@ -1456,9 +1494,11 @@ the highlighted candidate's text 4.5:1 on its pill.
   keyboard, the keys' white with a thin grey edge on the light one. When
   the pick moves within the same strip the pill glides to it (0.18 s); the
   words never animate.
-- **Chips** (Undo, "Insert last", "Never correct") are key-coloured capsules
-  with the keys' shadow, their symbol in the label colour and a little
-  heavier. The emoji jump bar's shown category is the label colour, the
+- **Chips**: Undo and "Insert last" are capsules in the island's fill,
+  edge and ink (round 12, owner: Cancel's × becomes Undo, so it looks like
+  the island; "Insert last" matches Undo beside it), their symbol a little
+  heavier. "Never correct" is a key-coloured capsule with the keys'
+  shadow, its symbol in the label colour. The emoji jump bar's shown category is the label colour, the
   others secondary.
 - **The swipe trace** is the label colour's grey, fading towards its tail
   ([Swipe typing](#swipe-typing)), 3:1 at the finger against the keys it
@@ -1470,11 +1510,12 @@ the highlighted candidate's text 4.5:1 on its pill.
   At every change of form what leaves goes first, in 0.06 s, and what
   arrives follows after it (`DictationBarView.handover`, round 8 council,
   Opus findings 2 and 3): the idle line before the island grows and Cancel
-  pops in, × and any words in the wait before Undo and Start; the middle's
+  buds out (round 12), the words in the wait before Undo and Start; the middle's
   words in the wait wait 0.14 s, until the contracting island has left
   them room. A press dims what the island holds; a tap on Start without a
   session also pops its dot once (a quick spring to 1.6 times and back).
-  Cancel and the chips arrive with a short spring from a little smaller.
+  The chips arrive with a short spring from a little smaller; Undo, after a
+  dictation, arrives as Cancel's bud.
   The middle cross-fades when what it holds changes (the strip coming or
   going), never as its words change. Nothing animates while idle but
   Start's dot breathing while the model prepares. Nothing slow runs on Start's first frames: the
