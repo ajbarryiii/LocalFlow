@@ -22,6 +22,8 @@ enum Theme {
     static let secondaryInk = Color.white.opacity(0.6)
     /// A switch that is on: neutral, so the only colour in a list is state.
     static let toggle = Color(white: 0.62)
+    /// A state's dot without an accent: not prepared yet, or cancelled.
+    static let neutralDot = Color.white.opacity(0.4)
 
     static func color(_ accent: AppAccent) -> Color {
         switch accent {
@@ -135,7 +137,8 @@ enum AppIdentity {
 // MARK: Buttons
 
 /// The main action: the island's pill, white ink, the accent only on its glyph (`accent`). A press dims what it holds,
-/// quickly, as on the keyboard; disabled, it dims to 45%.
+/// quickly, as on the keyboard; disabled, it dims to 45%. At large text its words wrap to a second line rather than
+/// shrink or truncate.
 struct PrimaryButtonStyle: ButtonStyle {
     var accent: Color?
 
@@ -156,9 +159,11 @@ private struct PillLabel: View {
             .labelStyle(AccentGlyphLabelStyle(accent: accent))
             .font(.body.weight(.semibold))
             .foregroundStyle(.white)
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 18)
+            .padding(.vertical, 6)
             .opacity(configuration.isPressed ? 0.6 : 1)
             .frame(maxWidth: .infinity, minHeight: height)
             .contentShape(Capsule())
@@ -218,13 +223,24 @@ private struct RoundIslandLabel: View {
     }
 }
 
+/// A footer's glyph and words, in the footer's own ink.
+struct FootnoteLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon.accessibilityHidden(true)
+            configuration.title
+        }
+    }
+}
+
 /// A label whose icon takes the accent (a small glyph) and whose title stays white.
 struct AccentGlyphLabelStyle: LabelStyle {
     var accent: Color?
 
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 8) {
-            configuration.icon.foregroundStyle(accent ?? .white)
+            // The glyph stops growing at the largest sizes, so the words keep the pill's width.
+            configuration.icon.foregroundStyle(accent ?? .white).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             configuration.title
         }
     }
@@ -232,7 +248,8 @@ struct AccentGlyphLabelStyle: LabelStyle {
 
 // MARK: Glyphs and marks
 
-/// A row's glyph: plain, in secondary ink (or a state's accent), no tile.
+/// A row's glyph: plain, in secondary ink (or a state's accent), no tile. It stops growing at the largest text sizes,
+/// so the title beside it keeps the width.
 struct SymbolTile: View {
     var systemName: String
     var tint: Color = Theme.secondaryInk
@@ -241,8 +258,26 @@ struct SymbolTile: View {
     var body: some View {
         Image(systemName: systemName)
             .font(.body)
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .foregroundStyle(tint)
-            .frame(width: width)
+            .frame(width: min(width, 34))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A step's number on a small island disc. The disc and its numeral stop growing at large text, so the words beside
+/// it keep the width. Decorative: the step's own label says its number.
+struct NumberBadge: View {
+    var number: Int
+    @ScaledMetric(relativeTo: .footnote) private var side: CGFloat = 24
+
+    var body: some View {
+        Text(verbatim: "\(number)")
+            .font(.footnote.weight(.bold))
+            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+            .foregroundStyle(.white)
+            .frame(width: min(side, 30), height: min(side, 30))
+            .islandSurface(Circle())
             .accessibilityHidden(true)
     }
 }
@@ -268,7 +303,7 @@ struct StateDot: View {
 
     var body: some View {
         Circle()
-            .fill(accent.map(Theme.color) ?? Color.white.opacity(0.3))
+            .fill(accent.map(Theme.color) ?? Theme.neutralDot)
             .frame(width: side, height: side)
             .accessibilityHidden(true)
     }
@@ -404,8 +439,10 @@ struct IslandShimmer: View {
 
 // MARK: Model
 
-/// "Speech model" and its state dot, with honest preparation progress: elapsed time, and an estimate only when this
-/// device has prepared the model before.
+/// "Speech model" and its state: a dot, or a check once ready. While it prepares, a glacier line and the time so far sit
+/// in the row (beside the title, or under it at accessibility sizes), so the row keeps its height from preparing to
+/// ready; the line fills toward an estimate only when this device has prepared the model before. At accessibility sizes
+/// the glyphs share a line above the title.
 struct ModelStatusRow: View {
     @ObservedObject var transcriber: ParakeetTranscriber
     var showsPrepareButton = true
@@ -413,26 +450,41 @@ struct ModelStatusRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
-                : AnyLayout(HStackLayout(spacing: 12))
+            let large = typeSize.isAccessibilitySize
+            let layout = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10)) : AnyLayout(HStackLayout(spacing: 12))
             layout {
-                HStack(spacing: 10) {
-                    SymbolTile(systemName: "cpu")
-                    Text("Speech model")
-                    StateDot(accent: ModelBadge.accent(transcriber.modelState))
+                Group {
+                    if large {
+                        // As the session card: the glyphs share a line, the title has the full width.
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 14) {
+                                SymbolTile(systemName: "cpu")
+                                badge
+                            }
+                            Text("Speech model")
+                        }
+                    } else {
+                        HStack(spacing: 10) {
+                            SymbolTile(systemName: "cpu")
+                            Text("Speech model").layoutPriority(1)
+                            badge
+                        }
+                    }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Speech model")
                 .accessibilityValue(ModelBadge.spoken(transcriber.modelState))
-                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                if !large { Spacer(minLength: 0) }
+                if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt {
+                    PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
+                        .frame(maxWidth: large ? .infinity : 96)
+                        .transition(.opacity)
+                }
                 if showsPrepareButton, transcriber.modelState == .notPrepared || transcriber.modelState == .failed {
                     Button(transcriber.modelState == .failed ? "Retry" : "Prepare") { transcriber.prepare() }
                         .buttonStyle(CompactPillStyle())
                         .accessibilityIdentifier("model.prepare")
                 }
-            }
-            if transcriber.modelState == .preparing, let started = transcriber.preparationStartedAt {
-                PreparationProgress(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
             }
             if let hint = transcriber.lastFailureHint {
                 Label(hint.message, systemImage: "exclamationmark.triangle.fill")
@@ -442,6 +494,20 @@ struct ModelStatusRow: View {
             if transcriber.modelState == .unavailable {
                 Text(ModelBadge.spoken(.unavailable)).font(.footnote).foregroundStyle(Theme.secondaryInk)
             }
+        }
+        .animation(.snappy(duration: 0.28), value: transcriber.modelState)
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        if let symbol = ModelBadge.symbol(transcriber.modelState) {
+            Image(systemName: symbol)
+                .font(.footnote.weight(.bold))
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .foregroundStyle(Theme.aurora)
+                .accessibilityHidden(true)
+        } else {
+            StateDot(accent: ModelBadge.accent(transcriber.modelState))
         }
     }
 }
@@ -473,6 +539,7 @@ private struct CompactPillLabel: View {
     }
 }
 
+/// The model preparing, in a row: a glacier line and the time so far.
 struct PreparationProgress: View {
     var startedAt: Date
     var estimate: Double?
@@ -480,23 +547,18 @@ struct PreparationProgress: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             let elapsed = max(0, context.date.timeIntervalSince(startedAt))
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 GlacierBar(fraction: estimate.map { min(elapsed / $0, 0.95) })
-                Text(caption(elapsed: elapsed))
+                Text(Duration.seconds(Int(elapsed)).formatted(.time(pattern: .minuteSecond)))
                     .font(.caption)
                     .foregroundStyle(Theme.secondaryInk)
                     .monospacedDigit()
+                    .fixedSize()
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Preparing")
+            .accessibilityValue(Duration.seconds(Int(elapsed)).formatted(.units(allowed: [.minutes, .seconds], width: .wide)))
         }
-    }
-
-    private func caption(elapsed: Double) -> String {
-        let elapsedText = Duration.seconds(Int(elapsed)).formatted(.time(pattern: .minuteSecond))
-        if let estimate {
-            let estimateText = Duration.seconds(Int(estimate.rounded())).formatted(.time(pattern: .minuteSecond))
-            return "\(elapsedText) · last time \(estimateText)"
-        }
-        return "\(elapsedText) · first time, a few minutes"
     }
 }
 

@@ -918,36 +918,51 @@ transcripts or other user data.
     onboarding headlines and the bounce screen's phase word, scaled with
     Dynamic Type; everything else is the system font, and without the font
     the display text falls back to it. Descriptions give way to glyphs:
-    toggles have titles only. What each screen shows for a state is in
-    `HostCore/AppScreens.swift` (pure, tested).
+    toggles have titles only. Decorative glyphs stop growing at the largest
+    text sizes, and pills wrap to a second line rather than truncate. What
+    each screen shows for a state is in `HostCore/AppScreens.swift` (pure,
+    tested).
   - Onboarding: the privacy promise as three glyphs, microphone permission,
     enabling the keyboard and Full Access, and model preparation with
     progress and an estimate from the last preparation; the user can finish
     onboarding while it continues. One line under each headline; no step
-    glyph on a small iPhone or at accessibility sizes. Finishing opens Home
-    with Try it pushed, so the first dictation comes next.
+    glyph on a small iPhone or at accessibility sizes. The main pill sits at
+    one height on every step. Finishing opens Home, which then pushes Try it,
+    so the first dictation comes next and Back leads to Home's large title.
   - Home: the session card as the Live Activity's Lock Screen shows a
-    session (the mark and Start with no session; during one the state, the
-    idle time left beside a timer glyph, the input's glyph, and End; with
-    the microphone denied, "Microphone off" and Open Settings only), the
-    speech model with a state dot, links to Try it, keyboard setup and
+    session (with no session, the Start pill with the mark on the
+    background; during one, a card with the state, the idle time left beside
+    a timer glyph, the input's glyph, and End; with the microphone denied,
+    "Microphone off" and Open Settings only; at accessibility sizes the
+    glyphs share a line and the words get the full width), the speech model
+    with a state dot or a check once ready and its preparation progress
+    inside the row, links to Try it, keyboard setup and
     Dictionary, session length, the dictation settings, "Use iPhone
     microphone", a "Keyboard" section with "Autocorrect", "Soft key edges"
     and "Typing haptics" (a lock marks those that need Full Access) and
     "Left-handed", and links to Diagnostics, Report a bug and the public
     privacy policy (opened in the browser only on a tap).
-  - Try it: the Start → speak → Stop cue and Field A first, then the
-    destination-binding test with Field B and a multi-line cursor practice
-    field with invented text. The text lives in view state only.
+  - Try it: the Start → speak → Stop cue and Field A first, then, folded
+    under "More practice", the destination-binding test with Field B and a
+    multi-line cursor practice field with invented text. The text lives in
+    view state only.
   - Bounce screen: the keyboard's island, large, with the phase in one word
     (`BouncePhase`): "Starting" until the dictation is `recording` (input is
     flowing), then "Listening" with the voice's wave, the coral recording dot
-    and the time, with Stop and Cancel; while the model prepares, a glacier
-    progress line with the time so far; with Bluetooth headphones connected,
-    which microphone records (see "Microphone choice"). One cue shows the way
+    and the time, with Stop and Cancel (Stop stays, dimmed, while
+    transcribing); with Bluetooth headphones connected, which microphone
+    records (see "Microphone choice"); under it, while the model prepares, a
+    glacier progress line with the time so far. Each phase fades out before
+    the next fades in, so two words never overlap; a cancelled dictation's
+    mark has a neutral dot. One cue shows the way
     back (`SwipeBackCue`): the swipe along the bottom edge, or the status
     bar's back link on an iPhone with a Home button; it shows its motion
-    once, never with Reduce Motion. It appears without sliding up over Home.
+    once, never with Reduce Motion. It appears without sliding up over Home,
+    opaque from its first frame. While the app is in the background, its
+    empty surface with the mark where the island sits covers the app
+    (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start
+    (and the app switcher's card) never shows Home; only the background
+    raises it, not the inactive state of iOS's own prompts.
     Anchored at the top, so nothing moves as the preparing line or the route
     arrives; it scrolls when it does not fit (large text on a small iPhone)
     while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in

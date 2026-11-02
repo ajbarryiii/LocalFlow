@@ -52,8 +52,9 @@ private struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var startedLaunchSession = false
-    /// Where Home opens: Try it right after onboarding, so the first dictation comes next.
-    @State private var homePath = LaunchOptions.current.homePath
+    /// Right after onboarding, Home pushes Try it once it is on screen, so the first dictation comes next and Back
+    /// leads to Home with its large title.
+    @State private var opensTryIt = false
     /// The start-session screen, mirrored from `host.bounceVisible` so it can appear without sliding up over Home.
     @State private var bounceShown = false
 
@@ -62,19 +63,26 @@ private struct RootView: View {
             if !host.isConfigured {
                 ConfigurationErrorView()
             } else if preferences.onboardingComplete || LaunchOptions.current.skipOnboarding {
-                HomeView(transcriber: host.transcriber, settings: host.settings, preferences: preferences, path: homePath)
+                HomeView(transcriber: host.transcriber, settings: host.settings, preferences: preferences,
+                         path: LaunchOptions.current.homePath, opensTryIt: opensTryIt)
                     .transition(.opacity)
             } else {
                 OnboardingView(transcriber: host.transcriber, step: LaunchOptions.current.onboardingStep) {
-                    homePath = [.tryIt]
+                    opensTryIt = true
                     withAnimation(.snappy(duration: 0.3)) { preferences.onboardingComplete = true }
                 }
                 .transition(.opacity)
             }
         }
         .environmentObject(host)
+        // In the background the app is the start-session screen's empty surface, so iOS's snapshot never shows Home.
+        .backgroundCover(bounceShown: bounceShown)
         .fullScreenCover(isPresented: Binding(get: { bounceShown }, set: { if !$0 { host.bounceVisible = false } })) {
-            BounceView(transcriber: host.transcriber).environmentObject(host)
+            BounceView(transcriber: host.transcriber)
+                .environmentObject(host)
+                .backgroundCover()
+                // Opaque from the first frame, before the screen's own background is laid out.
+                .presentationBackground(Theme.screenBackground)
         }
         // The keyboard opened the app to dictate: the screen is there at once, rather than sliding up over Home.
         .onChange(of: host.bounceVisible, initial: true) { _, visible in

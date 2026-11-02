@@ -74,11 +74,15 @@ struct DictionaryView: View {
             if !dictionary.hasVocabulary {
                 Text(DictionaryEditor.unavailableMessage).foregroundStyle(Theme.coral)
             } else if !dictionary.entries.isEmpty {
-                // A legend for the row's glyphs, a few words each.
+                // A legend for the row's glyphs, a few words each. Each phrase stays whole with its glyph; at
+                // accessibility sizes each has its own line instead, and its words wrap where words do.
                 let up = Text(Image(systemName: "arrow.up")).fontWeight(.bold).foregroundStyle(Theme.aurora)
                 let down = Text(Image(systemName: "arrow.down")).fontWeight(.bold).foregroundStyle(Theme.coral)
                 let mic = Text(Image(systemName: "mic"))
-                Text("\(up)\u{00A0}still\u{00A0}misheard   \(down)\u{00A0}shows\u{00A0}up\u{00A0}wrongly   \(mic)\u{00A0}find\u{00A0}by\u{00A0}voice")
+                let large = typeSize.isAccessibilitySize
+                let gap = large ? "\n" : "   "
+                let space = large ? " " : "\u{00A0}"
+                Text("\(up)\u{00A0}still\(space)misheard\(gap)\(down)\u{00A0}shows\(space)up\(space)wrongly\(gap)\(mic)\u{00A0}find\(space)by\(space)voice")
             }
         }
         .listRowBackground(Theme.cardBackground)
@@ -231,18 +235,15 @@ struct DictionaryEntryEditor: View {
                 } footer: {
                     if let message = saveError ?? validationError {
                         Text(message).foregroundStyle(Theme.coral)
-                    } else {
-                        Text("Type it exactly as it should appear, up to \(DictionaryValidation.maxWords) words.")
                     }
                 }
                 .listRowBackground(Theme.cardBackground)
 
                 Section {
-                    HStack {
-                        Text("Strength")
-                        Spacer()
-                        StrengthArrows(strength: strength) { strength = $0 }
-                    }
+                    // The section's header names it; the arrows have the row to themselves.
+                    StrengthArrows(strength: strength) { strength = $0 }
+                        .frame(maxWidth: .infinity)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     Button {
                         probeWord = ProbeWord(text: DictionaryValidation.normalize(text))
                     } label: {
@@ -253,12 +254,14 @@ struct DictionaryEntryEditor: View {
                 } header: {
                     Text("Strength")
                 } footer: {
-                    Text("Say a sentence with the word; LocalFlow keeps the lowest strength that gets it right. The recording is discarded right after.")
+                    Label("Audio discarded", systemImage: "trash")
+                        .labelStyle(FootnoteLabelStyle())
+                        .accessibilityLabel("The recording is discarded right after.")
                 }
                 .listRowBackground(Theme.cardBackground)
             }
             .themedListBackground()
-            .navigationTitle(original == nil ? "Add Word" : "Edit Word")
+            .navigationTitle(original == nil ? "Add word" : "Edit word")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -327,7 +330,7 @@ struct StrengthProbeSheet: View {
                 .actionBarBackground()
             }
             .background(Theme.screenBackground.ignoresSafeArea())
-            .navigationTitle("Find Strength")
+            .navigationTitle("Find strength")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

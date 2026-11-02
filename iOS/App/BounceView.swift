@@ -27,7 +27,7 @@ struct BounceView: View {
                         details(width: min(proxy.size.width - 56, 340))
                     }
                     .padding(.horizontal, 28)
-                    .padding(.top, max(16, proxy.size.height * (cue == .statusBarLink ? 0.14 : 0.24)))
+                    .padding(.top, Self.islandTop(height: proxy.size.height, cue: cue))
                     .frame(maxWidth: .infinity)
                 }
                 .scrollBounceBehavior(.basedOnSize)
@@ -45,6 +45,11 @@ struct BounceView: View {
         .background(Theme.screenBackground.ignoresSafeArea())
         .animation(reduceMotion ? .easeOut(duration: 0.15) : .snappy(duration: 0.28), value: phase)
         .accessibilityIdentifier("bounce")
+    }
+
+    /// The space above the island, which `HandoffSurface` shares, so the island arrives where its mark already is.
+    static func islandTop(height: CGFloat, cue: SwipeBackCue) -> CGFloat {
+        max(16, height * (cue == .statusBarLink ? 0.14 : 0.24))
     }
 
     private var phase: BouncePhase { BouncePhase(host.dictation?.phase) }
@@ -73,15 +78,15 @@ struct BounceView: View {
                     .fixedSize()
                 }
                 .padding(.horizontal, 22)
-                .transition(.opacity)
+                .transition(Self.outThenIn)
             case .transcribing:
                 IslandShimmer()
                     .frame(height: 26)
                     .padding(.horizontal, 22)
-                    .transition(.opacity)
+                    .transition(Self.outThenIn)
             case .done, .cancelled, .stopped:
-                RidgeMarkView(dot: Theme.color(phase.accent), side: 34)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.85)))
+                RidgeMarkView(dot: phase.accent.map(Theme.color) ?? Theme.neutralDot, side: 34)
+                    .transition(Self.outThenIn)
             }
         }
         // A fixed size, as the keyboard's island: the time stays at one size at large text.
@@ -91,19 +96,28 @@ struct BounceView: View {
         .accessibilityHidden(true)
     }
 
+    /// One phase at a time, in the word and in the island: the old one fades out, then the new one fades in, so the two
+    /// never paint over each other.
+    private static let outThenIn = AnyTransition.asymmetric(
+        insertion: .opacity.animation(.easeOut(duration: 0.1).delay(0.1)),
+        removal: .opacity.animation(.easeOut(duration: 0.1)))
+
     private var word: some View {
-        Text(phase.word)
-            .font(.display(.largeTitle))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-            .id(phase)
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 8)))
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityIdentifier("bounce.phase")
+        ZStack {
+            Text(phase.word)
+                .font(.display(.largeTitle))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .id(phase)
+                .transition(Self.outThenIn)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("bounce.phase")
+        }
     }
 
-    /// At most a short line under the word: why it stopped, the microphone prompt, the model preparing, the route.
+    /// At most a short line under the word: why it stopped, the microphone prompt, the route, the model preparing. The
+    /// route comes first, so it stays put when the preparing line leaves.
     @ViewBuilder
     private func details(width: CGFloat) -> some View {
         VStack(spacing: 14) {
@@ -113,11 +127,6 @@ struct BounceView: View {
             if phase == .cancelled || phase == .stopped, let error = host.dictation?.error {
                 note(error.message)
             }
-            if preparing, let started = transcriber.preparationStartedAt {
-                PreparingLine(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
-                    .frame(width: width)
-                    .transition(.opacity)
-            }
             if let notice = host.headphonesNotice, phase == .starting || phase == .listening {
                 Label(notice.shortLabel, systemImage: notice.symbol)
                     .font(.subheadline.weight(.medium))
@@ -125,6 +134,11 @@ struct BounceView: View {
                     .transition(.opacity)
                     .accessibilityLabel(notice.message)
                     .accessibilityIdentifier("bounce.headphones")
+            }
+            if preparing, let started = transcriber.preparationStartedAt {
+                PreparingLine(startedAt: started, estimate: transcriber.estimatedPreparationSeconds)
+                    .frame(width: width)
+                    .transition(.opacity)
             }
         }
     }
@@ -143,7 +157,7 @@ struct BounceView: View {
     private var buttons: some View {
         switch phase {
         case .starting, .listening, .transcribing:
-            // Cancel keeps its place from start to finish; Stop shows only while there is something to stop.
+            // Cancel and Stop keep their places from start to finish; Stop works only while there is something to stop.
             HStack(spacing: 14) {
                 Button {
                     host.cancelDictation()
@@ -160,14 +174,81 @@ struct BounceView: View {
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(phase != .listening)
-                .opacity(phase == .transcribing ? 0 : 1)
-                .accessibilityHidden(phase == .transcribing)
                 .accessibilityIdentifier("bounce.stop")
             }
         case .done, .cancelled, .stopped:
             Button("Close") { host.bounceVisible = false }
                 .buttonStyle(PrimaryButtonStyle())
                 .accessibilityIdentifier("bounce.close")
+        }
+    }
+}
+
+/// The start-session screen with nothing on it yet but the mark where the island sits. It covers the app in the
+/// background (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start is this, and the island
+/// arrives on it.
+struct HandoffSurface: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let cue = SwipeBackCue(bottomSafeAreaInset: Double(proxy.safeAreaInsets.bottom))
+            VStack(spacing: 0) {
+                if cue == .statusBarLink {
+                    StatusBarLinkCue(visible: false)
+                        .padding(.top, 4)
+                }
+                RidgeMarkView(side: 34)
+                    .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64)
+                    .padding(.top, BounceView.islandTop(height: proxy.size.height, cue: cue))
+                Spacer(minLength: 0)
+            }
+        }
+        .background(Theme.screenBackground.ignoresSafeArea())
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// Covers this with `HandoffSurface` while the app is in the background (`BackgroundCover`); `bounceShown` keeps it
+    /// under the start-session screen until that screen goes.
+    func backgroundCover(bounceShown: Bool = false) -> some View {
+        modifier(BackgroundCoverModifier(bounceShown: bounceShown))
+    }
+}
+
+private struct BackgroundCoverModifier: ViewModifier {
+    var bounceShown: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var covered = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if covered { HandoffSurface().transition(.opacity) }
+            }
+            .onChange(of: scenePhase) { update() }
+            .onChange(of: bounceShown) { update() }
+    }
+
+    private func update() {
+        let next = BackgroundCover.covers(scene: BackgroundCover.Scene(scenePhase), bounceShown: bounceShown, covered: covered)
+        guard next != covered else { return }
+        if next {
+            // At once: iOS takes its snapshot right after the app enters the background.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { covered = true }
+        } else {
+            withAnimation(.easeOut(duration: 0.12)) { covered = false }
+        }
+    }
+}
+
+extension BackgroundCover.Scene {
+    init(_ phase: ScenePhase) {
+        switch phase {
+        case .background: self = .background
+        case .inactive: self = .inactive
+        default: self = .active
         }
     }
 }

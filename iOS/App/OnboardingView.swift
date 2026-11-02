@@ -146,9 +146,32 @@ struct OnboardingView: View {
 
     // MARK: Buttons
 
-    @ViewBuilder
+    /// The main pill, and under it a quieter action or the same space left empty, so the main pill sits at one height on
+    /// every step.
     private var buttons: some View {
         VStack(spacing: 6) {
+            primaryAndSecondary
+            if !hasSecondary {
+                Button(" ") {}
+                    .buttonStyle(SecondaryButtonStyle())
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private var hasSecondary: Bool {
+        switch step {
+        case .welcome: return false
+        case .microphone: return permission != .granted
+        case .keyboard: return true
+        case .model: return transcriber.modelState == .notPrepared || transcriber.modelState == .failed
+        }
+    }
+
+    @ViewBuilder
+    private var primaryAndSecondary: some View {
+        Group {
             switch step {
             case .welcome:
                 Button("Get started") { go(to: .microphone) }
@@ -189,8 +212,9 @@ struct OnboardingView: View {
                         .accessibilityIdentifier("onboarding.prepare")
                     Button("Later") { onFinish() }.buttonStyle(SecondaryButtonStyle())
                 case .preparing:
-                    Button("Continue while it prepares") { onFinish() }
-                        .buttonStyle(SecondaryButtonStyle())
+                    // It goes on preparing after onboarding.
+                    Button("Continue") { onFinish() }
+                        .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("onboarding.finish")
                 case .ready, .unavailable:
                     Button("Try it") { onFinish() }
@@ -295,6 +319,7 @@ private struct PromiseItem: View {
         layout {
             Image(systemName: symbol)
                 .font(.title3)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                 .foregroundStyle(.white)
                 .frame(height: 26)
                 .accessibilityHidden(true)
@@ -353,16 +378,10 @@ private struct LeadingGlyphLabelStyle: LabelStyle {
 private struct SetupStep: View {
     var number: Int
     var text: LocalizedStringKey
-    @ScaledMetric(relativeTo: .subheadline) private var side: CGFloat = 26
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(number)")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: side, height: side)
-                .islandSurface(Circle())
-                .accessibilityHidden(true)
+            NumberBadge(number: number)
             Text(text).font(.body)
         }
         .accessibilityElement(children: .combine)

@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// Two plain text fields for trying the keyboard, including the destination-binding test. The text
-/// lives in view state only and is gone when the screen closes.
+/// A plain text field for trying the keyboard; under "More practice", folded away at first, the destination-binding test
+/// and the cursor practice. The text lives in view state only and is gone when the screen closes.
 struct TryItView: View {
     @EnvironmentObject private var host: HostSessionController
     @State private var fieldA = ""
     @State private var fieldB = ""
     @State private var practice = Self.practiceSample
+    @State private var showsMore = false
     @FocusState private var focus: Field?
 
     private enum Field { case a, b, practice }
@@ -33,32 +34,9 @@ struct TryItView: View {
                         .foregroundStyle(Theme.secondaryInk)
                 }
 
-                practiceHeader("Destination test", symbol: "arrow.left.arrow.right")
-                    .padding(.top, 10)
-                field("Field B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
-                Text("Start in A, then tap B before the text arrives. It stays out of B; the keyboard offers **Insert last** instead.")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.secondaryInk)
-
-                HStack {
-                    practiceHeader("Cursor practice", symbol: "text.cursor")
-                    Spacer()
-                    Button("Reset text") { practice = Self.practiceSample }
-                        .font(.footnote)
-                        .disabled(practice == Self.practiceSample)
-                }
-                .padding(.top, 10)
-                TextEditor(text: $practice)
-                    .focused($focus, equals: .practice)
-                    .frame(height: 220)
-                    .padding(8)
-                    .scrollContentBackground(.hidden)
-                    .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(focusEdge(.practice, cornerRadius: 16))
-                    .accessibilityIdentifier("tryit.practice")
-                Text("Touch and hold the space bar, then slide to move the cursor.")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.secondaryInk)
+                moreToggle
+                    .padding(.top, 6)
+                if showsMore { more }
             }
             .padding(20)
         }
@@ -77,6 +55,57 @@ struct TryItView: View {
         }
         .onAppear { host.tryItVisible = true }
         .onDisappear { host.tryItVisible = false }
+    }
+
+    /// "More practice": a chevron that turns as the group opens.
+    private var moreToggle: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.25)) { showsMore.toggle() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.bold))
+                    .rotationEffect(.degrees(showsMore ? 90 : 0))
+                    .accessibilityHidden(true)
+                Text("More practice")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.secondaryInk)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(showsMore ? "Shown" : "Hidden")
+        .accessibilityIdentifier("tryit.more")
+    }
+
+    @ViewBuilder
+    private var more: some View {
+        practiceHeader("Destination test", symbol: "arrow.left.arrow.right")
+        field("Field B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
+        Text("Start in A, then tap B before the text arrives. It stays out of B; the keyboard offers **Insert last** instead.")
+            .font(.footnote)
+            .foregroundStyle(Theme.secondaryInk)
+
+        HStack {
+            practiceHeader("Cursor practice", symbol: "text.cursor")
+            Spacer()
+            Button("Reset text") { practice = Self.practiceSample }
+                .font(.footnote)
+                .disabled(practice == Self.practiceSample)
+        }
+        .padding(.top, 10)
+        TextEditor(text: $practice)
+            .focused($focus, equals: .practice)
+            .frame(height: 220)
+            .padding(8)
+            .scrollContentBackground(.hidden)
+            .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(focusEdge(.practice, cornerRadius: 16))
+            .accessibilityIdentifier("tryit.practice")
+        Text("Touch and hold the space bar, then slide to move the cursor.")
+            .font(.footnote)
+            .foregroundStyle(Theme.secondaryInk)
     }
 
     private func practiceHeader(_ title: String, symbol: String) -> some View {
@@ -160,11 +189,7 @@ private struct HowToRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(number)")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(minWidth: 24, minHeight: 24)
-                .islandSurface(Circle())
+            NumberBadge(number: number)
             Text(text).font(.subheadline.weight(.regular))
         }
     }

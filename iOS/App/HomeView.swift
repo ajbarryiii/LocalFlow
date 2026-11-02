@@ -10,6 +10,9 @@ struct HomeView: View {
     @ObservedObject var settings: SharedSettingsModel
     @ObservedObject var preferences: AppPreferences
     @State var path: [HomeRoute]
+    /// Push Try it once Home is on screen (right after onboarding), so Home's large title is there to go back to.
+    var opensTryIt = false
+    @State private var openedTryIt = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -41,10 +44,8 @@ struct HomeView: View {
                 .listRowBackground(Theme.cardBackground)
 
                 Section {
-                    Picker(selection: $settings.sessionMinutes) {
+                    Picker("Session length", selection: $settings.sessionMinutes) {
                         ForEach(LocalFlowSettings.sessionMinuteOptions, id: \.self) { Text("\($0) min").tag($0) }
-                    } label: {
-                        RowLabel(title: "Session length", symbol: SessionActivityState.countdownSymbol)
                     }
                     .accessibilityHint("A session ends after this long without dictation")
                     .accessibilityIdentifier("settings.sessionLength")
@@ -104,14 +105,11 @@ struct HomeView: View {
                     .accessibilityHint("Opens in your browser")
                     .accessibilityIdentifier("home.privacyPolicy")
                 } footer: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "lock.fill").accessibilityHidden(true)
-                        Text("LocalFlow \(AppIdentity.version)")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("LocalFlow \(AppIdentity.version). Nothing you say leaves this iPhone.")
+                    // No lock here: on Home the lock means "needs Full Access".
+                    Text("LocalFlow \(AppIdentity.version)")
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                        .accessibilityLabel("LocalFlow \(AppIdentity.version). Nothing you say leaves this iPhone.")
                 }
                 .listRowBackground(Theme.cardBackground)
             }
@@ -129,17 +127,26 @@ struct HomeView: View {
             }
         }
         .tint(.white)
+        .task {
+            guard opensTryIt, !openedTryIt else { return }
+            openedTryIt = true
+            // After onboarding's cross-fade to Home, so the push reads as one.
+            try? await Task.sleep(for: .seconds(0.3))
+            path.append(.tryIt)
+        }
     }
 }
 
-/// The Flow session, as the Live Activity's Lock Screen shows it (`SessionCardState`): with no session, the mark on the
-/// Start pill; during one, the mark with the state's dot, the state, the time left or recorded, the input's glyph and
-/// End. With the microphone off, Open Settings is the only action.
+/// The Flow session, as the Live Activity's Lock Screen shows it (`SessionCardState`): with no session, the Start pill
+/// with the mark, on the background; during one, a card with the mark and the state's dot, the state, the time left or
+/// recorded, the input's glyph and End. With the microphone off, Open Settings is the only action. At accessibility
+/// sizes the glyphs share one line and the words get the card's full width.
 private struct SessionCard: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
     /// Read so the card looks at the microphone permission again on the way back from Settings.
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .headline) private var markSide: CGFloat = 30
     @ScaledMetric(relativeTo: .body) private var pillMarkSide: CGFloat = 22
 
@@ -151,36 +158,23 @@ private struct SessionCard: View {
 
     var body: some View {
         let state = state
+        let isCard = state.title != nil
         VStack(alignment: .leading, spacing: 16) {
             if let title = state.title {
-                HStack(alignment: .center, spacing: 12) {
-                    Group {
-                        if let accent = state.accent {
-                            RidgeMarkView(dot: Theme.color(accent), side: markSide)
-                                .animation(.snappy(duration: 0.28), value: accent)
-                        } else {
-                            Image(systemName: "mic.slash.fill")
-                                .font(.title3)
-                                .foregroundStyle(Theme.ember)
-                                .frame(width: markSide, height: markSide)
-                                .accessibilityHidden(true)
+                if typeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 14) {
+                            mark(state)
+                            input(state)
                         }
+                        words(title, state)
                     }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.headline)
-                        detail(state)
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(Theme.secondaryInk)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("session.state")
-                    Spacer(minLength: 0)
-                    if state.isSessionOn, let input = host.currentInput {
-                        Image(systemName: input == .builtInMic ? "iphone" : "headphones")
-                            .font(.body)
-                            .foregroundStyle(Theme.secondaryInk)
-                            .accessibilityLabel("Input: \(input.label)")
-                            .accessibilityIdentifier("session.input")
+                } else {
+                    HStack(alignment: .center, spacing: 12) {
+                        mark(state)
+                        words(title, state)
+                        Spacer(minLength: 0)
+                        input(state)
                     }
                 }
             }
@@ -201,11 +195,54 @@ private struct SessionCard: View {
 
             action(state)
         }
-        .padding(16)
-        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // No session: the pill sits on the background, as the keyboard's Start sits on its bar.
+        .padding(isCard ? 16 : 0)
+        .background(isCard ? Theme.cardBackground : .clear, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    /// One line under the state, kept in every state so the card keeps its height.
+    /// The mark with the state's dot, or the microphone-off glyph; it stops growing at the largest sizes.
+    @ViewBuilder
+    private func mark(_ state: SessionCardState) -> some View {
+        let side = min(markSide, 40)
+        if let accent = state.accent {
+            RidgeMarkView(dot: Theme.color(accent), side: side)
+                .animation(.snappy(duration: 0.28), value: accent)
+        } else {
+            Image(systemName: "mic.slash.fill")
+                .font(.title3)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .foregroundStyle(Theme.ember)
+                .frame(width: side, height: side)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func words(_ title: String, _ state: SessionCardState) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.headline)
+            if state.reservesDetailLine {
+                detail(state)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(Theme.secondaryInk)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("session.state")
+    }
+
+    @ViewBuilder
+    private func input(_ state: SessionCardState) -> some View {
+        if state.isSessionOn, let input = host.currentInput {
+            Image(systemName: input == .builtInMic ? "iphone" : "headphones")
+                .font(.body)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .foregroundStyle(Theme.secondaryInk)
+                .accessibilityLabel("Input: \(input.label)")
+                .accessibilityIdentifier("session.input")
+        }
+    }
+
+    /// One line under the state, kept while a session runs so the card keeps its height (`reservesDetailLine`).
     @ViewBuilder
     private func detail(_ state: SessionCardState) -> some View {
         switch state {
@@ -213,6 +250,7 @@ private struct SessionCard: View {
             if let expiresAt = host.sessionExpiresAt {
                 HStack(spacing: 5) {
                     Image(systemName: SessionActivityState.countdownSymbol)
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                         .accessibilityLabel(SessionActivityState.countdownSpokenLead)
                     Text("\(Text(timerInterval: min(Date.now, expiresAt) ... expiresAt, countsDown: true, showsHours: false)) \(SessionActivityState.lockScreenCountdownTail)")
                 }
@@ -241,7 +279,7 @@ private struct SessionCard: View {
                 host.startSession()
             } label: {
                 HStack(spacing: 10) {
-                    RidgeMarkView(dot: Theme.aurora, side: pillMarkSide)
+                    RidgeMarkView(dot: Theme.aurora, side: min(pillMarkSide, 30))
                     Text("Start session")
                 }
             }
@@ -268,7 +306,7 @@ private struct SessionCard: View {
     }
 }
 
-/// A row's glyph and title. At accessibility sizes the glyph stays its size beside the wrapping title.
+/// A row's glyph and title. At accessibility sizes the glyph stops growing beside the wrapping title.
 private struct RowLabel: View {
     var title: String
     var symbol: String
@@ -298,16 +336,6 @@ private struct FullAccessToggle: View {
         }
         .accessibilityLabel(title)
         .accessibilityHint("Needs Full Access")
-    }
-}
-
-/// A footer's glyph and words, in the footer's own ink.
-private struct FootnoteLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            configuration.icon.accessibilityHidden(true)
-            configuration.title
-        }
     }
 }
 

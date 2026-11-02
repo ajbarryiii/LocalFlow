@@ -2,7 +2,8 @@ import Foundation
 
 /// What the app's own screens show for a state, apart from layout (ARCHITECTURE.md, "Host app"): the session card's
 /// state and its one accent, the speech model's state dot, the start-session screen's phase word and return cue, the
-/// route it names, and onboarding's spoken progress. The views only draw these. Pure.
+/// route it names, onboarding's spoken progress, and when the background cover hides the app. The views only draw
+/// these. Pure.
 
 /// One of the brand colours a state may carry, on a small dot or glyph only (never a fill).
 enum AppAccent: Equatable, Sendable {
@@ -65,6 +66,15 @@ enum SessionCardState: Equatable, Sendable {
         }
     }
 
+    /// Whether the card keeps a line under its title even when there is nothing in it yet, so the card keeps its
+    /// height from starting to ready. Microphone off has no line, and no session has no title.
+    var reservesDetailLine: Bool {
+        switch self {
+        case .off, .microphoneOff: return false
+        case .starting, .ready, .listening, .transcribing, .preparing: return true
+        }
+    }
+
     /// Whether the session is running, so the card offers End rather than Start.
     var isSessionOn: Bool {
         switch self {
@@ -74,8 +84,14 @@ enum SessionCardState: Equatable, Sendable {
     }
 }
 
-/// The speech model's row on Home: "Speech model" and a state dot, with its state in words for VoiceOver.
+/// The speech model's row on Home: "Speech model" and a state dot, or a check once it is ready, with its state in
+/// words for VoiceOver.
 enum ModelBadge {
+    /// Ready is a check, so the state is a shape and not only a colour; nil: the state's dot.
+    static func symbol(_ model: HostStatus.Model) -> String? {
+        model == .ready ? "checkmark" : nil
+    }
+
     /// Nil: a neutral grey dot (not prepared yet).
     static func accent(_ model: HostStatus.Model) -> AppAccent? {
         switch model {
@@ -123,13 +139,15 @@ enum BouncePhase: Equatable, Sendable {
         }
     }
 
-    /// The island's accent: the recording dot, the wait's glint, or the mark's dot when it is over.
-    var accent: AppAccent {
+    /// The island's accent: the recording dot, the wait's glint, or the mark's dot when it is over. Nil: a neutral
+    /// dot, for a dictation the person cancelled themselves (ember is for one that failed).
+    var accent: AppAccent? {
         switch self {
         case .starting, .transcribing: return .glacier
         case .listening: return .coral
         case .done: return .aurora
-        case .cancelled, .stopped: return .ember
+        case .cancelled: return nil
+        case .stopped: return .ember
         }
     }
 
@@ -179,6 +197,25 @@ extension HeadphonesNotice {
         switch self {
         case .iPhoneMicrophone: return "iphone"
         case .headphonesMicrophone: return "headphones"
+        }
+    }
+}
+
+/// The neutral surface over the app while it is in the background, so the snapshot iOS zooms on the way back (and the
+/// app switcher's card) is the start-session screen's empty background, not Home: after the keyboard's Start, the
+/// island arrives on it, with no Home in between.
+enum BackgroundCover {
+    enum Scene: Equatable, Sendable { case active, inactive, background }
+
+    /// Whether the cover shows after a change of `scene` or of `bounceShown`, given whether it shows now (`covered`).
+    /// Only the background raises it: iOS's own prompts and Control Center make the app inactive, which keeps what is
+    /// on screen. Becoming active lowers it, unless the start-session screen is up over it; it then goes when that
+    /// screen does, so Home is there underneath.
+    static func covers(scene: Scene, bounceShown: Bool, covered: Bool) -> Bool {
+        switch scene {
+        case .background: return true
+        case .inactive: return covered
+        case .active: return covered && bounceShown
         }
     }
 }

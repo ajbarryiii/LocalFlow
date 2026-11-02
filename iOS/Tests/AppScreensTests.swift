@@ -1,7 +1,7 @@
 import Foundation
 
 /// The app's screens (ARCHITECTURE.md, "Host app"): the session card's state, the model's dot, the start-session
-/// screen's word and return cue, and onboarding's spoken progress.
+/// screen's word and return cue, onboarding's spoken progress, and the background cover.
 enum AppScreensTests {
     static var tests: [TestCase] {
         [
@@ -14,6 +14,9 @@ enum AppScreensTests {
             ("modelBadge", testModelBadge),
             ("bouncePhaseWordsAndCue", testBouncePhaseWordsAndCue),
             ("headphonesRouteInTwoWords", testHeadphonesRouteInTwoWords),
+            ("sessionCardReservesALineOnlyDuringASession", testSessionCardReservesALineOnlyDuringASession),
+            ("backgroundCoverShowsOnlyInTheBackground", testBackgroundCoverShowsOnlyInTheBackground),
+            ("backgroundCoverStaysUnderTheBounce", testBackgroundCoverStaysUnderTheBounce),
         ]
     }
 
@@ -93,6 +96,11 @@ enum AppScreensTests {
         TestSupport.expectEqual(ModelBadge.accent(.notPrepared), nil)
         TestSupport.expectEqual(ModelBadge.spoken(.ready), "Ready")
         TestSupport.expectEqual(ModelBadge.spoken(.notPrepared), "Not prepared yet")
+        // Ready is a shape, not only a colour; the other states are dots.
+        TestSupport.expectEqual(ModelBadge.symbol(.ready), "checkmark")
+        for model in [HostStatus.Model.notPrepared, .preparing, .failed, .unavailable] {
+            TestSupport.expectEqual(ModelBadge.symbol(model), nil)
+        }
     }
 
     private static func testBouncePhaseWordsAndCue() {
@@ -100,7 +108,10 @@ enum AppScreensTests {
         TestSupport.expectEqual(BouncePhase(.recording).word, "Listening")
         TestSupport.expectEqual(BouncePhase(.recording).accent, .coral)
         TestSupport.expectEqual(BouncePhase(.failed).word, "Stopped")
-        TestSupport.expectEqual(BouncePhase(.cancelled).accent, .ember)
+        // Cancelling is the person's own choice: a neutral dot. A failure keeps the warning colour.
+        TestSupport.expectEqual(BouncePhase(.cancelled).accent, nil)
+        TestSupport.expectEqual(BouncePhase(.failed).accent, .ember)
+        TestSupport.expectEqual(BouncePhase(.completed).accent, .aurora)
         TestSupport.expect(BouncePhase(.recording).showsReturnCue, "Listening shows the way back")
         TestSupport.expect(BouncePhase(.transcribing).showsReturnCue, "Transcribing shows the way back")
         TestSupport.expect(BouncePhase(.completed).showsReturnCue, "Done shows the way back")
@@ -113,5 +124,42 @@ enum AppScreensTests {
         TestSupport.expectEqual(HeadphonesNotice.iPhoneMicrophone.symbol, "iphone")
         TestSupport.expectEqual(HeadphonesNotice.headphonesMicrophone.shortLabel, "Headphones mic")
         TestSupport.expectEqual(HeadphonesNotice.headphonesMicrophone.symbol, "headphones")
+    }
+
+    private static func testSessionCardReservesALineOnlyDuringASession() {
+        TestSupport.expect(!SessionCardState.off.reservesDetailLine, "No session: the Start pill alone")
+        TestSupport.expect(!SessionCardState.microphoneOff.reservesDetailLine, "Microphone off has no empty line")
+        for state in [SessionCardState.starting, .ready, .listening, .transcribing, .preparing] {
+            TestSupport.expect(state.reservesDetailLine, "\(state) keeps the card's height")
+        }
+    }
+
+    private static func testBackgroundCoverShowsOnlyInTheBackground() {
+        for covered in [false, true] {
+            TestSupport.expect(BackgroundCover.covers(scene: .background, bounceShown: false, covered: covered),
+                               "The background raises the cover")
+            TestSupport.expect(BackgroundCover.covers(scene: .background, bounceShown: true, covered: covered),
+                               "The background raises the cover over the bounce too")
+        }
+        // iOS's prompts and Control Center make the app inactive: what is on screen stays.
+        TestSupport.expect(!BackgroundCover.covers(scene: .inactive, bounceShown: false, covered: false),
+                           "Inactive never blanks the app")
+        TestSupport.expect(BackgroundCover.covers(scene: .inactive, bounceShown: false, covered: true),
+                           "On the way back, inactive keeps the cover until active")
+        TestSupport.expect(!BackgroundCover.covers(scene: .active, bounceShown: false, covered: true),
+                           "Active lowers the cover")
+        TestSupport.expect(!BackgroundCover.covers(scene: .active, bounceShown: false, covered: false),
+                           "Active never raises it")
+    }
+
+    private static func testBackgroundCoverStaysUnderTheBounce() {
+        // Back from the keyboard's Start: the start-session screen is up, so Home stays covered beneath it ...
+        TestSupport.expect(BackgroundCover.covers(scene: .active, bounceShown: true, covered: true),
+                           "The cover stays under the start-session screen")
+        // ... until that screen goes.
+        TestSupport.expect(!BackgroundCover.covers(scene: .active, bounceShown: false, covered: true),
+                           "Closing the start-session screen shows Home")
+        TestSupport.expect(!BackgroundCover.covers(scene: .active, bounceShown: true, covered: false),
+                           "A start-session screen opened in the app raises no cover")
     }
 }
