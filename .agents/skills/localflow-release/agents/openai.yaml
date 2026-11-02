@@ -1,0 +1,4 @@
+interface:
+  display_name: "LocalFlow Release"
+  short_description: "Prepare and publish LocalFlow macOS beta releases."
+  default_prompt: "Prepare a new LocalFlow macOS beta release."
