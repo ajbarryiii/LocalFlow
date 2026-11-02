@@ -97,8 +97,8 @@ dictation immediate.
 
 Two later one-repeat runs on the same M1 Pro prepared b15 first and the other
 functions in the background: first b2/b4/b8/b15, then the b4/b8/b15/b30
-functions the bundle still carries. Version 2.1.7 removed that setup, and
-those timing records with it.
+functions the bundle still carries. Version 2.1.7 removed that setup; its
+timing records were deleted later.
 
 ## Stable model location
 
