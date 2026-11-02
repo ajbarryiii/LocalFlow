@@ -21,8 +21,8 @@ Manual verification performed:
 
 - [ ] No real API keys, audio, transcripts, screenshots, selected text,
       clipboard contents, window titles, or private provider URLs are included
-- [ ] Data sent to providers is unchanged, or the change is explained below
-- [ ] Credential and Keychain behavior is unchanged, or explained below
+- [ ] No new logging, persistence, or transmission of user content, or
+      explained below
 - [ ] macOS permissions and entitlements are unchanged, or explained below
 - [ ] Preferences and pipeline-history compatibility are unchanged, or
       explained below

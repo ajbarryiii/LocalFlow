@@ -764,7 +764,7 @@ final class UpdateManager: ObservableObject {
             return
         }
 
-        let dmgPath = tempDir.appendingPathComponent("FreeFlow.dmg")
+        let dmgPath = tempDir.appendingPathComponent("LocalFlow.dmg")
 
         // MARK: Download phase
         updateStatus = .downloading

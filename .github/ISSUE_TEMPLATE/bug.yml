@@ -65,13 +65,6 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: provider
-    attributes:
-      label: Provider and model
-      description: Provider and model names only. Do not include an API key or private URL.
-      placeholder: "For example: Groq / whisper-large-v3-turbo"
-
   - type: textarea
     id: permissions
     attributes:
