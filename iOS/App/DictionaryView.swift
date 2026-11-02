@@ -217,6 +217,8 @@ struct DictionaryEntryEditor: View {
     @ObservedObject var dictionary: DictionaryModel
     let original: DictionaryEntry?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @FocusState private var wordFocused: Bool
     @State private var text = ""
     @State private var strength = DictionaryValidation.defaultStrength
     @State private var saveError: String?
@@ -233,6 +235,7 @@ struct DictionaryEntryEditor: View {
                     TextField("e.g. Kubernetes", text: $text)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($wordFocused)
                         .accessibilityIdentifier("dictionary.word")
                 } header: {
                     Text("Word or phrase")
@@ -294,6 +297,11 @@ struct DictionaryEntryEditor: View {
             }
         }
         .onChange(of: text) { saveError = nil }
+        // Leaving the app puts the keyboard away, so it never shows through the start-session hand-off when the
+        // keyboard's Start brings the app back and the sheet closes.
+        .onChange(of: scenePhase) {
+            if scenePhase == .background { wordFocused = false }
+        }
     }
 
     private struct ProbeWord: Identifiable {
@@ -370,8 +378,7 @@ struct StrengthProbeSheet: View {
         case .failed(let message):
             outcomeHeader(symbol: "exclamationmark.triangle", tint: Theme.ember, title: "Couldn’t check", subtitle: message)
         case .microphoneDenied:
-            outcomeHeader(symbol: "mic.slash", tint: Theme.ember, title: "Microphone access is off",
-                          subtitle: "Allow the microphone in Settings.")
+            outcomeHeader(symbol: "mic.slash", tint: Theme.ember, title: "Microphone access is off")
         }
     }
 
@@ -501,7 +508,7 @@ struct StrengthProbeSheet: View {
             .buttonStyle(SecondaryButtonStyle())
     }
 
-    private func outcomeHeader(symbol: String, tint: Color, title: String, subtitle: String) -> some View {
+    private func outcomeHeader(symbol: String, tint: Color, title: String, subtitle: String? = nil) -> some View {
         VStack(spacing: 6) {
             Image(systemName: symbol)
                 .font(.title.weight(.semibold))
@@ -509,7 +516,9 @@ struct StrengthProbeSheet: View {
                 .padding(.bottom, 8)
                 .accessibilityHidden(true)
             Text(title).font(.title3.bold()).multilineTextAlignment(.center)
-            Text(subtitle).font(.subheadline).foregroundStyle(Theme.secondaryInk).multilineTextAlignment(.center)
+            if let subtitle {
+                Text(subtitle).font(.subheadline).foregroundStyle(Theme.secondaryInk).multilineTextAlignment(.center)
+            }
         }
         .padding(.top, 24)
     }

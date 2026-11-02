@@ -131,6 +131,27 @@ enum HostSessionPolicy {
         isForeground || isDictationInProgress
     }
 
+    /// Whether a request admitted in the foreground raises the bounce. In Try it the keyboard is in this app, and a
+    /// cover would hide the field it types into. But Try it stays the visible screen while the app sits in the
+    /// background, so it can't tell that Start was tapped there: a Start in another app opens LocalFlow on it too. Where
+    /// the request came from tells. `activeSince` is when the app last became active after the background (nil until
+    /// then); nothing in LocalFlow can be tapped before that, so a request issued earlier came from another app. The
+    /// arrival may admit it before the activation is noted (a resumed timer or the URL open can reconcile first); nil
+    /// covers that. A request whose record intent can't be read (`issuedAt` nil) keeps Try it, as before.
+    static func showsBounce(isForeground: Bool, tryItVisible: Bool, issuedAt: Date?, activeSince: Date?) -> Bool {
+        guard isForeground else { return false }
+        guard tryItVisible, let activeSince else { return true }
+        guard let issuedAt else { return false }
+        return issuedAt < activeSince
+    }
+
+    /// When `intent` asked to record `requestID`; nil for any other intent.
+    static func recordIssuedAt(_ intent: KeyboardIntent?, requestID: UUID) -> Date? {
+        guard let intent, intent.schema == DictationProtocol.schema, intent.action == .record,
+              intent.requestID == requestID else { return nil }
+        return intent.issuedAt
+    }
+
     /// Admission, after asking the model to prepare (ARCHITECTURE.md, "Admission"): a missing model, or a
     /// model still `failed` because a failed preparation is backing off, fails the request at once rather
     /// than recording audio that cannot be transcribed. Nil: the request records.

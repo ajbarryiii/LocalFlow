@@ -298,7 +298,10 @@ private struct SessionCard: View {
             Button {
                 AppIdentity.openSettings()
             } label: {
-                Label("Open Settings", systemImage: "gear")
+                ViewThatFits(in: .horizontal) {
+                    Label("Open Settings", systemImage: "gear")
+                    Text("Open Settings")
+                }
             }
             .buttonStyle(PrimaryButtonStyle())
             .accessibilityIdentifier("session.openSettings")
@@ -317,37 +320,51 @@ private struct SessionCard: View {
     }
 }
 
-/// A row's glyph and title. At accessibility sizes the glyph stops growing beside the wrapping title.
+/// A row's glyph and title. At accessibility sizes the glyph stops growing beside the wrapping title, and gives the
+/// title its width where a word would otherwise break.
 private struct RowLabel: View {
     var title: String
     var symbol: String
 
     var body: some View {
-        HStack(spacing: 14) {
-            SymbolTile(systemName: symbol)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                SymbolTile(systemName: symbol)
+                WordWidth {
+                    Text(title)
+                    ForEach(Array(title.split(separator: " ").enumerated()), id: \.offset) { Text($0.element).hidden() }
+                }
+            }
             Text(title)
         }
         .padding(.vertical, 2)
     }
 }
 
-/// A keyboard setting that works only with Full Access: a small lock after its title. At accessibility sizes the title
-/// has the width to itself, and the section's footer says it once.
+/// Its first view at the width offered, which ideally asks only for the width of its widest other view (the title's
+/// words), so `ViewThatFits` keeps the row's glyph while the title wraps between words.
+private struct WordWidth: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        let width = proposal.width ?? subviews.dropFirst().map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        return text.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        for word in subviews.dropFirst() { word.place(at: bounds.origin, proposal: .zero) }
+    }
+}
+
+/// A keyboard setting that works only with Full Access: a small lock after its title, inside its text, so it wraps
+/// with the words at accessibility sizes rather than taking their width.
 private struct FullAccessToggle: View {
     var title: String
     @Binding var isOn: Bool
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Toggle(isOn: $isOn) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title)
-                if !typeSize.isAccessibilitySize {
-                    Image(systemName: "lock.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.secondaryInk)
-                }
-            }
+            Text("\(title) \(Text(Image(systemName: "lock.fill")).font(.caption2).foregroundStyle(Theme.secondaryInk))")
         }
         .accessibilityLabel(title)
         .accessibilityHint("Needs Full Access")

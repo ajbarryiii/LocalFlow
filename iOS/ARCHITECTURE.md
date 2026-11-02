@@ -919,7 +919,8 @@ transcripts or other user data.
     Dynamic Type; everything else is the system font, and without the font
     the display text falls back to it. Descriptions give way to glyphs:
     toggles have titles only. Decorative glyphs stop growing at the largest
-    text sizes, and pills wrap to a second line rather than truncate. What
+    text sizes, and give the words their width where a word would break;
+    pills wrap to a second line rather than truncate. What
     each screen shows for a state is in `HostCore/AppScreens.swift` (pure,
     tested).
   - Onboarding: the privacy promise as three glyphs, microphone permission,
@@ -942,8 +943,9 @@ transcripts or other user data.
     inside the row, links to Try it, keyboard setup and
     Dictionary, session length, the dictation settings, "Use iPhone
     microphone", a "Keyboard" section with "Autocorrect", "Soft key edges"
-    and "Typing haptics" (a lock marks those that need Full Access, beside
-    the title except at accessibility sizes, and in the section's footer) and
+    and "Typing haptics" (a lock marks those that need Full Access, at the
+    end of the title's text so it wraps with the words, and in the section's
+    footer) and
     "Left-handed", and links to Diagnostics, Report a bug and the public
     privacy policy (opened in the browser only on a tap).
   - Try it: the Start → speak → Stop cue and one field first, then, folded
@@ -972,12 +974,15 @@ transcripts or other user data.
     the mark, and closes at once, without animation, when the screen is
     requested (`StartSessionSheets`), so the screen is never hidden behind it;
     Find strength's recording has already stopped when the app left the
-    screen.
+    screen, and the word's field has put the keyboard away.
     Anchored at the top, so nothing moves as the preparing line or the route
     arrives; it scrolls when it does not fit (large text on a small iPhone)
     while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
-    It is not shown while Try it has the keyboard.
+    It is not shown for a Start tapped in Try it, where it would hide the
+    field; a Start in another app shows it even with Try it left on screen:
+    a request issued before the app was last active again came from another
+    app (`HostSessionPolicy.showsBounce`).
   - Motion is quick (short springs); with Reduce Motion every change is a
     cross-fade or instant, and nothing loops.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the

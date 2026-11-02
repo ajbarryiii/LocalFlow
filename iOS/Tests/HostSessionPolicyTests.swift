@@ -16,6 +16,8 @@ enum HostSessionPolicyTests {
             ("sessionErrors", testSessionErrors),
             ("onlyALateIntentProvesAnUnlock", testOnlyALateIntentProvesAnUnlock),
             ("bounceClosesInTheBackgroundOnceIdle", testBounceClosesInTheBackgroundOnceIdle),
+            ("bounceSkipsTryItOnlyForAStartMadeInIt", testBounceSkipsTryItOnlyForAStartMadeInIt),
+            ("recordIssuedAt", testRecordIssuedAt),
             ("statusCaptureReadyAndLevel", testStatusCaptureReadyAndLevel),
             ("admissionFailsOnlyForAMissingOrBackingOffModel", testAdmissionFailsOnlyForAMissingOrBackingOffModel),
         ]
@@ -151,6 +153,47 @@ enum HostSessionPolicyTests {
         TestSupport.expect(HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: true), "dictating elsewhere")
         TestSupport.expect(!HostSessionPolicy.keepsBounce(isForeground: false, isDictationInProgress: false),
                            "in the background once the dictation ended")
+    }
+
+    /// Try it keeps its field for a Start tapped there, but a Start tapped in another app opens LocalFlow on the
+    /// start-session screen even when Try it was left on screen (the end of onboarding). A request issued before the app
+    /// was active came from another app.
+    private static func testBounceSkipsTryItOnlyForAStartMadeInIt() {
+        func shows(foreground: Bool = true, tryIt: Bool, issuedAt: Date?, activeSince: Date?) -> Bool {
+            HostSessionPolicy.showsBounce(isForeground: foreground, tryItVisible: tryIt, issuedAt: issuedAt,
+                                          activeSince: activeSince)
+        }
+        TestSupport.expect(!shows(tryIt: true, issuedAt: now, activeSince: now - 30), "Try it in front, a Start made in it")
+        TestSupport.expect(!shows(tryIt: true, issuedAt: now, activeSince: now - 0.2),
+                           "Try it, a Start made in it right after a return")
+        TestSupport.expect(shows(tryIt: true, issuedAt: now - 2, activeSince: now),
+                           "Try it left in the background, the request admitted on the return")
+        TestSupport.expect(shows(tryIt: true, issuedAt: now - 2, activeSince: nil),
+                           "Try it, admitted before the return is active")
+        TestSupport.expect(!shows(tryIt: true, issuedAt: nil, activeSince: now - 30), "Try it, the request's time unknown")
+        for activeSince in [now - 30, now, nil] {
+            TestSupport.expect(shows(tryIt: false, issuedAt: now - 2, activeSince: activeSince), "Home, from another app")
+            TestSupport.expect(shows(tryIt: false, issuedAt: now, activeSince: activeSince), "Home, either way")
+            TestSupport.expect(!shows(foreground: false, tryIt: false, issuedAt: now - 2, activeSince: activeSince),
+                               "in the background")
+            TestSupport.expect(!shows(foreground: false, tryIt: true, issuedAt: now - 2, activeSince: activeSince),
+                               "Try it, in the background")
+        }
+    }
+
+    /// When the record intent for a request was issued; nil for another request, a finish or cancel, another schema
+    /// or nothing.
+    private static func testRecordIssuedAt() {
+        let id = Fixture.requestID
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.record, at: now - 3), requestID: id), now - 3)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.record), requestID: Fixture.otherRequestID),
+                                nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.finish), requestID: id), nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(Fixture.intent(.cancel), requestID: id), nil)
+        var other = Fixture.intent(.record)
+        other.schema = DictationProtocol.schema + 1
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(other, requestID: id), nil)
+        TestSupport.expectEqual(HostSessionPolicy.recordIssuedAt(nil, requestID: id), nil)
     }
 
     private static func testSessionErrors() {
