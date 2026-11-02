@@ -33,7 +33,7 @@ struct BrandPalette: Equatable {
     var live: RGB
     /// The mark's dot unlit, with Reduce Motion while no session can take a dictation (round 11, owner): a dim grey on
     /// the island, like an LED that is off.
-    var unlitDot: RGB { Self.blend(island.ink, alpha: 0.3, over: island.color) }
+    var unlitDot: RGB { Self.blend(island.ink, alpha: 0.38, over: island.color) }
     /// The wait's shimmer on the island: a cool glacier white, the keyboard's only glacier.
     var shimmer: RGB
     /// Accents on the backdrop: the menu's mark (aurora) and an error's symbol (ember).

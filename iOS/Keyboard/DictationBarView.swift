@@ -214,7 +214,7 @@ struct DictationBarView: View {
                 }
 
                 DictationIsland(client: client, state: state, height: height, compact: compact, leftHanded: chrome.leftHanded,
-                                onAction: onAction, onStop: controls.captureEnded, onUnavailable: onMenu)
+                                menuOpen: menuOpen, onAction: onAction, onStop: controls.captureEnded, onUnavailable: onMenu)
                     .frame(width: CGFloat(layout.island.width), height: height)
                     // With Reduce Motion the island never resizes in view: each form is its own island, cross-faded.
                     .id(reduceMotion ? AnyHashable(form) : AnyHashable(0))
@@ -551,6 +551,8 @@ private struct DictationIsland: View {
     let height: CGFloat
     let compact: Bool
     let leftHanded: Bool
+    /// The menu covers the bar: Start's dot holds still behind it (`SessionDot.look`).
+    let menuOpen: Bool
     let onAction: () -> Void
     /// Stop was tapped, ending the recording: its former area takes no tap for a moment (`BarControlFrames.captureEnded`).
     let onStop: () -> Void
@@ -611,8 +613,8 @@ private struct DictationIsland: View {
         case .start:
             HStack(spacing: 6) {
                 let dot = SessionDot(mode: state.mode, sessionReady: state.sessionReady)
-                SessionMark(line: ink, dot: dot.color(palette, reduceMotion: reduceMotion), look: dot.look(reduceMotion: reduceMotion),
-                            side: 19, pops: reduceMotion ? 0 : bounces)
+                SessionMark(line: ink, dot: dot.color(palette, reduceMotion: reduceMotion),
+                            look: dot.look(reduceMotion: reduceMotion, behindMenu: menuOpen), side: 19, pops: reduceMotion ? 0 : bounces)
                 Text("Start").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
             // A process's first live timer text takes about 55 ms to resolve (round 9: Foundation's attribute-scope

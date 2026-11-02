@@ -290,7 +290,7 @@ enum SessionDot: Equatable, Sendable {
     enum Heartbeat {
         static let period = 3.0
         static let ripple = 1.0
-        static let reach = 4.5
+        static let reach = 3.5
         static let opacity = 0.6
         static let firstDelay = 0.4
         /// The ring's stroke, in points.
@@ -306,10 +306,13 @@ enum SessionDot: Equatable, Sendable {
         }
     }
 
-    func look(reduceMotion: Bool) -> Look {
+    /// Start's dot behind the open menu holds still, lit or unlit as it is, so only the menu's mark moves: two rings, each
+    /// timed from its own arrival, would beat out of step (round 11 council, Opus).
+    func look(reduceMotion: Bool, behindMenu: Bool = false) -> Look {
+        let still = reduceMotion || behindMenu
         switch self {
-        case .ready: return reduceMotion ? .lit : .heartbeat
-        case .preparing: return reduceMotion ? .lit : .breathing
+        case .ready: return still ? .lit : .heartbeat
+        case .preparing: return still ? .lit : .breathing
         case .off: return reduceMotion ? .unlit : .lit
         }
     }

@@ -431,7 +431,8 @@ enum KeyboardLookTests {
             // Unlit: a neutral grey that still shows on the island, well short of the lit dot and the mark's line.
             let unlit = palette.unlitDot, island = palette.island.color
             TestSupport.expect(isGrey(unlit), "the unlit dot has a hue, \(name)")
-            TestSupport.expect(ratio(unlit, island) >= 1.6, "the unlit dot vanishes on the island, \(name): \(ratio(unlit, island))")
+            // It reads as a graphic at 3:1 (round 11 council, Opus: 2.6:1 on the dark island was faint).
+            TestSupport.expect(ratio(unlit, island) >= 3, "the unlit dot is faint on the island, \(name): \(ratio(unlit, island))")
             TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.live, island), "the unlit dot looks lit, \(name)")
             TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.island.ink, island), "the unlit dot looks like the line")
         }
@@ -453,6 +454,21 @@ enum KeyboardLookTests {
             let distance = ((mark.dot.x - centre.x) * (mark.dot.x - centre.x) + (mark.dot.y - centre.y) * (mark.dot.y - centre.y)).squareRoot()
             TestSupport.expect(distance + widest <= r - 0.5, "the ripple leaves Start's pill at \(height): \(distance + widest) of \(r)")
         }
+        // It has all but faded by the time it meets the W's line (round 11 council, Opus: at 4.5 pt it crossed the W's
+        // lower points at about a quarter of its opacity). Path and opacity share one timing, so the opacity left when the
+        // ring's outer edge reaches the line follows from how far along its growth that is.
+        let mark = RidgeMark.fitted(in: KeyRect(x: 0, y: 0, width: 19, height: 19), weight: 1.3)
+        let clearance = zip(mark.line, mark.line.dropFirst()).map { a, b in
+            let dx = b.x - a.x, dy = b.y - a.y
+            let t = max(0, min(1, ((mark.dot.x - a.x) * dx + (mark.dot.y - a.y) * dy) / (dx * dx + dy * dy)))
+            let x = a.x + t * dx - mark.dot.x, y = a.y + t * dy - mark.dot.y
+            return (x * x + y * y).squareRoot()
+        }.min()! - mark.lineWidth / 2
+        let first = mark.dotRadius + beat.lineWidth, widest = mark.dotRadius + beat.reach
+        if widest > clearance {
+            let left = beat.opacity * (1 - (clearance - first) / (widest - first))
+            TestSupport.expect(left <= 0.1, "the ripple meets the W at \(left) opacity")
+        }
     }
 
     /// Round 11 (Opus, round 10: "No session running" sat beside a green mark under Start's amber dot; the owner: the
@@ -473,6 +489,17 @@ enum KeyboardLookTests {
                         TestSupport.expect(sameHue(onMenu, onStart), "the menu's dot is not Start's for \(mode), \(ready), \(name)")
                         TestSupport.expect(ratio(onMenu, menu.card) >= 3, "the menu's dot is faint on the card, \(name)")
                     }
+                }
+            }
+            // With the menu open only its mark moves: Start's, dimmed behind the card, holds still in the same colour, so
+            // two rings never beat out of step (round 11 council, Opus).
+            for (mode, ready) in sessionCases {
+                let dot = SessionDot(mode: mode, sessionReady: ready)
+                for reduceMotion in [false, true] {
+                    let behind = dot.look(reduceMotion: reduceMotion, behindMenu: true)
+                    TestSupport.expect(behind != .heartbeat && behind != .breathing, "Start moves behind the menu for \(mode)")
+                    TestSupport.expectEqual(behind == .unlit, dot.look(reduceMotion: reduceMotion) == .unlit)
+                    TestSupport.expectEqual(dot.look(reduceMotion: reduceMotion, behindMenu: false), dot.look(reduceMotion: reduceMotion))
                 }
             }
             let unlit = menu.unlitDot

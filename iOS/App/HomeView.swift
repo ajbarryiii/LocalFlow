@@ -85,7 +85,7 @@ struct HomeView: View {
                     SettingToggle(title: "Typing haptics", detail: "A light tap as you press each key. Needs Full Access.",
                                   isOn: $settings.keyHapticsEnabled)
                         .accessibilityIdentifier("settings.keyHaptics")
-                    SettingToggle(title: "Left-handed", detail: "Puts Start and Cancel at the left of the keyboard's top row.",
+                    SettingToggle(title: "Left-handed", detail: "Puts Start and Cancel at the left of the keyboard's top row, and the menu and Undo at the right.",
                                   isOn: $settings.leftHanded)
                         .accessibilityIdentifier("settings.leftHanded")
                 } header: {

@@ -1138,9 +1138,11 @@ every other point of the bar
     (iOS's microphone indicator and the Live Activity say a session is on),
     so it errs towards subtle:
     - **A session ready: a heartbeat.** A soft aurora ring ripples out from
-      the dot's edge, 4.5 pt beyond it over 1 s, ease-out, fading from 0.6
+      the dot's edge, 3.5 pt beyond it over 1 s, ease-out, fading from 0.6
       opacity, then rests; every 3 s, the first 0.4 s after the mark
-      appears (`SessionDot.Heartbeat`, every constant in one place).
+      appears (`SessionDot.Heartbeat`, every constant in one place). It has
+      all but faded (under 10% opacity) by the time it meets the W's line
+      (round 11 council: at 4.5 pt it crossed it at about a quarter).
       `HeartbeatRingView` runs each ripple as a Core Animation group at
       most 30 frames a second, started by a main-thread timer once per
       period, only while it is in a window, so between ripples nothing
@@ -1155,8 +1157,12 @@ every other point of the bar
       of the same size and place (`BrandPalette.unlitDot`, like an LED that
       is off). A hollow grey ring was tried in the simulator and dropped: at
       phone size its hole nearly closed and it read as a degree sign.
+    - **The menu open:** Start's dot, dimmed behind the card, holds still,
+      lit or unlit as it is, so only the menu's mark moves; two rings, each
+      timed from its own arrival, beat out of step (round 11 council).
     - Colour no longer carries the state, so Differentiate Without Colour
-      needs no case of its own. The dot changes with a 0.2 s cross-fade.
+      needs no case of its own. The unlit dot reads at 3:1 on the island.
+      The dot changes with a 0.2 s cross-fade.
     The dot leading the middle (round 4 to 9) was tried again in the
     simulator and dropped: beside Start's own dot it made two.
   - **Start without a session** (`hostUnavailable`) stays Start (round 10,
