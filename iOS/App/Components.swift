@@ -447,6 +447,7 @@ struct ModelStatusRow: View {
     @ObservedObject var transcriber: ParakeetTranscriber
     var showsPrepareButton = true
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -495,7 +496,7 @@ struct ModelStatusRow: View {
                 Text(ModelBadge.spoken(.unavailable)).font(.footnote).foregroundStyle(Theme.secondaryInk)
             }
         }
-        .animation(.snappy(duration: 0.28), value: transcriber.modelState)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: transcriber.modelState)
     }
 
     @ViewBuilder

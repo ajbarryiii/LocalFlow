@@ -188,17 +188,22 @@ struct BounceView: View {
 /// background (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start is this, and the island
 /// arrives on it.
 struct HandoffSurface: View {
+    /// Off on a sheet, where the mark could not sit where the island will.
+    var showsMark = true
+
     var body: some View {
         GeometryReader { proxy in
             let cue = SwipeBackCue(bottomSafeAreaInset: Double(proxy.safeAreaInsets.bottom))
             VStack(spacing: 0) {
-                if cue == .statusBarLink {
-                    StatusBarLinkCue(visible: false)
-                        .padding(.top, 4)
+                if showsMark {
+                    if cue == .statusBarLink {
+                        StatusBarLinkCue(visible: false)
+                            .padding(.top, 4)
+                    }
+                    RidgeMarkView(side: 34)
+                        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64)
+                        .padding(.top, BounceView.islandTop(height: proxy.size.height, cue: cue))
                 }
-                RidgeMarkView(side: 34)
-                    .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64)
-                    .padding(.top, BounceView.islandTop(height: proxy.size.height, cue: cue))
                 Spacer(minLength: 0)
             }
         }
@@ -211,19 +216,32 @@ extension View {
     /// Covers this with `HandoffSurface` while the app is in the background (`BackgroundCover`); `bounceShown` keeps it
     /// under the start-session screen until that screen goes.
     func backgroundCover(bounceShown: Bool = false) -> some View {
-        modifier(BackgroundCoverModifier(bounceShown: bounceShown))
+        modifier(BackgroundCoverModifier(bounceShown: bounceShown, showsMark: true))
+    }
+
+    /// An app sheet's content under the start-session hand-off: the same cover in the background, without the mark,
+    /// kept until the sheet closes for the start-session screen (`StartSessionSheets`).
+    func sheetBackgroundCover() -> some View {
+        modifier(SheetBackgroundCoverModifier())
+    }
+
+    /// Closes this view's sheets at once, without animation, when the keyboard's Start asks for the start-session
+    /// screen (`StartSessionSheets`), so that screen shows at once.
+    func closesSheetsForStartSession(_ close: @escaping () -> Void) -> some View {
+        modifier(StartSessionSheetsModifier(close: close))
     }
 }
 
 private struct BackgroundCoverModifier: ViewModifier {
     var bounceShown: Bool
+    var showsMark: Bool
     @Environment(\.scenePhase) private var scenePhase
     @State private var covered = false
 
     func body(content: Content) -> some View {
         content
             .overlay {
-                if covered { HandoffSurface().transition(.opacity) }
+                if covered { HandoffSurface(showsMark: showsMark).transition(.opacity) }
             }
             .onChange(of: scenePhase) { update() }
             .onChange(of: bounceShown) { update() }
@@ -239,6 +257,28 @@ private struct BackgroundCoverModifier: ViewModifier {
             withTransaction(transaction) { covered = true }
         } else {
             withAnimation(.easeOut(duration: 0.12)) { covered = false }
+        }
+    }
+}
+
+private struct SheetBackgroundCoverModifier: ViewModifier {
+    @EnvironmentObject private var host: HostSessionController
+
+    func body(content: Content) -> some View {
+        content.modifier(BackgroundCoverModifier(bounceShown: host.bounceVisible, showsMark: false))
+    }
+}
+
+private struct StartSessionSheetsModifier: ViewModifier {
+    var close: () -> Void
+    @EnvironmentObject private var host: HostSessionController
+
+    func body(content: Content) -> some View {
+        content.onChange(of: host.bounceVisible) { wasShown, shown in
+            guard StartSessionSheets.close(bounceWasShown: wasShown, bounceShown: shown) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, close)
         }
     }
 }

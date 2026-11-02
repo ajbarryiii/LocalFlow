@@ -46,6 +46,10 @@ struct DictionaryView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .closesSheetsForStartSession {
+            editor = nil
+            probe = nil
+        }
         .tint(.white)
     }
 
@@ -74,15 +78,15 @@ struct DictionaryView: View {
             if !dictionary.hasVocabulary {
                 Text(DictionaryEditor.unavailableMessage).foregroundStyle(Theme.coral)
             } else if !dictionary.entries.isEmpty {
-                // A legend for the row's glyphs, a few words each. Each phrase stays whole with its glyph; at
-                // accessibility sizes each has its own line instead, and its words wrap where words do.
+                // A legend for the row's glyphs, a few words each, in the row's order. Each phrase stays whole with its
+                // glyph; at accessibility sizes each has its own line instead, and its words wrap where words do.
                 let up = Text(Image(systemName: "arrow.up")).fontWeight(.bold).foregroundStyle(Theme.aurora)
                 let down = Text(Image(systemName: "arrow.down")).fontWeight(.bold).foregroundStyle(Theme.coral)
                 let mic = Text(Image(systemName: "mic"))
                 let large = typeSize.isAccessibilitySize
                 let gap = large ? "\n" : "   "
                 let space = large ? " " : "\u{00A0}"
-                Text("\(up)\u{00A0}still\(space)misheard\(gap)\(down)\u{00A0}shows\(space)up\(space)wrongly\(gap)\(mic)\u{00A0}find\(space)by\(space)voice")
+                Text("\(down)\u{00A0}shows\(space)up\(space)wrongly\(gap)\(up)\u{00A0}still\(space)misheard\(gap)\(mic)\u{00A0}find\(space)by\(space)voice")
             }
         }
         .listRowBackground(Theme.cardBackground)
@@ -281,6 +285,8 @@ struct DictionaryEntryEditor: View {
             }
         }
         .tint(.white)
+        .sheetBackgroundCover()
+        .closesSheetsForStartSession { probeWord = nil }
         .onAppear {
             if let original {
                 text = original.text
@@ -339,6 +345,7 @@ struct StrengthProbeSheet: View {
             }
         }
         .tint(.white)
+        .sheetBackgroundCover()
         .onAppear { model.start(host: host) }
         .onDisappear { model.close() }
         .onChange(of: scenePhase) {
@@ -463,8 +470,8 @@ struct StrengthProbeSheet: View {
             Button("Try again") { model.retry() }.buttonStyle(PrimaryButtonStyle())
             Button("Close") { dismiss() }.buttonStyle(SecondaryButtonStyle())
         case .microphoneDenied:
+            // Cancel, in the bar, is the way out.
             Button("Open Settings") { AppIdentity.openSettings() }.buttonStyle(PrimaryButtonStyle())
-            Button("Close") { dismiss() }.buttonStyle(SecondaryButtonStyle())
         case .finished(let result):
             switch result.outcome {
             case .recognized(let strength) where strength != current:

@@ -9,6 +9,7 @@ struct TryItView: View {
     @State private var practice = Self.practiceSample
     @State private var showsMore = false
     @FocusState private var focus: Field?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Field { case a, b, practice }
 
@@ -26,13 +27,8 @@ struct TryItView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 DictationCue()
-                field("Field A", text: $fieldA, field: .a, identifier: "tryit.fieldA")
-
-                if host.session != .active {
-                    Label("No session yet: Start on the keyboard opens one.", systemImage: "info.circle")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondaryInk)
-                }
+                // Alone, the field needs no name; beside B it is A.
+                field(showsMore ? "A" : nil, text: $fieldA, field: .a, identifier: "tryit.fieldA")
 
                 moreToggle
                     .padding(.top, 6)
@@ -60,7 +56,7 @@ struct TryItView: View {
     /// "More practice": a chevron that turns as the group opens.
     private var moreToggle: some View {
         Button {
-            withAnimation(.snappy(duration: 0.25)) { showsMore.toggle() }
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.25)) { showsMore.toggle() }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
@@ -82,7 +78,7 @@ struct TryItView: View {
     @ViewBuilder
     private var more: some View {
         practiceHeader("Destination test", symbol: "arrow.left.arrow.right")
-        field("Field B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
+        field("B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
         Text("Start in A, then tap B before the text arrives. It stays out of B; the keyboard offers **Insert last** instead.")
             .font(.footnote)
             .foregroundStyle(Theme.secondaryInk)
@@ -120,19 +116,29 @@ struct TryItView: View {
             .strokeBorder(Color.white.opacity(focus == field ? 0.5 : 0), lineWidth: 1)
     }
 
-    private func field(_ title: String, text: Binding<String>, field: Field, identifier: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.secondaryInk)
-                .accessibilityHidden(true)
+    /// A text field; with a name, its letter sits at the end of the field's first line, in the field's own size, so the
+    /// two share a line at every text size.
+    private func field(_ name: String?, text: Binding<String>, field: Field, identifier: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
             TextField("Tap here and dictate…", text: text, axis: .vertical)
                 .lineLimit(3...8)
                 .focused($focus, equals: field)
-                .padding(14)
-                .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(focusEdge(field, cornerRadius: 16))
-                .accessibilityLabel(title)
+                // The padding is the field's, so all of the card focuses it.
+                .padding([.vertical, .leading], 14)
+                .padding(.trailing, name == nil ? 14 : 0)
+                // Alone, it is read as its placeholder is.
+                .accessibilityLabel(name.map { "Field \($0)" } ?? "Tap here and dictate")
                 .accessibilityIdentifier(identifier)
+            if let name {
+                Text(name)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Theme.secondaryInk)
+                    .padding([.top, .trailing], 14)
+                    .accessibilityHidden(true)
+            }
         }
+        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(focusEdge(field, cornerRadius: 16))
     }
 }
 

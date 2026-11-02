@@ -139,6 +139,8 @@ struct OnboardingView: View {
             if !compact { HeroSymbol(systemName: "cpu") }
             StepTitle(title: "Prepare the speech model", line: "On this iPhone. A few minutes the first time.")
             ModelStatusRow(transcriber: transcriber, showsPrepareButton: false)
+                // Full width at every size, as the other steps' cards.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         }

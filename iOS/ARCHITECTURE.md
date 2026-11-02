@@ -927,25 +927,30 @@ transcripts or other user data.
     progress and an estimate from the last preparation; the user can finish
     onboarding while it continues. One line under each headline; no step
     glyph on a small iPhone or at accessibility sizes. The main pill sits at
-    one height on every step. Finishing opens Home, which then pushes Try it,
-    so the first dictation comes next and Back leads to Home's large title.
+    one height on every step. Finishing cross-fades to Home, which pushes Try
+    it once the fade has ended, so the first dictation comes next and Back
+    leads to Home's large title.
   - Home: the session card as the Live Activity's Lock Screen shows a
     session (with no session, the Start pill with the mark on the
     background; during one, a card with the state, the idle time left beside
-    a timer glyph, the input's glyph, and End; with the microphone denied,
-    "Microphone off" and Open Settings only; at accessibility sizes the
-    glyphs share a line and the words get the full width), the speech model
+    a timer glyph (spoken as one sentence, `SessionCountdown`), the input's
+    glyph, and End; with the microphone denied, "Microphone off" and Open
+    Settings only; at accessibility sizes the glyphs share a line and the
+    words get the full width, and a pill's glyph gives way where its words
+    would not fit on one line), the speech model
     with a state dot or a check once ready and its preparation progress
     inside the row, links to Try it, keyboard setup and
     Dictionary, session length, the dictation settings, "Use iPhone
     microphone", a "Keyboard" section with "Autocorrect", "Soft key edges"
-    and "Typing haptics" (a lock marks those that need Full Access) and
+    and "Typing haptics" (a lock marks those that need Full Access, beside
+    the title except at accessibility sizes, and in the section's footer) and
     "Left-handed", and links to Diagnostics, Report a bug and the public
     privacy policy (opened in the browser only on a tap).
-  - Try it: the Start → speak → Stop cue and Field A first, then, folded
-    under "More practice", the destination-binding test with Field B and a
-    multi-line cursor practice field with invented text. The text lives in
-    view state only.
+  - Try it: the Start → speak → Stop cue and one field first, then, folded
+    under "More practice", the destination-binding test with a second field
+    and a multi-line cursor practice field with invented text; with both
+    fields shown, a letter marks each (A, B). The text lives in view state
+    only.
   - Bounce screen: the keyboard's island, large, with the phase in one word
     (`BouncePhase`): "Starting" until the dictation is `recording` (input is
     flowing), then "Listening" with the voice's wave, the coral recording dot
@@ -962,14 +967,19 @@ transcripts or other user data.
     empty surface with the mark where the island sits covers the app
     (`BackgroundCover`), so the snapshot iOS zooms after the keyboard's Start
     (and the app switcher's card) never shows Home; only the background
-    raises it, not the inactive state of iOS's own prompts.
+    raises it, not the inactive state of iOS's own prompts. A sheet left
+    open (Add word, Edit word, Find strength) shows the same surface, without
+    the mark, and closes at once, without animation, when the screen is
+    requested (`StartSessionSheets`), so the screen is never hidden behind it;
+    Find strength's recording has already stopped when the app left the
+    screen.
     Anchored at the top, so nothing moves as the preparing line or the route
     arrives; it scrolls when it does not fit (large text on a small iPhone)
     while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
     It is not shown while Try it has the keyboard.
   - Motion is quick (short springs); with Reduce Motion every change is a
-    cross-fade and nothing loops.
+    cross-fade or instant, and nothing loops.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the
     keyboard's measured touch rate, the compute units in use (read-only),
     "Release model now", the last preparation, and the last dictations'

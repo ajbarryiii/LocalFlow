@@ -1,7 +1,8 @@
 import Foundation
 
 /// The app's screens (ARCHITECTURE.md, "Host app"): the session card's state, the model's dot, the start-session
-/// screen's word and return cue, onboarding's spoken progress, and the background cover.
+/// screen's word and return cue, onboarding's spoken progress, the spoken countdown, the background cover and the
+/// sheets' hand-off.
 enum AppScreensTests {
     static var tests: [TestCase] {
         [
@@ -17,6 +18,8 @@ enum AppScreensTests {
             ("sessionCardReservesALineOnlyDuringASession", testSessionCardReservesALineOnlyDuringASession),
             ("backgroundCoverShowsOnlyInTheBackground", testBackgroundCoverShowsOnlyInTheBackground),
             ("backgroundCoverStaysUnderTheBounce", testBackgroundCoverStaysUnderTheBounce),
+            ("sheetsCloseWhenTheBounceIsRequested", testSheetsCloseWhenTheBounceIsRequested),
+            ("countdownIsOneSpokenSentence", testCountdownIsOneSpokenSentence),
         ]
     }
 
@@ -161,5 +164,26 @@ enum AppScreensTests {
                            "Closing the start-session screen shows Home")
         TestSupport.expect(!BackgroundCover.covers(scene: .active, bounceShown: true, covered: false),
                            "A start-session screen opened in the app raises no cover")
+    }
+
+    private static func testSheetsCloseWhenTheBounceIsRequested() {
+        // Add word, Edit word or Find strength left open: the keyboard's Start closes it, so the screen shows at once.
+        TestSupport.expect(StartSessionSheets.close(bounceWasShown: false, bounceShown: true),
+                           "Requesting the start-session screen closes the app's sheets")
+        TestSupport.expect(!StartSessionSheets.close(bounceWasShown: true, bounceShown: false),
+                           "The start-session screen going closes nothing")
+        TestSupport.expect(!StartSessionSheets.close(bounceWasShown: false, bounceShown: false),
+                           "No start-session screen: a sheet stays open")
+        TestSupport.expect(!StartSessionSheets.close(bounceWasShown: true, bounceShown: true),
+                           "The screen already shown closes nothing more")
+    }
+
+    private static func testCountdownIsOneSpokenSentence() {
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: 296), "Session ends in 4 minutes 56 seconds if idle")
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: 61), "Session ends in 1 minute 1 second if idle")
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: 300), "Session ends in 5 minutes if idle")
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: 42), "Session ends in 42 seconds if idle")
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: 0), "Session ends in 0 seconds if idle")
+        TestSupport.expectEqual(SessionCountdown.spoken(secondsLeft: -3), "Session ends in 0 seconds if idle")
     }
 }

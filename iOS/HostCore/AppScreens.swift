@@ -2,8 +2,8 @@ import Foundation
 
 /// What the app's own screens show for a state, apart from layout (ARCHITECTURE.md, "Host app"): the session card's
 /// state and its one accent, the speech model's state dot, the start-session screen's phase word and return cue, the
-/// route it names, onboarding's spoken progress, and when the background cover hides the app. The views only draw
-/// these. Pure.
+/// route it names, onboarding's spoken progress, the idle countdown in words, when the background cover hides the app,
+/// and when the app's sheets close for the start-session screen. The views only draw these. Pure.
 
 /// One of the brand colours a state may carry, on a small dot or glyph only (never a fill).
 enum AppAccent: Equatable, Sendable {
@@ -217,6 +217,29 @@ enum BackgroundCover {
         case .inactive: return covered
         case .active: return covered && bounceShown
         }
+    }
+}
+
+/// The app's sheets (Add word, Edit word, Find strength) when the keyboard's Start asks for the start-session screen.
+/// SwiftUI can't show that screen over a sheet, so a sheet left open would hide it while the dictation records unseen.
+/// The sheets close at once, without animation, when it is requested; its going changes nothing.
+enum StartSessionSheets {
+    /// Whether the app's sheets close after `bounceShown` changes from `bounceWasShown`.
+    static func close(bounceWasShown: Bool, bounceShown: Bool) -> Bool {
+        bounceShown && !bounceWasShown
+    }
+}
+
+/// The session's idle countdown on Home, as VoiceOver reads it: one sentence rather than the glyph's words and the
+/// timer ("Session ends in 4 minutes 56 seconds if idle").
+enum SessionCountdown {
+    static func spoken(secondsLeft: Int) -> String {
+        let seconds = max(secondsLeft, 0)
+        func count(_ value: Int, _ unit: String) -> String { "\(value) \(unit)\(value == 1 ? "" : "s")" }
+        let minutes = seconds / 60, rest = seconds % 60
+        let parts = [minutes > 0 ? count(minutes, "minute") : nil,
+                     rest > 0 || minutes == 0 ? count(rest, "second") : nil].compactMap { $0 }
+        return "Session ends in \(parts.joined(separator: " ")) if idle"
     }
 }
 

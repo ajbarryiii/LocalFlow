@@ -127,11 +127,10 @@ struct HomeView: View {
             }
         }
         .tint(.white)
-        .task {
+        // Set once onboarding's cross-fade to Home has ended, so the push never overlaps it.
+        .onChange(of: opensTryIt, initial: true) {
             guard opensTryIt, !openedTryIt else { return }
             openedTryIt = true
-            // After onboarding's cross-fade to Home, so the push reads as one.
-            try? await Task.sleep(for: .seconds(0.3))
             path.append(.tryIt)
         }
     }
@@ -248,11 +247,16 @@ private struct SessionCard: View {
         switch state {
         case .ready:
             if let expiresAt = host.sessionExpiresAt {
-                HStack(spacing: 5) {
-                    Image(systemName: SessionActivityState.countdownSymbol)
-                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                        .accessibilityLabel(SessionActivityState.countdownSpokenLead)
-                    Text("\(Text(timerInterval: min(Date.now, expiresAt) ... expiresAt, countsDown: true, showsHours: false)) \(SessionActivityState.lockScreenCountdownTail)")
+                // Spoken as one sentence (`SessionCountdown`), brought up to date each second.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    HStack(spacing: 5) {
+                        Image(systemName: SessionActivityState.countdownSymbol)
+                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        Text("\(Text(timerInterval: min(Date.now, expiresAt) ... expiresAt, countsDown: true, showsHours: false)) \(SessionActivityState.lockScreenCountdownTail)")
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(SessionCountdown.spoken(
+                        secondsLeft: Int(expiresAt.timeIntervalSince(context.date).rounded(.down))))
                 }
             } else {
                 Text(verbatim: " ")
@@ -278,8 +282,12 @@ private struct SessionCard: View {
             Button {
                 host.startSession()
             } label: {
-                HStack(spacing: 10) {
-                    RidgeMarkView(dot: Theme.aurora, side: min(pillMarkSide, 30))
+                // The words take the width first: the glyph goes where both don't fit on one line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        RidgeMarkView(dot: Theme.aurora, side: min(pillMarkSide, 30))
+                        Text("Start session")
+                    }
                     Text("Start session")
                 }
             }
@@ -298,7 +306,10 @@ private struct SessionCard: View {
             Button {
                 host.endSession()
             } label: {
-                Label("End session", systemImage: "stop.fill")
+                ViewThatFits(in: .horizontal) {
+                    Label("End session", systemImage: "stop.fill")
+                    Text("End session")
+                }
             }
             .buttonStyle(PrimaryButtonStyle())
             .accessibilityIdentifier("session.end")
@@ -320,18 +331,22 @@ private struct RowLabel: View {
     }
 }
 
-/// A keyboard setting that works only with Full Access: a small lock after its title.
+/// A keyboard setting that works only with Full Access: a small lock after its title. At accessibility sizes the title
+/// has the width to itself, and the section's footer says it once.
 private struct FullAccessToggle: View {
     var title: String
     @Binding var isOn: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Toggle(isOn: $isOn) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
-                Image(systemName: "lock.fill")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.secondaryInk)
+                if !typeSize.isAccessibilitySize {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.secondaryInk)
+                }
             }
         }
         .accessibilityLabel(title)

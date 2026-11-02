@@ -68,8 +68,12 @@ private struct RootView: View {
                     .transition(.opacity)
             } else {
                 OnboardingView(transcriber: host.transcriber, step: LaunchOptions.current.onboardingStep) {
-                    opensTryIt = true
-                    withAnimation(.snappy(duration: 0.3)) { preferences.onboardingComplete = true }
+                    // Try it is pushed only once the cross-fade has ended, so the two never overlap.
+                    withAnimation(.snappy(duration: 0.3), completionCriteria: .removed) {
+                        preferences.onboardingComplete = true
+                    } completion: {
+                        opensTryIt = true
+                    }
                 }
                 .transition(.opacity)
             }
