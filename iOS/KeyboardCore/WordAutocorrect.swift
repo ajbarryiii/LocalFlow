@@ -10,6 +10,19 @@ struct AutocorrectSetup {
     var secureTextEntry: Bool
     /// The field turned autocorrection off (`autocorrectionType == .no`): its input stays literal.
     var autocorrectionDisabled = false
+    /// The kind of field: URL and email fields get no suggestions while typing.
+    var field = KeyboardField.standard
+    /// A field that asks for a number pad: no next words.
+    var numeric = false
+
+    /// Whether words are corrected here at all: not in a secure field or one that turns autocorrection off.
+    var corrects: Bool { !secureTextEntry && !autocorrectionDisabled }
+    /// Whether the strip suggests words while one is typed: where words are corrected, but not in URL and email
+    /// fields.
+    var suggestsWhileTyping: Bool { corrects && field != .url && field != .email }
+    /// Whether the strip predicts the next word after a space: where it suggests words while typing, but not in number
+    /// fields.
+    var predictsNextWords: Bool { suggestsWhileTyping && !numeric }
 }
 
 /// The word decisions of autocorrect, pure (ARCHITECTURE.md, "Word autocorrect"): which keys commit a word,
@@ -53,16 +66,127 @@ enum WordAutocorrect {
     /// The pronoun I and its contractions, as the corrector sees them: always written with a capital I.
     static let pronounForms: Set<String> = ["i", "i'm", "i'll", "i've", "i'd"]
 
+    /// Day and month names, always written with a capital first letter, also with "'s". Not "may" and "march",
+    /// which are as often ordinary words.
+    static let capitalizedNames: Set<String> = [
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "january", "february", "april", "june", "july", "august", "september", "october", "november", "december",
+    ]
+
+    /// Whether a word (as the corrector sees it) is always written with a capital first letter: the pronoun I
+    /// (`pronounForms`) and the day and month names (`capitalizedNames`).
+    static func takesCapital(_ word: String) -> Bool {
+        pronounForms.contains(word) || capitalizedNames.contains(word)
+            || (word.hasSuffix("'s") && capitalizedNames.contains(String(word.dropLast(2))))
+    }
+
+    /// Common chat abbreviations and slang, kept as typed without asking the corrector, as the user's never-correct
+    /// words are: the corrector's lexicon would turn some of them into words ("lol" into "lil", "ur" into "our").
+    static let chatWords: Set<String> = [
+        "lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
+        "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
+        "yep", "nope", "ur",
+    ]
+
+    /// Two words typed run together, corrected to the two words as Apple's keyboard does, whatever the corrector says
+    /// (it would make "abit" "habit" and "alot" "almost"). No source is a lexicon word; the targets are two of them.
+    static let runTogetherWords: [String: String] = ["abit": "a bit", "alot": "a lot", "aswell": "as well", "atleast": "at least"]
+
+    /// Corrections made whatever the corrector says: lexicon words ("cant", "wont", "whats", "hows") almost always typed for
+    /// the contraction, as the corrector already corrects "dont".
+    static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't", "whats": "what's", "hows": "how's"]
+
+    /// Corrections made at a sentence's start only, whatever the corrector says (round 7, Opus finding 2: "Lets go" stayed
+    /// "Lets"): with no subject before it "lets" can't be the verb, so it is "let's". Within a sentence it is left to the
+    /// corrector and the apostrophe twins ("she lets me"). Only words as unambiguous there: not "its" ("Its battery is low").
+    static let sentenceStartCorrections: [String: String] = ["lets": "let's"]
+
+    /// Very common misspellings known for certain, corrected as `fixedCorrections` are: the touch model scores a letter
+    /// typed for one far from it ("definately") as almost impossible, so the corrector never offers these. Every
+    /// target is a word of the bundle's lexicon and no source is one (checked against bundle b34).
+    static let commonMisspellings: [String: String] = [
+        "accomodate": "accommodate", "acheive": "achieve", "adress": "address", "arguement": "argument",
+        "basicly": "basically", "becuase": "because", "begining": "beginning", "beleive": "believe", "belive": "believe",
+        "buisness": "business", "calender": "calendar", "comming": "coming", "completly": "completely",
+        "concious": "conscious", "definately": "definitely", "diffrent": "different", "dissapoint": "disappoint",
+        "embarass": "embarrass", "enviroment": "environment", "existance": "existence", "experiance": "experience",
+        "familar": "familiar", "finaly": "finally", "foriegn": "foreign", "freind": "friend", "goverment": "government",
+        "happend": "happened", "immediatly": "immediately", "independant": "independent", "knowlege": "knowledge",
+        "libary": "library", "maintainance": "maintenance", "millenium": "millennium", "neccessary": "necessary",
+        "noticable": "noticeable", "occassion": "occasion", "occured": "occurred", "posession": "possession",
+        "prefered": "preferred", "probaly": "probably", "publically": "publicly", "recieve": "receive",
+        "recomend": "recommend", "relevent": "relevant", "religous": "religious", "remeber": "remember", "rythm": "rhythm",
+        "seperate": "separate", "sucess": "success", "suprise": "surprise", "thier": "their", "tommorow": "tomorrow",
+        "tounge": "tongue", "truely": "truly", "untill": "until", "wich": "which", "wierd": "weird", "writting": "writing",
+    ]
+
+    /// The correction made whatever the corrector says (`fixedCorrections`, `commonMisspellings`, `runTogetherWords`), if
+    /// any.
+    static func fixedCorrection(_ word: String) -> String? {
+        fixedCorrections[word] ?? commonMisspellings[word] ?? runTogetherWords[word]
+    }
+
+    /// `fixedCorrection`, and at a sentence's start (`context`, normalized, holds no word of the sentence yet) the
+    /// `sentenceStartCorrections`.
+    static func fixedCorrection(_ word: String, context: String) -> String? {
+        fixedCorrection(word) ?? (Autocorrector.sentenceWords(context).isEmpty ? sentenceStartCorrections[word] : nil)
+    }
+
+    /// English words that keep their accents, by the plain lexicon form: offered beside the plain word, never put in by a
+    /// commit key (ARCHITECTURE.md, "Word autocorrect", Accented forms).
+    static let accentedForms: [String: String] = [
+        "cafe": "café", "cafes": "cafés", "resume": "résumé", "resumes": "résumés", "naive": "naïve", "fiance": "fiancé",
+        "fiancee": "fiancée", "cliche": "cliché", "cliches": "clichés", "jalapeno": "jalapeño", "jalapenos": "jalapeños",
+        "entree": "entrée", "entrees": "entrées", "decor": "décor", "creme": "crème", "brulee": "brûlée", "pinata": "piñata",
+        "senor": "señor", "senora": "señora", "touche": "touché", "souffle": "soufflé", "saute": "sauté", "puree": "purée",
+        "protege": "protégé", "passe": "passé", "facade": "façade", "voila": "voilà",
+        "naivete": "naïveté", "flambe": "flambé", "consomme": "consommé", "creche": "crèche",
+        "deja": "déjà", "risque": "risqué", "matinee": "matinée", "eclair": "éclair", "melee": "mêlée",
+    ]
+
+    /// Real words commonly typed for a contraction, by the word: the contraction is offered beside the word, never put in by
+    /// a commit key (ARCHITECTURE.md, "Word autocorrect", Apostrophe forms). Each is the word with an apostrophe.
+    static let apostropheForms: [String: String] = [
+        "ill": "i'll", "id": "i'd", "well": "we'll", "were": "we're", "wed": "we'd", "hell": "he'll", "shell": "she'll",
+        "shed": "she'd", "its": "it's", "lets": "let's",
+    ]
+
+    /// The forms offered beside a word as the corrector sees it, never put in (its accented form, `accentedForms`, and its
+    /// apostrophe form, `apostropheForms`), in the typed word's case and with its trailing apostrophes.
+    static func offered(_ lowered: String, typed word: String, tail: String) -> [String] {
+        [accented(lowered, typed: word, tail: tail), apostropheForms[lowered].map { cased($0, like: word) + tail }].compactMap { $0 }
+    }
+
+    /// The accented form offered for a word as the corrector sees it, in the typed word's case and with its trailing
+    /// apostrophes; nil for a word without one.
+    static func accented(_ lowered: String, typed word: String, tail: String) -> String? {
+        accentedForms[lowered].map { cased($0, like: word) + tail }
+    }
+
+    /// `candidates` with spelling matches (ARCHITECTURE.md, "Word autocorrect", Spelling matches): the best always (in
+    /// the last slot when the strip is full, never over the first `protected`), the others in the slots left.
+    static func adding(spelling matches: [String], to candidates: [String], protected: Int) -> [String] {
+        var out = candidates
+        for (rank, match) in matches.enumerated() where !out.contains(match) {
+            if out.count < SwipeStrip.limit {
+                out.append(match)
+            } else if rank == 0, out.count > protected {
+                out[out.count - 1] = match
+            }
+        }
+        return out
+    }
+
     /// The correction (lowercase) in the typed word's case: all capitals (two letters or more) stays all
-    /// capitals, a capital first letter (or the pronoun I, `pronounForms`) takes a capital first letter, and
-    /// anything else is the lexicon form.
+    /// capitals, a capital first letter (or a word that always takes one, `takesCapital`) takes a capital first
+    /// letter, and anything else is the lexicon form.
     static func cased(_ correction: String, like typed: String) -> String {
         let lower = correction.lowercased()
         let letters = typed.filter(\.isLetter)
         if letters.count >= 2, letters.allSatisfy(\.isUppercase) { return lower.uppercased() }
         guard let head = lower.first else { return lower }
         let capital = typed.first(where: \.isLetter)?.isUppercase == true
-        guard capital || pronounForms.contains(lower) else { return lower }
+        guard capital || takesCapital(lower) else { return lower }
         return head.uppercased() + lower.dropFirst()
     }
 
@@ -79,8 +203,10 @@ enum WordAutocorrect {
 
     /// What a commit key does with the owned word: its correction, if any, and the strip's words to choose from
     /// after it. The words replace `typed`, each cased as the typed word and followed by its trailing apostrophes:
-    /// the typed word first, then the correction, then the corrector's suggestions, at most `SwipeStrip.limit`
-    /// and only when there is a choice (none for a lexicon word the corrector keeps).
+    /// the typed word first, then the correction (or, for a word kept for a vowel rival, the corrector's choice and the
+    /// rival), then the corrector's suggestions, with the best spelling match of a word outside the lexicon
+    /// (`adding(spelling:to:protected:)`) and the word's accented and apostrophe forms (`offered`), at most
+    /// `SwipeStrip.limit` and only when there is a choice (none for a lexicon word the corrector keeps).
     struct Review: Equatable {
         var correction: Correction?
         var typed: String
@@ -94,8 +220,8 @@ enum WordAutocorrect {
     /// corrector. The record is the word: nothing is read from the field but the context before it (`before`, the
     /// text before the caret as the editor knows it, for the word model only). Nil without a setup, in a secure
     /// field or one that turns autocorrection off, for an unowned record or one without a letter, or for a word
-    /// holding other characters, reverted in this keyboard session, or one the user asked never to correct
-    /// (`neverCorrect`).
+    /// holding other characters, reverted in this keyboard session, one the user asked never to correct
+    /// (`neverCorrect`) or a chat word (`chatWords`).
     static func review(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
                        setup: AutocorrectSetup?) -> Review? {
         guard let setup, !setup.secureTextEntry, !setup.autocorrectionDisabled, record.owned,
@@ -104,13 +230,21 @@ enum WordAutocorrect {
         let word = String(entries[found.word].map(\.character))
         guard isCorrectable(word) else { return nil }
         let lowered = correctorWord(word)
-        guard !reverted.contains(lowered), !neverCorrect.contains(lowered) else { return nil }
+        guard !reverted.contains(lowered), !neverCorrect.contains(lowered), !chatWords.contains(lowered) else { return nil }
         let points: [(x: Double, y: Double)?] = entries[found.word].map { $0.point.map { (x: $0.x, y: $0.y) } }
         // The text before the word, when the editor's text ends with it (it always should); none otherwise.
         let leading = entries.count - found.word.lowerBound
         let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(leading))) : ""
-        let corrected = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
-                                                params: setup.params)
+        let modelled = setup.corrector.correct(context: context, word: lowered, points: points, keys: setup.keys,
+                                               params: setup.params)
+        let fixed = fixedCorrection(lowered, context: context)
+        // A vowel rival about as likely as the corrector's choice: the word stays as typed, and both are offered.
+        let rival = fixed == nil && !modelled.isEmpty && modelled != lowered
+            ? setup.corrector.vowelRival(context: context, word: lowered, correction: modelled, keys: setup.keys) : nil
+        // An apostrophe twin too little likelier than the word: the word stays as typed, and the twin is offered.
+        let twin = fixed == nil && rival == nil && !modelled.isEmpty && modelled != lowered
+            && setup.corrector.keepsWordOverTwin(context: context, word: lowered, correction: modelled)
+        let corrected = fixed ?? (rival == nil && !twin ? modelled : lowered)
         let suggested = setup.corrector.suggestions(context: context, word: lowered, points: points, keys: setup.keys,
                                                     params: setup.params, limit: SwipeStrip.limit)
         let tail = String(entries[found.word.upperBound...].map(\.character))
@@ -118,15 +252,116 @@ enum WordAutocorrect {
         var correction: Correction?
         if !corrected.isEmpty, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
             correction = Correction(word: lowered, typed: typed, replacement: cased(corrected, like: word) + tail, record: record)
-        } else if pronounForms.contains(lowered), word.first == "i" {
-            // A kept pronoun (one letter is below the corrector's minimum length) takes its capital I, the rest as typed.
-            correction = Correction(word: lowered, typed: typed, replacement: "I" + word.dropFirst() + tail, record: record)
+        } else if takesCapital(lowered), let first = word.first, first.isLowercase {
+            // A kept word that always takes a capital (the pronoun I, one letter below the corrector's minimum
+            // length, or a day or month name) gets it, the rest as typed.
+            correction = Correction(word: lowered, typed: typed, replacement: first.uppercased() + word.dropFirst() + tail,
+                                    record: record)
         }
         var choices = [typed]
-        for choice in (correction.map { [$0.replacement] } ?? []) + suggested.map({ cased($0, like: word) + tail })
+        let held = (rival.map { [modelled, $0] } ?? (twin ? [modelled] : [])).map { cased($0, like: word) + tail }
+        for choice in (correction.map { [$0.replacement] } ?? []) + held + suggested.map({ cased($0, like: word) + tail })
         where choices.count < SwipeStrip.limit && !choices.contains(choice) {
             choices.append(choice)
         }
+        let protected = correction != nil ? 2 : 1 + held.count
+        let spelled = setup.corrector.spellingMatches(context: context, word: lowered, params: setup.params, limit: SwipeStrip.limit)
+        choices = adding(spelling: spelled.map { cased($0, like: word) + tail }, to: choices, protected: protected)
+        // The accented and apostrophe forms, beside the word as typed: choices, never a correction.
+        for form in offered(lowered, typed: word, tail: tail) {
+            choices = adding(spelling: [form], to: choices, protected: protected)
+        }
         return Review(correction: correction, typed: typed, choices: choices.count > 1 ? choices : [])
+    }
+
+    /// The strip while a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions), and what a choice replaces.
+    struct Typing: Equatable {
+        var strip: SwipeStrip
+        /// The word so far as typed, trailing apostrophes included: what keeping it leaves.
+        var typed: String
+        /// The word as the corrector sees it (lowercased): what keeping it over a pending correction reverts.
+        var word: String
+        /// The characters a choice deletes: the word's from its start, trailing apostrophes included.
+        var deletes: Int
+    }
+
+    /// The strip for the owned word being typed in `record` (`before`: the text before the caret as the editor
+    /// knows it, for the context), or nil for none. Nil where `review` would not ask the corrector (except for a word
+    /// it keeps: a reverted, never-correct or chat word still gets suggestions, without a pending correction), in URL
+    /// and email fields, and when there is nothing to offer but the word as typed.
+    /// - A pending correction (what a commit key would do, `review`'s rules included: "cant" → "can't", day names'
+    ///   capitals): the word as typed, quoted (a tap keeps it), the correction, marked, then the best other. A correction
+    ///   with a vowel rival (`WordCorrecting.vowelRival`) is none: the word as typed, the correction and the rival.
+    /// - Otherwise the word as typed when it is a lexicon word (or kept, or nothing else is offered), then the best
+    ///   others. Every word takes the typed word's case and trailing apostrophes.
+    /// - A word that is no lexicon word (and not kept) that none of the others completes also gets its spelling matches
+    ///   (`adding(spelling:to:protected:)`), after the word as typed when nothing else is offered; a word with an accented
+    ///   or apostrophe form (`offered`) gets that the same way.
+    static func typingStrip(before: String, record: WordTapRecord, reverted: Set<String>, neverCorrect: Set<String> = [],
+                            allCapitals: Bool = false, setup: AutocorrectSetup?) -> Typing? {
+        guard let setup, setup.suggestsWhileTyping, record.owned, let found = word(before: record.text) else { return nil }
+        let entries = record.entries
+        let word = String(entries[found.word].map(\.character))
+        guard isCorrectable(word) else { return nil }
+        let lowered = correctorWord(word)
+        let deletes = entries.count - found.word.lowerBound
+        let context = before.hasSuffix(found.run) ? TapPrior.normalizeContext(String(before.dropLast(deletes))) : ""
+        let tail = String(entries[found.word.upperBound...].map(\.character))
+        let typed = word + tail
+        // Apostrophes after the word so far are the middle of a contraction ("don'"), not a closing quote: the
+        // completions start with them, and nothing is put back after the words offered.
+        let contraction = !tail.isEmpty
+        let prefix = contraction ? correctorWord(typed) : lowered
+        let points: [(x: Double, y: Double)?] = entries[found.word.lowerBound...].prefix(contraction ? deletes : found.word.count)
+            .map { $0.point.map { (x: $0.x, y: $0.y) } }
+        let predicted = setup.corrector.predictions(context: context, word: prefix, points: points, keys: setup.keys,
+                                                    params: setup.params, limit: SwipeStrip.limit)
+        // Caps lock (`allCapitals`): a word typed in capitals so far, one letter included, is all capitals.
+        let capitals = allCapitals && !word.isEmpty && word.filter(\.isLetter).allSatisfy(\.isUppercase)
+        let kept = reverted.contains(lowered) || neverCorrect.contains(lowered) || chatWords.contains(lowered)
+        func shown(_ form: String) -> String { (capitals ? form.uppercased() : cased(form, like: word)) + tail }
+        var correction: String?
+        // A vowel rival as likely as the correction: no correction pending; the word as typed, the correction and the rival.
+        var held: [String] = []
+        if !kept, !contraction {
+            let fixed = fixedCorrection(lowered, context: context)
+            if let corrected = fixed ?? predicted.correction, corrected.lowercased() != lowered, cased(corrected, like: word) != word {
+                if fixed == nil, let rival = setup.corrector.vowelRival(context: context, word: lowered, correction: corrected,
+                                                                         keys: setup.keys) {
+                    held = [shown(corrected), shown(rival)]
+                } else if fixed == nil, setup.corrector.keepsWordOverTwin(context: context, word: lowered, correction: corrected) {
+                    held = [shown(corrected)]
+                } else {
+                    correction = shown(corrected)
+                }
+            } else if takesCapital(lowered), let first = word.first, first.isLowercase {
+                correction = first.uppercased() + word.dropFirst() + tail
+            }
+        }
+        let others = predicted.words.map { (capitals ? $0.uppercased() : cased($0, like: word)) + (contraction ? "" : tail) }
+        // A word that is no word and that nothing offered completes also gets its spelling matches.
+        var spelled: [String] = []
+        if !predicted.isWord, !kept, !contraction, !predicted.words.contains(where: { $0.hasPrefix(prefix) }) {
+            spelled = setup.corrector.spellingMatches(context: context, word: lowered, params: setup.params, limit: SwipeStrip.limit)
+                .map { (capitals ? $0.uppercased() : cased($0, like: word)) + tail }
+        }
+        var candidates: [String] = []
+        // Spelling matches are a guess: they never hide the word as typed, which is what a space keeps.
+        let showsTyped = predicted.isWord || kept || others.isEmpty || !held.isEmpty
+        for choice in (correction.map { [typed, $0] } ?? (showsTyped ? [typed] : [])) + held + others
+        where candidates.count < SwipeStrip.limit && !candidates.contains(choice) {
+            candidates.append(choice)
+        }
+        let protected = correction != nil ? 2 : !held.isEmpty ? 1 + held.count : showsTyped ? 1 : 0
+        candidates = adding(spelling: spelled, to: candidates, protected: protected)
+        if !contraction {
+            for form in offered(lowered, typed: word, tail: tail) {
+                candidates = adding(spelling: [capitals ? form.uppercased() : form], to: candidates, protected: protected)
+            }
+        }
+        guard candidates != [typed], !candidates.isEmpty else { return nil }
+        let live = correction == nil ? SwipeStrip.Live(quoted: nil, marked: nil) : SwipeStrip.Live(quoted: 0, marked: 1)
+        return Typing(strip: SwipeStrip(candidates: candidates, inserted: live.marked ?? 0, live: live), typed: typed, word: lowered,
+                      deletes: deletes)
     }
 }

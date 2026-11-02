@@ -26,8 +26,8 @@ struct TryItView: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 12) {
                     HowToRow(number: 1, text: "Tap a field, then switch to the LocalFlow keyboard with \(Image(systemName: "globe")).")
-                    HowToRow(number: 2, text: "Tap the microphone, speak, and tap it again to stop.")
-                    HowToRow(number: 3, text: "The text appears in the field you dictated into.")
+                    HowToRow(number: 2, text: "Tap **Start** at the top of the keyboard, speak, then tap **Stop**.")
+                    HowToRow(number: 3, text: "The text goes into the field you started in. If you have moved to another field by then, the keyboard offers **Insert last dictation** instead.")
                 }
                 .padding(18)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -51,7 +51,7 @@ struct TryItView: View {
                         .scrollContentBackground(.hidden)
                         .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .accessibilityIdentifier("tryit.practice")
-                    Text("Touch and hold the space bar, then move up, down and sideways across the long wrapped lines and the short ones. Try the same with Apple's keyboard to compare.")
+                    Text("Touch and hold the space bar, then move up, down and sideways across the long wrapped lines and the short ones.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -66,7 +66,7 @@ struct TryItView: View {
                 .background(Theme.aurora.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 if host.session != .active {
-                    Label("No session is running. The keyboard will open LocalFlow to start one.", systemImage: "info.circle")
+                    Label("No session is running. Tapping Start on the keyboard opens LocalFlow to start one; if it does not, start a session from Home.", systemImage: "info.circle")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -8,13 +8,53 @@ import Foundation
 protocol WordCorrecting: AnyObject {
     func correct(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                  params: AutocorrectParams) -> String
-    /// The suggestion strip's words for the same inputs: up to `limit` lexicon forms, lowercase, best first,
-    /// ranked as `correct` ranks its candidates (channel plus weighted model log probability; ties to the higher
-    /// frequency, then the first form) but with no margin, any finite score. None for a word in the lexicon, or
-    /// one `correct` keeps without looking (invalid inputs, a key shorter than `minLength`).
+    /// The suggestion strip's words for the same inputs: up to `limit` lexicon forms other than `word`, lowercase,
+    /// best first, ranked as `correct` ranks its candidates (channel plus weighted model log probability; ties to
+    /// the higher frequency, then the first form) but with no margin: every form whose posterior odds against
+    /// keeping the word are at least the suggestion floor, for a lexicon word too. None for a word typed as meant
+    /// (no form near enough), or one `correct` keeps without looking (invalid inputs, a key shorter than
+    /// `minLength`).
     func suggestions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
                      params: AutocorrectParams, limit: Int) -> [String]
+    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions): what a commit key would make of
+    /// it, and up to `limit` other lexicon forms, best first, none far less likely than the first word the strip
+    /// shows. `word` is the word so far, as for `correct`.
+    func predictions(context: String, word: String, points: [(x: Double, y: Double)?], keys: [PlacedKey],
+                     params: AutocorrectParams, limit: Int) -> WordPredictions
+    /// Spelling matches (ARCHITECTURE.md, "Word autocorrect", Spelling matches): for a word outside the lexicon, up to
+    /// `limit` lexicon forms within the corrector's edit limit of it whatever the keys' distance, lowercase, fewest
+    /// edits first, then by the word model in the context. Suggestions only: nothing corrects from them.
+    func spellingMatches(context: String, word: String, params: AutocorrectParams, limit: Int) -> [String]
+    /// A vowel rival (ARCHITECTURE.md, "Word autocorrect", Vowel rivals): for a word outside the lexicon that a commit would
+    /// correct to `correction`, a lexicon form one vowel away from it that the touch model counts as a far miss, about as
+    /// likely as the correction by the word model in `context`; lowercase. Nil for none. The keyboard then keeps the word
+    /// and offers both.
+    func vowelRival(context: String, word: String, correction: String, keys: [PlacedKey]) -> String?
+    /// An apostrophe twin (ARCHITECTURE.md, "Word autocorrect", Apostrophe twins): for a lexicon word a commit would correct
+    /// to its twin, the same letters with an apostrophe ("were" to "we're"), whether the twin is too little likelier by the
+    /// word model in `context` to replace it. The keyboard then keeps the word and offers the twin.
+    func keepsWordOverTwin(context: String, word: String, correction: String) -> Bool
+    /// Next words (ARCHITECTURE.md, "Word autocorrect", Next words): after a finished word and a space, up to `limit` likely
+    /// next words given the sentence so far (`context`, normalized), lowercase, best first by the word model; only words
+    /// likely enough, and none far less likely than the best. None for a limit below 1.
+    func nextWords(context: String, limit: Int) -> [String]
     /// Drops every cache that holds context or words (the keyboard calls it when it hides). Results after it
     /// are the same as before.
     func forgetContext()
+}
+
+/// The corrector's predictions for a word being typed (`WordCorrecting.predictions`), lowercase lexicon forms.
+struct WordPredictions: Equatable, Sendable {
+    /// What `correct` would commit instead of the word; nil when it keeps it.
+    var correction: String?
+    /// Forms other than the word, best first: its completions and its typo-tolerant matches.
+    var words: [String]
+    /// The word is a lexicon form.
+    var isWord: Bool
+
+    init(correction: String? = nil, words: [String], isWord: Bool) {
+        self.correction = correction
+        self.words = words
+        self.isWord = isWord
+    }
 }

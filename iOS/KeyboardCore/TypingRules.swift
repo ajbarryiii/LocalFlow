@@ -63,9 +63,10 @@ struct TypingState: Equatable, Sendable {
         lastShiftTapAt = nil
     }
 
-    /// The text a character key types now: uppercase while shifted.
+    /// The text a character key types now: uppercase while shifted. A key typing a fixed string (".com" and its
+    /// alternates) types it as it is.
     func text(for character: String) -> String {
-        shift == .off ? character : character.uppercased()
+        shift == .off || character.count > 1 ? character : character.uppercased()
     }
 
     /// Call after a character key typed. A one-shot shift turns off; an apostrophe in the number

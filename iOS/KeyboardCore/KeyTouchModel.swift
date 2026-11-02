@@ -31,6 +31,10 @@ import Foundation
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
 ///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
 ///   identified field drops held, uncommitted keys and a running swipe.
+/// - Alternates: a character with alternates (`KeyAlternates`) wants a timer from its touch-down (`wantsAlternates`);
+///   held uncommitted until it fires, still not a swipe, the touch opens its row (`alternatesElapsed`) and can no longer become a swipe. Its
+///   callout gives way to the row, sliding picks a cell, and its release or rollover types the cell picked, or, if the
+///   finger never moved `KeyAlternates.moveSlop`, what a tap would (ARCHITECTURE.md, "Press-and-hold alternates").
 struct KeyTouchModel: Equatable, Sendable {
     typealias TouchID = Int
 
@@ -66,6 +70,14 @@ struct KeyTouchModel: Equatable, Sendable {
         /// The letters were laid out anew while it was held (a resize or rotation): its touch-down point belongs
         /// to the old geometry, so it types its key (or decision) with no point.
         var geometryChanged = false
+        /// The alternates row while it is open (`alternatesElapsed`): its options, the key's own character first,
+        /// and their cells in key-area points; empty while closed.
+        var alternates: [String] = []
+        var alternateFrames: [KeyRect] = []
+        /// The cell picked: the first (the key's own character) until the finger moves `KeyAlternates.moveSlop`.
+        var selectedAlternate = 0
+        var alternatesOriginX = 0.0
+        var alternatesMoved = false
     }
 
     enum Effect: Equatable, Sendable {
@@ -105,6 +117,8 @@ struct KeyTouchModel: Equatable, Sendable {
     var softTapsEnabled = false
     private(set) var keys: [PlacedKey] = []
     private(set) var layer = KeyboardLayer.letters
+    /// The kind of field the keys are for: its "." may have its own alternates (`alternateOptions`).
+    private(set) var field = KeyboardField.standard
     /// Held fingers in press order.
     private(set) var touches: [Touch] = []
     private(set) var trackpadTouch: TouchID?
@@ -142,9 +156,14 @@ struct KeyTouchModel: Equatable, Sendable {
     /// sliding. A swipe shows none.
     var calloutTouch: Touch? {
         touches.last { touch in
-            guard touch.action?.isCharacter == true else { return false }
+            guard touch.action?.isCharacter == true, touch.alternateFrames.isEmpty else { return false }
             return touch.role == .character || (touch.role == .slide && !touch.committed)
         }
+    }
+
+    /// The finger whose alternates row is open, if any (uncommitted).
+    var alternatesTouch: Touch? {
+        touches.first { !$0.committed && !$0.alternateFrames.isEmpty }
     }
 
     /// The character to show in a callout (`calloutTouch`): a soft tap's decided key, when it has one.
@@ -191,9 +210,10 @@ struct KeyTouchModel: Equatable, Sendable {
         var touch = Touch(id: id, role: .character, action: action, startX: x, startY: y, x: x, y: y, field: field)
         switch action {
         case .character:
-            // Typed at release or rollover (v4); a possible swipe until then.
-            touch.onLetters = layer == .letters
-            if swipeEnabled, layer == .letters { touch.samples = [SwipeSample(x: x, y: y, t: t)] }
+            // Typed at release or rollover (v4); a possible swipe until then. Only letters swipe or are soft taps: the
+            // email field's "@" and "." on the letters layer are not.
+            touch.onLetters = layer == .letters && action.letterIndex != nil
+            if swipeEnabled, touch.onLetters { touch.samples = [SwipeSample(x: x, y: y, t: t)] }
         case .nextKeyboard:
             break
         case .space:
@@ -239,6 +259,11 @@ struct KeyTouchModel: Equatable, Sendable {
                 return [.cancelHoldTimer(id)]
             }
         case .character:
+            // An open alternates row picks the cell under the finger once it has moved.
+            if !touch.alternateFrames.isEmpty {
+                pickAlternate(index, x: x)
+                break
+            }
             // The key stays the one touched down on; the path counts only towards a swipe.
             guard !touch.samples.isEmpty else { break }
             touches[index].samples += samples
@@ -281,6 +306,8 @@ struct KeyTouchModel: Equatable, Sendable {
         }
         // The lift never makes a swipe: a finger first past the threshold as it lifts skidded (a tap).
         guard let index = touches.firstIndex(where: { $0.id == id }) else { return [] }
+        // An open alternates row picks where the finger lifts, as where it moves.
+        if !touches[index].alternateFrames.isEmpty { pickAlternate(index, x: x) }
         let touch = touches.remove(at: index)
         var effects: [Effect] = []
         switch touch.role {
@@ -325,12 +352,64 @@ struct KeyTouchModel: Equatable, Sendable {
         return beginTrackpad(index)
     }
 
+    /// Whether the touch, just touched down (and its soft tap decided), wants the alternates timer
+    /// (`KeyAlternates.holdDelay`, then `alternatesElapsed`): an uncommitted character whose shown key has alternates.
+    func wantsAlternates(_ id: TouchID) -> Bool {
+        guard let touch = touches.first(where: { $0.id == id }), touch.role == .character, !touch.committed,
+              case .character(let character) = shownAction(touch) else { return false }
+        return !alternateOptions(for: character).isEmpty
+    }
+
+    /// The alternates row of a character on the current keys: the field's own only on the letters layer, where its
+    /// keys are (`KeyboardLayout.keys`).
+    func alternateOptions(for character: String) -> [String] {
+        KeyAlternates.options(for: character, field: layer == .letters ? field : .standard)
+    }
+
+    /// The alternates timer of a character touch fired: opens its row, when it is still held, uncommitted, has
+    /// alternates, and no swipe or trackpad runs. True if it opened.
+    mutating func alternatesElapsed(_ id: TouchID) -> Bool {
+        guard trackpadTouch == nil, swipeTouch == nil, let index = touches.firstIndex(where: { $0.id == id }) else { return false }
+        let touch = touches[index]
+        guard touch.role == .character, !touch.committed, touch.alternateFrames.isEmpty,
+              let shown = shownAction(touch), case .character(let character) = shown else { return false }
+        let options = alternateOptions(for: character)
+        guard !options.isEmpty, let key = keys.first(where: { $0.action == shown }) ?? keys.first(where: { $0.action == touch.action })
+        else { return false }
+        touches[index].alternates = options
+        touches[index].alternateFrames = KeyAlternates.frames(options: options, key: key.frame, width: areaWidth)
+        touches[index].selectedAlternate = 0
+        touches[index].alternatesOriginX = touch.x
+        touches[index].alternatesMoved = false
+        // It is no longer a possible swipe.
+        touches[index].samples = []
+        return true
+    }
+
+    /// An open row's pick with the finger at `x`: the key's own cell until it has moved `KeyAlternates.moveSlop`
+    /// sideways from where the row opened, then the cell under it.
+    private mutating func pickAlternate(_ index: Int, x: Double) {
+        if !touches[index].alternatesMoved, abs(x - touches[index].alternatesOriginX) >= KeyAlternates.moveSlop {
+            touches[index].alternatesMoved = true
+        }
+        if touches[index].alternatesMoved {
+            touches[index].selectedAlternate = KeyAlternates.index(atX: x, in: touches[index].alternateFrames)
+        }
+    }
+
+    /// The key area's width, from the keys' symmetric side margins.
+    private var areaWidth: Double {
+        guard let minX = keys.map(\.frame.x).min(), let maxX = keys.map(\.frame.maxX).max() else { return 0 }
+        return maxX + minX
+    }
+
     /// The keys were rebuilt (a layer or shift change, or a new size). Held slides and layer-key fingers
     /// follow the keys under them; a held character keeps its key; a finger whose function key is gone is
     /// dropped. Letter keys set the swipe threshold.
-    mutating func keysChanged(_ keys: [PlacedKey], layer: KeyboardLayer) -> [Effect] {
+    mutating func keysChanged(_ keys: [PlacedKey], layer: KeyboardLayer, field: KeyboardField = .standard) -> [Effect] {
         self.keys = keys
         self.layer = layer
+        self.field = field
         // Half the letter pitch.
         if layer == .letters, let pitch = KeyboardLayout.letterPitch(in: keys) { swipeThreshold = pitch / 2 }
         var resized = false
@@ -349,6 +428,10 @@ struct KeyTouchModel: Equatable, Sendable {
             switch touch.role {
             case .character:
                 if resized { touch.geometryChanged = true }
+                // An open alternates row belongs to the old keys: it closes, and the touch types what a tap would.
+                touch.alternates = []
+                touch.alternateFrames = []
+                touch.selectedAlternate = 0
                 kept.append(pinnedIfMoved(touch))
             case .slide, .layer:
                 touch.action = nearestAction(x: touch.x, y: touch.y)
@@ -453,6 +536,9 @@ struct KeyTouchModel: Equatable, Sendable {
     /// touch-down point, unless the letters were laid out anew while it was held (then its key or decision,
     /// with no point); otherwise the key itself. Slides never are.
     private func characterEffect(_ touch: Touch, _ action: KeyAction) -> Effect {
+        if touch.selectedAlternate > 0, touch.alternates.indices.contains(touch.selectedAlternate) {
+            return .type(.character(touch.alternates[touch.selectedAlternate]), field: touch.field)
+        }
         guard softTapsEnabled, touch.role == .character, touch.onLetters else { return .type(action, field: touch.field) }
         // Its point no longer matches the keys: its key, or its decision, without one.
         if touch.geometryChanged { return .type(touch.decided ?? action, field: touch.field) }

@@ -25,6 +25,7 @@ enum NeverCorrectTests {
             ("aRevertOffersToNeverCorrectTheWord", testARevertOffersToNeverCorrectTheWord),
             ("acceptingStoresTheWordForEveryInstance", testAcceptingStoresTheWordForEveryInstance),
             ("acceptingFromTheStripClosesIt", testAcceptingFromTheStripClosesIt),
+            ("acceptingClosesTheTypingStripToo", testAcceptingClosesTheTypingStripToo),
             ("anythingElseEndsTheOffer", testAnythingElseEndsTheOffer),
             ("ownEchoesKeepTheOffer", testOwnEchoesKeepTheOffer),
             ("noOfferWithoutAStoreOrForAWordItCannotKeep", testNoOfferWithoutAStoreOrForAWordItCannotKeep),
@@ -317,7 +318,8 @@ enum NeverCorrectTests {
             chosen.tap("TEH")
             chosen.press(.character(","))
             chosen.choose(0)
-            TestSupport.expectEqual(chosen.text, "TEH,")
+            // A chosen word ends with one space (round 2).
+            TestSupport.expectEqual(chosen.text, "TEH, ")
             TestSupport.expectEqual(chosen.editor.neverCorrectOffer, NeverCorrectOffer(word: "teh", typed: "TEH"))
             TestSupport.expectEqual(chosen.strip, SwipeStrip(candidates: ["TEH", "THE"], inserted: 0))
             TestSupport.expect(storeIsEmpty(store), "an offer stored its word")
@@ -367,6 +369,20 @@ enum NeverCorrectTests {
             TestSupport.expectEqual(rig.strip, nil)
             TestSupport.expectEqual(rig.text, "teh ")
             TestSupport.expectEqual(store.load().words, ["teh"])
+        }
+    }
+
+    /// Sol round 2, run 3: the reverted word is being typed again, so suggestions for it lie under the offer; accepting
+    /// closes them too, as it closes the strip after a commit key.
+    private static func testAcceptingClosesTheTypingStripToo() {
+        withStore { store in
+            let rig = rig(store)
+            rig.corrector.predicted["teh"] = WordPredictions(correction: "the", words: ["the", "ten"], isWord: false)
+            revert(rig)
+            TestSupport.expect(rig.editor.neverCorrectOffer != nil, "no offer")
+            rig.editor.acceptNeverCorrect()
+            TestSupport.expectEqual(rig.editor.neverCorrectOffer, nil)
+            TestSupport.expectEqual(rig.strip, nil)
         }
     }
 

@@ -38,6 +38,8 @@ final class HostSessionController: ObservableObject {
     /// Nil when the build is misconfigured (missing identifiers or App Group).
     let core: HostSessionCore?
     private let store: SharedDictationStore?
+    /// The session's Live Activity (ARCHITECTURE.md, "Live Activity").
+    private let activity = SessionActivityDriver(backend: LiveActivityBackend())
     private var timer: Timer?
     private var intentObservation: DarwinNotifier.Observation?
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -99,6 +101,8 @@ final class HostSessionController: ObservableObject {
         guard let core, !core.isLaunched else { return }
         // Locked at launch: nothing may be admitted until an unlock.
         if !UIApplication.shared.isProtectedDataAvailable { core.deviceWillLock() }
+        // An earlier run's activity goes before this run can start a session.
+        activity.launch()
         core.launch()
         timer = Timer.mainLoop(after: HostSessionPolicy.tickInterval, repeats: true) { [weak self] _ in self?.tick() }
         intentObservation = configuration.map(DarwinNotifier.init(configuration:))?.observe(.intent) { [weak self] in
@@ -209,6 +213,16 @@ final class HostSessionController: ObservableObject {
     private func tick() {
         core?.tick()
         if dictation?.phase == .recording { refresh() }   // the level meter
+        syncActivity()   // a change held for `SessionActivityPolicy.minimumWaitDisplay` lands on a tick
+    }
+
+    /// Only an active app may start an activity; one that is merely inactive is still on its way.
+    private func syncActivity() {
+        guard let core else { return }
+        activity.sync(SessionActivityInput(sessionID: core.sessionID, session: core.session,
+                                           sessionExpiresAt: core.sessionExpiresAt, dictation: core.current,
+                                           model: core.transcriber.modelState),
+                      isForeground: UIApplication.shared.applicationState == .active, now: Date())
     }
 
     private func refresh() {
@@ -234,6 +248,7 @@ final class HostSessionController: ObservableObject {
             hapticRequestID = current.requestID
             if bounceVisible, settings.hapticsEnabled { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
         }
+        syncActivity()
     }
 
     private func set<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<HostSessionController, Value>, _ value: Value) {

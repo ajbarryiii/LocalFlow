@@ -470,7 +470,8 @@ private final class TortureWorld {
 
     private func shiftOrLayerStep() -> String? {
         note("shift or layer")
-        let layers = keys { if case .layer = $0 { return true } else { return false } }
+        // The key layers only: the emoji panel has no keys to type, space or trackpad, and is not modeled here.
+        let layers = keys { if case .layer(let layer) = $0 { return layer != .emoji } else { return false } }
         if random.chance(0.6), keys({ $0 == .shift }).count == 1 {
             touchUp(touchDown(.shift))
             // Sometimes the second tap of a double tap: caps lock.
@@ -825,7 +826,8 @@ private final class TortureWorld {
         case 0, 1: return .delete
         case 2:
             let switches = keys { action in
-                if case .layer = action { return true }
+                // The key layers only, as in `shiftOrLayerStep`.
+                if case .layer(let layer) = action { return layer != .emoji }
                 return shift && action == .shift
             }
             return switches.isEmpty ? .delete : random.pick(switches)

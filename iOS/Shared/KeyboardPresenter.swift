@@ -72,6 +72,19 @@ enum KeyboardPresenter {
         return .hostUnavailable
     }
 
+    /// The mode the keyboard shows for `mode`: Start without a session stays Start (round 10, Opus round 9 finding 2:
+    /// it grew into the dimmed recording form, with the stop square and Cancel, while iOS asked to open LocalFlow, and
+    /// stayed so about 15 s when the user declined). While the request this keyboard instance bounced to LocalFlow,
+    /// `bouncedRequestID`, is the pending intent and the host has not picked it up, the keyboard shows `hostUnavailable`,
+    /// so a decline leaves Start as it was and a second tap bounces again. Every other mode shows as it is, a request
+    /// another instance bounced included.
+    static func shownMode(_ mode: KeyboardMode, bouncedRequestID: UUID?, intent: StoreRead<KeyboardIntent>,
+                          status: StoreRead<HostStatus>) -> KeyboardMode {
+        guard mode == .starting, let bouncedRequestID, intent.value?.requestID == bouncedRequestID,
+              status.value?.dictation?.requestID != bouncedRequestID else { return mode }
+        return .hostUnavailable
+    }
+
     /// A live host is preparing the model: the keyboard says so while recording too. Only a live host's
     /// status counts, so a dead host's last status never claims preparation.
     static func isModelPreparing(status: StoreRead<HostStatus>, now: Date) -> Bool {

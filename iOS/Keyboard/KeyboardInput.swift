@@ -67,6 +67,9 @@ final class KeyboardInput: KeyAreaViewDelegate {
     var onSwipeStripChanged: (() -> Void)?
     /// The offer to never correct a reverted word appeared, changed or went (`neverCorrectOffer`).
     var onNeverCorrectOfferChanged: (() -> Void)?
+    /// An own edit, or a frame while the proxy may only now show one: whether the field has text may have changed
+    /// (`fieldHasText`).
+    var onTextMayHaveChanged: (() -> Void)?
     /// The swipe engine, once loaded (`loadSwipeEngine`); nil keeps swipe typing off.
     private var swipeEngine: SwipeEngine? {
         didSet { updateTouchModes() }
@@ -92,7 +95,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
         self.keyArea = keyArea
         document = ProxyDocument(controller: controller)
         let trackpad = TrackpadController(host: document)
-        editor = KeyboardEditor(document: document, trackpad: trackpad)
+        editor = KeyboardEditor(document: document, trackpad: trackpad, parking: Self.parking)
         driver = TrackpadDriver(controller: controller, trackpad: trackpad)
         editor.autocapitalization = { [weak self] in self?.autocapitalization ?? .sentences }
         editor.onStateChanged = { [weak self] in self?.editorStateChanged() }
@@ -106,6 +109,12 @@ final class KeyboardInput: KeyAreaViewDelegate {
     }
 
     var trackpad: TrackpadController { editor.trackpad }
+
+    /// Whether the field has text: the proxy's word, or text before the caret that the keyboard typed and the proxy
+    /// does not show yet. Read for `enablesReturnKeyAutomatically`; nothing is kept.
+    var fieldHasText: Bool {
+        proxy?.hasText == true || !editor.tapPriorContext(now: now).isEmpty
+    }
 
     private var proxy: UITextDocumentProxy? { controller?.textDocumentProxy }
 
@@ -125,18 +134,28 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     // MARK: Lifecycle
 
-    /// The keyboard appeared: start fresh in whatever field it serves.
+    /// Fields that ask for a number pad: the keyboard opens on its numbers layer there, and predicts no next words.
+    /// The word being typed when the keyboard hid, for the next controller in this process (ARCHITECTURE.md, "Word
+    /// autocorrect", Owned words). In memory only.
+    private static let parking = ParkedWordSlot()
+
+    private static let numericTypes: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
+
+    private var isNumericField: Bool { Self.numericTypes.contains(proxy?.keyboardType ?? .default) }
+
+    /// The keyboard appeared: start fresh in whatever field it serves (a word it was typing there may be its own again,
+    /// ARCHITECTURE.md, "Word autocorrect", Owned words).
     func reset() {
-        let numeric: Set<UIKeyboardType> = [.numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad]
-        editor.reset(numeric: numeric.contains(proxy?.keyboardType ?? .default))
+        editor.reset(numeric: isNumericField)
         stopUndoTimers()
         updateTouchModes()
     }
 
     /// The keyboard is hiding: end every gesture and held key and, synchronously, drop every copy of
     /// the field's context and identity (the trackpad snapshot and its layout, its unit, the undo text
-    /// and anchors, the typing tail). A probe still out is rolled back first. Every key typed has already
-    /// been applied.
+    /// and anchors, the typing tail), but the word being typed, kept in memory until the keyboard appears
+    /// again (ARCHITECTURE.md, "Word autocorrect", Owned words). A probe still out is rolled back first.
+    /// Every key typed has already been applied.
     func stop() {
         cancelHeldActions()
         editor.hide(now: now)
@@ -250,6 +269,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
             guard let self else { return }
             autocorrect = loaded.map { (params: $0.params, corrector: $0.corrector) }
             updateTouchModes()
+            editor.autocorrectChanged()
         }
     }
 
@@ -289,10 +309,11 @@ final class KeyboardInput: KeyAreaViewDelegate {
         return AutocorrectSetup(corrector: autocorrect.corrector, keys: keyArea.letterKeys,
                                 params: autocorrect.params,
                                 secureTextEntry: proxy?.isSecureTextEntry == true,
-                                autocorrectionDisabled: proxy?.autocorrectionType == .no)
+                                autocorrectionDisabled: proxy?.autocorrectionType == .no, field: keyArea.field,
+                                numeric: isNumericField)
     }
 
-    /// The candidate strip after a swipe or an autocorrect commit, nil when closed.
+    /// The candidate strip after a swipe or an autocorrect commit, or while a word is typed; nil when closed.
     var swipeStrip: SwipeStrip? { editor.swipeStrip }
 
     /// A tap on the strip's candidate `index`.
@@ -312,6 +333,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
 
     private func editorStateChanged() {
         keyArea?.apply(layer: editor.typing.layer, shift: editor.typing.shift)
+        onTextMayHaveChanged?()
         scheduleTailExpiry()
         if editor.needsService { scheduleService() }
     }
@@ -323,6 +345,7 @@ final class KeyboardInput: KeyAreaViewDelegate {
             guard let self else { return }
             self.serviceTimer = nil
             self.editor.service(now: self.now)
+            self.onTextMayHaveChanged?()
             if self.editor.needsService { self.scheduleService() }
         }
     }

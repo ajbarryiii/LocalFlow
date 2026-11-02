@@ -165,6 +165,27 @@ final class WordLexicon: @unchecked Sendable {
 
     func contains(_ form: String) -> Bool { formID(of: form) != nil }
 
+    /// The ids of the forms that start with `prefix` (its UTF-8 bytes): a range, since ids follow code point order.
+    func formRange(prefix: String) -> Range<Int> {
+        var prefix = prefix
+        return prefix.withUTF8 { bytes in
+            withView { view in
+                func firstNotBefore(_ precedes: (UnsafeRawBufferPointer) -> Bool) -> Int {
+                    var lo = 0, hi = formCount
+                    while lo < hi {
+                        let mid = (lo + hi) / 2
+                        if precedes(UnsafeRawBufferPointer(rebasing: view.raw[view.textRange(mid)])) { lo = mid + 1 } else { hi = mid }
+                    }
+                    return lo
+                }
+                let start = firstNotBefore { $0.lexicographicallyPrecedes(bytes) }
+                // Past the forms that start with the prefix: those before it, or starting with it.
+                let end = firstNotBefore { $0.lexicographicallyPrecedes(bytes) || $0.starts(with: bytes) }
+                return start ..< max(start, end)
+            }
+        }
+    }
+
     func frequency(of form: String) -> Int? { formID(of: form).map(frequency(ofFormAt:)) }
 
     /// The ids of a key's forms (a node's), by frequency, highest first, then code point order.

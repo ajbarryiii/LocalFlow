@@ -7,10 +7,20 @@ import Foundation
 /// the vocabulary gets the probability of "<unk>". Main thread only: models may cache by context.
 protocol WordModel: AnyObject {
     func logProbs(context: [String], words: [String]) -> [Double]
+    /// `logProbs` of every form of `lexicon`, by form id, in one call: what suggestions while typing rank completions
+    /// by, once per context (ARCHITECTURE.md, "Word autocorrect", Suggestions).
+    func logProbs(context: [String], allFormsOf lexicon: WordLexicon) -> [Double]
     /// Whether the word has its own probability (not "<unk>"'s).
     func inVocab(_ word: String) -> Bool
     /// Drops every cache of contexts; results after it are the same as before.
     func forgetContext()
+}
+
+extension WordModel {
+    /// Every form by name.
+    func logProbs(context: [String], allFormsOf lexicon: WordLexicon) -> [Double] {
+        logProbs(context: context, words: (0 ..< lexicon.formCount).map(lexicon.form(at:)))
+    }
 }
 
 /// Word model constants shared with the reference (`tap.wordlm`).
@@ -347,6 +357,28 @@ final class LSTMWordModel: WordModel {
                 var dot = 0.0
                 for i in 0 ..< embed { dot += Double(row[i]) * Double(state.out[i]) }
                 return dot + Double(outBias[output]) - state.logZ + extra
+            }
+        }
+    }
+
+    /// Every form of the model's own lexicon from one read-out of the context's state: a model word's logit, or a
+    /// rare form's "<unk>" class with its frequency's share, as `logProbs` scores each.
+    func logProbs(context: [String], allFormsOf lexicon: WordLexicon) -> [Double] {
+        guard lexicon === self.lexicon else { return logProbs(context: context, words: (0 ..< lexicon.formCount).map(lexicon.form(at:))) }
+        let state = state(for: context.map(input))
+        let classes = vocabulary + 2
+        return data.withUnsafeBytes { raw in
+            let embedding = raw.baseAddress!.advanced(by: offsets.embedding).assumingMemoryBound(to: Float.self)
+            let outBias = raw.baseAddress!.advanced(by: offsets.outBias).assumingMemoryBound(to: Float.self)
+            // Class c's logit is embedding row c + 1 · out, as the step's read-out computes them (Float32: within
+            // rounding of `logProbs`, which sums each in Float64; enough to rank by).
+            var logits = [Float](repeating: 0, count: classes)
+            vDSP_mmul(embedding + embed, 1, state.out, 1, &logits, 1, vDSP_Length(classes), 1, vDSP_Length(embed))
+            return (0 ..< lexicon.formCount).map { form in
+                let k = LFBinaryFile.u32(raw, offsets.formWords + 4 * form)
+                let output = k == Self.rare ? 1 : Int(k) + 2
+                let extra = k == Self.rare ? rareByFrequency[lexicon.frequency(ofFormAt: form)] : 0
+                return Double(logits[output]) + Double(outBias[output]) - state.logZ + extra
             }
         }
     }

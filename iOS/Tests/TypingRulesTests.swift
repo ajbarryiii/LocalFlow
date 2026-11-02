@@ -4,6 +4,7 @@ enum TypingRulesTests {
     static var tests: [TestCase] {
         [
             ("shiftTapAndCapsLock", testShiftTapAndCapsLock),
+            ("shiftCasesSingleCharactersOnly", testShiftCasesSingleCharactersOnly),
             ("shiftLetterShiftIsNotCapsLock", testShiftLetterShiftIsNotCapsLock),
             ("contextTailIsReleasedOnceAcknowledged", testContextTailIsReleasedOnceAcknowledged),
             ("oneShotShiftClearsAfterALetter", testOneShotShiftClearsAfterALetter),
@@ -315,5 +316,19 @@ enum TypingRulesTests {
         // An outside change (the user tapped elsewhere) drops the model.
         tail.proxyChanged(before: "Somewhere else")
         TestSupport.expectEqual(tail.known, nil)
+    }
+
+    /// Shift cases one character (a letter or an accented alternate); a key that types a fixed string (the URL field's
+    /// ".com" and its alternates) types it as its caption shows, and an emoji is never changed.
+    private static func testShiftCasesSingleCharactersOnly() {
+        var state = TypingState()
+        state.tapShift(at: 0)
+        TestSupport.expectEqual(state.text(for: "é"), "É")
+        TestSupport.expectEqual(state.text(for: KeyboardLayout.dotCom), ".com")
+        TestSupport.expectEqual(state.text(for: ".org"), ".org")
+        TestSupport.expectEqual(state.text(for: "\u{1F600}"), "\u{1F600}")
+        state.tapShift(at: 0.1)
+        TestSupport.expectEqual(state.text(for: ".net"), ".net")
+        TestSupport.expectEqual(state.text(for: "q"), "Q")
     }
 }

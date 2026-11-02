@@ -17,12 +17,22 @@ enum KeyboardLayoutTests {
             ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
             ("letterPitchIsTheTopRowPitch", testLetterPitchIsTheTopRowPitch),
             ("letterIndexIsAToZOnly", testLetterIndexIsAToZOnly),
+            ("fieldsChangeOnlyTheBottomRow", testFieldsChangeOnlyTheBottomRow),
+            ("emailFieldsHaveAtAndPeriodBesideTheSpaceBar", testEmailFieldsHaveAtAndPeriodBesideTheSpaceBar),
+            ("urlFieldsHaveDomainKeysInPlaceOfTheSpaceBar", testURLFieldsHaveDomainKeysInPlaceOfTheSpaceBar),
+            ("theEmojiKeyIsBesideTheSpaceBarWhereItBelongs", testTheEmojiKeyIsBesideTheSpaceBarWhereItBelongs),
+            ("theEmojiLayerHasItsBottomKeysAndPanel", testTheEmojiLayerHasItsBottomKeysAndPanel),
         ]
     }
 
     private static func keys(_ layer: KeyboardLayer, width: Double = 402, height: Double = KeyboardMetrics.regularHeight,
-                             globe: Bool = false) -> [PlacedKey] {
-        KeyboardLayout.keys(for: layer, metrics: KeyboardMetrics(width: width, height: height), showsGlobe: globe)
+                             globe: Bool = false, field: KeyboardField = .standard) -> [PlacedKey] {
+        KeyboardLayout.keys(for: layer, metrics: KeyboardMetrics(width: width, height: height), showsGlobe: globe, field: field)
+    }
+
+    private static func bottomRow(_ placed: [PlacedKey]) -> [PlacedKey] {
+        let bottom = placed.map(\.frame.y).max()!
+        return placed.filter { $0.frame.y == bottom }.sorted { $0.frame.x < $1.frame.x }
     }
 
     private static func key(_ action: KeyAction, in keys: [PlacedKey]) -> PlacedKey {
@@ -42,13 +52,13 @@ enum KeyboardLayoutTests {
 
     private static func testLettersLayer() {
         let letters = keys(.letters)
-        TestSupport.expectEqual(letters.count, 26 + 5)
+        TestSupport.expectEqual(letters.count, 26 + 6)
         let rows = Dictionary(grouping: letters, by: { $0.frame.y }).sorted { $0.key < $1.key }.map(\.value)
-        TestSupport.expectEqual(rows.map(\.count), [10, 9, 9, 3])
+        TestSupport.expectEqual(rows.map(\.count), [10, 9, 9, 4])
         TestSupport.expectEqual(rows[0].map(\.label).joined(), "qwertyuiop")
         TestSupport.expectEqual(rows[2].first?.action, .shift)
         TestSupport.expectEqual(rows[2].last?.action, .delete)
-        TestSupport.expectEqual(rows[3].map(\.action), [.layer(.numbers), .space, .returnKey])
+        TestSupport.expectEqual(rows[3].map(\.action), [.layer(.numbers), .layer(.emoji), .space, .returnKey])
         // The middle row is centered under the top row.
         let a = key(.character("a"), in: letters), l = key(.character("l"), in: letters)
         TestSupport.expect(abs((a.frame.x + l.frame.maxX) / 2 - 201) < 0.01, "middle row centered")
@@ -82,9 +92,13 @@ enum KeyboardLayoutTests {
 
     private static func testKeysStayInsideAndNeverOverlap() {
         for width in [320.0, 375, 402, 440, 874] {
-            for layer in [KeyboardLayer.letters, .numbers, .symbols] {
+            for layer in [KeyboardLayer.letters, .numbers, .symbols, .emoji] { for field in [KeyboardField.standard, .email, .url, .webSearch] {
                 let height = width > 600 ? KeyboardMetrics.compactHeight : KeyboardMetrics.regularHeight
-                let placed = keys(layer, width: width, height: height, globe: true)
+                let placed = keys(layer, width: width, height: height, globe: true, field: field)
+                if let space = placed.first(where: { $0.action == .space }) {
+                    TestSupport.expect(space.frame.width >= 2.5 * KeyboardMetrics(width: width, height: height).letterWidth,
+                                       "space bar too narrow in \(field) at \(width)")
+                }
                 for key in placed {
                     TestSupport.expect(key.frame.x >= 0 && key.frame.maxX <= width + 1e-9, "\(key.action) outside at \(width)")
                     TestSupport.expect(key.frame.y >= 0 && key.frame.maxY <= height + 1e-9, "\(key.action) below at \(width)")
@@ -97,7 +111,7 @@ enum KeyboardLayoutTests {
                         TestSupport.expect(!overlaps, "\(first.action) overlaps \(second.action) at \(width)")
                     }
                 }
-            }
+            } }
         }
     }
 
@@ -335,5 +349,112 @@ extension KeyboardLayoutTests {
         TestSupport.expectEqual(TapDecoder.outputIndex(of: .character("q")), 16)
         TestSupport.expectEqual(others.filter { $0 != .space }.map { TapDecoder.outputIndex(of: $0) },
                                 Array(repeating: nil, count: others.count - 1))
+    }
+
+    /// Owner decision 4: only the bottom row differs between fields; the letter rows, and the number and symbol layers
+    /// (but for the emoji key), are the same everywhere, so the keyboard keeps its shape in every app.
+    private static func testFieldsChangeOnlyTheBottomRow() {
+        for width in [375.0, 402] {
+            for globe in [false, true] {
+                let standard = keys(.letters, width: width, globe: globe)
+                let bottom = standard.map(\.frame.y).max()!
+                for field in [KeyboardField.email, .url, .webSearch] {
+                    let other = keys(.letters, width: width, globe: globe, field: field)
+                    TestSupport.expectEqual(other.filter { $0.frame.y != bottom }, standard.filter { $0.frame.y != bottom })
+                    TestSupport.expect(other.filter { $0.frame.y == bottom }.allSatisfy { $0.frame.height == standard.last!.frame.height },
+                                       "bottom row height in \(field)")
+                    for layer in [KeyboardLayer.numbers, .symbols] {
+                        let plain = keys(layer, width: width, globe: globe).filter { $0.action != .layer(.emoji) }
+                        let fieldKeys = keys(layer, width: width, globe: globe, field: field)
+                        TestSupport.expectEqual(fieldKeys.filter { $0.frame.y != bottom }, plain.filter { $0.frame.y != bottom })
+                        TestSupport.expectEqual(bottomRow(fieldKeys).map(\.action).filter { $0 != .layer(.emoji) },
+                                                bottomRow(plain).map(\.action))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apple's email keyboard: "@" and "." between a narrower space bar and return, letter-key wide. They type
+    /// themselves, and the return key keeps its width.
+    private static func testEmailFieldsHaveAtAndPeriodBesideTheSpaceBar() {
+        for globe in [false, true] {
+            let row = bottomRow(keys(.letters, width: 375, globe: globe, field: .email))
+            let expected: [KeyAction] = [.layer(.numbers)] + (globe ? [.nextKeyboard] : []) + [.space, .character("@"), .character("."), .returnKey]
+            TestSupport.expectEqual(row.map(\.action), expected)
+            let metrics = KeyboardMetrics(width: 375, height: KeyboardMetrics.regularHeight)
+            for key in row where key.action == .character("@") || key.action == .character(".") {
+                TestSupport.expectEqual(key.frame.width, metrics.letterWidth)
+                TestSupport.expectEqual(key.label, key.action == .character("@") ? "@" : ".")
+            }
+            TestSupport.expectEqual(row.last!.frame.width, metrics.returnWidth)
+            TestSupport.expect(row.first { $0.action == .space }!.frame.width
+                               < bottomRow(keys(.letters, width: 375, globe: globe)).first { $0.action == .space }!.frame.width,
+                               "email space bar is not narrower")
+        }
+    }
+
+    /// Apple's URL keyboard: ".", "/" and ".com" share the space bar's room (there is none), equally wide.
+    private static func testURLFieldsHaveDomainKeysInPlaceOfTheSpaceBar() {
+        for globe in [false, true] {
+            let row = bottomRow(keys(.letters, width: 375, globe: globe, field: .url))
+            let expected: [KeyAction] = [.layer(.numbers)] + (globe ? [.nextKeyboard] : [])
+                + [.character("."), .character("/"), .character(KeyboardLayout.dotCom), .returnKey]
+            TestSupport.expectEqual(row.map(\.action), expected)
+            let domain = row.filter { if case .character = $0.action { return true }; return false }
+            TestSupport.expectEqual(domain.map(\.label), [".", "/", ".com"])
+            TestSupport.expect(domain.allSatisfy { abs($0.frame.width - domain[0].frame.width) < 1e-9 }, "unequal domain keys")
+            TestSupport.expect(domain[0].frame.width > KeyboardMetrics(width: 375, height: 216).letterWidth * 1.5, "domain keys too narrow")
+        }
+        // Web search fields (a browser's address bar) keep the space bar, with "." beside it.
+        let search = bottomRow(keys(.letters, field: .webSearch)).map(\.action)
+        TestSupport.expectEqual(search, [.layer(.numbers), .layer(.emoji), .space, .character("."), .returnKey])
+    }
+
+    /// The emoji key sits between the layer key (and the globe, when shown) and the space bar, on every layer, as wide
+    /// as the layer key; email and URL fields have none.
+    private static func testTheEmojiKeyIsBesideTheSpaceBarWhereItBelongs() {
+        TestSupport.expect(KeyboardField.standard.showsEmojiKey && KeyboardField.webSearch.showsEmojiKey, "emoji key missing")
+        TestSupport.expect(!KeyboardField.email.showsEmojiKey && !KeyboardField.url.showsEmojiKey, "emoji key in email or URL")
+        for layer in [KeyboardLayer.letters, .numbers, .symbols] {
+            for globe in [false, true] {
+                let row = bottomRow(keys(layer, width: 375, globe: globe))
+                let index = row.firstIndex { $0.action == .layer(.emoji) }!
+                TestSupport.expectEqual(index, globe ? 2 : 1)
+                TestSupport.expectEqual(row[index + 1].action, .space)
+                TestSupport.expectEqual(row[index].frame.width, row[0].frame.width)
+                for field in [KeyboardField.email, .url] {
+                    TestSupport.expect(!keys(layer, globe: globe, field: field).contains { $0.action == .layer(.emoji) },
+                                       "emoji key in \(field)")
+                }
+            }
+        }
+    }
+
+    /// The emoji panel keeps the keyboard's height: its grid fills the area above the bottom row, whose layer key
+    /// ("ABC", back to letters), globe and delete sit where they are on the letters layer, and the jump bar takes the
+    /// rest of the bottom, so every point of the panel is the grid's, the jump bar's or a key's.
+    private static func testTheEmojiLayerHasItsBottomKeysAndPanel() {
+        for (width, height) in [(375.0, KeyboardMetrics.regularHeight), (402, KeyboardMetrics.regularHeight), (874, KeyboardMetrics.compactHeight)] {
+            for globe in [false, true] {
+                let metrics = KeyboardMetrics(width: width, height: height)
+                let emoji = keys(.emoji, width: width, height: height, globe: globe)
+                let letters = keys(.letters, width: width, height: height, globe: globe)
+                TestSupport.expectEqual(emoji.map(\.action), [.layer(.letters)] + (globe ? [.nextKeyboard] : []) + [.delete])
+                TestSupport.expectEqual(emoji[0].label, "ABC")
+                TestSupport.expectEqual(emoji[0].frame, key(.layer(.numbers), in: letters).frame)
+                if globe { TestSupport.expectEqual(emoji[1].frame, key(.nextKeyboard, in: letters).frame) }
+                TestSupport.expectEqual(emoji.last!.frame.maxX, key(.delete, in: letters).frame.maxX)
+                TestSupport.expectEqual(emoji.last!.frame.y, metrics.rowY(3))
+                let grid = KeyboardLayout.emojiGridFrame(metrics: metrics)
+                let jump = KeyboardLayout.emojiJumpBarFrame(metrics: metrics, showsGlobe: globe)
+                TestSupport.expectEqual(grid.y, 0)
+                TestSupport.expectEqual(grid.width, width)
+                TestSupport.expectEqual(jump.y, grid.maxY)
+                TestSupport.expectEqual(jump.maxY, height)
+                TestSupport.expect(jump.x > emoji[globe ? 1 : 0].frame.maxX && jump.maxX < emoji.last!.frame.x, "jump bar overlaps a key")
+                TestSupport.expect(jump.width > 120, "jump bar too narrow at \(width)")
+            }
+        }
     }
 }
