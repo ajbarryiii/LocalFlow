@@ -7,8 +7,7 @@ enum ShortcutStoreTests {
     static func run() {
         testStorageKeysNeverChange()
         testEmptyDefaultsWriteBackHoldAndToggle()
-        testLegacyPresetMigration()
-        testStoredBindingsWinOverLegacyPreset()
+        testStoredBindingsWinOverDefaults()
         testStoredCustomBindingIsRemembered()
         testUnreadableValues()
         testNormalizationIsWrittenBack()
@@ -39,7 +38,6 @@ enum ShortcutStoreTests {
         TestSupport.expectEqual(ShortcutRole.allCases.map(\.savedCustomStorageKey),
                                 ["saved_hold_custom_shortcut", "saved_toggle_custom_shortcut",
                                  "saved_copy_again_custom_shortcut", "saved_prompt_custom_shortcut"])
-        TestSupport.expectEqual(ShortcutStore.legacyPresetKey, "hotkey_option")
     }
 
     private static func testEmptyDefaultsWriteBackHoldAndToggle() {
@@ -56,33 +54,16 @@ enum ShortcutStoreTests {
         }
     }
 
-    private static func testLegacyPresetMigration() {
-        for (legacy, preset) in [("rightOption", ShortcutPreset.rightOption), ("f5", .f5), ("fn", .fnKey), ("unknown", .fnKey)] {
-            TestSupport.withDefaults { defaults in
-                defaults.set(legacy, forKey: "hotkey_option")
-                let loaded = ShortcutStore(defaults: defaults).load()
-                TestSupport.expectEqual(loaded.configuration.hold, preset.binding)
-                TestSupport.expectEqual(loaded.configuration.toggle, preset.binding.withAddedModifiers(.command))
-                TestSupport.expectEqual(loaded.configuration.copyAgain, .disabled)
-                TestSupport.expectEqual(loaded.configuration.prompt, .disabled)
-                TestSupport.expectEqual(stored("hold_shortcut", in: defaults), preset.binding)
-                TestSupport.expectEqual(stored("toggle_shortcut", in: defaults), preset.binding.withAddedModifiers(.command))
-                TestSupport.expectEqual(defaults.string(forKey: "hotkey_option"), legacy)
-            }
-        }
-    }
-
-    private static func testStoredBindingsWinOverLegacyPreset() {
+    private static func testStoredBindingsWinOverDefaults() {
         TestSupport.withDefaults { defaults in
-            defaults.set("rightOption", forKey: "hotkey_option")
-            defaults.set(Data(#"{"keyCode":63,"keyDisplay":"Fn","modifiers":0,"kind":"modifierKey","preset":"fn"}"#.utf8),
+            defaults.set(Data(#"{"keyCode":61,"keyDisplay":"Right Option","modifiers":0,"kind":"modifierKey","preset":"rightOption"}"#.utf8),
                          forKey: "hold_shortcut")
             defaults.set(Data(#"{"keyCode":0,"keyDisplay":"Disabled","modifiers":0,"kind":"disabled"}"#.utf8),
                          forKey: "toggle_shortcut")
             defaults.set(Data(#"{"keyCode":96,"keyDisplay":"F5","modifiers":0,"kind":"key","preset":"f5"}"#.utf8),
                          forKey: "prompt_shortcut")
             let loaded = ShortcutStore(defaults: defaults).load()
-            TestSupport.expectEqual(loaded.configuration.hold, ShortcutPreset.fnKey.binding)
+            TestSupport.expectEqual(loaded.configuration.hold, ShortcutPreset.rightOption.binding)
             TestSupport.expectEqual(loaded.configuration.toggle, .disabled)
             TestSupport.expectEqual(loaded.configuration.prompt, ShortcutPreset.f5.binding)
             TestSupport.expectEqual(loaded.savedCustom, [:])
