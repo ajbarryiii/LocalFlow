@@ -52,9 +52,6 @@ private struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var startedLaunchSession = false
-    /// Right after onboarding, Home pushes Try it once it is on screen, so the first dictation comes next and Back
-    /// leads to Home with its large title.
-    @State private var opensTryIt = false
     /// The start-session screen, mirrored from `host.bounceVisible` so it can appear without sliding up over Home.
     @State private var bounceShown = false
 
@@ -64,16 +61,11 @@ private struct RootView: View {
                 ConfigurationErrorView()
             } else if preferences.onboardingComplete || LaunchOptions.current.skipOnboarding {
                 HomeView(transcriber: host.transcriber, settings: host.settings, preferences: preferences,
-                         path: LaunchOptions.current.homePath, opensTryIt: opensTryIt)
+                         path: LaunchOptions.current.homePath)
                     .transition(.opacity)
             } else {
                 OnboardingView(transcriber: host.transcriber, step: LaunchOptions.current.onboardingStep) {
-                    // Try it is pushed only once the cross-fade has ended, so the two never overlap.
-                    withAnimation(.snappy(duration: 0.3), completionCriteria: .removed) {
-                        preferences.onboardingComplete = true
-                    } completion: {
-                        opensTryIt = true
-                    }
+                    withAnimation(.snappy(duration: 0.3)) { preferences.onboardingComplete = true }
                 }
                 .transition(.opacity)
             }

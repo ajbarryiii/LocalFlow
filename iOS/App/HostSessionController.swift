@@ -26,8 +26,6 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var microphoneRouting = MicrophoneRouting.systemChoice
     /// The bounce screen: a dictation was admitted while the app was in front (`HostSessionPolicy.showsBounce`).
     @Published var bounceVisible = false
-    /// "Try it" is on screen; only a request whose issue time is unknown uses it (`HostSessionPolicy.showsBounce`).
-    var tryItVisible = false
     /// When the app last became active after the background, nil until then (`HostSessionPolicy.showsBounce`).
     private var activeSince: Date?
 
@@ -236,14 +234,13 @@ final class HostSessionController: ObservableObject {
         set(\.level, core.level)
         set(\.isDictationInProgress, core.isDictationInProgress)
         // A request admitted while the app is in front came from the bounce (the keyboard opened the
-        // app), unless the keyboard is in "Try it", where a cover would hide the text field.
+        // app), unless Start was tapped in the Dictionary editor, where a cover would close its sheet.
         let isForeground = UIApplication.shared.applicationState != .background
         if let current = core.current, core.isDictationInProgress, current.requestID != lastAdmittedRequestID {
             lastAdmittedRequestID = current.requestID
             // Read in the pass that admitted it, so the intent is still its record.
             let issuedAt = store.flatMap { HostSessionPolicy.recordIssuedAt($0.readIntent().value, requestID: current.requestID) }
-            if HostSessionPolicy.showsBounce(isForeground: isForeground, tryItVisible: tryItVisible, issuedAt: issuedAt,
-                                             activeSince: activeSince) {
+            if HostSessionPolicy.showsBounce(isForeground: isForeground, issuedAt: issuedAt, activeSince: activeSince) {
                 bounceVisible = true
             }
         }

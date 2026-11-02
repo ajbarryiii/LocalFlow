@@ -4,7 +4,7 @@ import UIKit
 /// The Wilderness Labs palette (wilderness-labs-site, `public/css/style.css`): forest night, aurora green,
 /// glacier cyan, coral and ember. The app is always dark, as the site is (`UIUserInterfaceStyle`). As on the keyboard
 /// and the Live Activity, the controls are monochrome: white ink on a near-black pill with a hairline edge, and the
-/// brand colours only on small dots and glyphs that mark a state (ARCHITECTURE.md, "Keyboard look").
+/// brand colours only on small dots, glyphs and switches that mark a state (ARCHITECTURE.md, "Keyboard look").
 enum Theme {
     static let aurora = Color(red: 109 / 255, green: 255 / 255, blue: 168 / 255)
     /// Loading and preparing states, as on the site.
@@ -20,8 +20,9 @@ enum Theme {
     static let edge = Color(red: 0.43, green: 0.43, blue: 0.44)
     /// Secondary ink, as the Live Activity's.
     static let secondaryInk = Color.white.opacity(0.6)
-    /// A switch that is on: neutral, so the only colour in a list is state.
-    static let toggle = Color(white: 0.62)
+    /// A switch that is on: aurora, the keyboard's "session ready", a shade deeper so the white knob stays crisp and on
+    /// reads at a glance beside off.
+    static let toggle = Color(red: 63 / 255, green: 209 / 255, blue: 122 / 255)
     /// A state's dot without an accent: not prepared yet, or cancelled.
     static let neutralDot = Color.white.opacity(0.4)
 

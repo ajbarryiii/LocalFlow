@@ -127,7 +127,7 @@ enum FieldProfileTests {
         let messages = [measured([0, 0, 2, 0, 0, 1, 1, 2, 2]), measured([0, 0, 2, 0, 0, 1, 1, 2, 1])]   // light, dark
         let others: [(String, FieldTraits)] = [
             ("Messages To:", measured([0, 0, 2, 0, 0, 2, 2, 2, 0])),
-            ("UITextView and UITextField defaults, SwiftUI Try it fields", measured([0, 0, 2, 0, 0, 2, 2, 2, 2])),
+            ("UITextView and UITextField defaults, SwiftUI text fields", measured([0, 0, 2, 0, 0, 2, 2, 2, 2])),
             ("UITextView without autocorrection or smart punctuation", measured([0, 0, 2, 1, 1, 1, 1, 2, 2])),
             ("WebKit textarea and contenteditable", measured([0, 0, 2, 2, 0, 2, 2, 2, 0])),
             ("Safari address", measured([10, 1, 0, 1, 0, 1, 1, 2, 2])),

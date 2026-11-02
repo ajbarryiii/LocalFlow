@@ -155,34 +155,22 @@ enum HostSessionPolicyTests {
                            "in the background once the dictation ended")
     }
 
-    /// A Start tapped in this app's own fields (Try it, the Dictionary editor) keeps its field, but a Start tapped in
-    /// another app opens LocalFlow on the start-session screen, even when Try it was left on screen (the end of
-    /// onboarding). A request issued before the app was active came from another app.
+    /// A Start tapped in this app's own field (the Dictionary editor) keeps its field, but a Start tapped in another app
+    /// opens LocalFlow on the start-session screen, even with the editor left on screen. A request issued before the app
+    /// was active came from another app; one whose issue time is unknown raises the screen.
     private static func testBounceShowsOnlyForAStartMadeInAnotherApp() {
-        func shows(foreground: Bool = true, tryIt: Bool, issuedAt: Date?, activeSince: Date?) -> Bool {
-            HostSessionPolicy.showsBounce(isForeground: foreground, tryItVisible: tryIt, issuedAt: issuedAt,
-                                          activeSince: activeSince)
+        func shows(foreground: Bool = true, issuedAt: Date?, activeSince: Date?) -> Bool {
+            HostSessionPolicy.showsBounce(isForeground: foreground, issuedAt: issuedAt, activeSince: activeSince)
         }
-        TestSupport.expect(!shows(tryIt: true, issuedAt: now, activeSince: now - 30), "Try it in front, a Start made in it")
-        TestSupport.expect(!shows(tryIt: true, issuedAt: now, activeSince: now - 0.2),
-                           "Try it, a Start made in it right after a return")
-        TestSupport.expect(shows(tryIt: true, issuedAt: now - 2, activeSince: now),
-                           "Try it left in the background, the request admitted on the return")
-        TestSupport.expect(shows(tryIt: true, issuedAt: now - 2, activeSince: nil),
-                           "Try it, admitted before the return is active")
-        TestSupport.expect(!shows(tryIt: true, issuedAt: nil, activeSince: now - 30), "Try it, the request's time unknown")
-        TestSupport.expect(!shows(tryIt: false, issuedAt: now, activeSince: now - 30),
-                           "the Dictionary editor in front, a Start made in it")
-        TestSupport.expect(shows(tryIt: false, issuedAt: now, activeSince: nil), "Home, admitted before the return is active")
-        TestSupport.expect(shows(tryIt: false, issuedAt: nil, activeSince: now - 30), "Home, the request's time unknown")
+        TestSupport.expect(!shows(issuedAt: now, activeSince: now - 30), "the Dictionary editor in front, a Start made in it")
+        TestSupport.expect(!shows(issuedAt: now, activeSince: now - 0.2), "the editor, a Start made in it right after a return")
+        TestSupport.expect(shows(issuedAt: now, activeSince: nil), "Home, admitted before the return is active")
+        TestSupport.expect(shows(issuedAt: nil, activeSince: now - 30), "Home, the request's time unknown")
         for activeSince in [now, nil] {
-            TestSupport.expect(shows(tryIt: false, issuedAt: now - 2, activeSince: activeSince), "Home, from another app")
+            TestSupport.expect(shows(issuedAt: now - 2, activeSince: activeSince), "Home, from another app")
         }
         for activeSince in [now - 30, now, nil] {
-            TestSupport.expect(!shows(foreground: false, tryIt: false, issuedAt: now - 2, activeSince: activeSince),
-                               "in the background")
-            TestSupport.expect(!shows(foreground: false, tryIt: true, issuedAt: now - 2, activeSince: activeSince),
-                               "Try it, in the background")
+            TestSupport.expect(!shows(foreground: false, issuedAt: now - 2, activeSince: activeSince), "in the background")
         }
     }
 

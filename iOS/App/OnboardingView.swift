@@ -5,7 +5,7 @@ enum OnboardingStep: Int, CaseIterable {
 }
 
 /// First run: the privacy promise, microphone permission, enabling the keyboard, and preparing the model. It ends on
-/// Try it, so the first dictation is the next thing a person does.
+/// Home.
 struct OnboardingView: View {
     @EnvironmentObject private var host: HostSessionController
     @ObservedObject var transcriber: ParakeetTranscriber
@@ -219,7 +219,7 @@ struct OnboardingView: View {
                         .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("onboarding.finish")
                 case .ready, .unavailable:
-                    Button("Try it") { onFinish() }
+                    Button("Done") { onFinish() }
                         .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("onboarding.finish")
                 }

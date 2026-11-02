@@ -909,7 +909,7 @@ transcripts or other user data.
 - **UI (SwiftUI):**
   - Look: the keyboard island's language ([Keyboard look](#keyboard-look)).
     Actions are near-black pills (#09090A) with a grey hairline and white
-    ink; row glyphs are plain; switches are a neutral grey; the brand
+    ink; row glyphs are plain; a switch that is on is aurora green; the brand
     colours mark state only, on small dots and glyphs (aurora ready, coral
     recording, glacier waiting, ember warning). The ridge mark (`RidgeMark`)
     and the recording wave (`DotWave`) are compiled into the app. Geist Serif
@@ -928,9 +928,7 @@ transcripts or other user data.
     progress and an estimate from the last preparation; the user can finish
     onboarding while it continues. One line under each headline; no step
     glyph on a small iPhone or at accessibility sizes. The main pill sits at
-    one height on every step. Finishing cross-fades to Home, which pushes Try
-    it once the fade has ended, so the first dictation comes next and Back
-    leads to Home's large title.
+    one height on every step. Finishing cross-fades to Home.
   - Home: the session card as the Live Activity's Lock Screen shows a
     session (with no session, the Start pill with the mark on the
     background; during one, a card with the state, the idle time left beside
@@ -940,7 +938,7 @@ transcripts or other user data.
     words get the full width, and a pill's glyph gives way where its words
     would not fit on one line), the speech model
     with a state dot or a check once ready and its preparation progress
-    inside the row, links to Try it, keyboard setup and
+    inside the row, links to keyboard setup and
     Dictionary, session length, the dictation settings, "Use iPhone
     microphone", a "Keyboard" section with "Autocorrect", "Soft key edges"
     and "Typing haptics" (a lock marks those that need Full Access, at the
@@ -948,11 +946,6 @@ transcripts or other user data.
     footer) and
     "Left-handed", and links to Diagnostics, Report a bug and the public
     privacy policy (opened in the browser only on a tap).
-  - Try it: the Start → speak → Stop cue and one field first, then, folded
-    under "More practice", the destination-binding test with a second field
-    and a multi-line cursor practice field with invented text; with both
-    fields shown, a letter marks each (A, B). The text lives in view state
-    only.
   - Bounce screen: the keyboard's island, large, with the phase in one word
     (`BouncePhase`): "Starting" until the dictation is `recording` (input is
     flowing), then "Listening" with the voice's wave, the coral recording dot
@@ -979,11 +972,12 @@ transcripts or other user data.
     arrives; it scrolls when it does not fit (large text on a small iPhone)
     while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
-    It is not shown for a Start tapped in the app's own fields (Try it, the
-    Dictionary editor), where it would hide the field or close the editor and
-    lose its draft; a Start in another app shows it even with Try it left on screen:
-    a request issued before the app was last active again came from another
-    app (`HostSessionPolicy.showsBounce`).
+    It is not shown for a Start tapped in the app's own field (the
+    Dictionary editor), where it would close the editor and lose its draft;
+    a Start in another app shows it even with the editor left on screen:
+    a request issued before the app was last active came from another
+    app, and one whose issue time is unknown shows it
+    (`HostSessionPolicy.showsBounce`).
   - Motion is quick (short springs); with Reduce Motion every change is a
     cross-fade or instant, and nothing loops.
   - Diagnostics: the trackpad sensitivity and acceleration sliders, the
@@ -3230,8 +3224,8 @@ app reads only the count. The models are fixed.
   and fresh and stale URL hints. The Mac microphone is never used.
 - With the synthetic microphone, Sol through computer use or a person at the
   simulator covers: enabling the keyboard and Full Access, first-run
-  onboarding, the bounce and adoption, field binding (Try it field A, then
-  field B mid-request; another app opened mid-request), cancel, the host
+  onboarding, the bounce and adoption, field binding (Reminders' title, then
+  its notes mid-request; another app opened mid-request), cancel, the host
   terminated during recording, and idle expiry.
 - The simulator has no Neural Engine; it runs the encoder on the CPU and
   prepares it on every cold launch (about 72 s and 840 MB), so simulator
@@ -3248,9 +3242,9 @@ merge (AGENTS.md).
   through the universal link in an App Store or opted-in dev build (it opens
   LocalFlow, never Safari, and with the association missing the keyboard
   shows "Open LocalFlow");
-  session keep-alive and idle expiry; field binding (dictate into Try it field
-  A, switch to field B mid-request: no auto-insert into B, and the chip
-  appears; start in one app, open another before the transcript is ready: no
+  session keep-alive and idle expiry; field binding (dictate into Reminders'
+  title, switch to its notes mid-request: no auto-insert into the notes, and
+  the chip appears; start in one app, open another before the transcript is ready: no
   auto-insert there, only the chip; let a dictation reach the maximum
   duration in one field: it lands there); kill during recording; a
   phone-call interruption; a Bluetooth
@@ -3268,8 +3262,8 @@ merge (AGENTS.md).
   Engine against CPU (CPU through the self-test); no jetsam in the
   background; battery over 30 minutes, idle session against no session
   (and against Wispr Flow if installed); result cleanup after a forced kill.
-- **Keyboard** (side by side with Apple's keyboard in Try it → Cursor
-  practice): hold-to-trackpad delay; slow drags landing between each pair of
+- **Keyboard** (side by side with Apple's keyboard in Notes, in a note with
+  soft-wrapped, short and blank lines): hold-to-trackpad delay; slow drags landing between each pair of
   letters and fast swipes travelling similar distances; vertical moves across
   soft-wrapped, short and blank lines keeping the column; held delete
   switching to words; shift, caps lock, auto-capitalization, the double-space

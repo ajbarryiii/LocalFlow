@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum HomeRoute: Hashable {
-    case tryIt, keyboardSetup, dictionary, diagnostics, reportBug
+    case keyboardSetup, dictionary, diagnostics, reportBug
 }
 
 struct HomeView: View {
@@ -10,9 +10,6 @@ struct HomeView: View {
     @ObservedObject var settings: SharedSettingsModel
     @ObservedObject var preferences: AppPreferences
     @State var path: [HomeRoute]
-    /// Push Try it once Home is on screen (right after onboarding), so Home's large title is there to go back to.
-    var opensTryIt = false
-    @State private var openedTryIt = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -29,10 +26,6 @@ struct HomeView: View {
                 .listRowBackground(Theme.cardBackground)
 
                 Section {
-                    NavigationLink(value: HomeRoute.tryIt) {
-                        RowLabel(title: "Try it", symbol: "text.cursor")
-                    }
-                    .accessibilityIdentifier("home.tryIt")
                     NavigationLink(value: HomeRoute.keyboardSetup) {
                         RowLabel(title: "Keyboard setup", symbol: "keyboard")
                     }
@@ -49,6 +42,8 @@ struct HomeView: View {
                     }
                     .accessibilityHint("A session ends after this long without dictation")
                     .accessibilityIdentifier("settings.sessionLength")
+                    // Its value stays secondary ink; only the switches take the section's tint.
+                    .tint(Theme.secondaryInk)
                     Toggle("Spoken quotes and brackets", isOn: $settings.spokenDelimitersEnabled)
                     Toggle("Numbers as digits", isOn: $settings.spokenNumbersEnabled)
                     Toggle("Say “press enter” to send", isOn: $settings.pressEnterEnabled)
@@ -118,7 +113,6 @@ struct HomeView: View {
             .navigationTitle("LocalFlow")
             .navigationDestination(for: HomeRoute.self) { route in
                 switch route {
-                case .tryIt: TryItView()
                 case .keyboardSetup: KeyboardSetupScreen()
                 case .dictionary: DictionaryView(dictionary: host.dictionary)
                 case .diagnostics: DiagnosticsView(transcriber: transcriber)
@@ -127,12 +121,6 @@ struct HomeView: View {
             }
         }
         .tint(.white)
-        // Set once onboarding's cross-fade to Home has ended, so the push never overlaps it.
-        .onChange(of: opensTryIt, initial: true) {
-            guard opensTryIt, !openedTryIt else { return }
-            openedTryIt = true
-            path.append(.tryIt)
-        }
     }
 }
 
