@@ -17,12 +17,11 @@ Everything stays on this machine. The daemon still opens no network
 connections: only the bridge talks to T3 Code's local server, and it sends
 the daemon counts, never thread titles or messages.
 
-## Protocol additions
+## Protocol
 
-New text commands on the control socket (`localflow/1`, see
-`lf_daemon::protocol`). Existing commands and replies are unchanged. As for
-every text command, an unknown, repeated, missing or malformed field is
-`error bad-request`.
+The agent link has these text commands on the control socket (`localflow/1`,
+see `lf_daemon::protocol`). As for every text command, an unknown, repeated,
+missing or malformed field is `error bad-request`.
 
 ```text
 suggest-add word=<pct>                 ok <status> outcome=queued|present|ignored
@@ -94,7 +93,7 @@ commands).
 
 ### Watch lines
 
-Watch lines gain optional fields after `mic=` and `level=`, in this order,
+Watch lines carry optional fields after `mic=` and `level=`, in this order,
 each only when its value is above zero:
 
 ```text
@@ -110,7 +109,7 @@ commands do not carry these fields.
 
 ## Waybar
 
-`watch --waybar` keeps its classes, glyphs and texts, with these additions:
+`watch --waybar` adds to its usual classes, glyphs and texts:
 
 - **While idle, loading or without a microphone:**
   - A live report with `agent-approval` adds the class `agent-approval`;
@@ -157,7 +156,7 @@ localflowctl agents clear
   - It prints `loaded <n>, skipped <n>`.
 - **`agents t3`** is the T3 Code bridge (below). It runs until killed.
 
-New exit code: 8, the T3 token file is missing, unreadable or unsafe.
+Exit code 8: the T3 token file is missing, unreadable or unsafe.
 
 ## T3 Code bridge (`localflowctl agents t3`)
 

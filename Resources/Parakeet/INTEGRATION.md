@@ -1,6 +1,6 @@
 # Bundled LocalFlow speech model
 
-LocalFlow is the ternary derivative of NVIDIA Parakeet v2 from the completed `main-M1-P2-lr5e-4` training run from
+LocalFlow's model, kea-t, is the ternary derivative of NVIDIA Parakeet v2 from the completed `main-M1-P2-lr5e-4` training run from
 `ajbarryiii/wilderness-labs-stt`, selected at step 250,000. Its packed export
 SHA-256 is `a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503`.
 The full development-set mean WER reported after rebuilding that export is
@@ -42,8 +42,8 @@ Preparation loads the 15-second encoder function on the dictation queue and
 runs a synthetic zero-input prediction, without accessing the microphone or
 user content.
 Settings and the menu show preparation status. First-time device preparation
-may still take several minutes; dictation submitted before it finishes waits
-behind preparation. The runtime and loaded models stay in memory for the
+takes a minute or two (about 90 seconds on an M1 Pro); dictation submitted
+before it finishes waits behind preparation. The runtime and loaded models stay in memory for the
 session, so subsequent dictations reuse them. The model's file size is not its runtime RAM footprint: loaded models
 and working buffers require additional memory. Recordings are split into
 15-second chunks that overlap by 2 seconds, each padded to the 15-second
@@ -66,7 +66,7 @@ app now runs only the 15-second function), and
 extends the shared folded relative-position tables from 188 to 376 encoder
 frames. Shorter functions slice the same centre positions, whose values depend
 only on position. The upstream accuracy gates did not cover the 30-second
-function; its synthetic smoke validation is in `Benchmarks/ParakeetStartup.md`.
+function, which the app never loads.
 
 The bundle model ID is `localflow`, with display name LocalFlow and
 `kea-t` recorded as its base model. The build can relabel a
@@ -88,48 +88,14 @@ into `Contents/Resources/Parakeet` before the existing signing step.
 `LICENSE` and `NOTICE` cover the modified CC-BY-4.0 model;
 `Software-LICENSE` covers the adapted MIT inference code.
 
-Local validation on 2026-10-04: full Swift type-check and deterministic
-tests, including token boundaries, duration-zero progress, symbol caps,
-cancellation, native blob bounds, silent features, and
-synthetic stereo AIFF resampling through EOF. The separate synthetic speech
-smoke check exercises the converted final model without launching LocalFlow
-or requesting microphone access.
+Deterministic tests cover the runtime without the model: only the 15-second
+function is loaded and warmed, preparation is idempotent and reused by
+transcription, a failed load or warm-up is retried, and recordings of any
+length are split into 15-second chunks with a 2-second overlap. They also
+cover token boundaries, duration-zero progress, symbol caps, cancellation,
+native blob bounds, silent features, and synthetic stereo AIFF resampling
+through EOF. Startup timing on a shared M1 Pro is in
+`Benchmarks/ParakeetStartup.md`.
 
-All four encoder buckets transcribed the invented phrase exactly. An
-18-second synthetic recording with the phrase in both chunks also matched
-exactly. First-use smoke runs took 98–109 seconds including model preparation;
-the subsequent 18-second run completed in about one second. These are
-functional checks, not a controlled performance benchmark or real-world
-accuracy evaluation.
-
-The next three paragraphs describe earlier runtimes that loaded more than
-one function; they are superseded by the 15-second-only runtime (see
-`Benchmarks/ParakeetStartup.md`) and kept as a record.
-
-Previous all-function startup validation on the same Mac: preparing all four buckets
-using the existing Core ML device cache took 2.605 seconds, repeating
-preparation took less than a millisecond, and the synthetic 18-second
-two-chunk recording still matched exactly in 0.140 seconds after preparation.
-The guarded process group peaked at about 153 MiB RSS; this does not include
-all memory used by system Core ML/Neural Engine services. A fresh device cache
-was not measured in this follow-up.
-
-The earlier 15-second-only startup was tested by the user in an isolated
-app: approximately 90 seconds to readiness, with only 10–15 seconds of setup.
-The Core ML comparison and synthetic short/long transcript checks are documented
-in `Benchmarks/ParakeetStartup.md`.
-
-The 4/8/15/30-second conversion matched every synthetic fixture, including an
-18-second recording in one b30 pass and a 33-second recording as b30+b4.
-First-use readiness was 102.51 seconds with b15 only; all functions were ready
-by 421.24 seconds.
-
-Deterministic tests verify that only the 15-second function is loaded and
-warmed, that preparation is idempotent and reused by transcription, that a
-failed load or warm-up is retried, and that recordings of any length are
-split into 15-second chunks with a 2-second overlap.
-
-Before merge, manually test microphone dictation, global shortcuts,
-Accessibility paste, cancellation, local retries, and offline operation
-in the built app. These app-level checks remain pending; the local build is
-ad hoc signed and has not been notarized or released.
+Microphone dictation, global shortcuts, Accessibility paste, cancellation,
+local retries and offline operation are checked by hand in a built app.

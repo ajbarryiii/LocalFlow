@@ -10,6 +10,10 @@ that architecture unless the user explicitly approves a migration.
 - `Sources/AppState.swift`: central pipeline orchestration and shared state.
 - `Sources/AudioRecorder.swift`: microphone capture and audio conversion.
 - `Sources/Parakeet/`: bundled local speech recognition and model preparation.
+- `Sources/Dictionary/`: the custom dictionary (word boosting, casing,
+  correction suggestions), shared with the iOS app. Its contract is
+  `docs/dictionary/DESIGN.md`, with pinned interpretations in
+  `docs/dictionary/DESIGN-pins.md`.
 - `Sources/LocalDictationCore.swift`: deterministic voice macros and commands.
 - `Sources/ShortcutCore/`: shortcut models, matching, and session behavior.
 - `Sources/PipelineHistoryStore.swift`: local pipeline history.
@@ -19,12 +23,23 @@ that architecture unless the user explicitly approves a migration.
 - `Tests/`: dependency-free executable tests.
 - `.github/workflows/check.yml`: pull-request verification: `make check`
   (macOS), `make -C iOS check` (iOS), and the Linux commands below.
-- `.github/workflows/release.yml`: semver-tagged production release.
-- `.github/workflows/dev-release.yml`: signed development release from `main`.
-- `linux/`: Linux (NixOS, Hyprland) implementation in Rust. It is a separate
-  Cargo workspace that shares no build with the macOS app; see
-  `linux/PLAN.md`. The Rust build is approved for `linux/` only. The macOS
-  app stays Swift with `swiftc` and Make.
+- `.github/workflows/release.yml`: production release for `vX.Y.Z` tags. It
+  has never produced a release: CI has no model bundle, so it stops at
+  `make release-preflight`. macOS betas are built and published by hand; see
+  `.agents/skills/localflow-release/SKILL.md`.
+- `iOS/`: the iPhone prototype, a custom keyboard with dictation and its
+  containing app, built with `swiftc` and its own Makefile. `iOS/README.md`
+  covers building and `make -C iOS check`; `iOS/ARCHITECTURE.md` is the
+  contract between its components. It compiles the shared Swift in
+  `Sources/Parakeet/`, `Sources/Dictionary/` and a few other `Sources/` files.
+- `linux/`: Linux implementation in Rust for Wayland desktops and X11
+  (developed on NixOS and Hyprland). It is a separate Cargo workspace that
+  shares no build with the macOS app, only the test vectors in
+  `linux/testdata/`; see `linux/README.md`. The Rust build is approved for
+  `linux/` only. The macOS app stays Swift with `swiftc` and Make.
+- `docs/`: the iOS support and privacy pages (`docs/README.md`), the
+  dictionary contract (`docs/dictionary/`) and the word-boosting experiments
+  behind it (`docs/word-boosting.md`).
 
 ## Linux verification
 
@@ -84,7 +99,9 @@ git diff --check
 `make check` performs a full Swift type-check, compiles and runs deterministic
 tests, validates plist files, and parses repository shell scripts and YAML.
 It also fails if any `linux/testdata/*.json` vectors file is not referenced by
-name from both `Tests/` and `linux/crates/`.
+name from both `Tests/` and `linux/crates/`. Changes under `iOS/`, or to the
+shared Swift it compiles, also need `make -C iOS check`; changes under
+`linux/` need the Linux commands above.
 
 A full app build is usually unnecessary. When a compile-and-bundle check is
 material to the change, use:

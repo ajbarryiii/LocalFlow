@@ -13,7 +13,13 @@
 ---
 
 A native macOS menu-bar dictation app using the bundled [kea-t](https://huggingface.co/rajb3/kea-t)
-English speech model, derived from NVIDIA Parakeet v2. This fork runs speech recognition on the Mac, and contains code for linux and iOS versions (if the App store ever lets it in). Requires no API key, provider account, network transcription, LLM cleanup, translation, Edit Mode, or screenshot/app context capture.
+English speech model, derived from NVIDIA Parakeet v2. Speech recognition
+runs on the Mac. There is no API key, provider account, network
+transcription, LLM cleanup, translation, Edit Mode or screen capture.
+
+The repository also holds [LocalFlow for Linux](linux/README.md), which is
+released separately (`linux-v*` tags), and a prototype iPhone keyboard with
+dictation ([iOS/README.md](iOS/README.md)).
 
 Requires an **Apple Silicon Mac running macOS 26 or later**. Other devices
 are not supported by this model bundle yet. The app and model are about
@@ -31,12 +37,18 @@ are not supported by this model bundle yet. The app and model are about
 4. Dictate into any text field. LocalFlow transcribes locally and pastes at
    the cursor, optionally restoring the previous clipboard.
 
+New on `main` after 2.1.8, not yet in a release: a dictation placed inside
+existing text is fitted to it. Just before pasting, LocalFlow reads up to 16
+characters on each side of the cursor (never from password fields),
+lowercases a first word that continues the sentence, and drops final
+punctuation the following text makes redundant. Nothing read is kept.
+
 An optional setting, off by default, lets you double-tap Hold to Talk (tap,
 then press and hold again within 0.4 seconds) to dictate in prompt mode;
 while it is on, holds shorter than 0.3 seconds are discarded.
 
 The model prepares in the background at startup and stays in memory for the
-session. First device preparation can take several minutes; Settings and the
+session. First device preparation can take a minute or two; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
 Recordings use chunks of up to 15 seconds. Consecutive chunks overlap by 2
 seconds and are joined on a word both heard, so chunk edges do not add sentence
@@ -54,6 +66,10 @@ labels, units and ranges (“step 3”, “5 GB”). Turn it off in Settings.
 The Dictionary (Settings → Dictionary) helps the recognizer with names and
 technical terms. Entries bias decoding toward their words, each entry has its
 own strength, and entries containing capitals are written exactly as entered.
+A word can be limited to chosen apps; a dictation uses the words for every
+app plus those of the app in front when recording starts. LocalFlow saves
+the name and bundle ID of each app you add, and nothing else about the apps
+you dictate into.
 A setting, on by default (turn it off in Settings → Dictionary), notices when
 you correct a word right after a dictation. For up to a minute it reads only
 the pasted text and a little of the text around it, never from password fields. When re-decoding the same
@@ -62,9 +78,7 @@ add the word. That text stays in memory and is discarded afterwards. See
 [docs/word-boosting.md](docs/word-boosting.md) for how this was chosen.
 
 The latest 20 recordings and transcripts are retained locally for playback
-and local retry. Clear or delete them from Run Log. Existing history and
-shortcut preferences remain compatible; old provider preferences and
-credentials are ignored and are not read or automatically erased.
+and local retry. Clear or delete them from Run Log.
 
 ## Build locally
 
@@ -85,7 +99,7 @@ open "build/LocalFlow Dev.app"
 Without `PARAKEET_BUNDLE_DIR` the app still builds, but without the model, so
 dictation cannot run. Release builds must include it:
 `make release-preflight PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"` fails unless the
-directory contains the bundle's `bundle.json`, and both release workflows run
+directory contains the bundle's `bundle.json`, and the release workflow runs
 it before building.
 
 The ad hoc development build may need its existing system approval refreshed
