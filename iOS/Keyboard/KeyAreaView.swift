@@ -99,10 +99,6 @@ final class KeyAreaView: UIView {
     /// Whether the view leaves a touch at this point inside it to the bar's Stop capsule below it, whose tap area
     /// reaches into the top row while dictation is starting or recording (`KeyboardMetrics.keyPointGoesToStart`).
     var yieldsTouch: (CGPoint) -> Bool = { _ in false }
-    /// The space bar's caption, as on Apple's keyboard (the keyboard's name).
-    var spaceTitle = "LocalFlow" {
-        didSet { if spaceTitle != oldValue { relabel() } }
-    }
 
     private(set) var keyLayer = KeyboardLayer.letters
     private(set) var shift = ShiftMode.off
@@ -286,7 +282,7 @@ final class KeyAreaView: UIView {
             case .delete:
                 view.configure(title: nil, symbol: "delete.left", font: wordFont, weight: symbolWeight)
             case .space:
-                view.configure(title: spaceTitle, symbol: nil, font: wordFont, weight: symbolWeight, secondary: true)
+                view.configure(title: nil, symbol: nil, font: wordFont, weight: symbolWeight)
             case .returnKey:
                 view.configure(title: returnKeyType.keyTitle, symbol: returnKeyType.keyTitle == nil ? "return" : nil,
                                font: wordFont, weight: symbolWeight, prominent: returnKeyType.isProminent, enabled: returnKeyEnabled)

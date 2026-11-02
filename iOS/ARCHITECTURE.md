@@ -1365,7 +1365,7 @@ every other point of the bar
   minute (never under one), so it agrees with the activity's countdown
   ("4:58" is 5 min; round 9, Opus). Bar text grows with Dynamic Type up to
   what one line of the fixed-height bar holds, and shrinks at most to 85%.
-- The space bar reads "LocalFlow".
+- The space bar is blank.
 - While the trackpad runs, the top row fades to 30% opacity and the key caps
   go blank.
 - **Appearance and accessibility.** The keyboard follows its window's
