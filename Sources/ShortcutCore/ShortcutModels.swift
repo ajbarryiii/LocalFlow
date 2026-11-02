@@ -22,16 +22,6 @@ struct ShortcutModifiers: OptionSet, Hashable, Codable {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
     }
-
-    var orderedDisplayNames: [String] {
-        var names: [String] = []
-        if contains(.command) { names.append("Cmd ⌘") }
-        if contains(.control) { names.append("Ctrl ⌃") }
-        if contains(.option) { names.append("Option ⌥") }
-        if contains(.shift) { names.append("Shift ⇧") }
-        if contains(.function) { names.append("Fn 🌐") }
-        return names
-    }
 }
 
 enum ShortcutBindingKind: String, Codable {
@@ -43,13 +33,6 @@ enum ShortcutBindingKind: String, Codable {
 enum RecordingTriggerMode: String, Codable {
     case hold
     case toggle
-
-    var badgeTitle: String {
-        switch self {
-        case .hold: return "Hold"
-        case .toggle: return "Tap"
-        }
-    }
 }
 
 enum ShortcutRole: CaseIterable {
@@ -186,10 +169,6 @@ struct ShortcutBinding: Codable, Hashable, Identifiable, Equatable {
         return parts.joined(separator: " + ")
     }
 
-    var selectionTitle: String {
-        preset?.title ?? displayName
-    }
-
     var isCustom: Bool {
         preset == nil && !isDisabled
     }
@@ -205,10 +184,6 @@ struct ShortcutBinding: Codable, Hashable, Identifiable, Equatable {
     var usesFnKey: Bool {
         guard !isDisabled else { return false }
         return keyCode == 63 || modifiers.contains(.function)
-    }
-
-    var requiresExactModifierMatch: Bool {
-        kind == .modifierKey || exactModifierKeyCodes != nil
     }
 
     func withAddedModifiers(_ extraModifiers: ShortcutModifiers) -> ShortcutBinding {
@@ -382,21 +357,6 @@ struct ShortcutBinding: Codable, Hashable, Identifiable, Equatable {
         return modifiers
     }
 
-    static func canonicalModifierKeyCode(for keyCode: UInt16) -> UInt16 {
-        switch keyCode {
-        case 54:
-            return 55
-        case 60:
-            return 56
-        case 61:
-            return 58
-        case 62:
-            return 59
-        default:
-            return keyCode
-        }
-    }
-
     static func exactModifierKeyCodes(for modifiers: ShortcutModifiers) -> Set<UInt16> {
         var keyCodes: Set<UInt16> = []
         if modifiers.contains(.command) { keyCodes.insert(55) }
@@ -420,23 +380,6 @@ struct ShortcutBinding: Codable, Hashable, Identifiable, Equatable {
     static func matchingModifierKeyCodes(for modifiers: ShortcutModifiers) -> Set<UInt16> {
         modifierKeyCodes.filter { keyCode in
             logicalModifier(forKeyCode: keyCode).map(modifiers.contains) == true
-        }
-    }
-
-    static func logicalModifierDisplayLabel(for keyCode: UInt16) -> String {
-        switch keyCode {
-        case 55:
-            return "Command"
-        case 59:
-            return "Control"
-        case 58:
-            return "Option"
-        case 56:
-            return "Shift"
-        case 63:
-            return "Fn"
-        default:
-            return "Modifier"
         }
     }
 

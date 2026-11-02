@@ -266,12 +266,6 @@ private struct SettingsCard<Content: View>: View {
     }
 }
 
-private let iso8601DayFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyy-MM-dd"
-    return formatter
-}()
-
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
 

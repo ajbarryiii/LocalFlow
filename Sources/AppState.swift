@@ -48,7 +48,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 enum AppBuild {
     static var isDevBundle: Bool {
         Bundle.main.bundleIdentifier == "com.ajbarryiii.localflow.dev" ||
-        ["LocalFlow Dev", "FreeFlow Dev"].contains(AppName.displayName)
+        AppName.displayName == "LocalFlow Dev"
     }
 }
 
@@ -204,7 +204,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
     @Published var retryingItemIDs: Set<UUID> = []
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
-    @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var hotkeyMonitoringErrorMessage: String?
     @Published var isDebugOverlayActive = false
@@ -954,14 +953,11 @@ final class AppState: ObservableObject, DictationCleanupActions {
         case .ready:
             errorMessage = nil
             debugStatusMessage = "Idle"
-            statusText = "Ready"
         case .cancelled:
             errorMessage = nil
             debugStatusMessage = "Cancelled"
-            statusText = "Cancelled"
         case .failed(let message):
             errorMessage = message
-            statusText = "Error"
         }
     }
 
@@ -969,11 +965,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
         overlayManager.dismiss()
     }
 
-    func scheduleReadyStatusAfterCancel() {
-        if !isRecording && !isTranscribing && statusText == "Cancelled" {
-            scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
-        }
-    }
+    /// A `DictationCleanupActions` step with nothing left to do: no view shows a
+    /// status that returns to "Ready" after a cancel.
+    func scheduleReadyStatusAfterCancel() {}
 
     private func scheduleShortcutStart(mode: RecordingTriggerMode) {
         cancelPendingShortcutStart(resetMode: false)
@@ -1028,7 +1022,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         hasAccessibility = PrivacyPermission.accessibility.isGranted
         guard hasAccessibility else {
             errorMessage = "\(PrivacyPermission.accessibility.settingsTitle) permission required. \(PrivacyPermission.accessibility.enableInstructions(appName: AppName.displayName))"
-            statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
             shortcutSessionController.reset()
             showPermissionAlert(.accessibility)
@@ -1067,16 +1060,9 @@ final class AppState: ObservableObject, DictationCleanupActions {
                             strongSelf.shortcutSessionController.beginManual(mode: .toggle)
                             strongSelf.applyAudioInterruptionIfNeeded()
                             strongSelf.beginRecording(triggerMode: .toggle)
-                        } else {
-                            strongSelf.statusText = "Microphone access granted. Press and hold again to record."
-                            strongSelf.scheduleReadyStatusReset(
-                                after: 2,
-                                matching: ["Microphone access granted. Press and hold again to record."]
-                            )
                         }
                     } else {
                         strongSelf.errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
-                        strongSelf.statusText = "No Microphone"
                         strongSelf.activeRecordingTriggerMode = nil
                         strongSelf.shortcutSessionController.reset()
                         strongSelf.showPermissionAlert(.microphone)
@@ -1086,7 +1072,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
             return false
         default:
             errorMessage = "Microphone permission denied. \(PrivacyPermission.microphone.enableInstructions(appName: AppName.displayName))"
-            statusText = "No Microphone"
             activeRecordingTriggerMode = nil
                 shortcutSessionController.reset()
             showPermissionAlert(.microphone)
@@ -1147,7 +1132,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         errorMessage = nil
 
         isRecording = true
-        statusText = "Starting..."
 
         // Show initializing dots only if engine takes longer than 0.2s to start
         var overlayShown = false
@@ -1176,7 +1160,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 guard let self, self.recordingAttempts.isCurrent(attempt) else { return }
                 self.cancelRecordingInitializationTimer()
                 os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
-                self.statusText = "Recording..."
                 self.clearPendingOverlayDismissToken()
                 if overlayShown {
                     self.overlayManager.transitionToRecording(
@@ -1356,7 +1339,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         lastTranscriptionStatus = ""
         debugStatusMessage = "Preparing audio"
         isTranscribing = true
-        statusText = "Preparing audio..."
         errorMessage = nil
         playAlertSound(named: "Pop")
         overlayManager.showTranscribing()
@@ -1377,7 +1359,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
                 let savedAudio = Self.saveAudioFile(from: fileURL)
                 let input = savedAudio?.fileURL ?? fileURL
                 self.transcribingAudioFileName = savedAudio?.fileName
-                self.statusText = "Transcribing locally..."
                 self.debugStatusMessage = "Transcribing audio"
                 self.transcriptionTask?.cancel()
                 self.transcriptionGeneration &+= 1
@@ -1405,18 +1386,14 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         self.recordPipelineHistoryEntry(rawTranscript: result.rawTranscript, transcript: result.output,
                                                         status: result.status, audioFileName: savedAudio?.fileName)
                         self.lastTranscript = result.output
-                        let completionStatus = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
-                        let enterStatus = "Pressed Enter"
                         DictationCleanupSteps.finishTranscription(self) {
                             self.debugStatusMessage = "Done"
                             self.clearPendingOverlayDismissToken()
                             if !self.showPostTranscriptionUpdateReminderIfNeeded() { self.overlayManager.dismiss() }
                             if result.output.isEmpty {
                                 if let id = transcription.dictationID { LocalParakeetService.shared.releaseCorrectionSession(dictationID: id) }
-                                self.statusText = result.shouldPressEnter ? enterStatus : "Nothing to transcribe"
                                 if result.shouldPressEnter { self.pressEnterWhenShortcutReleased() }
                             } else {
-                                self.statusText = completionStatus
                                 // A macro's text is pasted exactly as the user wrote it.
                                 self.pasteAtCursorWhenShortcutReleased(
                                     result.output, fitsContext: !result.usedMacro,
@@ -1438,7 +1415,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
                                                            seconds: seconds)
                             }
                         }
-                        self.scheduleReadyStatusReset(after: 3, matching: [completionStatus, "Nothing to transcribe", enterStatus])
                     } catch is CancellationError {
                         // Whoever cancelled or replaced this task already cleaned up, and a
                         // newer dictation may have begun: only an unprompted cancellation
@@ -1450,7 +1426,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
                         let message = self.formattedTranscriptionError(error)
                         self.errorMessage = message
                         DictationCleanupSteps.finishTranscription(self) {
-                            self.statusText = "Error"
                             self.overlayManager.showError(message)
                             self.lastTranscriptionStatus = "Error: \(message)"
                             self.recordPipelineHistoryEntry(rawTranscript: "", transcript: "",
@@ -1577,17 +1552,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
             if UpdateManager.shared.updateAvailable {
                 UpdateManager.shared.showUpdateAlert()
             }
-        }
-    }
-
-    private func scheduleOverlayDismissAfterFailureIndicator(after delay: TimeInterval) {
-        let dismissToken = UUID()
-        pendingOverlayDismissToken = dismissToken
-        overlayManager.showFailureIndicator()
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.pendingOverlayDismissToken == dismissToken else { return }
-            self.pendingOverlayDismissToken = nil
-            self.overlayManager.dismiss()
         }
     }
 
@@ -1877,15 +1841,5 @@ final class AppState: ObservableObject, DictationCleanupActions {
     func cancelRecordingInitializationTimer() {
         recordingInitializationTimer?.cancel()
         recordingInitializationTimer = nil
-    }
-
-    private func scheduleReadyStatusReset(after delay: TimeInterval, matching statuses: Set<String>? = nil) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            if let statuses, !statuses.contains(self.statusText) {
-                return
-            }
-            self.statusText = "Ready"
-        }
     }
 }
