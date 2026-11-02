@@ -5,61 +5,44 @@ final class PipelineHistoryStore {
     private let container: NSPersistentContainer
     private let isStoreLoaded: Bool
 
-    init(inMemory: Bool = false) {
-        let model = Self.makeModel()
-        container = NSPersistentContainer(name: "PipelineHistory", managedObjectModel: model)
+    convenience init(inMemory: Bool = false) {
+        self.init(storeURL: inMemory ? nil : Self.defaultStoreURL())
+    }
 
-        var storeURL: URL?
-        if !inMemory, let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let appName = AppName.supportDirectoryName
-            let baseURL = appSupport.appendingPathComponent(appName, isDirectory: true)
-            try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
-            storeURL = baseURL.appendingPathComponent("PipelineHistory.sqlite")
+    /// Opens the SQLite store at `storeURL`, creating it if needed; `nil` keeps history in memory.
+    init(storeURL: URL?) {
+        container = NSPersistentContainer(name: "PipelineHistory", managedObjectModel: Self.model)
+        guard let storeURL else {
+            isStoreLoaded = Self.loadInMemoryStore(into: container)
+            return
+        }
+        try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        do {
+            try Self.migrateLegacyStoreIfNeeded(at: storeURL)
+        } catch {
+            // Leave the old store for the next launch instead of letting the recovery below delete it.
+            print("[PipelineHistoryStore] Could not update the history store (\((error as NSError).domain) \((error as NSError).code)). Using in-memory history.")
+            isStoreLoaded = Self.loadInMemoryStore(into: container)
+            return
         }
 
-        if let storeURL {
-            let description = NSPersistentStoreDescription(url: storeURL)
-            description.shouldMigrateStoreAutomatically = true
-            description.shouldInferMappingModelAutomatically = true
-            container.persistentStoreDescriptions = [description]
-        } else {
-            let description = NSPersistentStoreDescription()
-            if inMemory { description.type = NSInMemoryStoreType }
-            container.persistentStoreDescriptions = [description]
+        container.persistentStoreDescriptions = [Self.sqliteDescription(at: storeURL)]
+        if Self.loadPersistentStoresSynchronously(container: container) == nil {
+            isStoreLoaded = true
+            return
         }
 
+        print("[PipelineHistoryStore] Failed to load persistent store at \(storeURL.path). Attempting recovery.")
+        Self.destroySQLiteStoreFiles(at: storeURL)
+        // Clear any partially loaded stores and reset descriptions before retrying.
+        Self.removeLoadedStores(from: container)
+        container.persistentStoreDescriptions = [Self.sqliteDescription(at: storeURL)]
         if Self.loadPersistentStoresSynchronously(container: container) == nil {
             isStoreLoaded = true
         } else {
-            if let storeURL {
-                print("[PipelineHistoryStore] Failed to load persistent store at \(storeURL.path). Attempting recovery.")
-                Self.destroySQLiteStoreFiles(at: storeURL)
-
-                // Clear any partially loaded stores and reset descriptions before retrying.
-                let coordinator = container.persistentStoreCoordinator
-                for store in coordinator.persistentStores {
-                    try? coordinator.remove(store)
-                }
-
-                let recoveryDescription = NSPersistentStoreDescription(url: storeURL)
-                recoveryDescription.shouldMigrateStoreAutomatically = true
-                recoveryDescription.shouldInferMappingModelAutomatically = true
-                container.persistentStoreDescriptions = [recoveryDescription]
-            }
-
-            if Self.loadPersistentStoresSynchronously(container: container) == nil {
-                isStoreLoaded = true
-            } else {
-                print("[PipelineHistoryStore] Failed to recover persistent store. Falling back to in-memory history.")
-                let coordinator = container.persistentStoreCoordinator
-                for store in coordinator.persistentStores {
-                    try? coordinator.remove(store)
-                }
-                let description = NSPersistentStoreDescription()
-                description.type = NSInMemoryStoreType
-                container.persistentStoreDescriptions = [description]
-                isStoreLoaded = Self.loadPersistentStoresSynchronously(container: container) == nil
-            }
+            print("[PipelineHistoryStore] Failed to recover persistent store. Falling back to in-memory history.")
+            isStoreLoaded = Self.loadInMemoryStore(into: container)
         }
     }
 
@@ -187,12 +170,6 @@ final class PipelineHistoryStore {
                 entity.postProcessedTranscript = item.transcript
                 entity.postProcessingStatus = item.status
                 entity.audioFileName = item.audioFileName
-                // Required legacy columns remain empty for new local dictations.
-                entity.intent = "dictation"
-                entity.contextSummary = ""
-                entity.contextScreenshotStatus = ""
-                entity.debugStatus = ""
-                entity.customVocabulary = ""
                 try saveContext()
             } catch {
                 thrownError = error
@@ -240,6 +217,60 @@ final class PipelineHistoryStore {
         return capturedError
     }
 
+    private static func loadInMemoryStore(into container: NSPersistentContainer) -> Bool {
+        removeLoadedStores(from: container)
+        let description = NSPersistentStoreDescription()
+        description.type = NSInMemoryStoreType
+        container.persistentStoreDescriptions = [description]
+        return loadPersistentStoresSynchronously(container: container) == nil
+    }
+
+    private static func removeLoadedStores(from container: NSPersistentContainer) {
+        let coordinator = container.persistentStoreCoordinator
+        for store in coordinator.persistentStores {
+            try? coordinator.remove(store)
+        }
+    }
+
+    private static func sqliteDescription(at storeURL: URL) -> NSPersistentStoreDescription {
+        let description = NSPersistentStoreDescription(url: storeURL)
+        description.shouldMigrateStoreAutomatically = true
+        description.shouldInferMappingModelAutomatically = true
+        return description
+    }
+
+    private static func defaultStoreURL() -> URL? {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return appSupport
+            .appendingPathComponent(AppName.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("PipelineHistory.sqlite")
+    }
+
+    /// Rewrites a store from LocalFlow 2.1.0–2.1.8 without FreeFlow's legacy
+    /// attributes. Core Data cannot do this on its own: a model built in code
+    /// leaves it no source model to infer from, so the load would fail and the
+    /// recovery in `init` would delete the history. The old store stays as it
+    /// was until the migrated copy replaces it, so an interrupted migration runs
+    /// again on the next launch.
+    private static func migrateLegacyStoreIfNeeded(at storeURL: URL) throws {
+        let stagingURL = storeURL.deletingLastPathComponent()
+            .appendingPathComponent(storeURL.deletingPathExtension().lastPathComponent + "-migrating.sqlite")
+        destroySQLiteStoreFiles(at: stagingURL)
+        guard FileManager.default.fileExists(atPath: storeURL.path),
+              let metadata = try? NSPersistentStoreCoordinator.metadataForPersistentStore(type: .sqlite, at: storeURL),
+              !model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata),
+              legacyModel.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata)
+        else { return }
+
+        defer { destroySQLiteStoreFiles(at: stagingURL) }
+        let mapping = try NSMappingModel.inferredMappingModel(forSourceModel: legacyModel, destinationModel: model)
+        try NSMigrationManager(sourceModel: legacyModel, destinationModel: model)
+            .migrateStore(from: storeURL, type: .sqlite, mapping: mapping, to: stagingURL, type: .sqlite)
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
+        try coordinator.replacePersistentStore(at: storeURL, withPersistentStoreFrom: stagingURL, type: .sqlite)
+        try? coordinator.destroyPersistentStore(at: stagingURL, type: .sqlite)
+    }
+
     private static func destroySQLiteStoreFiles(at storeURL: URL) {
         let basePath = storeURL.path
         let fileManager = FileManager.default
@@ -255,16 +286,30 @@ final class PipelineHistoryStore {
                             status: entity.postProcessingStatus ?? "", audioFileName: entity.audioFileName)
     }
 
-    // Retain the previous schema verbatim so existing local history needs no
-    // destructive migration. Legacy context/prompt columns are not read into
-    // the app's history model or populated by new dictations.
-    private static func makeModel() -> NSManagedObjectModel {
-        let model = NSManagedObjectModel()
-
+    /// One shared model, so every store maps `PipelineHistoryEntry` to the same entity.
+    private static let model: NSManagedObjectModel = {
         let entity = NSEntityDescription()
         entity.name = "PipelineHistoryEntry"
         entity.managedObjectClassName = NSStringFromClass(PipelineHistoryEntry.self)
+        entity.properties = [
+            makeAttribute(name: "id", type: .UUIDAttributeType, isOptional: false),
+            makeAttribute(name: "timestamp", type: .dateAttributeType, isOptional: false),
+            makeAttribute(name: "rawTranscript", type: .stringAttributeType, isOptional: false),
+            makeAttribute(name: "postProcessedTranscript", type: .stringAttributeType, isOptional: false),
+            makeAttribute(name: "postProcessingStatus", type: .stringAttributeType, isOptional: false),
+            makeAttribute(name: "audioFileName", type: .stringAttributeType, isOptional: true)
+        ]
+        let model = NSManagedObjectModel()
+        model.entities = [entity]
+        return model
+    }()
 
+    /// The schema LocalFlow 2.1.0–2.1.8 kept verbatim from FreeFlow, with
+    /// context, prompt and screenshot attributes the app never read. Only the
+    /// migration uses it, as its source model.
+    private static let legacyModel: NSManagedObjectModel = {
+        let entity = NSEntityDescription()
+        entity.name = "PipelineHistoryEntry"
         entity.properties = [
             makeAttribute(name: "intent", type: .stringAttributeType, isOptional: true, defaultValue: "dictation"),
             makeAttribute(name: "selectedText", type: .stringAttributeType, isOptional: true),
@@ -288,10 +333,10 @@ final class PipelineHistoryStore {
             makeAttribute(name: "contextBundleIdentifier", type: .stringAttributeType, isOptional: true),
             makeAttribute(name: "contextWindowTitle", type: .stringAttributeType, isOptional: true)
         ]
-
+        let model = NSManagedObjectModel()
         model.entities = [entity]
         return model
-    }
+    }()
 
     private static func makeAttribute(
         name: String,
@@ -311,24 +356,9 @@ final class PipelineHistoryStore {
 @objc(PipelineHistoryEntry)
 final class PipelineHistoryEntry: NSManagedObject {
     @NSManaged var id: UUID
-    @NSManaged var intent: String?
-    @NSManaged var selectedText: String?
-    @NSManaged var capturedSelection: String?
     @NSManaged var timestamp: Date?
     @NSManaged var rawTranscript: String?
     @NSManaged var postProcessedTranscript: String?
-    @NSManaged var postProcessingPrompt: String?
-    @NSManaged var systemPrompt: String?
-    @NSManaged var contextSummary: String?
-    @NSManaged var contextSystemPrompt: String?
-    @NSManaged var contextPrompt: String?
-    @NSManaged var contextScreenshotDataURL: String?
-    @NSManaged var contextScreenshotStatus: String?
     @NSManaged var postProcessingStatus: String?
-    @NSManaged var debugStatus: String?
-    @NSManaged var customVocabulary: String?
     @NSManaged var audioFileName: String?
-    @NSManaged var contextAppName: String?
-    @NSManaged var contextBundleIdentifier: String?
-    @NSManaged var contextWindowTitle: String?
 }
