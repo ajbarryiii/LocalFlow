@@ -2,8 +2,8 @@ import Foundation
 
 /// What the app's own screens show for a state, apart from layout (ARCHITECTURE.md, "Host app"): the session card's
 /// state and its one accent, the speech model's state dot, the start-session screen's phase word and return cue, the
-/// route it names, onboarding's spoken progress, the idle countdown in words, when the background cover hides the app,
-/// and when the app's sheets close for the start-session screen. The views only draw these. Pure.
+/// route it names, onboarding's microphone step and spoken progress, the idle countdown in words, when the background
+/// cover hides the app, and when the app's sheets close for the start-session screen. The views only draw these. Pure.
 
 /// One of the brand colours a state may carry, on a small dot or glyph only (never a fill).
 enum AppAccent: Equatable, Sendable {
@@ -240,6 +240,17 @@ enum SessionCountdown {
         let parts = [minutes > 0 ? count(minutes, "minute") : nil,
                      rest > 0 || minutes == 0 ? count(rest, "second") : nil].compactMap { $0 }
         return "Session ends in \(parts.joined(separator: " ")) if idle"
+    }
+}
+
+/// Onboarding's microphone step. App Review (guideline 5.1.1(iv)) wants the pill before the system's permission prompt
+/// to read as the next step, never as "Allow": the prompt itself asks.
+enum OnboardingMicrophoneStep {
+    static let title = "Microphone"
+
+    /// The main pill: Continue (to the system prompt while the choice is open), or Open Settings once it is off.
+    static func primaryButton(_ permission: CapturePermission) -> String {
+        permission == .denied ? "Open Settings" : "Continue"
     }
 }
 
