@@ -117,7 +117,7 @@ final class StrengthProbeModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 phase = .finished(result)
             } catch {
-                if !Task.isCancelled { fail("LocalFlow couldn't check this recording. Try again.") }
+                if !Task.isCancelled { fail("LocalFlow couldn’t check this recording. Try again.") }
             }
         }
     }
@@ -176,7 +176,7 @@ final class StrengthProbeModel: ObservableObject {
         do {
             try recorder.start(useBuiltInMicrophone: host.preferences.useBuiltInMicrophone)
         } catch {
-            return fail("The microphone could not start. Try again.")
+            return fail("The microphone couldn’t start. Try again.")
         }
         phase = .recording
         startLevelTimer()

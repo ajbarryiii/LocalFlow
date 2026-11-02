@@ -241,7 +241,7 @@ enum MicrophoneRouteTests {
         TestSupport.expectEqual(router.routing, .awaitingRoute)
         TestSupport.expect(!router.routeChanged(session, change: echo), "requested again on its own answer")
         TestSupport.expectEqual(router.routing, .unresolved(.headset))
-        TestSupport.expectEqual(router.routing.problem, "Using headset microphone: couldn't switch to iPhone microphone")
+        TestSupport.expectEqual(router.routing.problem, "Using headset microphone: couldn’t switch to iPhone microphone")
         TestSupport.expectEqual(session.preferences.count, 1)
         // A device comes or goes (AirPods connect): one retry.
         TestSupport.expect(router.routeChanged(session, change: plugged), "not retried at the next device change")
@@ -266,7 +266,7 @@ enum MicrophoneRouteTests {
         try! router.configureCategory(session)
         TestSupport.expect(!router.applyInput(session), "a failed request awaits a route")
         TestSupport.expectEqual(router.routing, .unresolved(.usb))
-        TestSupport.expectEqual(router.routing.problem, "Using USB microphone: couldn't switch to iPhone microphone")
+        TestSupport.expectEqual(router.routing.problem, "Using USB microphone: couldn’t switch to iPhone microphone")
         session.answer = .immediately
         router.routeChanged(session, change: unplugged)
         TestSupport.expectEqual(session.preferences.count, 2)
@@ -300,7 +300,7 @@ enum MicrophoneRouteTests {
     }
 
     private static func testProblemsAreContentFree() {
-        let suffix = ": couldn't switch to iPhone microphone"
+        let suffix = ": couldn’t switch to iPhone microphone"
         TestSupport.expectEqual(MicrophoneRouting.unresolved(.bluetooth).problem, "Using Bluetooth microphone" + suffix)
         TestSupport.expectEqual(MicrophoneRouting.unresolved(.other).problem, "Using another microphone" + suffix)
         TestSupport.expectEqual(MicrophoneRouting.unresolved(nil).problem, "No microphone available" + suffix)

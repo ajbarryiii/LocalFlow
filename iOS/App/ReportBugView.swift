@@ -15,10 +15,17 @@ struct ReportBugView: View {
     var body: some View {
         List {
             Section {
-                Text("Describe what happened and how to reproduce it. You can edit or cancel the draft in your email app before sending.")
+                Text("Describe what happened and how to make it happen again.")
                 LabeledContent("To") {
                     Text(recipient).textSelection(.enabled)
                 }
+            } footer: {
+                Label("Only the details below. No recordings, transcripts or logs.", systemImage: "lock.fill")
+                    .font(.footnote)
+            }
+            .listRowBackground(Theme.cardBackground)
+
+            Section {
                 Button {
                     guard let url = draft.mailtoURL else {
                         emailUnavailable = true
@@ -30,11 +37,11 @@ struct ReportBugView: View {
                 } label: {
                     Label("Write email", systemImage: "envelope")
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .accessibilityIdentifier("support.writeEmail")
-            } footer: {
-                Text("The draft includes only the app version, iOS version, and device type shown below. No recordings, transcripts, or logs are attached.")
             }
-            .listRowBackground(Theme.cardBackground)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
 
             Section("Email draft") {
                 Text(draft.body)

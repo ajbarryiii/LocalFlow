@@ -64,6 +64,14 @@ in the same pull request; bump the version only when preparing a release.
 - Production sources are discovered automatically by the Makefile. Test source
   dependencies must be listed explicitly in `TEST_PRODUCTION_SOURCES`.
 
+## Design
+
+- Prefer icons over text almost always. Before adding descriptive text,
+  particularly a subtitle, ask whether a minimal icon, animation, or visual cue
+  would do the same job. Add text only when the UI would be very unclear
+  without it, or when leaving it out would be odd. For example, a toggle has a
+  title but generally no subtitle.
+
 ## Verification
 
 Run before handing off every code change:

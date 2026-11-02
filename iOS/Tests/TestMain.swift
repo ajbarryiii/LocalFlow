@@ -28,6 +28,7 @@ struct LocalFlowIOSTests {
             ("ComputePolicy", ComputePolicyTests.tests),
             ("HostSessionCore", HostSessionCoreTests.tests),
             ("SessionActivity", SessionActivityTests.tests),
+            ("AppScreens", AppScreensTests.tests),
             ("CapturePipeline", CapturePipelineTests.tests),
             ("CaptureTiming", CaptureTimingTests.tests),
             ("TranscriptionEngine", TranscriptionEngineTests.tests),

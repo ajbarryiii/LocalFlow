@@ -122,6 +122,10 @@ ACTIVITY_ATTRIBUTES_SOURCES ?= Activity/SessionActivityAttributes.swift
 # The ridge mark, drawn as the keyboard draws it; KeyboardLayout has its box type; DotWave the swell the strip shares with
 # the keyboard's wave. All are Foundation only.
 ACTIVITY_KEYBOARDCORE_SOURCES ?= KeyboardCore/RidgeMark.swift KeyboardCore/KeyboardLayout.swift KeyboardCore/DotWave.swift
+# The app draws the same mark and wave (the session card, onboarding and the start-session screen).
+APP_KEYBOARDCORE_SOURCES ?= $(ACTIVITY_KEYBOARDCORE_SOURCES)
+# The display face, Geist Serif (SIL OFL 1.1), with its license beside it in the app (`UIAppFonts`).
+APP_FONTS ?= Resources/Fonts/GeistSerif-Regular.ttf Resources/Fonts/GeistSerif-OFL.txt
 SHARED_SOURCES ?= $(call swift_sources,Shared)
 HOSTCORE_SOURCES ?= $(call swift_sources,HostCore)
 KEYBOARDCORE_SOURCES ?= $(call swift_sources,KeyboardCore)
@@ -143,7 +147,7 @@ DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenN
 # TextInsertionFormatter uses it, so the app, the keyboard and the host tests compile it.
 INSERTION_CONTEXT_SOURCES ?= ../Sources/InsertionContextFormatter.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES) \
-	$(ACTIVITYCORE_SOURCES) $(ACTIVITY_ATTRIBUTES_SOURCES)
+	$(ACTIVITYCORE_SOURCES) $(ACTIVITY_ATTRIBUTES_SOURCES) $(APP_KEYBOARDCORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(KEYBOARDCORE_SOURCES)
 ACTIVITY_SOURCES = $(ACTIVITY_SWIFT_SOURCES) $(ACTIVITYCORE_SOURCES) $(ACTIVITY_KEYBOARDCORE_SOURCES)
 
@@ -372,8 +376,8 @@ $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY) $(APP_ENTI
 		Config/LocalFlowActivity-Info.plist $(ICON_SOURCE) $(PARAKEET_STAMP) Config/LocalFlow-PrivacyInfo.xcprivacy \
 		Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy Config/LocalFlowActivity-PrivacyInfo.xcprivacy \
 		$(wildcard ../Resources/Parakeet/*) ../scripts/label-localflow-model.py \
-		$(SWIPE_STAMP) $(wildcard ../Resources/Swipe/*)
-	@rm -rf "$(APPEX_BUNDLE)" "$(ACTIVITY_APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision"
+		$(SWIPE_STAMP) $(wildcard ../Resources/Swipe/*) $(APP_FONTS)
+	@rm -rf "$(APPEX_BUNDLE)" "$(ACTIVITY_APPEX_BUNDLE)" "$(APP_BUNDLE)/_CodeSignature" "$(APP_BUNDLE)/embedded.mobileprovision" "$(APP_BUNDLE)/Fonts"
 	@mkdir -p "$(APPEX_BUNDLE)" "$(ACTIVITY_APPEX_BUNDLE)"
 	@cp "$(APP_BINARY)" "$(APP_BUNDLE)/LocalFlow"
 	@cp "$(KEYBOARD_BINARY)" "$(APPEX_BUNDLE)/LocalFlowKeyboard"
@@ -388,6 +392,7 @@ $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY) $(APP_ENTI
 	@cp Config/LocalFlow-PrivacyInfo.xcprivacy "$(APP_BUNDLE)/PrivacyInfo.xcprivacy"
 	@cp Config/LocalFlowKeyboard-PrivacyInfo.xcprivacy "$(APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
 	@cp Config/LocalFlowActivity-PrivacyInfo.xcprivacy "$(ACTIVITY_APPEX_BUNDLE)/PrivacyInfo.xcprivacy"
+	@mkdir -p "$(APP_BUNDLE)/Fonts" && cp $(APP_FONTS) "$(APP_BUNDLE)/Fonts/"
 	@# The icon source is a full-bleed square (Resources/ICON.md); iOS applies its
 	@# own mask. The App Store rejects an icon with an alpha channel, so it is
 	@# flattened (through JPEG at the best quality) before scaling to the single

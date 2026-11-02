@@ -24,52 +24,41 @@ struct TryItView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 12) {
-                    HowToRow(number: 1, text: "Tap a field, then switch to the LocalFlow keyboard with \(Image(systemName: "globe")).")
-                    HowToRow(number: 2, text: "Tap **Start** at the top of the keyboard, speak, then tap **Stop**.")
-                    HowToRow(number: 3, text: "The text goes into the field you started in. If you have moved to another field by then, the keyboard offers **Insert last dictation** instead.")
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-
+                DictationCue()
                 field("Field A", text: $fieldA, field: .a, identifier: "tryit.fieldA")
-                field("Field B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Cursor practice").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Reset text") { practice = Self.practiceSample }
-                            .font(.footnote)
-                            .disabled(practice == Self.practiceSample)
-                    }
-                    TextEditor(text: $practice)
-                        .focused($focus, equals: .practice)
-                        .frame(height: 220)
-                        .padding(8)
-                        .scrollContentBackground(.hidden)
-                        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .accessibilityIdentifier("tryit.practice")
-                    Text("Touch and hold the space bar, then move up, down and sideways across the long wrapped lines and the short ones.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "arrow.left.arrow.right").foregroundStyle(Theme.aurora).padding(.top, 2)
-                    Text("**Destination test.** Start dictating in Field A, then tap Field B before the text arrives. It must not appear in B; the keyboard offers **Insert last dictation** instead.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(16)
-                .background(Theme.aurora.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 if host.session != .active {
-                    Label("No session is running. Tapping Start on the keyboard opens LocalFlow to start one; if it does not, start a session from Home.", systemImage: "info.circle")
+                    Label("No session yet: Start on the keyboard opens one.", systemImage: "info.circle")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.secondaryInk)
                 }
+
+                practiceHeader("Destination test", symbol: "arrow.left.arrow.right")
+                    .padding(.top, 10)
+                field("Field B", text: $fieldB, field: .b, identifier: "tryit.fieldB")
+                Text("Start in A, then tap B before the text arrives. It stays out of B; the keyboard offers **Insert last** instead.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.secondaryInk)
+
+                HStack {
+                    practiceHeader("Cursor practice", symbol: "text.cursor")
+                    Spacer()
+                    Button("Reset text") { practice = Self.practiceSample }
+                        .font(.footnote)
+                        .disabled(practice == Self.practiceSample)
+                }
+                .padding(.top, 10)
+                TextEditor(text: $practice)
+                    .focused($focus, equals: .practice)
+                    .frame(height: 220)
+                    .padding(8)
+                    .scrollContentBackground(.hidden)
+                    .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(focusEdge(.practice, cornerRadius: 16))
+                    .accessibilityIdentifier("tryit.practice")
+                Text("Touch and hold the space bar, then slide to move the cursor.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.secondaryInk)
             }
             .padding(20)
         }
@@ -90,19 +79,78 @@ struct TryItView: View {
         .onDisappear { host.tryItVisible = false }
     }
 
+    private func practiceHeader(_ title: String, symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.secondaryInk)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func focusEdge(_ field: Field, cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .strokeBorder(Color.white.opacity(focus == field ? 0.5 : 0), lineWidth: 1)
+    }
+
     private func field(_ title: String, text: Binding<String>, field: Field, identifier: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Theme.secondaryInk)
+                .accessibilityHidden(true)
             TextField("Tap here and dictate…", text: text, axis: .vertical)
                 .lineLimit(3...8)
                 .focused($focus, equals: field)
                 .padding(14)
                 .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(focus == field ? AnyShapeStyle(Theme.gradient) : AnyShapeStyle(Color.clear), lineWidth: 2))
+                .overlay(focusEdge(field, cornerRadius: 16))
+                .accessibilityLabel(title)
                 .accessibilityIdentifier(identifier)
         }
+    }
+}
+
+/// How to dictate, as the keyboard shows it: the globe key, Start with the mark, speaking, Stop. In a row of glyphs, or
+/// numbered lines where the row does not fit (large text).
+private struct DictationCue: View {
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                chip { Image(systemName: "globe") }
+                arrow
+                chip { HStack(spacing: 6) { RidgeMarkView(side: 17); Text("Start") } }
+                arrow
+                Image(systemName: "waveform").font(.body.weight(.medium))
+                arrow
+                chip { Label("Stop", systemImage: "stop.fill").labelStyle(AccentGlyphLabelStyle()) }
+            }
+            .frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 12) {
+                HowToRow(number: 1, text: "Switch to the LocalFlow keyboard with \(Image(systemName: "globe"))")
+                HowToRow(number: 2, text: "Tap **Start** and speak")
+                HowToRow(number: 3, text: "Tap **Stop**")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(16)
+        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Tap a field, switch to the LocalFlow keyboard with the globe key, tap Start, speak, then tap Stop.")
+        .accessibilityIdentifier("tryit.cue")
+    }
+
+    private var arrow: some View {
+        Image(systemName: "arrow.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Theme.secondaryInk)
+    }
+
+    private func chip<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 10)
+            .frame(minHeight: 34)
+            .islandSurface()
     }
 }
 
@@ -114,10 +162,10 @@ private struct HowToRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(Theme.onAccent)
-                .frame(width: 24, height: 24)
-                .background(Theme.gradient, in: Circle())
-            Text(text).font(.subheadline)
+                .foregroundStyle(.white)
+                .frame(minWidth: 24, minHeight: 24)
+                .islandSurface(Circle())
+            Text(text).font(.subheadline.weight(.regular))
         }
     }
 }
