@@ -979,8 +979,9 @@ transcripts or other user data.
     arrives; it scrolls when it does not fit (large text on a small iPhone)
     while the buttons and the cue stay on screen. It stays up after the swipe back only while its dictation is in
     progress, so a later return to LocalFlow shows Home, not an old outcome.
-    It is not shown for a Start tapped in Try it, where it would hide the
-    field; a Start in another app shows it even with Try it left on screen:
+    It is not shown for a Start tapped in the app's own fields (Try it, the
+    Dictionary editor), where it would hide the field or close the editor and
+    lose its draft; a Start in another app shows it even with Try it left on screen:
     a request issued before the app was last active again came from another
     app (`HostSessionPolicy.showsBounce`).
   - Motion is quick (short springs); with Reduce Motion every change is a

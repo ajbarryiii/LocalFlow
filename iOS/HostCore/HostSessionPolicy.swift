@@ -131,17 +131,19 @@ enum HostSessionPolicy {
         isForeground || isDictationInProgress
     }
 
-    /// Whether a request admitted in the foreground raises the bounce. In Try it the keyboard is in this app, and a
-    /// cover would hide the field it types into. But Try it stays the visible screen while the app sits in the
-    /// background, so it can't tell that Start was tapped there: a Start in another app opens LocalFlow on it too. Where
-    /// the request came from tells. `activeSince` is when the app last became active after the background (nil until
+    /// Whether a request admitted in the foreground raises the bounce. A Start tapped in this app's own fields (Try it,
+    /// the Dictionary editor) has the keyboard in this app, and a cover would hide the field it types into (and close
+    /// the editor's sheet, losing its draft). The visible screen can't tell where Start was tapped: Try it stays on
+    /// screen while the app sits in the background, and a Start in another app opens LocalFlow on it too. Where the
+    /// request came from tells. `activeSince` is when the app last became active after the background (nil until
     /// then); nothing in LocalFlow can be tapped before that, so a request issued earlier came from another app. The
     /// arrival may admit it before the activation is noted (a resumed timer or the URL open can reconcile first); nil
-    /// covers that. A request whose record intent can't be read (`issuedAt` nil) keeps Try it, as before.
+    /// covers that. A request whose record intent can't be read (`issuedAt` nil) keeps Try it and raises the bounce
+    /// elsewhere, as before.
     static func showsBounce(isForeground: Bool, tryItVisible: Bool, issuedAt: Date?, activeSince: Date?) -> Bool {
         guard isForeground else { return false }
-        guard tryItVisible, let activeSince else { return true }
-        guard let issuedAt else { return false }
+        guard let activeSince else { return true }
+        guard let issuedAt else { return !tryItVisible }
         return issuedAt < activeSince
     }
 

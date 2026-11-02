@@ -26,7 +26,7 @@ final class HostSessionController: ObservableObject {
     @Published private(set) var microphoneRouting = MicrophoneRouting.systemChoice
     /// The bounce screen: a dictation was admitted while the app was in front (`HostSessionPolicy.showsBounce`).
     @Published var bounceVisible = false
-    /// "Try it" has the keyboard in this app, so an admission made there must not cover it.
+    /// "Try it" is on screen; only a request whose issue time is unknown uses it (`HostSessionPolicy.showsBounce`).
     var tryItVisible = false
     /// When the app last became active after the background, nil until then (`HostSessionPolicy.showsBounce`).
     private var activeSince: Date?

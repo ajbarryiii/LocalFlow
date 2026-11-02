@@ -16,7 +16,7 @@ enum HostSessionPolicyTests {
             ("sessionErrors", testSessionErrors),
             ("onlyALateIntentProvesAnUnlock", testOnlyALateIntentProvesAnUnlock),
             ("bounceClosesInTheBackgroundOnceIdle", testBounceClosesInTheBackgroundOnceIdle),
-            ("bounceSkipsTryItOnlyForAStartMadeInIt", testBounceSkipsTryItOnlyForAStartMadeInIt),
+            ("bounceShowsOnlyForAStartMadeInAnotherApp", testBounceShowsOnlyForAStartMadeInAnotherApp),
             ("recordIssuedAt", testRecordIssuedAt),
             ("statusCaptureReadyAndLevel", testStatusCaptureReadyAndLevel),
             ("admissionFailsOnlyForAMissingOrBackingOffModel", testAdmissionFailsOnlyForAMissingOrBackingOffModel),
@@ -155,10 +155,10 @@ enum HostSessionPolicyTests {
                            "in the background once the dictation ended")
     }
 
-    /// Try it keeps its field for a Start tapped there, but a Start tapped in another app opens LocalFlow on the
-    /// start-session screen even when Try it was left on screen (the end of onboarding). A request issued before the app
-    /// was active came from another app.
-    private static func testBounceSkipsTryItOnlyForAStartMadeInIt() {
+    /// A Start tapped in this app's own fields (Try it, the Dictionary editor) keeps its field, but a Start tapped in
+    /// another app opens LocalFlow on the start-session screen, even when Try it was left on screen (the end of
+    /// onboarding). A request issued before the app was active came from another app.
+    private static func testBounceShowsOnlyForAStartMadeInAnotherApp() {
         func shows(foreground: Bool = true, tryIt: Bool, issuedAt: Date?, activeSince: Date?) -> Bool {
             HostSessionPolicy.showsBounce(isForeground: foreground, tryItVisible: tryIt, issuedAt: issuedAt,
                                           activeSince: activeSince)
@@ -171,9 +171,14 @@ enum HostSessionPolicyTests {
         TestSupport.expect(shows(tryIt: true, issuedAt: now - 2, activeSince: nil),
                            "Try it, admitted before the return is active")
         TestSupport.expect(!shows(tryIt: true, issuedAt: nil, activeSince: now - 30), "Try it, the request's time unknown")
-        for activeSince in [now - 30, now, nil] {
+        TestSupport.expect(!shows(tryIt: false, issuedAt: now, activeSince: now - 30),
+                           "the Dictionary editor in front, a Start made in it")
+        TestSupport.expect(shows(tryIt: false, issuedAt: now, activeSince: nil), "Home, admitted before the return is active")
+        TestSupport.expect(shows(tryIt: false, issuedAt: nil, activeSince: now - 30), "Home, the request's time unknown")
+        for activeSince in [now, nil] {
             TestSupport.expect(shows(tryIt: false, issuedAt: now - 2, activeSince: activeSince), "Home, from another app")
-            TestSupport.expect(shows(tryIt: false, issuedAt: now, activeSince: activeSince), "Home, either way")
+        }
+        for activeSince in [now - 30, now, nil] {
             TestSupport.expect(!shows(foreground: false, tryIt: false, issuedAt: now - 2, activeSince: activeSince),
                                "in the background")
             TestSupport.expect(!shows(foreground: false, tryIt: true, issuedAt: now - 2, activeSince: activeSince),
