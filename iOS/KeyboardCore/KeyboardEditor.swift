@@ -41,12 +41,6 @@ struct NeverCorrectOffer: Equatable, Sendable {
     var word: String
     /// As typed, without trailing apostrophes: what the prompt shows.
     var typed: String
-
-    /// Whether the top row shows the offer: dictation's own top-row UI wins, so not while a dictation is
-    /// starting, recording or transcribing, nor while its Undo chip shows. Hidden, the offer still ends as usual.
-    static func barShows(_ offer: NeverCorrectOffer?, dictationInProgress: Bool, dictationUndoShown: Bool) -> Bool {
-        offer != nil && !dictationInProgress && !dictationUndoShown
-    }
 }
 
 /// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model v2: immediate

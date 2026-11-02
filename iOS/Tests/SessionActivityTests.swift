@@ -86,8 +86,7 @@ enum SessionActivityTests {
     /// "Session ends in 4:53 if idle". VoiceOver still hears the whole meaning, in the menu's words ("Session ends in 2
     /// min if idle", whole minutes to the nearest, never under one).
     private static func testCountdownSpeaksTheBarsWords() {
-        let lead = SessionActivityState.countdownLead, tail = SessionActivityState.countdownTail
-        TestSupport.expectEqual(lead, "ends in")
+        let lead = "ends in", tail = "if idle"
         TestSupport.expectEqual(SessionActivityState.countdownSymbol, "timer")
         TestSupport.expectEqual(SessionActivityState.lockScreenCountdownTail, "left")
         let spoken = SessionActivityState.countdownSpokenLead

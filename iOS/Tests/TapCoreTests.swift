@@ -80,7 +80,7 @@ enum TapCoreTests {
         var shared = prior()
         for context in TapFixtures.contexts {
             var cold = prior()
-            let surprise = cold.recentSurprise(context: context.text)
+            let surprise = cold.prediction(context: context.text).surprise
             TestSupport.expect(abs(surprise - context.surprise) <= 1e-4, "surprise \(context.normalized): \(surprise) vs \(context.surprise)")
             let both = shared.prediction(context: context.text)
             TestSupport.expect(abs(both.surprise - context.surprise) <= 1e-4, "shared surprise \(context.normalized)")

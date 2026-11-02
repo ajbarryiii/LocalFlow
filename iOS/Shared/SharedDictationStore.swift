@@ -93,12 +93,6 @@ struct SharedDictationStore: Sendable {
         removeResultFile(at: resultURL(for: requestID))
     }
 
-    /// True only if this call removed the file, so exactly one claimant wins a result.
-    @discardableResult
-    func deleteResult(requestID: UUID) -> Bool {
-        removeResult(requestID: requestID) == .removed
-    }
-
     /// Deletes results whose age is outside `[-clockSkewTolerance, resultTTL]`. A result that cannot
     /// be decoded (for example while the device is locked) is judged by its file's modification date.
     /// Also sweeps staging files abandoned for as long, so either process cleans up after a crash.

@@ -244,8 +244,6 @@ struct TrackpadSession {
         return true
     }
 
-    var isEnded: Bool { endedAt != nil }
-
     /// A unit probe is outstanding: the caret may be past or inside a cluster until it is resolved.
     var hasOutstandingProbe: Bool {
         if case .unitProbe? = flight?.kind { return true }

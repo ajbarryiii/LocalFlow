@@ -31,7 +31,6 @@ enum NeverCorrectTests {
             ("noOfferWithoutAStoreOrForAWordItCannotKeep", testNoOfferWithoutAStoreOrForAWordItCannotKeep),
             ("bindingAStoreReplacesTheWordsInMemory", testBindingAStoreReplacesTheWordsInMemory),
             ("nothingIsOfferedWhereNothingIsCorrected", testNothingIsOfferedWhereNothingIsCorrected),
-            ("dictationUIWinsTheBar", testDictationUIWinsTheBar),
         ]
     }
 
@@ -515,15 +514,5 @@ enum NeverCorrectTests {
                 TestSupport.expect(storeIsEmpty(store), "\(name) stored a word")
             }
         }
-    }
-
-    private static func testDictationUIWinsTheBar() {
-        let offer = NeverCorrectOffer(word: "teh", typed: "Teh")
-        TestSupport.expect(NeverCorrectOffer.barShows(offer, dictationInProgress: false, dictationUndoShown: false), "hidden")
-        TestSupport.expect(!NeverCorrectOffer.barShows(offer, dictationInProgress: true, dictationUndoShown: false),
-                           "shown over a dictation in progress")
-        TestSupport.expect(!NeverCorrectOffer.barShows(offer, dictationInProgress: false, dictationUndoShown: true),
-                           "shown over dictation's Undo")
-        TestSupport.expect(!NeverCorrectOffer.barShows(nil, dictationInProgress: false, dictationUndoShown: false), "shown without an offer")
     }
 }
