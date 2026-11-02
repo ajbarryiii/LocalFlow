@@ -9,6 +9,7 @@ enum AppScreensTests {
             ("swipeCueFollowsTheBottomInset", testSwipeCueFollowsTheBottomInset),
             ("swipeCueDemonstratesOnceUnlessReduceMotion", testSwipeCueDemonstratesOnceUnlessReduceMotion),
             ("onboardingProgressIsSpoken", testOnboardingProgressIsSpoken),
+            ("microphoneStepNeverAsksToAllow", testMicrophoneStepNeverAsksToAllow),
             ("sessionCardWithoutASession", testSessionCardWithoutASession),
             ("sessionCardDuringASession", testSessionCardDuringASession),
             ("sessionCardWordsMatchTheLiveActivity", testSessionCardWordsMatchTheLiveActivity),
@@ -40,6 +41,18 @@ enum AppScreensTests {
         TestSupport.expectEqual(OnboardingProgress.spoken(index: 1, count: 4), "Step 2 of 4")
         TestSupport.expectEqual(OnboardingProgress.spoken(index: 3, count: 4), "Step 4 of 4")
         TestSupport.expectEqual(OnboardingProgress.spoken(index: 9, count: 4), "Step 4 of 4")
+    }
+
+    private static func testMicrophoneStepNeverAsksToAllow() {
+        // App Review 5.1.1(iv): the pill before the system prompt continues; only the prompt asks.
+        TestSupport.expectEqual(OnboardingMicrophoneStep.primaryButton(.undetermined), "Continue")
+        TestSupport.expectEqual(OnboardingMicrophoneStep.primaryButton(.granted), "Continue")
+        TestSupport.expectEqual(OnboardingMicrophoneStep.primaryButton(.denied), "Open Settings")
+        for permission in [CapturePermission.undetermined, .denied, .granted] {
+            let words = [OnboardingMicrophoneStep.title, OnboardingMicrophoneStep.primaryButton(permission)]
+            TestSupport.expect(!words.contains { $0.localizedCaseInsensitiveContains("allow") },
+                               "\(permission): \(words) asks the user to allow the microphone")
+        }
     }
 
     private static func card(_ session: HostStatus.Session, permission: CapturePermission = .granted,

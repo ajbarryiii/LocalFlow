@@ -112,7 +112,7 @@ struct OnboardingView: View {
     private func microphone(compact: Bool) -> some View {
         VStack(spacing: 22) {
             if !compact { HeroSymbol(systemName: "mic") }
-            StepTitle(title: "Allow the microphone", line: "Only during a session you start.")
+            StepTitle(title: OnboardingMicrophoneStep.title, line: "Only during a session you start.")
             HStack(spacing: 12) {
                 SymbolTile(systemName: permissionSymbol, tint: permission == .denied ? Theme.ember : .white)
                 Text(permissionText).font(.body.weight(.medium))
@@ -182,7 +182,7 @@ struct OnboardingView: View {
             case .microphone:
                 switch permission {
                 case .undetermined:
-                    Button("Allow microphone") {
+                    Button(OnboardingMicrophoneStep.primaryButton(permission)) {
                         Task {
                             _ = await host.requestMicrophonePermission()
                             refreshSetupState()
@@ -192,11 +192,12 @@ struct OnboardingView: View {
                     .accessibilityIdentifier("onboarding.allowMicrophone")
                     Button("Not now") { go(to: .keyboard) }.buttonStyle(SecondaryButtonStyle())
                 case .granted:
-                    Button("Continue") { go(to: .keyboard) }
+                    Button(OnboardingMicrophoneStep.primaryButton(permission)) { go(to: .keyboard) }
                         .buttonStyle(PrimaryButtonStyle())
                         .accessibilityIdentifier("onboarding.continue")
                 case .denied:
-                    Button("Open Settings") { AppIdentity.openSettings() }.buttonStyle(PrimaryButtonStyle())
+                    Button(OnboardingMicrophoneStep.primaryButton(permission)) { AppIdentity.openSettings() }
+                        .buttonStyle(PrimaryButtonStyle())
                     Button("Continue") { go(to: .keyboard) }.buttonStyle(SecondaryButtonStyle())
                 }
             case .keyboard:
