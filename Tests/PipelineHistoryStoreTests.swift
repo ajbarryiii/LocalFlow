@@ -210,14 +210,25 @@ enum PipelineHistoryStoreTests {
         }
         if let copyURL {
             let fileManager = FileManager.default
-            let wal = url.path + "-wal"
-            let walSize = (try? fileManager.attributesOfItem(atPath: wal)[.size] as? Int) ?? 0
-            TestSupport.expect(walSize > 0, "an open store should hold its recent rows in -wal")
             for suffix in ["", "-wal", "-shm"] where fileManager.fileExists(atPath: url.path + suffix) {
                 try! fileManager.copyItem(atPath: url.path + suffix, toPath: copyURL.path + suffix)
             }
+            let mainFileOnlyURL = url.deletingLastPathComponent().appendingPathComponent("MainFileOnly.sqlite")
+            try! fileManager.copyItem(at: url, to: mainFileOnlyURL)
+            TestSupport.expect(legacyRowCount(at: mainFileOnlyURL) < legacyRows.count, "the copied rows should depend on -wal")
         }
         try! coordinator.remove(store)
+    }
+
+    private static func legacyRowCount(at url: URL) -> Int {
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: legacyModel)
+        let store = try! coordinator.addPersistentStore(type: .sqlite, at: url)
+        defer { try! coordinator.remove(store) }
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = coordinator
+        return context.performAndWait {
+            try! context.count(for: NSFetchRequest<NSManagedObject>(entityName: entityName))
+        }
     }
 
     private static func withTemporaryDirectory(_ body: (URL) -> Void) {
