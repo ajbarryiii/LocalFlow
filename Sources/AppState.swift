@@ -965,10 +965,6 @@ final class AppState: ObservableObject, DictationCleanupActions {
         overlayManager.dismiss()
     }
 
-    /// A `DictationCleanupActions` step with nothing left to do: no view shows a
-    /// status that returns to "Ready" after a cancel.
-    func scheduleReadyStatusAfterCancel() {}
-
     private func scheduleShortcutStart(mode: RecordingTriggerMode) {
         cancelPendingShortcutStart(resetMode: false)
         pendingShortcutStartMode = mode

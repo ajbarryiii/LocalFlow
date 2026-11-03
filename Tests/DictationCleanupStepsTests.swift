@@ -36,13 +36,13 @@ enum DictationCleanupStepsTests {
     }
 
     /// Escape or a cancel during Tap to Toggle: the pending start and the
-    /// session end first, the capture is thrown away, "Cancelled" then resets.
+    /// session end first, then the capture is thrown away showing "Cancelled".
     @MainActor
     private static func testCancelToggleSession() {
         let actions = RecordingCleanup()
         DictationCleanupSteps.cancelToggleSession(actions)
         TestSupport.expectEqual(actions.log, ["cancelPendingStart", "endSession"]
-            + captureTeardown(status: "status(cancelled)") + ["scheduleReady"])
+            + captureTeardown(status: "status(cancelled)"))
     }
 
     /// Escape while transcribing: the task is cancelled before anything else,
@@ -53,7 +53,7 @@ enum DictationCleanupStepsTests {
         DictationCleanupSteps.cancelTranscription(actions)
         TestSupport.expectEqual(actions.log, [
             "cancelTask", "stopCorrections", "endSession", "notRecording", "notTranscribing", "status(cancelled)",
-            "dismissOverlay", "cleanUpRecorder", "deleteAudio", "endActivity", "refreshMicrophones", "scheduleReady",
+            "dismissOverlay", "cleanUpRecorder", "deleteAudio", "endActivity", "refreshMicrophones",
         ])
     }
 
@@ -192,7 +192,6 @@ final class RecordingCleanup: DictationCleanupActions {
     }
 
     func dismissOverlay() { log.append("dismissOverlay") }
-    func scheduleReadyStatusAfterCancel() { log.append("scheduleReady") }
     func endCriticalDictationActivity() { log.append("endActivity") }
     func refreshAvailableMicrophonesIfNeeded() { log.append("refreshMicrophones") }
 }

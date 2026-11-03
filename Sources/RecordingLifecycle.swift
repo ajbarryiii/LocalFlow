@@ -182,12 +182,11 @@ struct RecordingAttempts {
 
 /// The status a teardown leaves behind.
 enum DictationCleanupStatus: Equatable {
-    /// No error; "Ready" (debug status "Idle").
+    /// No error; debug status "Idle".
     case ready
-    /// No error; "Cancelled" (debug status "Cancelled").
+    /// No error; debug status "Cancelled".
     case cancelled
-    /// The message is shown as the error with status "Error"; the debug
-    /// status is left as it was.
+    /// The message is shown as the error; the debug status is left as it was.
     case failed(String)
 }
 
@@ -245,8 +244,6 @@ protocol DictationCleanupActions: AnyObject {
     // Presentation and process
     func showStatus(_ status: DictationCleanupStatus)
     func dismissOverlay()
-    /// Return to "Ready" a moment after "Cancelled", if nothing started since.
-    func scheduleReadyStatusAfterCancel()
     /// Allow automatic termination again.
     func endCriticalDictationActivity()
     /// Refresh the microphone list if a device change arrived while recording.
@@ -276,7 +273,7 @@ enum DictationCleanupSteps {
     }
 
     /// The capture in progress is thrown away (a too-short hold). The status
-    /// goes straight back to Ready: a discard is not a user-visible cancel.
+    /// goes straight back to `.ready`: a discard is not a user-visible cancel.
     static func discardCapture(_ actions: DictationCleanupActions) {
         tearDownCapture(showing: .ready, actions)
     }
@@ -287,7 +284,6 @@ enum DictationCleanupSteps {
         actions.cancelPendingShortcutStart()
         actions.endShortcutSession()
         tearDownCapture(showing: .cancelled, actions)
-        actions.scheduleReadyStatusAfterCancel()
     }
 
     /// Escape while transcribing. The task is cancelled first, so its result
@@ -304,7 +300,6 @@ enum DictationCleanupSteps {
         actions.deleteTranscribingAudio()
         actions.endCriticalDictationActivity()
         actions.refreshAvailableMicrophonesIfNeeded()
-        actions.scheduleReadyStatusAfterCancel()
     }
 
     /// Before the system microphone prompt. Shortcuts stop while it is shown,
