@@ -15,14 +15,14 @@ import Foundation
 ///   letter log pInsert + log q, q mixing a repeat of the previous candidate letter, a slip onto its
 ///   neighbours and a uniform stray tap over the letters area; two swapped letters log pTranspose plus both
 ///   taps at their keys) plus `lmWeight` × the word model's log probability given the sentence's words.
-/// - Spelling channel ("Spelling channel"), with `wSpelling` > 0 and `spelling` tables: each step of an
-///   alignment that is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its score above and
-///   spelling, with m the match log above and t(x) the step's tap's touch log likelihood at key x (0 for a
-///   letter without a tap typed as x): typed x at candidate letter c ≠ x, m + sub[c, x] + t(x); candidate
-///   letter c omitted after p (START for the first), dele[p, c]; typed x inserted after candidate letter c
-///   (START before the first, where the motor term still judges it against the first), m + ins[c, x] + t(x);
-///   candidate letters p, c typed as c, p, 2m + trans[p, c] + both taps' touch log likelihoods. Matches and
-///   keep are unchanged. `wSpelling` 0 ignores the tables: the scores are the motor channel's, bit for bit.
+/// - Spelling channel ("Word autocorrect", Spelling channel), with `wSpelling` > 0 and `spelling` tables: each step of
+///   an alignment that is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its score above and
+///   spelling, with m the match log above and t(x) the step's tap's touch log likelihood at key x (0 for a letter
+///   without a tap typed as x): typed x at candidate letter c ≠ x, m + sub[c, x] + t(x); candidate letter c omitted
+///   after p (START for the first), dele[p, c]; typed x inserted after candidate letter c (START before the first,
+///   where the motor term still judges it against the first), m + ins[c, x] + t(x); candidate letters p, c typed as c,
+///   p, 2m + trans[p, c] + both taps' touch log likelihoods. Matches and keep are unchanged. `wSpelling` 0 ignores the
+///   tables: the scores are the motor channel's, bit for bit.
 /// - Keep scores the typed key with every letter matched, plus `lmWeight` × its model log probability if it
 ///   is a lexicon form, else `lmWeight` × log P("<unk>") + `logOOV`.
 /// - The best form (ties: higher frequency, then alphabetically first) replaces the word only if it beats

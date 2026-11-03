@@ -1523,9 +1523,8 @@ the highlighted candidate's text 4.5:1 on its pill.
   with a spring (response 0.26 s, damping 0.88; the grow is about 0.2 s).
   At every change of form what leaves goes first, in 0.06 s, and what
   arrives follows after it (`DictationBarView.handover`): the idle line
-  before the island grows and Cancel buds out, the words in the wait before
-  Undo and Start; the middle's words in the wait wait 0.14 s, until the
-  contracting island has left them room. A press dims what the island holds;
+  before the island grows and Cancel buds out, and the wait's shimmer before
+  Undo and Start. A press dims what the island holds;
   a tap on Start without a session also pops its dot once (a quick spring to
   1.6 times and back). The chips arrive with a short spring from a little
   smaller; Undo, after a dictation, arrives as Cancel's bud.
