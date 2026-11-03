@@ -35,7 +35,7 @@ private final class ProxyDocument: TextDocument, TrackpadHost {
 /// KeyboardCore (`KeyboardEditor`, `EditingCore`, `UndoTracker`, `TrackpadController`, the typing
 /// rules), where they are tested.
 ///
-/// ARCHITECTURE.md, "Typing model v2: immediate execution": a key edits through the proxy the moment it
+/// ARCHITECTURE.md, "Typing model", Immediate execution: a key edits through the proxy the moment it
 /// is typed, ending any trackpad gesture on the spot; it is refused only in another identified field.
 /// Context is read in memory only and never stored or logged; every copy is dropped on hiding and
 /// expires on its own clock otherwise.

@@ -1,7 +1,7 @@
 import Foundation
 
-/// The keyboard's editing side as `KeyboardInput` drives it (ARCHITECTURE.md, "Typing model v2:
-/// immediate execution"): touches through `KeyTouchModel` (each key bound to the field it touched down
+/// The keyboard's editing side as `KeyboardInput` drives it (ARCHITECTURE.md, "Typing model",
+/// Immediate execution): touches through `KeyTouchModel` (each key bound to the field it touched down
 /// in, or the first one identified after), keys through `KeyboardEditor` with the real `TypingState`,
 /// the held delete key's timer, the trackpad through the real `TrackpadController` and
 /// `TrackpadSession` once per frame, and every host callback (the trackpad's reports, focus changes,
@@ -80,10 +80,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testLettersDuringAProbeRunAtOnceInOrder() {
-        // The round-6 review's P1 was Shift overtaking letters queued behind a probe. Nothing is queued:
-        // each key edits as it is typed, cased by the shift of that moment, and the probe's outcome is
-        // abandoned. Where a key typed as a probe crosses a cluster lands is the host's (it may be inside
-        // the cluster: the accepted residual), but every key is there, once, in order, together.
+        // Shift must not overtake letters typed behind a probe. Nothing is queued: each key edits as it is
+        // typed, cased by the shift of that moment, and the probe's outcome is abandoned. Where a key typed
+        // as a probe crosses a cluster lands is the host's (it may be inside the cluster: the accepted
+        // residual), but every key is there, once, in order, together.
         for unit in [CursorOffsetUnit.utf16, .grapheme] {
             let harness = emojiField(unit: unit)
             harness.gesture(dx: -10, events: 1)
@@ -111,8 +111,8 @@ enum KeyboardEditorTests {
     }
 
     private static func testAnyKeyTouchDownEndsSettlement() {
-        // The round-9 review's P1: Shift and layer keys never ended settlement, and a character only at its
-        // release, so a gesture report arriving after Shift moved the caret on before the letter. Any
+        // Shift and layer keys end settlement too, and a character at its touch-down, not its release:
+        // otherwise a gesture report arriving after Shift would move the caret on before the letter. Any
         // key's touch-down ends the gesture; nothing is adjusted after it, and the letter lands where the
         // caret was once what was already issued landed.
         let untouched = settlingGesture()
@@ -139,9 +139,9 @@ enum KeyboardEditorTests {
             expected.insert(contentsOf: Array(testCase.typed.utf16), at: caret)
             TestSupport.expectEqual(harness.document.text, String(decoding: expected, as: UTF16.self))
         }
-        // A character held across several frames of settlement (typing model v4): the gesture ends at its
-        // touch-down, nothing is typed while it is held, and the letter is typed at the lift, landing after
-        // what was already issued.
+        // A character held across several frames of settlement (ARCHITECTURE.md, "Typing model"): the
+        // gesture ends at its touch-down, nothing is typed while it is held, and the letter is typed at the
+        // lift, landing after what was already issued.
         let held = settlingGesture()
         let finger = held.touchDown(.character("q"))
         TestSupport.expect(!held.trackpad.isActive, "a character's touch-down did not end the gesture")
@@ -170,9 +170,9 @@ enum KeyboardEditorTests {
     }
 
     private static func testLateGestureReportIsNeverAnEcho() {
-        // The round-9 review's P2: move to "One|Two", Space; the gesture's delayed report showed "One |Two",
-        // which is exactly what the space left, and was taken for its echo, so the second Space typed
-        // "One. Two". A report a gesture still owes is never an echo: it resets the timing.
+        // Move to "One|Two", Space; the gesture's delayed report shows "One |Two", exactly what the space
+        // left. Taken for its echo, it would let the second Space type "One. Two". A report a gesture
+        // still owes is never an echo: it resets the timing.
         let harness = KeyboardHarness(FakeTextHost(text: "OneTwo", unit: .utf16, callbackFrames: 6))
         harness.gesture(dx: -30, events: 1)
         TestSupport.expectEqual(harness.document.host.caret, 3)
@@ -211,10 +211,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testLateReportShowingAnEarlierEditsStateIsNoEcho() {
-        // Found by the typing torture (seed 315): "a", "l", a gesture out and back, then a delete, which
-        // brought the field back to exactly what "a" had left. The gesture's late reports showed that, and
-        // the first was taken for the echo of "a", made before the gesture. Once a gesture has finished,
-        // nothing is an echo until its reports have come.
+        // Typing torture seed 315: "a", "l", a gesture out and back, then a delete, which brings the field
+        // back to exactly what "a" left. The gesture's late reports show that, and the first must not be
+        // taken for the echo of "a", made before the gesture. Once a gesture has finished, nothing is an
+        // echo until its reports have come.
         let harness = KeyboardHarness(FakeTextHost(text: "One", unit: .utf16, callbackFrames: 20))
         harness.type("al")
         let finger = harness.beginGesture()
@@ -248,10 +248,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testCancelledProbeOwesEveryReport() {
-        // The round-10 review's P2: a probe and the rollback its cancellation issued owe four WebKit reports,
-        // but only two were counted. After two had come, the third, showing what the Space typed meanwhile
-        // left, was taken for its echo, and the next Space typed a period. Every report is counted, per
-        // adjustment and per report the host sends, whatever settles.
+        // A probe and the rollback its cancellation issued owe four WebKit reports. Were only two counted,
+        // the third, showing what the Space typed meanwhile left, would be taken for its echo, and the next
+        // Space would type a period. Every report is counted, per adjustment and per report the host
+        // sends, whatever settles.
         var host = FakeTextHost(text: "Hi \u{1F44D}\u{1F3FD}", unit: .grapheme, callbackFrames: 3)
         host.reportsAsIssuedFirst = true
         let harness = KeyboardHarness(host)
@@ -278,11 +278,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testReportOfAnIgnoredJumpIsNoEchoOfTheKeyBefore() {
-        // Found by the typing torture (seed 8527): Space, then a gesture whose jump past the last line the
-        // host ignored, ended by Shift. Its report showed the field unchanged, exactly as the Space left it,
-        // and was taken for the Space's echo, so the shift the user turned off stayed off. While a finished
-        // gesture owes reports, nothing is an echo: the report resets the timing and the shift follows the
-        // text again.
+        // Typing torture seed 8527: Space, then a gesture whose jump past the last line the host ignores,
+        // ended by Shift. Its report shows the field unchanged, exactly as the Space left it; taken for the
+        // Space's echo, it would leave off the shift the user turned off. While a finished gesture owes
+        // reports, nothing is an echo: the report resets the timing and the shift follows the text again.
         let harness = KeyboardHarness(FakeTextHost(text: "One", unit: .utf16, callbackFrames: 6), autocapitalization: .words)
         harness.tap(.space)
         TestSupport.expectEqual(harness.editor.typing.shift, .once)
@@ -305,10 +304,11 @@ enum KeyboardEditorTests {
     }
 
     private static func testSlowHostLeavesAJumpInsideAnEmoji() {
-        // Expected risk, pinned (ARCHITECTURE.md: reports later than `syncTimeout` are outside the trackpad's
-        // guarantees). The jump's report comes after the session gave up on it, from a provisional answer
-        // showing the caret at the window's edge, so the gesture settles with the caret between the halves
-        // of 👍. A letter typed then lands there, visibly, and one delete restores the field.
+        // Expected risk, pinned (ARCHITECTURE.md, "Trackpad and keys", Known limits: reports later than
+        // `syncTimeout` are outside the trackpad's guarantees). The jump's report comes after the session
+        // gave up on it, from a provisional answer showing the caret at the window's edge, so the gesture
+        // settles with the caret between the halves of 👍. A letter typed then lands there, visibly, and
+        // one delete restores the field.
         let original = Array("Ab. Cd. \u{1F44D} Ef".utf16)
         let harness = slowJumpIntoAnEmoji()
         harness.gesture(dy: 20, events: 1)
@@ -335,9 +335,9 @@ enum KeyboardEditorTests {
     }
 
     private static func testJumpWatchOutlastsHidingAndReappearing() {
-        // Found by the typing torture (seeds 6961, 9549): a jump past the window's edge stopped inside a
-        // hidden emoji, the keyboard hid, and it reappeared before the jump's report; the reappearance ended
-        // the watch, and the caret stayed inside the emoji. In the same field the text-free watch goes on.
+        // Typing torture seeds 6961 and 9549: a jump past the window's edge stops inside a hidden emoji,
+        // the keyboard hides, and it reappears before the jump's report. Were the reappearance to end the
+        // watch, the caret would stay inside the emoji. In the same field the text-free watch goes on.
         var host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16, window: 2, callbackFrames: 30)
         host.provisionalContext = true
         let harness = KeyboardHarness(host)
@@ -358,10 +358,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testGestureFromInsideAClusterCasesFromTheField() {
-        // Found by the typing torture (seed 2083): a key the accepted residual left between "e" and its
-        // accent; a gesture began there and the host ignored its adjustments from inside the cluster, so the
-        // boundary the gesture assumed was not where the caret was. A key at the lift is cased from the
-        // field's own text before the caret, not from that assumed landing.
+        // Typing torture seed 2083: a key the accepted residual left between "e" and its accent; a gesture
+        // begins there and the host ignores its adjustments from inside the cluster, so the boundary the
+        // gesture assumes is not where the caret is. A key at the lift is cased from the field's own text
+        // before the caret, not from that assumed landing.
         let harness = KeyboardHarness(FakeTextHost(text: "Done. e\u{301}", caret: 7, unit: .grapheme, callbackFrames: 3),
                                       autocapitalization: .sentences)
         harness.gesture(dx: -10, events: 1)
@@ -382,7 +382,7 @@ enum KeyboardEditorTests {
     }
 
     private static func testKeyInsideAClusterIsUndoneByOneDelete() {
-        // ARCHITECTURE.md, "Typing model v2", accepted residual: a key typed as a probe crosses a cluster
+        // ARCHITECTURE.md, "Trackpad and keys", Accepted residual: a key typed as a probe crosses a cluster
         // may land inside it (placed there directly here). It is visible, and one delete restores the
         // cluster exactly: the host keeps the halves of a split surrogate pair, as UIKit's storage does.
         for (text, caret) in [("Hi \u{1F44D} there", 4), ("Hi \u{1F44D}\u{1F3FD} there", 5)] {
@@ -420,8 +420,8 @@ enum KeyboardEditorTests {
     }
 
     private static func testHidingLosesNothingTyped() {
-        // The round-8 review's P1: keys behind a Return's pause were dropped on hiding. Every key has
-        // been applied by the time the keyboard hides, during a gesture's settling too.
+        // Hiding drops no key, after a Return too: every key has been applied by the time the keyboard
+        // hides, during a gesture's settling too.
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         harness.type("a\nb")
         harness.hide()
@@ -435,9 +435,9 @@ enum KeyboardEditorTests {
     }
 
     private static func testDictationIsInsertedAtOnce() {
-        // The round-8 review's P1: a claimed result could queue behind a Return and be dropped. A result is
-        // claimed only while it can be inserted at once (`isBusy` is only a running gesture), and the
-        // insertion is immediate: after a Return, with no identity, ending a gesture.
+        // A claimed result must not queue behind a Return and be dropped. A result is claimed only while it
+        // can be inserted at once (`isBusy` is only a running gesture), and the insertion is immediate:
+        // after a Return, with no identity, ending a gesture.
         let harness = KeyboardHarness(FakeTextHost(text: "Notes:", model: .uikit))
         TestSupport.expect(!harness.editor.isBusy, "busy with nothing running")
         harness.press(.returnKey)
@@ -460,9 +460,9 @@ enum KeyboardEditorTests {
     // MARK: Shift and double space
 
     private static func testOutsideCaretTapResetsDoubleSpace() {
-        // The round-8 review's P1: after a gesture and a space, a tap after another word's space within
-        // a second, then Space, replaced that space with ". ". Any callback that is not an echo of our own
-        // edits starts the space timing over.
+        // After a gesture and a space, a tap after another word's space within a second, then Space, must
+        // not replace that space with ". ". Any callback that is not an echo of our own edits starts the
+        // space timing over.
         let harness = KeyboardHarness(FakeTextHost(text: "One two three", unit: .utf16, callbackFrames: 2))
         harness.gesture(dx: -100, events: 1)
         harness.press(.space)
@@ -488,8 +488,8 @@ enum KeyboardEditorTests {
     }
 
     private static func testNewFieldsFirstLetterIsCasedFromItsText() {
-        // The round-8 review's P1: the first letter typed in a newly focused field before its first
-        // callback took the old field's casing. The field the proxy serves is adopted first.
+        // The first letter typed in a newly focused field before its first callback must not take the
+        // old field's casing. The field the proxy serves is adopted first.
         let toEmpty = KeyboardHarness(FakeTextHost(text: "Field A has wor", model: .uikit), autocapitalization: .sentences)
         TestSupport.expectEqual(toEmpty.editor.typing.shift, .off)
         toEmpty.document.switchField(to: FakeTextHost(text: "", model: .uikit), id: UUID())
@@ -511,10 +511,10 @@ enum KeyboardEditorTests {
     // MARK: Field binding
 
     private static func testHeldTouchesBindToTheFirstIdentifiedField() {
-        // The round-8 review's P1: a finger that touched down while no field was identified kept no
-        // binding, and released into B after first becoming identified in A. It binds to the first field
-        // identified, A, so it ends without typing in B (both known, different). A held letter, typed only
-        // at its lift (typing model v4), is checked below.
+        // A finger that touched down while no field was identified must not release into B after first
+        // becoming identified in A. It binds to the first field identified, A, so it ends without typing in
+        // B (both known, different). A held letter, typed only at its lift (ARCHITECTURE.md, "Typing
+        // model", Characters), is checked below.
         let fieldA = UUID()
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit), documentID: nil)
         let delete = harness.touchDown(.delete)
@@ -570,8 +570,7 @@ enum KeyboardEditorTests {
     }
 
     private static func testOwnTypingReportsNeverDropKeys() {
-        // The round-6 review's P1: a host that reports our own edits had them taken as outside changes.
-        // Delayed or coalesced, they are echoes: never outside changes.
+        // A host may report our own edits: delayed or coalesced, they are echoes, never outside changes.
         for delay in [1, 2, 3] {
             let typed = KeyboardHarness(FakeTextHost(text: "Notes: ", model: .uikit), editCallbackDelay: delay)
             for character in "abc" {
@@ -603,9 +602,9 @@ enum KeyboardEditorTests {
     }
 
     private static func testKeyReleasedAfterTheFieldChangedNeverLands() {
-        // The round-6 review's P1: a letter pressed in field A; the proxy served field B before any
-        // callback said so; the release typed into B. Both identities are known and differ: cancelled. Held
-        // spaces and letters alike (typing model v4: a letter types at its lift).
+        // A letter pressed in field A; the proxy serves field B before any callback says so; the release
+        // must not type into B. Both identities are known and differ: cancelled. Held spaces and letters
+        // alike (ARCHITECTURE.md, "Typing model", Characters: a letter types at its lift).
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         let fieldA = harness.field
         let touch = harness.touchDown(.space)
@@ -617,7 +616,7 @@ enum KeyboardEditorTests {
         // Touched down in B, it types in B.
         harness.tap(.character("y"))
         TestSupport.expectEqual(harness.document.text, "Field B.y")
-        // A held letter (typing model v4) is refused the same way.
+        // A held letter (ARCHITECTURE.md, "Typing model", Characters) is refused the same way.
         let letter = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         let finger = letter.touchDown(.character("x"))
         letter.document.switchField(to: FakeTextHost(text: "Field B.", model: .uikit), id: UUID())
@@ -627,10 +626,10 @@ enum KeyboardEditorTests {
     }
 
     private static func testKeyTouchedDownInTheNewFieldSurvivesItsFirstCallback() {
-        // The round-7 review's P1: focus moved A→B; a character touched down in B before B's first
-        // callback; that callback cancelled every held touch, B's valid key included. Only touches and a
-        // delete bound to another field end: a space held in A ends, a letter touched down in B types there at
-        // its lift (typing model v4).
+        // Focus moves A→B; a character touches down in B before B's first callback, which must not cancel
+        // every held touch, B's valid key included. Only touches and a delete bound to another field end: a
+        // space held in A ends, a letter touched down in B types there at its lift (ARCHITECTURE.md, "Typing
+        // model", Field binding).
         let harness = KeyboardHarness(FakeTextHost(text: "Field A.", model: .uikit))
         let deleteInA = harness.touchDown(.delete)
         let inA = harness.touchDown(.space)
@@ -667,9 +666,9 @@ enum KeyboardEditorTests {
 
 
     private static func testAbortedJumpIsRepairedToABoundary() {
-        // The round-7 review's P1, now with no key involved: a jump past the edge stopped between the
-        // halves of 👍's surrogate pair and an unrelated change ended the gesture. The gesture's own
-        // safety goes on through the abort until the field shows a whole-cluster boundary.
+        // With no key involved: a jump past the edge stops between the halves of 👍's surrogate pair
+        // and an unrelated change ends the gesture. The gesture's own safety goes on through the abort
+        // until the field shows a whole-cluster boundary.
         let harness = KeyboardHarness(FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16,
                                                    window: 2, callbackFrames: 6))
         let touch = harness.beginGesture()
@@ -730,9 +729,9 @@ enum KeyboardEditorTests {
     }
 
     private static func testDeletingPastTheFieldStartKeepsItsCasing() {
-        // Found by the typing torture (seed 6990): the proxy showed our deletions a frame late; deleting
-        // everything known, then once more at the field's start, fell back to the stale reading, which
-        // still showed the deleted text, so the next letter came out lowercase.
+        // Typing torture seed 6990: the proxy shows our deletions a frame late. Deleting everything known,
+        // then once more at the field's start, must not fall back to the stale reading, which still shows
+        // the deleted text and would make the next letter lowercase.
         var host = FakeTextHost(text: "Ab", model: .whole)
         host.editContextLagFrames = 3
         let harness = KeyboardHarness(host, autocapitalization: .sentences)
@@ -804,8 +803,7 @@ enum KeyboardEditorTests {
     /// Seeds 1...60 and earlier failures by default; `TORTURE_SEEDS=first-last` runs others (a stress run
     /// on the Mac). Prints the failing seed and the smallest failing number of steps.
     private static func testTypingTorture() {
-        // Seeds a stress run found failing in rounds 9 and 10, each a bug since fixed or a limit the oracle
-        // now states.
+        // Regression seeds from stress runs, each pinning a bug or a limit the oracle states.
         var seeds = Array(UInt64(1) ... 60) + [63, 107, 114, 156, 315, 419, 439, 469, 470, 556, 1240, 1284, 1402, 1850, 2083, 2105,
                                               4026, 5329, 5392, 6822, 6961, 6990, 8527, 9549, 11942]
         if let range = ProcessInfo.processInfo.environment["TORTURE_SEEDS"]?.split(separator: "-"), range.count == 2,
@@ -972,7 +970,7 @@ final class KeyboardHarness {
         perform(model.cancelled(id))
     }
 
-    // MARK: Swipes (ARCHITECTURE.md, "Typing model v4 and swipe typing")
+    // MARK: Swipes (ARCHITECTURE.md, "Swipe typing")
 
     /// Whether a drag on a letter may become a swipe (`KeyTouchModel.swipeEnabled`).
     var swipeEnabled: Bool {

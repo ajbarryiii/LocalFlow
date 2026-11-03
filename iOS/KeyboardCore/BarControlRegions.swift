@@ -1,11 +1,11 @@
 import Foundation
 
-/// Where the dictation bar's controls are, in the bar's coordinates (ARCHITECTURE.md, "Reach above the keys"):
-/// each control's frame as last laid out, plus, for `linger` seconds after a control moved or went, the frame
-/// it left. Reported frames are the destination layout, while the bar animates its controls there, so a
-/// control still visible where it was stays the bar's. When a recording ends, the island's former area takes no tap for
-/// `stopGuard` (round 11): Cancel slides into it with the contracting island, and a quick second tap on Stop must
-/// neither cancel nor type. Pure.
+/// Where the dictation bar's controls are, in the bar's coordinates (ARCHITECTURE.md, "Reach and touch regions",
+/// The bar outside its controls): each control's frame as last laid out, plus, for `linger` seconds after a
+/// control moved or went, the frame it left. Reported frames are the destination layout, while the bar animates its
+/// controls there, so a control still visible where it was stays the bar's. When a recording ends, the island's
+/// former area takes no tap for `stopGuard`: Cancel slides into it with the contracting island, and a quick second
+/// tap on Stop must neither cancel nor type. Pure.
 struct BarControlRegions: Equatable, Sendable {
     /// Longer than the bar's animations: its chips over 0.2 s, the Start capsule with a spring.
     static let linger: TimeInterval = 0.6

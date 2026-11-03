@@ -1,10 +1,9 @@
 import Foundation
 
-/// ARCHITECTURE.md, "Top row": Cancel's × as a bud of the dictation island (round 12, owner: "have the cancel dictation
-/// x next to the speaking pill bubble out from the speaking pill when you open it, and then bubble across to the undo
-/// key location"; the stretch, A). It buds off the island's end that faces the bar's middle and pinches free as the
-/// island grows, slides with it at Stop, and when the text lands it travels to Undo's place and becomes Undo; with no
-/// text, or on Cancel, the island absorbs it. With Reduce Motion nothing travels.
+/// ARCHITECTURE.md, "Top row": Cancel's × as a bud of the dictation island. It buds off the island's end that faces the
+/// bar's middle and pinches free as the island grows, slides with it at Stop, and when the text lands it travels to
+/// Undo's place and becomes Undo; with no text, or on Cancel, the island absorbs it. With Reduce Motion nothing
+/// travels.
 enum IslandBudTests {
     static var tests: [TestCase] {
         [
@@ -381,7 +380,7 @@ enum IslandBudTests {
 
     /// The bud becomes Undo only for the dictation that just finished, when it put in text that can be undone. Undo
     /// still showing for an earlier dictation (a recording cancelled, nothing heard, an error) takes the bud back into
-    /// the island; the earlier chip is left alone (Sol, round 12).
+    /// the island; the earlier chip is left alone.
     private static func testOnlyANewDictationBecomesUndo() {
         let cancel = IslandBud.Body(minX: 189, maxX: 221, height: 32), chip = IslandBud.Body(minX: 54, maxX: 126, height: 30)
         TestSupport.expectEqual(IslandBud.target(cancel: cancel, undo: chip, dictationInserted: true), .cancel(cancel))
@@ -392,7 +391,7 @@ enum IslandBudTests {
     }
 
     /// The phone turns (or the bar otherwise changes size) while the bud is on its way to Undo: it lands on Undo's new
-    /// place, not the old one; and one on its way back into an island that has moved is simply gone (Sol, round 12).
+    /// place, not the old one; and one on its way back into an island that has moved is simply gone.
     private static func testATurnOnTheWayLandsOnUndosNewPlace() {
         for leftHanded in [false, true] {
             let start = layout(402, 38, .compact, leftHanded: leftHanded)
@@ -432,7 +431,7 @@ enum IslandBudTests {
     }
 
     /// Reduce Motion turned on while the bud is on its way (budding out, being taken back, going to Undo): everything
-    /// takes its place at once, as the island's content does, and nothing more moves (Sol, round 12).
+    /// takes its place at once, as the island's content does, and nothing more moves.
     private static func testReduceMotionTurnedOnMidwaySettlesAtOnce() {
         for leftHanded in [false, true] {
             let start = layout(402, 38, .compact, leftHanded: leftHanded)
@@ -467,9 +466,9 @@ enum IslandBudTests {
     }
 
     /// Which dictation the island shows, by its request (`IslandBud.Shown`), so the bud becomes Undo only when this
-    /// keyboard put in that very dictation (Sol, round 12): from the start of a dictation, also when the bar first
-    /// appears while one is already under way (back from LocalFlow); a new dictation forgets the last one at once,
-    /// even before its request is known; going idle keeps it for the landing.
+    /// keyboard put in that very dictation: from the start of a dictation, also when the bar first appears while one is
+    /// already under way (back from LocalFlow); a new dictation forgets the last one at once, even before its request
+    /// is known; going idle keeps it for the landing.
     private static func testTheBarKnowsWhichDictationItShows() {
         let a = UUID(), b = UUID()
         var shown = IslandBud.Shown()

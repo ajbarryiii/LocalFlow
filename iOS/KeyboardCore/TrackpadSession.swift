@@ -1,7 +1,7 @@
 import Foundation
 
 /// One trackpad gesture over the text the proxy exposes, modeled on Apple's floating cursor
-/// (ARCHITECTURE.md, "Measured Apple keyboard behavior"). A 2D point starts at the caret in the
+/// (ARCHITECTURE.md, "Trackpad: activation and motion"). A 2D point starts at the caret in the
 /// layout of the context snapshot and moves by the measured per-event gain. The caret is the
 /// character boundary nearest the point on the line whose center is nearest the point's y. Line ends
 /// do not wrap; only vertical motion changes lines; the point is clamped and overshoot is forgotten.
@@ -24,8 +24,8 @@ import Foundation
 /// walk to the snapshot's edge, refreshed snapshots). After the finger lifts the point stays where it
 /// was, and settling keeps re-anchoring and snapping it until the caret is there.
 ///
-/// Safety rules (ARCHITECTURE.md, "Trackpad safety", "Undo ownership v2", "Probes only where units
-/// can differ"):
+/// Safety rules (ARCHITECTURE.md, "Trackpad: proxy and snapshots", "Trackpad: units, probes and attribution"
+/// and "Trackpad and keys"):
 /// - Moves across single-code-point BMP characters need no probe: both units count them alike.
 ///   Only crossing a multi-unit cluster with the unit unknown probes, by the cluster's UTF-16 length
 ///   (or the crossing-side scalar when the snapshot has too few clusters, never mid-pair).
@@ -55,7 +55,7 @@ import Foundation
 ///   time limit, moving a caret it left inside a hidden cluster back to the cluster's edge. An
 ///   outstanding repair out of a surrogate pair's middle is watched the same way and finished: a caret
 ///   it leaves inside the cluster goes on to the cluster's edge in the repair's direction.
-/// - A key ends the session on the spot (ARCHITECTURE.md, "Typing model v2"): nothing more is issued
+/// - A key ends the session on the spot (ARCHITECTURE.md, "Trackpad and keys"): nothing more is issued
 ///   and a probe's outcome is abandoned. Typing never waits on any of this.
 /// - An outside change ends the gesture without another step toward the target, but a caret that may
 ///   be inside a cluster (something out, or the field shows it there) is watched and repaired to a
@@ -103,7 +103,7 @@ struct TrackpadSession {
         var id: Int
         var outcomes: [CaretExpectation]
         /// The context it was issued in. WebKit reports every adjustment twice, first with this context
-        /// (the proxy shows it again until the second report; measured in a WKWebView, round 6).
+        /// (the proxy shows it again until the second report; measured in a WKWebView).
         var issuedIn: Context
         var issuedAt: TimeInterval
         var reportedAsIssued = false
@@ -611,7 +611,7 @@ struct TrackpadSession {
     /// change: a context that is none of the following.
     /// - **As issued:** exactly the context the oldest adjustment still owed a callback was issued in
     ///   (reports arrive in order), once per adjustment and never empty. WebKit reports every adjustment
-    ///   twice, first this way (measured in a WKWebView, round 6). It confirms nothing; if the adjustment
+    ///   twice, first this way (measured in a WKWebView). It confirms nothing; if the adjustment
     ///   then never reports where it landed, the session is ambiguous (`retireOverdue`). Once the host is
     ///   known to report once (a moved adjustment reported only as it landed), such a report is an
     ///   adjustment the host ignored.

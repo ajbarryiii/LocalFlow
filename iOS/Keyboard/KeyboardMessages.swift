@@ -11,12 +11,12 @@ enum KeyboardMessages {
     /// 375-point phone beside Cancel and the labelled Stop capsule.
     static let listeningWhilePreparing = "Listening · model loads"
     /// Idle with a live session and a released model: a tap prepares it (ARCHITECTURE.md, "Keyboard
-    /// presentation"), nothing prepares it now. VoiceOver's, after the session line (round 10: the bar shows no words).
+    /// presentation"), nothing prepares it now. VoiceOver's, after the session line (the bar shows no words).
     static let modelLoadsWhenDictating = "Model loads when you dictate"
-    /// What VoiceOver hears after the time while recording as the host still prepares the model (round 9 showed it in
-    /// the bar's middle; round 10, owner: the wave says it is listening, and the wait will show it is busy).
+    /// What VoiceOver hears after the time while recording as the host still prepares the model (the bar shows no
+    /// words for it: the wave says it is listening, and the wait will show it is busy).
     static let modelLoadingCaption = "Model loading"
-    /// VoiceOver's words for Start with no session (round 10: the bar shows the ember dot instead of these words).
+    /// VoiceOver's words for Start with no session (the bar shows Start's dot, still, instead of these words).
     static let noSessionSpoken = "No session. Start opens LocalFlow"
     static let storeWriteFailed = "Couldn't reach LocalFlow"
     static let fullAccessExplanation = "Full Access lets this keyboard talk to the LocalFlow app, which transcribes "
@@ -60,9 +60,9 @@ enum KeyboardMessages {
     }
 
     /// What VoiceOver hears as the island's value: while it is Stop, the mode and the time while recording, then any
-    /// `detail` (the model still loading); on Start, `detail`, the status the bar shows as Start's dot (round 10: the
-    /// session's time left, the model, no session; `spokenStatus`). Empty for the wait, whose label names it. A notice, an
-    /// error and "Open LocalFlow to start a session" are the middle's words, which VoiceOver reaches on its own.
+    /// `detail` (the model still loading); on Start, `detail`, the status the bar shows as Start's dot (the session's
+    /// time left, the model, no session; `spokenStatus`). Empty for the wait, whose label names it. A notice, an error
+    /// and "Open LocalFlow to start a session" are the middle's words, which VoiceOver reaches on its own.
     static func islandAccessibilityValue(for mode: KeyboardMode, detail: String?, now: Date) -> String {
         switch mode {
         case .starting: return "Starting"
@@ -75,10 +75,9 @@ enum KeyboardMessages {
         }
     }
 
-    /// The status words the bar no longer shows (round 10, owner: "prefer intuitive icons to textual descriptions"),
-    /// for VoiceOver, only from a live host: the session's time left in the menu's words, the model loading when the user
-    /// dictates or preparing now, no session (Start opens LocalFlow), and the model still loading while recording. Nil
-    /// where the bar's own words or the island's label say it all.
+    /// The status words the bar does not show, for VoiceOver, only from a live host: the session's time left in the
+    /// menu's words, the model loading when the user dictates or preparing now, no session (Start opens LocalFlow), and
+    /// the model still loading while recording. Nil where the bar's own words or the island's label say it all.
     static func spokenStatus(mode: KeyboardMode, status: HostStatus?, launcherFailed: Bool, now: Date) -> String? {
         let live = status.flatMap { status -> HostStatus? in
             status.schema == DictationProtocol.schema && status.session == .active
@@ -176,8 +175,8 @@ enum KeyboardMessages {
     }
 
     /// The idle line's words about the model, only from a live host's session, and only for a model that cannot load
-    /// (round 10: the session's state is Start's dot, and a model that loads or is loading is VoiceOver's,
-    /// `spokenStatus`). A dead host's last status says nothing.
+    /// (the session's state is Start's dot, and a model that loads or is loading is VoiceOver's, `spokenStatus`). A
+    /// dead host's last status says nothing.
     static func hint(for status: HostStatus?, now: Date) -> String? {
         guard let status, status.schema == DictationProtocol.schema, status.session == .active,
               DictationProtocol.isFresh(status.heartbeatAt, ttl: DictationProtocol.livenessTimeout, now: now)
@@ -218,7 +217,7 @@ extension IslandForm {
 
 /// What the island holds (ARCHITECTURE.md, "Top row"): the ridge mark and "Start"; while starting, the status and the
 /// stop glyph; while recording, the wave, the time and the stop glyph; while the recording waits for its transcript, only
-/// the shimmer (the middle says what it waits for).
+/// the shimmer (no words name the wait).
 enum CapsuleContent: Equatable, Sendable {
     case start
     case starting
@@ -236,12 +235,11 @@ enum CapsuleContent: Equatable, Sendable {
     }
 }
 
-/// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"). Round 10 (owner: "prefer intuitive icons
-/// to textual descriptions ... balance between these two poles"): words only where they earn their space. A notice
-/// whenever one is up; the words of what the user must act on (Full Access, a broken install or versions, "Open
-/// LocalFlow to start a session" after the launcher failed), of an error, and of a model that cannot load (`hint`);
-/// otherwise nothing: the island's motion says it is starting, recording or waiting, and Start's dot (`SessionDot`)
-/// whether a session is on. Nothing beside a chip but a notice.
+/// What the bar's middle shows beside any chips (ARCHITECTURE.md, "Top row"): words only where they earn their space.
+/// A notice whenever one is up; the words of what the user must act on (Full Access, a broken install or versions,
+/// "Open LocalFlow to start a session" after the launcher failed), of an error, and of a model that cannot load
+/// (`hint`); otherwise nothing: the island's motion says it is starting, recording or waiting, and Start's dot
+/// (`SessionDot`) whether a session is on. Nothing beside a chip but a notice.
 enum BarStatus: Equatable, Sendable {
     case notice(String)
     /// `attention`: an error or a state that keeps dictation from working, led by the ember warning symbol.
@@ -270,12 +268,11 @@ enum BarStatus: Equatable, Sendable {
     }
 }
 
-/// The session on Start's mark's dot, and on the menu's (round 11, owner, after trying round 10's green and amber dots:
-/// amber made the logo look worse, and iOS's own orange microphone dot means a session is on). The dot is always the
-/// brand's aurora; the session shows in its motion. A live session that can take a dictation: a heartbeat, a soft ring
-/// rippling out from the dot every few seconds; its model preparing: breathing; no session, or dictation cannot run
-/// here: the same dot, still. With Reduce Motion nothing moves: lit while a session is on, unlit (a neutral grey) while
-/// none is.
+/// The session on Start's mark's dot, and on the menu's. The dot is always the brand's aurora (an amber dot makes the
+/// logo look worse, and iOS's own orange microphone dot means a session is on); the session shows in its motion. A live
+/// session that can take a dictation: a heartbeat, a soft ring rippling out from the dot every few seconds; its model
+/// preparing: breathing; no session, or dictation cannot run here: the same dot, still. With Reduce Motion nothing
+/// moves: lit while a session is on, unlit (a neutral grey) while none is.
 enum SessionDot: Equatable, Sendable {
     case ready, preparing, off
 
@@ -284,9 +281,9 @@ enum SessionDot: Equatable, Sendable {
         case heartbeat, breathing, lit, unlit
     }
 
-    /// The heartbeat, in one place to tune (the owner judges it on a phone): a ring `ripple` seconds long growing from
-    /// the dot's edge to `reach` points beyond it, ease-out, fading from `opacity`, every `period` seconds, the first
-    /// `firstDelay` after the mark appears.
+    /// The heartbeat, in one place to tune: a ring `ripple` seconds long growing from the dot's edge to `reach` points
+    /// beyond it, ease-out, fading from `opacity`, every `period` seconds, the first `firstDelay` after the mark
+    /// appears.
     enum Heartbeat {
         static let period = 3.0
         static let ripple = 1.0
@@ -307,7 +304,7 @@ enum SessionDot: Equatable, Sendable {
     }
 
     /// Start's dot behind the open menu holds still, lit or unlit as it is, so only the menu's mark moves: two rings, each
-    /// timed from its own arrival, would beat out of step (round 11 council, Opus).
+    /// timed from its own arrival, would beat out of step.
     func look(reduceMotion: Bool, behindMenu: Bool = false) -> Look {
         let still = reduceMotion || behindMenu
         switch self {
@@ -322,7 +319,7 @@ enum SessionDot: Equatable, Sendable {
         look(reduceMotion: reduceMotion) == .unlit ? palette.unlitDot : palette.live
     }
 
-    /// The dot's colour on the menu's card (round 11, Opus: it was always aurora, beside "No session running").
+    /// The dot's colour on the menu's card: the accent, or the card's unlit grey.
     func menuColor(_ menu: MenuPalette, reduceMotion: Bool) -> MenuPalette.RGB {
         look(reduceMotion: reduceMotion) == .unlit ? menu.unlitDot : menu.markDot
     }

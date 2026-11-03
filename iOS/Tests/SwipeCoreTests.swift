@@ -1,7 +1,7 @@
 import Foundation
 
 /// The swipe decoding core against the reference implementation's fixtures (ARCHITECTURE.md,
-/// "Typing model v4 and swipe typing", decoding pipeline). Every input is synthetic.
+/// "Swipe typing", Decoding pipeline). Every input is synthetic.
 enum SwipeCoreTests {
     static var tests: [TestCase] {
         [

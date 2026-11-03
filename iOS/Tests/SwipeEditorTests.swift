@@ -1,9 +1,9 @@
 import Foundation
 
-/// Swipe typing in the editor (ARCHITECTURE.md, "Typing model v4 and swipe typing": "Inserting a swiped
-/// word" and "Candidate strip"): the best candidate goes in with its leading space and casing, the strip
-/// offers up to three, a tap replaces the word only while the field still ends with it, the strip closes
-/// on anything else, and the first deletion while it shows removes the whole word. Invented words only.
+/// Swipe typing in the editor (ARCHITECTURE.md, "Swipe typing", Inserting a swiped word and Candidate
+/// strip): the best candidate goes in with its leading space and casing, the strip offers up to three, a
+/// tap replaces the word only while the field still ends with it, the strip closes on anything else, and
+/// the first deletion while it shows removes the whole word. Invented words only.
 enum SwipeEditorTests {
     static var tests: [TestCase] {
         [
@@ -293,8 +293,8 @@ enum SwipeEditorTests {
     }
 
     private static func testTapPriorContextIncludesEditsTheProxyHasNotShown() {
-        // ARCHITECTURE.md, "Soft key edges" (context, code review 2026-10-18): a tap decided right after a rollover
-        // follows the letter just typed even while the proxy still shows the field without it.
+        // ARCHITECTURE.md, "Soft key edges", Context: a tap decided right after a rollover follows the letter just
+        // typed even while the proxy still shows the field without it.
         let rig = SwipeRig("so ")
         rig.document.host.editContextLagFrames = 3
         rig.press(.character("t"))
@@ -312,8 +312,8 @@ enum SwipeEditorTests {
         // Without edits of ours, the proxy's text.
         let plain = SwipeRig("ab")
         TestSupport.expectEqual(plain.editor.tapPriorContext(now: plain.time), "ab")
-        // Code review round 2: in another field the proxy already serves, before any callback reports it, the
-        // first field's typing tail is not the context, even where the new field's text is a suffix of it.
+        // In another field the proxy already serves, before any callback reports it, the first field's typing
+        // tail is not the context, even where the new field's text is a suffix of it.
         for text in ["", "th"] {
             let switched = SwipeRig("so ")
             switched.document.host.editContextLagFrames = 3
@@ -577,7 +577,7 @@ enum SwipeEditorTests {
         let rig = SwipeRig("x")
         rig.swipe(["word", "ward", "wired"])
         TestSupport.expectEqual(rig.text, "x word")
-        // A chosen word ends with one space (round 2, owner: "a tapped suggestion ends with one space").
+        // A chosen word ends with one space.
         rig.choose(1)
         TestSupport.expectEqual(rig.text, "x ward ")
         TestSupport.expectEqual(rig.editor.swipeStrip, SwipeStrip(candidates: ["word", "ward", "wired"], inserted: 1))
@@ -704,7 +704,7 @@ enum SwipeEditorTests {
         refused.swipe(["word"])
         refused.press(.character("a"), field: .some(UUID()))
         TestSupport.expect(refused.editor.swipeStrip == nil, "the strip stayed after a refused key")
-        // Touching a key down types nothing yet (v4) and leaves the strip.
+        // Touching a key down types nothing yet and leaves the strip.
         let touched = SwipeRig("x")
         touched.swipe(["word"])
         touched.editor.keyTouchedDown(now: touched.time)
@@ -813,7 +813,7 @@ enum SwipeEditorTests {
     }
 
     private static func testDeleteRemovesAReplacedWordWhole() {
-        // A chosen word ends with its space (round 2): Delete takes the space, then deletes as usual.
+        // A chosen word ends with its space: Delete takes the space, then deletes as usual.
         let rig = SwipeRig("a")
         rig.swipe(["cat", "chart"])
         rig.choose(1)

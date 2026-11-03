@@ -54,15 +54,15 @@ enum FieldProfileTests {
 
     private static func testLinePitchIsLineHeightPlusLeading() {
         // Measured: text views advance 24.00 pt per line at the default size (body lineHeight 22.29),
-        // not lineHeight, which made every vertical step 7.7 % short.
+        // not lineHeight, which would make every vertical step 7.7 % short.
         close(FieldLayoutParameters.linePitch(lineHeight: 22.29, leading: 1.71), 24, 1e-9, "default size")
         TestSupport.expectEqual(FieldLayoutParameters.linePitch(lineHeight: 20, leading: -1), 20)
     }
 
     private static func testVerticalStepsUseTheRealPitch() {
         // With a 24-point pitch the next line's center is 24 points down, and the caret moves to it
-        // only past half of that: 11.9 points stay, 12.1 go. Regression: 22.29 snapped 0.9 points early
-        // and landed every multi-line move short.
+        // only past half of that: 11.9 points stay, 12.1 go. With 22.29 it would snap 0.9 points
+        // early and land every multi-line move short.
         let text = "abcdefghij" + "klmnopqrst" + "uvwxyzabcd"
         func caret(after travel: Double) -> Int {
             var host = FakeTextHost(text: text, caret: 3)
@@ -183,8 +183,8 @@ enum FieldProfileTests {
     }
 
     private static func testContentTypesAreAllowlisted() {
-        // Sol's round-5 review: an app can set any string as its content type ("PrivateDraft"), which
-        // was shown in the menu and hashed. Only Apple's constants pass, digits and hyphens included.
+        // An app can set any string as its content type ("PrivateDraft"), which must be neither shown in
+        // the menu nor hashed. Only Apple's constants pass, digits and hyphens included.
         let known: Set<String> = ["tel", "one-time-code", "address-line1", "username"]
         TestSupport.expectEqual(FieldTraits.contentTypeLabel(nil, known: known), nil)
         TestSupport.expectEqual(FieldTraits.contentTypeLabel("one-time-code", known: known), "one-time-code")
@@ -201,8 +201,8 @@ enum FieldProfileTests {
     }
 
     private static func testChoiceSurvivesForgettingTheUnit() {
-        // Sol's round-5 review: a choice made after the trackpad learned the unit was saved under the key
-        // with the unit only; hiding forgets the unit, and on reopening the field was detected again.
+        // A choice made after the trackpad learned the unit must not be saved under the key with the unit
+        // only: hiding forgets the unit, and on reopening the field would be detected again.
         var traits = FieldTraits()
         traits.autocapitalization = 2
         var overrides: [String: FieldLayout] = [:]
@@ -221,7 +221,7 @@ enum FieldProfileTests {
     }
 
     private static func testMessagesGeometryOnlyWhereMeasured() {
-        // Sol's round-5 review: the portrait chrome formula was applied in landscape and at any width.
+        // The portrait chrome formula applies only in portrait, at the measured widths.
         var traits = FieldTraits()
         traits.autocapitalization = 2
         traits.smartQuotes = 1
@@ -243,7 +243,7 @@ enum FieldProfileTests {
 }
 
 extension FieldProfileTests {
-    /// Measured in the simulator (iOS 26.4, round 6): what the proxy reports in Messages' compose field
+    /// Measured in the simulator (iOS 26.4): what the proxy reports in Messages' compose field
     /// before its first `textDidChange` (no field identity), and after.
     fileprivate static var placeholderTraits: FieldTraits {
         var traits = FieldTraits()
@@ -269,9 +269,9 @@ extension FieldProfileTests {
     }
 
     fileprivate static func testPlaceholderReadingsAreIgnored() {
-        // The user's device (iOS 26.6.2): Messages was not detected at first. At the keyboard's first
-        // appearance the proxy reports default traits without a field identity; such a reading is never
-        // used, and a choice is never remembered for it.
+        // At the keyboard's first appearance the proxy reports default traits without a field identity
+        // (on device, iOS 26.6.2, reading them leaves Messages undetected at first); such a reading is
+        // never used, and a choice is never remembered for it.
         let field = UUID()
         var tracker = FieldProfileTracker()
         TestSupport.expect(!tracker.read(FieldFingerprint(traits: placeholderTraits, unit: nil), documentID: nil),

@@ -17,7 +17,7 @@ enum DeleteRepeatTests {
     }
 
     private static func testMeasuredParameters() {
-        // ARCHITECTURE.md, "Measured Apple keyboard behavior"; the first deletion as measured on device
+        // ARCHITECTURE.md, "Delete key"; the first deletion as measured on device
         // (0.087 s in the simulator).
         let measured = DeleteRepeatParameters.standard
         TestSupport.expectEqual(measured.firstDeletionDelay, 0.12)
@@ -70,8 +70,8 @@ enum DeleteRepeatTests {
         TestSupport.expectEqual(DeleteRepeatParameters.standard, DeleteRepeatParameters())
     }
     private static func testHeldKeyIsBoundToItsPressAndField() {
-        // The fourth review's P1: a held delete's timers outlived a focus change. Each deletion belongs to
-        // its press and its field.
+        // A held delete's timers must not outlive a focus change. Each deletion belongs to its press and
+        // its field.
         let fieldA = UUID(), fieldB = UUID()
         let schedule = DeleteRepeat()
         var key = HeldDeleteKey(schedule: schedule)

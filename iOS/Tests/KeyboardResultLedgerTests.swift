@@ -28,7 +28,7 @@ enum KeyboardResultLedgerTests {
     private static let thirdRequestID = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
 
     private static func testEmptyResultDoesNotHideTheChip() {
-        // Regression: a newer result that inserts nothing hid an older one that would.
+        // A newer result that inserts nothing does not hide an older one that would.
         let older = Fixture.result(Fixture.requestID, text: "Synthetic older sentence", createdAt: Fixture.now - 10)
         let emptyNewer = Fixture.result(Fixture.otherRequestID, text: "  ", pressEnter: false, createdAt: Fixture.now - 2)
         let plan = KeyboardResultLedger().plan(for: [older, emptyNewer], documentID: Fixture.documentA, now: Fixture.now)
@@ -182,10 +182,10 @@ enum KeyboardResultLedgerTests {
         }
     }
 
-    /// Security review regression: the user dictates in app A and opens app B before the transcript
-    /// is ready. iOS gives B a new keyboard instance, which shows the request as recording, then
-    /// transcribing or waiting for the model. It must never auto-insert A's transcript (or its
-    /// Return) into B's field; it may only offer it as "Insert last dictation".
+    /// The user dictates in app A and opens app B before the transcript is ready. iOS gives B a new
+    /// keyboard instance, which shows the request as recording, then transcribing or waiting for the
+    /// model. It must never auto-insert A's transcript (or its Return) into B's field; it may only offer
+    /// it as "Insert last dictation".
     private static func testNewInstanceNeverAutoInsertsAnotherAppsRequest() {
         withStore { store in
             var appA = KeyboardResultLedger()
@@ -231,8 +231,8 @@ enum KeyboardResultLedgerTests {
     }
 
     private static func testHidingForgetsFieldBindings() {
-        // Third keyboard review: no field identity outlives hiding. The request is not rebound to
-        // whatever field shows next; its result is offered as "Insert last dictation" instead.
+        // No field identity outlives hiding. The request is not rebound to whatever field shows next; its
+        // result is offered as "Insert last dictation" instead.
         var ledger = KeyboardResultLedger()
         ledger.bindFinish(requestID: Fixture.requestID, documentID: Fixture.documentA)
         ledger.forgetFieldBindings()
@@ -351,7 +351,8 @@ enum KeyboardResultLedgerTests {
         }
     }
 
-    /// The verification-plan scenario: dictate into field A, switch to field B while transcribing.
+    /// The field-binding scenario of ARCHITECTURE.md, "Manual verification": dictate into field A, switch
+    /// to field B while transcribing.
     private static func testFieldSwitchMidRequest() {
         withStore { store in
             var ledger = KeyboardResultLedger()

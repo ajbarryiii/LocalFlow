@@ -5,7 +5,7 @@ protocol KeyAreaViewDelegate: AnyObject {
     /// A key touched down (any key but the globe), before anything it does: trackpad settlement ends. The
     /// click, the haptic and a character's callout come with it; a character types only later.
     func keyAreaTouchedDownKey(_ keyArea: KeyAreaView, timestamp: TimeInterval)
-    /// A key acted (ARCHITECTURE.md, "Typing model v4 and swipe typing"): characters on touch-up or
+    /// A key acted (ARCHITECTURE.md, "Typing model"): characters on touch-up or
     /// rollover (the key under the touch-down point); shift and layer keys on touch-down; space and return
     /// on touch-up or rollover; delete here only from VoiceOver (a held delete uses the begin and end
     /// calls). A cancelled touch types nothing. `field`: the field the keyboard served when the finger
@@ -164,7 +164,7 @@ final class KeyAreaView: UIView {
     /// In a keyboard extension iOS ignores touches on fully transparent points, so taps in the gaps between keys,
     /// the padding and the bar would never arrive. Not transparent, at the least alpha an 8-bit colour keeps (1 of
     /// 255): any more tints the keyboard against the band iOS 26 draws above it, a visible seam
-    /// (ARCHITECTURE.md, "Touchable backgrounds").
+    /// (ARCHITECTURE.md, "Keyboard extension", Touchable backgrounds).
     static let touchableBackground = UIColor(white: 0.5, alpha: 1.0 / 255)
 
     override init(frame: CGRect) {
@@ -177,7 +177,8 @@ final class KeyAreaView: UIView {
         globeButton.tintColor = .label
         globeButton.accessibilityLabel = "Next keyboard"
         globeButton.accessibilityIdentifier = "lf.globe"
-        // Its whole nearest-key region, so no point beside it is dead (ARCHITECTURE.md, "A stricter space bar").
+        // Its whole nearest-key region, so no point beside it is dead (ARCHITECTURE.md, "Reach and touch regions",
+        // The globe).
         globeButton.claims = { [weak self] point in
             guard let self, self.keyLayer != .emoji else { return false }
             let keys = placedKeys
@@ -364,7 +365,7 @@ final class KeyAreaView: UIView {
             guard let id = touchIDs[ObjectIdentifier(touch)] else { continue }
             if id == model.trackpadTouch, let last = trackpadLast {
                 // One step per delivered event, not per coalesced sample: Apple's gain was measured
-                // per event (ARCHITECTURE.md, "Measured Apple keyboard behavior").
+                // per event (ARCHITECTURE.md, "Trackpad: activation and motion", Gain).
                 let point = touch.location(in: self)
                 delegate?.keyArea(self, movedTrackpadBy: Double(point.x - last.x), dy: Double(point.y - last.y),
                                   timestamp: touch.timestamp)
@@ -373,7 +374,7 @@ final class KeyAreaView: UIView {
             }
             let point = touch.location(in: self)
             // A swipe, or a letter that may become one, keeps every coalesced sample of the move, in order
-            // (ARCHITECTURE.md, "Typing model v4 and swipe typing"); other touches only where they are now.
+            // (ARCHITECTURE.md, "Swipe typing", Gesture); other touches only where they are now.
             let samples = model.collectsSamples(id) ? swipeSamples(of: touch, with: event) : []
             let effects = model.moved(id, x: Double(point.x), y: Double(point.y), t: touch.timestamp, coalesced: samples)
             if id == model.trackpadTouch { trackpadLast = point }
@@ -576,7 +577,7 @@ final class KeyAreaView: UIView {
 
     /// Follows the running swipe: the trace appears when a touch becomes one and updates on every move;
     /// when the swipe ends or is cancelled it fades out (or, with Reduce Motion, disappears at once)
-    /// (ARCHITECTURE.md, "Swipe trace").
+    /// (ARCHITECTURE.md, "Swipe typing", Swipe trace).
     private func refreshTrail() {
         if model.isSwipeActive {
             let samples = model.swipeSamples

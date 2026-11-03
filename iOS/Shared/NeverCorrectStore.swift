@@ -1,7 +1,7 @@
 import Foundation
 
 /// The words the user asked autocorrect never to correct (ARCHITECTURE.md, "Word autocorrect", Never correct;
-/// requested by the owner 2026-10-20: persisted only on the user's explicit tap of the prompt a revert offers).
+/// persisted only on the user's explicit tap of the prompt a revert offers).
 /// Bounded, in the order they were added, least recent first. Only words as the corrector sees them are kept
 /// (`isStorable`). In memory this is a value; `NeverCorrectStore` keeps it on the device.
 struct NeverCorrectWords: Equatable, Sendable {

@@ -35,7 +35,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
     }
 
     /// Whether a touch above the key area (in its coordinates) goes to the keys: one in the bar away from its
-    /// controls (ARCHITECTURE.md, "Reach above the keys"), never while the menu panel is open.
+    /// controls (ARCHITECTURE.md, "Reach and touch regions", The bar outside its controls), never while the menu
+    /// panel is open.
     private func keysTakeTouch(above point: CGPoint) -> Bool {
         guard !chrome.isMenuOpen, let barView = bar?.view else { return false }
         let inBar = keyArea.convert(point, to: barView)
@@ -212,7 +213,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
         // The appearance is never pinned from `proxy.keyboardAppearance`: the keyboard's window traits follow the
         // host's keyboard backdrop, live switches included. The proxy's value is the host's appearance when it last
         // sent its traits, so a host that missed a switch in the background reports the old one (ARCHITECTURE.md,
-        // "Appearance and accessibility").
+        // "Top row", Appearance and accessibility).
         updateReturnKey()
         readField()
     }
@@ -242,8 +243,8 @@ final class KeyboardViewController: UIInputViewController, KeyboardTextTarget {
 
     /// Remembered choices, the soft-key-edge and autocorrect switches and the trackpad multipliers live in the
     /// App Group. iOS lets a keyboard without Full Access read it but not write it; LocalFlow reads it only with Full
-    /// Access, so these typing features stay off without it (owner decision). One handle is kept, renewed each time
-    /// the keyboard appears; its values are read from the suite at each use.
+    /// Access, so these typing features stay off without it. One handle is kept, renewed each time the keyboard
+    /// appears; its values are read from the suite at each use.
     private var fieldSettings: LocalFlowSettings? {
         guard hasFullAccess else { return nil }
         if appGroupSettings == nil, let configuration = LocalFlowConfiguration.main {

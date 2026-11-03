@@ -1,7 +1,7 @@
 import Foundation
 
 /// One touch sample of a swipe: key-area points and the touch's timestamp in seconds
-/// (ARCHITECTURE.md, "Typing model v4 and swipe typing").
+/// (ARCHITECTURE.md, "Swipe typing", Gesture).
 struct SwipeSample: Equatable, Sendable {
     var x: Double
     var y: Double

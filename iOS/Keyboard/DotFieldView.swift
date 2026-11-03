@@ -2,13 +2,13 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
-/// The island's dots (ARCHITECTURE.md, "Keyboard look"): the recording wave (`DotWave.dots`, with the mark's dot) or the
-/// wait's shimmer (`DotWave.shimmer`), each dot a small layer that Core Animation composites. Round 8 drew them in a
-/// SwiftUI `Canvas` inside `TimelineView(.animation)`, which in some keyboard processes drew nothing at all for the rest
-/// of the process (round 8 council, finding 1). Here every change of size, level or colour draws a frame at once, so the
-/// first frame never waits for a clock, and a display link moves the dots only while the view is in a window, shown,
-/// and animating (recording, or the wait's sweep), at most 60 frames a second. While recording, each frame records the
-/// followed level into the wave's trace (`DotWave.Trace`), which the row shows.
+/// The island's dots (ARCHITECTURE.md, "Keyboard look"): the recording wave (`DotWave.dots`, with the mark's dot) or
+/// the wait's shimmer (`DotWave.shimmer`), each dot a small layer that Core Animation composites, not a SwiftUI
+/// `Canvas` inside `TimelineView(.animation)`, which in some keyboard processes draws nothing at all for the rest of
+/// the process. Every change of size, level or colour draws a frame at once, so the first frame never waits for a
+/// clock, and a display link moves the dots only while the view is in a window, shown, and animating (recording, or the
+/// wait's sweep), at most 60 frames a second. While recording, each frame records the followed level into the wave's
+/// trace (`DotWave.Trace`), which the row shows.
 struct DotFieldRepresentable: UIViewRepresentable {
     let kind: DotFieldView.Kind
     /// The latest input level, 0 to 1.
@@ -29,7 +29,7 @@ struct DotFieldRepresentable: UIViewRepresentable {
 
 final class DotFieldView: UIView {
     enum Kind: Equatable {
-        /// The recording wave; `live` while recording (it follows the voice and drifts), otherwise its still, calm row.
+        /// The recording wave; `live` while recording (it follows the voice), otherwise its still, calm row.
         case wave(live: Bool)
         /// The wait's shimmer.
         case shimmer
@@ -127,7 +127,7 @@ final class DotFieldView: UIView {
         render(at: link.targetTimestamp)
     }
 
-    /// Lays the dots out for the moment `now`: the level and drift advanced to it while the wave is live.
+    /// Lays the dots out for the moment `now`: the level advanced to it while the wave is live.
     private func render(at now: CFTimeInterval) {
         let width = Double(bounds.width), height = Double(bounds.height)
         var dots: [DotWave.Dot] = []

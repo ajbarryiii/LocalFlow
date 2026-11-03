@@ -57,16 +57,13 @@ enum CorrectionEvaluation {
         ("", "were", .offered("were")),
         ("I think ", "were", .corrected("we're")),
         ("", "ill", .corrected("i'll")),
-        // Round 7: at a sentence's start "lets" has no subject, so it is "let's"; within a sentence it is the verb.
+        // At a sentence's start "lets" has no subject, so it is "let's"; within a sentence it is the verb.
         ("", "lets", .corrected("let's")),
         ("Running late. ", "lets", .corrected("let's")),
         ("She ", "lets", .offered("lets")),
     ]
 
-    /// Bundle b34 (round 7): all 36 cases as expected and no word changed to another than the one meant. Before vowel
-    /// rivals and the archaic forms' exclusion, 27 of the first 30, with three wrong ("neer" → "never", "lanch" → "launch",
-    /// "sind" → "find"); before apostrophe twins, "were" at a sentence's start became "we're"; before the sentence-start
-    /// table, "lets" stayed at a sentence's start (34 of 36).
+    /// Bundle b34: all 36 cases as expected and no word changed to another than the one meant.
     static let expectedAtLeast = 36
     static let wrongAtMost = 0
 

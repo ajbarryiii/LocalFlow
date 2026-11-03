@@ -326,11 +326,11 @@ enum KeyboardPresenterTests {
         }
     }
 
-    /// Round 10 (Opus, round 9 finding 2): with no session, Start grew into the dimmed recording form (the stop square
-    /// and Cancel) while iOS asked to open LocalFlow, and stayed so about 15 s when the user declined. While the request
-    /// this keyboard bounced to LocalFlow has not reached the host, the keyboard shows Start as it was, so a decline
-    /// leaves Start at once and a second tap bounces again. Once the host picks the request up (the user accepted), it
-    /// shows as usual; a request another keyboard instance bounced (adopted after the swipe back) is unaffected.
+    /// With no session, Start must not grow into the dimmed recording form (the stop square and Cancel) while iOS asks
+    /// to open LocalFlow, nor stay so when the user declines. While the request this keyboard bounced to LocalFlow has
+    /// not reached the host, the keyboard shows Start as it was, so a decline leaves Start at once and a second tap
+    /// bounces again. Once the host picks the request up (the user accepted), it shows as usual; a request another
+    /// keyboard instance bounced (adopted after the swipe back) is unaffected.
     private static func testStartWithoutASessionStaysStart() {
         let intent = Fixture.intent(.record)
         func shown(_ status: HostStatus?, bounced: UUID?, now: Date = Fixture.now) -> KeyboardMode {

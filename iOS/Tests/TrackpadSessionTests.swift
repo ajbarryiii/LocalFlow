@@ -254,7 +254,7 @@ enum TrackpadSessionTests {
     private static func testUpFromALineStartKeepsTheColumn() {
         // Right after a line break a context may show just "\n" before the caret: the line it ends is
         // hidden, so up from there is a jump to the line above, which then takes the point's column.
-        // Regression: the "\n" once counted as a visible empty line and the caret went to the end of the
+        // The "\n" is not a visible empty line: counted as one, it would send the caret to the end of the
         // line above.
         for model in [FakeContextModel.lineBreakOnly, .uikit] {
             var host = FakeTextHost(text: "first line\nsecond", caret: 11, model: model)
@@ -272,8 +272,8 @@ enum TrackpadSessionTests {
     private static func testColumnIsKeptOnALineWhoseStartWasHidden() {
         // The window starts mid-line ("ld.\nShort."), so the line above has no real columns. Up from
         // "Short.|" (column 6) lands on it; as the host reveals more of the line, the snapshot is
-        // refreshed and the point keeps its column: "Hello |there". Regression: the caret stayed at the
-        // line's end, measured from the window's start.
+        // refreshed and the point keeps its column: "Hello |there", not the line's end measured from
+        // the window's start.
         var host = FakeTextHost(text: "Hello there world.\nShort.", window: 10)
         TestSupport.expectEqual(host.context.before, "ld.\nShort.")
         var session = makeSession(host)
@@ -289,8 +289,8 @@ enum TrackpadSessionTests {
     private static func testProvisionalEdgeIsNotACrossing() {
         // Measured in UIKit: the proxy first answers a jump past its window from the text it last
         // reported, so the caret reads as sitting at that window's edge; the host's own context follows
-        // with `textDidChange`. Regression: the provisional answer was taken as the crossing, the caret
-        // was sent back into the old paragraph and the gesture ended.
+        // with `textDidChange`. Taken as the crossing, the provisional answer would send the caret back
+        // into the old paragraph and end the gesture.
         let text = "Alpha beta gamma.\nShort line.\nLast one."
         var host = FakeTextHost(text: text, caret: 8, model: .uikit, provisionalContext: true)
         var session = makeSession(host)
@@ -437,8 +437,8 @@ enum TrackpadSessionTests {
     }
 
     private static func testLongAmbiguousBlankRunsStayPassable() {
-        // Regression: between blank lines a context that shows the same thing everywhere makes every
-        // jump ambiguous, and after eight the run became impassable. New travel keeps it passable.
+        // Between blank lines a context that shows the same thing everywhere makes every jump
+        // ambiguous, and after eight the edge holds. New travel keeps the run passable.
         let text = "a" + String(repeating: "\n", count: 12) + "b"
         var host = FakeTextHost(text: text, caret: 1, model: .lineBreakOnly)
         var session = makeSession(host)
@@ -561,10 +561,10 @@ enum TrackpadSessionTests {
     }
 
     private static func testWindowedHostsNeverLeaveTheCaretInsideACluster() {
-        // Regression: a probe whose outcome could not be placed (a narrow or repetitive window) was
-        // discarded with the caret inside 👍🏽 or between e and its accent. Across windows, units, lag,
-        // provisional answers, lifts and cancellations at every point, the caret ends on a boundary
-        // and never stops between the halves of a surrogate pair of its own doing.
+        // A probe whose outcome cannot be placed (a narrow or repetitive window) must not be discarded
+        // with the caret inside 👍🏽 or between e and its accent. Across windows, units, lag, provisional
+        // answers, lifts and cancellations at every point, the caret ends on a boundary and never stops
+        // between the halves of a surrogate pair of its own doing.
         let text = "a\u{1F44D}\u{1F3FD}b e\u{301}e\u{301}e\u{301} \u{1F44D}\u{1F3FD}\u{1F44D}\u{1F3FD}c. "
             + "Next \u{1F469}\u{200D}\u{1F4BB}d"
         let models: [(FakeContextModel, Int?)] = [(.whole, nil), (.uikit, nil), (.whole, 1), (.whole, 2), (.whole, 3)]
@@ -679,7 +679,7 @@ enum TrackpadSessionTests {
         TestSupport.expect(session.isSettled, "moved after the lift")
     }
 
-    // MARK: Safety (ARCHITECTURE.md, "Trackpad safety")
+    // MARK: Safety (ARCHITECTURE.md, "Trackpad: units, probes and attribution" and "Trackpad and keys")
 
     /// Runs frames until the session finishes, returning the time after.
     @discardableResult
@@ -703,8 +703,8 @@ enum TrackpadSessionTests {
     }
 
     private static func testStaleContextTeachesNoUnit() {
-        // Regression: with "e\u{301}e\u{301}" the context before the caret ends the same way whether or
-        // not the host moved, so a changed context (here, a wider window) once taught UTF-16.
+        // With "e\u{301}e\u{301}" the context before the caret ends the same way whether or not the host
+        // moved, so a changed context (here, a wider window) must not teach UTF-16.
         var (session, _, offset) = probedSession()
         TestSupport.expectEqual(offset, -2)
         // It shows the caret where it was: the probe's "ignored" outcome. It teaches nothing, and the
@@ -887,7 +887,7 @@ enum TrackpadSessionTests {
         TestSupport.expect(session.fits(before: landed.before, after: landed.after), "own outcome, selection")
         TestSupport.expect(session.acknowledge(before: landed.before, after: landed.after), "own outcome")
         // One callback per adjustment: a second one is an outside change, and so is a selection callback
-        // once nothing is owed (the fourth review: the caret where the session has it is not proof).
+        // once nothing is owed (the caret where the session has it is not proof).
         TestSupport.expect(!session.acknowledge(before: landed.before, after: landed.after), "consumed twice")
         TestSupport.expect(!session.fits(before: landed.before, after: landed.after), "selection fits after consumption")
         // Anything else is an outside change.
@@ -947,8 +947,8 @@ enum TrackpadSessionTests {
     }
 
     private static func testCancelledJumpIntoAHiddenClusterIsRepaired() {
-        // The fourth review's P1: "ab" shows before a hidden "👍🏽"; the jump past the snapshot's end (+3)
-        // stops between the halves of a surrogate pair, and cancelling handled only unit probes.
+        // "ab" shows before a hidden "👍🏽"; the jump past the snapshot's end (+3) stops between the halves
+        // of a surrogate pair, and cancelling must handle that jump, not only unit probes.
         var host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16, window: 2)
         var session = makeSession(host)
         session.drag(dx: 0, dy: 20)
@@ -983,8 +983,8 @@ enum TrackpadSessionTests {
     }
 
     private static func testEmptiedFieldIsNotACrossing() {
-        // The fourth review's P1: while a jump past the snapshot's edge was pending, the host cleared the
-        // field and reported empty contexts, which matched the crossing with nothing compared.
+        // While a jump past the snapshot's edge is pending, the host clears the field and reports empty
+        // contexts, which must not match the crossing with nothing compared.
         func makeJump() -> TrackpadSession {
             var jump = TrackpadSession(before: "Alpha be", after: "ta gamma.", unit: nil, parameters: .flat,
                                        layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
@@ -1004,8 +1004,8 @@ enum TrackpadSessionTests {
     }
 
     private static func testSingleEmojiFieldIsReachedInEitherUnit() {
-        // The fourth review's P2: in a grapheme field holding only "👍🏽", a left probe of two units asks
-        // for two clusters, the host ignores it, and the probe was retried that way forever.
+        // In a grapheme field holding only "👍🏽", a left probe of two units asks for two clusters and the
+        // host ignores it; the probe must not be retried that way forever.
         for unit in [CursorOffsetUnit.grapheme, .utf16] {
             var host = FakeTextHost(text: "\u{1F44D}\u{1F3FD}", unit: unit)
             var session = makeSession(host)
@@ -1024,9 +1024,9 @@ enum TrackpadSessionTests {
     }
 
     private static func testWebKitReportsEachAdjustmentTwice() {
-        // Measured in a WKWebView (round 6): after adjustTextPosition the proxy answers provisionally,
-        // then textDidChange shows the context the adjustment was issued in, then the one it landed in.
-        // The first report was an unexplained callback, which ended every gesture after one step.
+        // Measured in a WKWebView: after adjustTextPosition the proxy answers provisionally, then
+        // textDidChange shows the context the adjustment was issued in, then the one it landed in.
+        // Taken as an unexplained callback, the first report would end every gesture after one step.
         let text = "Invented ab\u{1F44D}\u{1F3FD}cd words and more text"
         let caret = 23
         var plain = FakeTextHost(text: text, caret: caret, unit: .grapheme, model: .uikit)
@@ -1083,7 +1083,7 @@ final class RetainingLayout: LineLayout {
 
 extension TrackpadSessionTests {
     fileprivate static func testKeyEndsTheGestureOnTheSpot() {
-        // ARCHITECTURE.md, "Typing model v2": a key ends the gesture at once. With a move out, the caret
+        // ARCHITECTURE.md, "Trackpad and keys": a key ends the gesture at once. With a move out, the caret
         // is where it lands; with a probe out, its outcome is abandoned. Nothing more is issued either way.
         for text in ["Alpha beta gamma", "ab\u{1F44D}\u{1F3FD}"] {
             let document = FakeDocument(FakeTextHost(text: text, unit: .utf16, lagFrames: 2, callbackFrames: 2))
@@ -1111,9 +1111,9 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testUnresolvedPreMoveReportIsAmbiguous() {
-        // The round-6 review's P1: a report showing the context a move was issued in was accepted as
-        // WebKit's first report, and an unrelated host change could be absorbed that way. If the move then
-        // never reports where it landed, the session cannot know where the caret is: it is ambiguous.
+        // A report showing the context a move was issued in is accepted as WebKit's first report, so an
+        // unrelated host change could be absorbed that way. If the move then never reports where it landed,
+        // the session cannot know where the caret is: it is ambiguous.
         var session = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
                                       layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         session.drag(dx: -30, dy: 0)
@@ -1170,9 +1170,9 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testPreMoveReportSuspendsMovement() {
-        // The round-7 review's P1: after a report showing the context a move was issued in (WebKit's first
-        // report), the session went on moving from where it believed the caret was. Until that move
-        // reports where it landed, nothing more is issued; then the gesture goes on.
+        // After a report showing the context a move was issued in (WebKit's first report), the session
+        // must not go on moving from where it believes the caret is. Until that move reports where it
+        // landed, nothing more is issued; then the gesture goes on.
         var session = TrackpadSession(before: "Alpha beta gamma", after: "", unit: .utf16, parameters: .flat,
                                       layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         session.drag(dx: -30, dy: 0)
@@ -1271,10 +1271,10 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testGuardRepairsOnlyFromALandedContext() {
-        // Found by the typing torture (seed 11942): the gesture's own repair (-1) was still in flight when
-        // an outside change ended it; the guard repaired the stale split it saw (+1), the two landed in
-        // turn, the field showed the very context already repaired in, and the guard ran out its time
-        // with the caret inside the emoji. It repairs only once what was issued has landed.
+        // Typing torture seed 11942: the gesture's own repair (-1) is still in flight when an outside
+        // change ends it. Were the guard to repair the stale split it sees (+1), the two would land in
+        // turn, the field would show the very context already repaired in, and the guard would run out
+        // its time with the caret inside the emoji. It repairs only once what was issued has landed.
         var session = TrackpadSession(before: "Hi there", after: "", unit: .utf16, parameters: .flat,
                                       layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         session.drag(dx: -10, dy: 0)
@@ -1300,10 +1300,10 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testEdgeWatchRepairsOnlyFromALandedContext() {
-        // The round-9 residual: a cancelled jump's edge watch repaired a split it saw while an adjustment
-        // was still in flight (+1 here); the two landed in turn and brought back the context already
-        // repaired in, leaving the caret inside the emoji. Like the guard, it repairs only once what was
-        // issued has landed.
+        // A cancelled jump's edge watch must not repair a split it sees while an adjustment is still in
+        // flight (+1 here): the two would land in turn and bring back the context already repaired in,
+        // leaving the caret inside the emoji. Like the guard, it repairs only once what was issued has
+        // landed.
         let host = FakeTextHost(text: "ab\u{1F44D}\u{1F3FD}cd\nnext line", caret: 0, unit: .utf16, window: 2)
         var session = makeSession(host)
         session.drag(dx: 0, dy: 20)
@@ -1399,7 +1399,7 @@ extension TrackpadSessionTests {
         // A move the proxy already showed landed (its provisional answer), then a report of an earlier
         // adjustment showed the caret where it was before the move, while the finger went on past the
         // snapshot's first line. That context showed "more" before the caret only because it was behind:
-        // taken as a new snapshot, the move was made again from there.
+        // taken as a new snapshot, it would have the move made again from there.
         var session = TrackpadSession(before: "ab\ncd", after: "", unit: nil, parameters: .flat,
                                       layout: FixedWidthLayout(columns: 1_000), linePitch: 20, layoutWidth: 10_000)
         session.drag(dx: 0, dy: -20)
@@ -1435,8 +1435,8 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testCancellingReleasesTheLaidOutText() {
-        // The round-6 review's P2: cancelling dropped the snapshot but kept the layout, whose TextKit
-        // storage still held a laid-out copy of it.
+        // Cancelling drops the layout with the snapshot: the layout's TextKit storage holds a laid-out
+        // copy of it.
         weak var released: RetainingLayout?
         var session: TrackpadSession = {
             let layout = RetainingLayout()
@@ -1476,10 +1476,9 @@ extension TrackpadSessionTests {
 
 extension TrackpadSessionTests {
     fileprivate static func testNextGestureWaitsForReportsStillOwed() {
-        // Found by the typing torture test: a key ended a gesture at once while a report of its last move
-        // was still owed; the next gesture began on the proxy's provisional context and took that late
-        // report for its own probe's outcome. The next gesture moves nothing until it has arrived, and
-        // then starts from what it shows.
+        // A key ends a gesture at once while a report of its last move is still owed; the next gesture,
+        // begun on the proxy's provisional context, must not take that late report for its own probe's
+        // outcome. The next gesture moves nothing until it has arrived, and then starts from what it shows.
         let document = FakeDocument(FakeTextHost(text: "Hi \u{1F44D}\u{1F3FD} ab", unit: .utf16, lagFrames: 0, callbackFrames: 4))
         let controller = TrackpadController(host: document)
         controller.parameters = .flat
@@ -1559,8 +1558,8 @@ extension TrackpadSessionTests {
     }
 
     fileprivate static func testNextGestureInheritsBothWebKitReports() {
-        // The round-10 review's P2: a gesture begun while the last one still owed reports inherited one per
-        // adjustment. WebKit reports each twice, and the second reached the new gesture as one of its own.
+        // A gesture begun while the last one still owes reports must not inherit only one per adjustment:
+        // WebKit reports each twice, and the second would reach the new gesture as one of its own.
         // The new gesture inherits every report the field still owes, as the host sends them.
         var host = FakeTextHost(text: "Alpha beta gamma", unit: .grapheme, callbackFrames: 4)
         host.reportsAsIssuedFirst = true

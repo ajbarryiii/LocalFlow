@@ -126,8 +126,9 @@ final class Autocorrector: WordCorrecting {
     private var completionContext: [String]?
     private var completionLogProbs: [Double] = []
 
-    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions): `correct`'s result for it, and the
-    /// best `limit` other forms by their odds against keeping it (score minus keep's, as in `alternatives`):
+    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing): `correct`'s result for
+    /// it, and the best `limit` other forms by their odds against keeping it (score minus keep's, as in
+    /// `alternatives`):
     /// - completions: the forms starting with the word (a range of ids, `WordLexicon.formRange`), scored as the word
     ///   typed so far matched exactly, so by the weighted model log probability in the sentence's context alone;
     /// - typo-tolerant matches: `alternatives` at the suggestion floor (none below `minLength` letters).
@@ -186,8 +187,8 @@ final class Autocorrector: WordCorrecting {
 
     /// While a word is typed, the most by which a form offered may be less likely than the strip's first word (its
     /// odds ratio). Chosen on the bundle's model with invented sentences and centre taps (ARCHITECTURE.md, "Word
-    /// autocorrect", Suggestions): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti" (1 in 1,200)
-    /// but keeps "defiantly" for "defi" (1 in 220).
+    /// autocorrect", Suggestions while typing): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti"
+    /// (1 in 1,200) but keeps "defiantly" for "defi" (1 in 220).
     static let suggestionRatio = 1000.0
 
     // MARK: Next words
@@ -799,7 +800,7 @@ final class Autocorrector: WordCorrecting {
 /// sum is formed in the reference's order, so scores match its bits whatever is reused. Plain pointers and
 /// comparisons: it runs for every candidate, and the keyboard may be built without optimization. With the
 /// spelling channel the same loops read its precomputed terms (`Autocorrector.SpellingTerms`) instead of the
-/// motor costs; without, they run exactly as before.
+/// motor costs; without, they read only the motor costs.
 private final class Channel {
     private let n: Int
     private let edits: Int

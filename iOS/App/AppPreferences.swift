@@ -18,7 +18,7 @@ final class AppPreferences: ObservableObject {
         didSet { defaults.set(onboardingComplete, forKey: Key.onboardingComplete) }
     }
 
-    /// "Use iPhone microphone" (contract: "Microphone choice"), on by default.
+    /// "Use iPhone microphone" (ARCHITECTURE.md, "Capture", Microphone choice), on by default.
     @Published var useBuiltInMicrophone: Bool {
         didSet { defaults.set(useBuiltInMicrophone, forKey: Key.useBuiltInMicrophone) }
     }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Never correct (ARCHITECTURE.md, "Word autocorrect", Never correct; requested by the owner 2026-10-20): a revert
+/// Never correct (ARCHITECTURE.md, "Word autocorrect", Never correct): a revert
 /// offers to never correct its word, only a tap on the offer stores it, and stored words are never corrected or
 /// offered. Also the bounded list and its file in the App Group. Every word is invented; every file lives in a
 /// temporary directory.
@@ -318,7 +318,7 @@ enum NeverCorrectTests {
             chosen.tap("TEH")
             chosen.press(.character(","))
             chosen.choose(0)
-            // A chosen word ends with one space (round 2).
+            // A chosen word ends with one space.
             TestSupport.expectEqual(chosen.text, "TEH, ")
             TestSupport.expectEqual(chosen.editor.neverCorrectOffer, NeverCorrectOffer(word: "teh", typed: "TEH"))
             TestSupport.expectEqual(chosen.strip, SwipeStrip(candidates: ["TEH", "THE"], inserted: 0))
@@ -372,8 +372,8 @@ enum NeverCorrectTests {
         }
     }
 
-    /// Sol round 2, run 3: the reverted word is being typed again, so suggestions for it lie under the offer; accepting
-    /// closes them too, as it closes the strip after a commit key.
+    /// The reverted word is being typed again, so suggestions for it lie under the offer; accepting closes them too, as
+    /// it closes the strip after a commit key.
     private static func testAcceptingClosesTheTypingStripToo() {
         withStore { store in
             let rig = rig(store)
@@ -446,7 +446,7 @@ enum NeverCorrectTests {
     }
 
     private static func testNoOfferWithoutAStoreOrForAWordItCannotKeep() {
-        // No store bound (autocorrect off or no Full Access when the keyboard appeared): a revert as before.
+        // No store bound (autocorrect off or no Full Access when the keyboard appeared): a plain revert, no offer.
         let unbound = AutocorrectRig("", corrections: ["teh": "the"])
         revert(unbound)
         TestSupport.expectEqual(unbound.editor.neverCorrectOffer, nil)

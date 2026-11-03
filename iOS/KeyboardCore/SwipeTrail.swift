@@ -1,8 +1,8 @@
 import Foundation
 
-/// The swipe trace's shape (ARCHITECTURE.md, "Typing model v4 and swipe typing", "Swipe trace"): the
-/// last moments of a running swipe's samples, as points that taper and fade from the finger back to the
-/// tail. Pure; the key area draws it. Built from samples in memory only.
+/// The swipe trace's shape (ARCHITECTURE.md, "Swipe typing", Swipe trace): the last moments of a running
+/// swipe's samples, as points that taper and fade from the finger back to the tail. Pure; the key area
+/// draws it. Built from samples in memory only.
 enum SwipeTrail {
     /// One point of the trail, in key-area points: the stroke's width there, its opacity, and how far along the trail
     /// it is (0 at the tail, 1 at the finger).

@@ -1,7 +1,7 @@
 import Foundation
 
-/// The proof rules of "Undo ownership v2". Ownership through the edit generation and real callback
-/// sequences is covered by `EditingCoreTests`.
+/// The proof rules of Undo last dictation (ARCHITECTURE.md, "Undo last dictation", Proof of ownership). Ownership
+/// through the edit generation and real callback sequences is covered by `EditingCoreTests`.
 enum UndoTrackerTests {
     static var tests: [TestCase] {
         [
@@ -93,8 +93,8 @@ enum UndoTrackerTests {
     }
 
     private static func testShortInsertionsNeedBothAnchorsInFull() {
-        // Regression (third keyboard review): a lone "\n" was offered wherever the visible context ended
-        // in "\n", so moving the caret to another line break could delete it there.
+        // A lone "\n" must not be offered wherever the visible context ends in "\n", or moving the caret
+        // to another line break could delete it there.
         let undo = tracker("\n", before: "First note.\nSecond note.", after: "")
         TestSupport.expect(offered(undo, before: "First note.\nSecond note.\n"), "not offered in place")
         TestSupport.expect(!offered(undo, before: "First note.\n"), "offered at another line break")
@@ -200,7 +200,7 @@ enum UndoTrackerTests {
     }
 
     private static func testBothEndsMustBeCharacterBoundaries() {
-        // The fourth review's P1: deletion counts characters, so the insertion's start must not have merged
+        // Deletion counts characters, so the insertion's start must not have merged
         // with the character before it ("\r" + "\n") and the caret must not sit inside a character (text
         // followed by a combining mark that joined its last letter).
         let crlf = tracker("\n", before: "Line one\r", after: "")

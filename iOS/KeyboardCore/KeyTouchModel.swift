@@ -11,17 +11,16 @@ import Foundation
 /// - Characters type at release (or rollover), the key nearest the touch-down point, never hit-tested
 ///   again: a tap that rolls onto space, delete or Shift still types its own key, and a cancelled one
 ///   types nothing. Shift and layer keys act on touch-down; space, return and slides from a layer key
-///   type on lift (or rollover); delete starts repeating on touch-down (ARCHITECTURE.md, "Typing model
-///   v4 and swipe typing", amending "Typing model v3"). Every key's touch-down first ends trackpad
-///   settlement (`keyDown`).
+///   type on lift (or rollover); delete starts repeating on touch-down (ARCHITECTURE.md, "Typing model").
+///   Every key's touch-down first ends trackpad settlement (`keyDown`).
 /// - Swipe: with `swipeEnabled`, on the letters layer, an uncommitted character touch that is the only
 ///   finger becomes a swipe once any sample of a move (a coalesced touch; never the lift) is
 ///   `swipeThreshold` from its touch-down point. It types nothing, its callout ends, other touches are
 ///   ignored until it ends, and its release emits its samples (`swipe`); a cancelled swipe emits nothing.
 /// - Skid: a swipe younger than `skidDuration`, none of whose samples was a full letter pitch from its
 ///   touch-down point, is a tap that skidded. Released, it types its touch-down key as a tap would; a new
-///   finger first commits it so, in press order, and is then handled as usual (ARCHITECTURE.md, "Dropped
-///   taps: reach, skids and counters").
+///   finger first commits it so, in press order, and is then handled as usual
+///   (ARCHITECTURE.md, "Swipe typing", Skids).
 /// - Soft taps: with `softTapsEnabled`, a character touch that touched down on a letter key of the letters
 ///   layer emits `tap` with its touch-down point instead of `type`, at release or rollover alike, for the
 ///   keyboard to re-decide (ARCHITECTURE.md, "Soft key edges"), unless the keyboard decided its key at
@@ -29,7 +28,7 @@ import Foundation
 ///   (`typeDecided`, for autocorrect). Slides, other layers and every other key are unchanged.
 /// - Each finger keeps the field the keyboard served when it touched down (or, touched down before any
 ///   identity, the first one identified after); what it types carries that field, so the keyboard can
-///   refuse it in another identified one (ARCHITECTURE.md, "Typing model v2"). A change to another
+///   refuse it in another identified one (ARCHITECTURE.md, "Typing model", Field binding). A change to another
 ///   identified field drops held, uncommitted keys and a running swipe.
 /// - Alternates: a character with alternates (`KeyAlternates`) wants a timer from its touch-down (`wantsAlternates`);
 ///   held uncommitted until it fires, still not a swipe, the touch opens its row (`alternatesElapsed`) and can no longer become a swipe. Its
@@ -82,7 +81,7 @@ struct KeyTouchModel: Equatable, Sendable {
 
     enum Effect: Equatable, Sendable {
         /// A key touched down (any key but the globe): trackpad settlement ends now, before whatever the
-        /// key does at once or at its release (ARCHITECTURE.md, "Typing model v2").
+        /// key does at once or at its release (ARCHITECTURE.md, "Typing model", Touch-down).
         case keyDown
         /// `field`: the field the finger touched down in (nil for keys acting at once).
         case type(KeyAction, field: UUID? = nil)
@@ -96,7 +95,7 @@ struct KeyTouchModel: Equatable, Sendable {
         /// `cancelled` is a system cancellation, not a lift.
         case endTrackpad(cancelled: Bool)
         /// A swipe was released: its samples from the touch-down point through the lift, and the field it
-        /// touched down in (ARCHITECTURE.md, "Typing model v4 and swipe typing").
+        /// touched down in (ARCHITECTURE.md, "Swipe typing", Gesture).
         case swipe([SwipeSample], field: UUID?)
         /// With `softTapsEnabled`, a character tap by a finger that touched down on a letter key, where it
         /// would otherwise `type`: the key nearest its touch-down point, that point, and its field, so the
@@ -104,7 +103,7 @@ struct KeyTouchModel: Equatable, Sendable {
         case tap(KeyAction, x: Double, y: Double, field: UUID?)
         /// With `softTapsEnabled`, a tap whose key was decided at touch-down (`decideTap`), where it would
         /// otherwise `type`: the decided key, typed as it is, with the touch-down point and the field, so
-        /// autocorrect can record where the tap landed (ARCHITECTURE.md, "Word autocorrect", Taps).
+        /// autocorrect can record where the tap landed (ARCHITECTURE.md, "Word autocorrect", Points).
         case typeDecided(KeyAction, x: Double, y: Double, field: UUID?)
     }
 
@@ -210,7 +209,7 @@ struct KeyTouchModel: Equatable, Sendable {
         var touch = Touch(id: id, role: .character, action: action, startX: x, startY: y, x: x, y: y, field: field)
         switch action {
         case .character:
-            // Typed at release or rollover (v4); a possible swipe until then. Only letters swipe or are soft taps: the
+            // Typed at release or rollover; a possible swipe until then. Only letters swipe or are soft taps: the
             // email field's "@" and "." on the letters layer are not.
             touch.onLetters = layer == .letters && action.letterIndex != nil
             if swipeEnabled, touch.onLetters { touch.samples = [SwipeSample(x: x, y: y, t: t)] }
@@ -464,9 +463,9 @@ struct KeyTouchModel: Equatable, Sendable {
         return pinned
     }
 
-    /// Another field became current (`field`, ARCHITECTURE.md, "Typing model v2"): fingers that touched
+    /// Another field became current (`field`, ARCHITECTURE.md, "Typing model", Field binding): fingers that touched
     /// down before any identity bind to this field; uncommitted ones bound to a different identified field
-    /// end without typing (held characters and a swipe included, v4); the rest go on. Nothing changes while
+    /// end without typing (held characters and a swipe included); the rest go on. Nothing changes while
     /// no field is identified.
     mutating func fieldChanged(to field: UUID?) -> [Effect] {
         guard let field else { return [] }

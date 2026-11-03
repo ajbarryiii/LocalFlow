@@ -2,7 +2,7 @@ import Foundation
 
 /// Every trackpad-mode constant, in one place. Distances are in points and times in seconds.
 ///
-/// Measured on Apple's keyboard (ARCHITECTURE.md, "Measured Apple keyboard behavior", and the
+/// Measured on Apple's keyboard (ARCHITECTURE.md, "Trackpad: activation and motion", and the
 /// calibration report). Device values (iPhone 15 Pro, iOS 26.6.2, real thumbs and XCUITest)
 /// supersede the simulator's:
 /// - Activation only by the timer, 0.40 s after touch-down on space (0.381 s in the simulator), if

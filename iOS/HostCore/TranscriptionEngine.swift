@@ -56,9 +56,10 @@ protocol SpeechStream: AnyObject, Sendable {
 }
 
 /// Owns the speech model runtime: preparation, readiness and transcription, always on the Neural Engine
-/// (contract: "No compute-policy picker"). At most one runtime is alive: it is released only while
-/// nothing prepares or transcribes, and a new one is created only after that. After a failed preparation,
-/// automatic attempts wait out `ModelPreparationBackoff`; only `retryPreparation()` (the user) skips it.
+/// (ARCHITECTURE.md, "Transcription", No compute-policy picker). At most one runtime is alive: it is
+/// released only while nothing prepares or transcribes, and a new one is created only after that. After a
+/// failed preparation, automatic attempts wait out `ModelPreparationBackoff`; only `retryPreparation()`
+/// (the user) skips it.
 @MainActor
 final class TranscriptionEngine: HostTranscriber {
     struct PreparationReport: Sendable {

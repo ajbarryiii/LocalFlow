@@ -2,8 +2,8 @@ import Foundation
 
 /// Deleting back into the word just finished (ARCHITECTURE.md, "Word autocorrect", Owned words, Deletion): a Delete of the
 /// space this keyboard typed right after a word it owned, nothing else in between, makes that word its own again, with its
-/// strip, as if it had never been finished. Round 6 council (Opus finding 1): "ok see you at the " then Delete fell back to
-/// the status line, and typing on ("them") showed nothing. Every word, text and point is invented.
+/// strip, as if it had never been finished: "ok see you at the " then Delete must not fall back to the status line, nor
+/// typing on ("them") show nothing. Every word, text and point is invented.
 enum ReopenedWordTests {
     static var tests: [TestCase] {
         [
@@ -131,7 +131,7 @@ enum ReopenedWordTests {
         chosen.heldDelete()
         TestSupport.expectEqual(chosen.text, "so that")
         TestSupport.expectEqual(chosen.strip, live(["that", "that's"]))
-        // Sol review (round 7, run 1): another word chosen on a commit key's strip replaces the word and its space at once;
+        // Another word chosen on a commit key's strip replaces the word and its space at once;
         // a Delete of the space it ends with still brings that word back, owned: corrected at the next space.
         let replaced = AutocorrectRig.typingASpace(after: "so", corrections: ["thme": "them"], alternatives: ["thm": ["the", "them"]])
         replaced.corrector.predicted = the
@@ -187,8 +187,8 @@ enum ReopenedWordTests {
         corrected.heldDelete()
         TestSupport.expectEqual(corrected.text, "so the teh")
         TestSupport.expectEqual(corrected.editor.revertedWords, ["teh"])
-        // Sol review (round 7, run 5): the typed word put back is owned as before, so deleting it and its space still brings
-        // back the word before it.
+        // The typed word put back is owned as before, so deleting it and its space still brings back the word
+        // before it.
         corrected.heldDelete()
         corrected.heldDelete()
         corrected.heldDelete()
@@ -319,8 +319,8 @@ enum ReopenedWordTests {
         TestSupport.expectEqual(changed.text, "so thy")
         TestSupport.expectEqual(changed.strip, nil)
         TestSupport.expect(!changed.editor.wordTaps.owned, "another word is owned")
-        // Sol review (round 7, run 3): the host moved the caret right after an earlier copy of the word and its space, not
-        // reported yet. The proxy shows the same word before the caret, but other text after it: that copy is not taken.
+        // The host moved the caret right after an earlier copy of the word and its space, not reported yet. The
+        // proxy shows the same word before the caret, but other text after it: that copy is not taken.
         let copy = AutocorrectRig("x the y", corrections: [:])
         copy.corrector.predicted = the
         copy.press(.space)

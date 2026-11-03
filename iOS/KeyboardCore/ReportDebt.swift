@@ -1,7 +1,7 @@
 import Foundation
 
 /// The reports the host still owes for this keyboard's caret adjustments, at the level of callbacks
-/// (ARCHITECTURE.md, "Typing model v2": late gesture reports are never echoes). Every adjustment issued
+/// (ARCHITECTURE.md, "Editing core", Late gesture reports are never echoes). Every adjustment issued
 /// owes one `textDidChange`, or two where the host reports each adjustment twice (WebKit) or is not known
 /// to report once, whatever the gesture that issued it settled or expects: a probe and the rollback a
 /// cancellation issued, a guard's repairs, and the reports of an earlier gesture a new one begins with all

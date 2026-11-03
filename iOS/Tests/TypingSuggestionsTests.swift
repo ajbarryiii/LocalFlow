@@ -1,9 +1,9 @@
 import Foundation
 
-/// Suggestions while typing (ARCHITECTURE.md, "Word autocorrect", Suggestions): the corrector's predictions for
-/// the word being typed (completions of it ranked by the word model in the sentence's context, and typo-tolerant
-/// matches), the strip they make in the top row, its gates, and a tapped suggestion's one space. Every word, text
-/// and model is invented or a tiny fixture.
+/// Suggestions while typing (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing): the corrector's
+/// predictions for the word being typed (completions of it ranked by the word model in the sentence's context, and
+/// typo-tolerant matches), the strip they make in the top row, its gates, and a tapped suggestion's one space. Every
+/// word, text and model is invented or a tiny fixture.
 enum TypingSuggestionsTests {
     static var tests: [TestCase] {
         [
@@ -245,8 +245,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(reverted.strip, live(["teh", "the"]))
     }
 
-    /// Sol round 2, run 4: an apostrophe typed at the end of a word so far is the middle of a contraction, not a
-    /// closing quote: the completions start with it and never get a second one.
+    /// An apostrophe typed at the end of a word so far is the middle of a contraction, not a closing quote: the
+    /// completions start with it and never get a second one.
     private static func testAContractionsApostropheIsPartOfTheWord() {
         let rig = rig(predictions: ["don'": WordPredictions(words: ["don't"], isWord: false)])
         rig.tap("Don'")
@@ -344,7 +344,7 @@ enum TypingSuggestionsTests {
         rig.choose(0)
         TestSupport.expectEqual(rig.text, "hi world there")
         TestSupport.expectEqual(rig.document.host.caret, "hi world".utf16.count)
-        // The next word still gets its own space (Sol round 2, run 1): it never joins the chosen one.
+        // The next word still gets its own space: it never joins the chosen one.
         rig.tap("new")
         TestSupport.expectEqual(rig.text, "hi world new there")
     }
@@ -404,8 +404,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(rig.strip, nil)
     }
 
-    /// Sol round 2, run 1: the proxy switched to another field before reporting it, and that field shows the same
-    /// word: the choice, made for the first field, changes nothing in it.
+    /// The proxy switched to another field before reporting it, and that field shows the same word: the choice, made
+    /// for the first field, changes nothing in it.
     private static func testAChoiceStaysInItsField() {
         let rig = rig(predictions: ["hel": WordPredictions(words: ["hello"], isWord: false)])
         rig.tap("hel")
@@ -416,8 +416,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(rig.strip, nil)
     }
 
-    /// Sol round 2, run 2: a proxy that shows a Delete late hides the strip for the moment (it shows another word);
-    /// once it shows the word, the strip is back without another key.
+    /// A proxy that shows a Delete late hides the strip for the moment (it shows another word); once it shows the
+    /// word, the strip is back without another key.
     private static func testTheStripReturnsWhenALateProxyCatchesUp() {
         let rig = rig("so", predictions: ["hel": WordPredictions(words: ["hello"], isWord: false),
                                           "he": WordPredictions(words: ["her"], isWord: true)])
@@ -431,8 +431,7 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(rig.strip, live(["he", "her"]))
     }
 
-    /// Sol round 2, run 2: with Caps Lock (or a field that capitalizes every character), one capital letter already
-    /// means all capitals.
+    /// With Caps Lock (or a field that capitalizes every character), one capital letter already means all capitals.
     private static func testAllCapitalsTypingSuggestsAllCapitals() {
         let rig = rig(predictions: ["h": WordPredictions(words: ["hello", "help"], isWord: false)])
         rig.autocapitalization = .allCharacters
@@ -444,8 +443,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(once.strip, live(["Hello", "Help"]))
     }
 
-    /// Sol round 2, run 2: where `correct` keeps a word without looking (an infinite margin), the strip marks no
-    /// correction, even when the model gives the typed word no probability at all.
+    /// Where `correct` keeps a word without looking (an infinite margin), the strip marks no correction, even when the
+    /// model gives the typed word no probability at all.
     private static func testAnInfiniteMarginIsNoPendingCorrection() {
         let model = CountingModel(["cat": 0, "car": 0.5])
         let corrector = Autocorrector(lexicon: AutocorrectCoreTests.lexicon([("cat", 200), ("car", 190)]), model: model,
@@ -456,8 +455,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(predict(corrector, "", "cat", never).correction, nil)
     }
 
-    /// Sol round 2, run 3: the host moved the caret after another copy of the word and has not reported it yet: the
-    /// text after the caret is no longer what it was, and the choice changes nothing.
+    /// The host moved the caret after another copy of the word and has not reported it yet: the text after the caret
+    /// is no longer what it was, and the choice changes nothing.
     private static func testAChoiceStaysAtItsCaret() {
         let rig = rig("x hel x", predictions: ["hel": WordPredictions(words: ["hello"], isWord: false)])
         rig.press(.space)
@@ -467,7 +466,7 @@ enum TypingSuggestionsTests {
         rig.choose(0)
         TestSupport.expectEqual(rig.text, "x hel x hel")
         TestSupport.expectEqual(rig.strip, nil)
-        // Sol round 2, run 5: nor after a Shift or layer key made the strip again at the moved caret.
+        // Nor after a Shift or layer key made the strip again at the moved caret.
         let shifted = Self.rig("x hel x", predictions: ["hel": WordPredictions(words: ["hello"], isWord: false)])
         shifted.press(.space)
         shifted.tap("hel")
@@ -477,8 +476,7 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(shifted.text, "x hel x hel")
     }
 
-    /// Sol round 2, run 5: a space a choice adds is a space: the numbers layer goes back to letters, as after the
-    /// space key.
+    /// A space a choice adds is a space: the numbers layer goes back to letters, as after the space key.
     private static func testAChosenWordsSpaceReturnsToLetters() {
         let rig = AutocorrectRig("", corrections: ["teh": "the"])
         rig.tap("teh")
@@ -500,8 +498,8 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(typed.editor.typing.layer, .letters)
     }
 
-    /// Sol round 2, run 5: a model may give the typed letters no probability at all (an n-gram's zero): every
-    /// completion is then infinitely better than keeping them, and they still rank by the model.
+    /// A model may give the typed letters no probability at all (an n-gram's zero): every completion is then
+    /// infinitely better than keeping them, and they still rank by the model.
     private static func testCompletionsSurviveATypedWordWithNoProbability() {
         let model = CountingModel(["h": 0, "hello": 0.5, "help": 0.3])
         let corrector = Autocorrector(lexicon: AutocorrectCoreTests.lexicon([("h", 100), ("hello", 200), ("help", 180)]),
@@ -510,7 +508,7 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(predict(corrector, "", "hel").words, ["hello", "help"])
     }
 
-    /// Sol round 2, run 1: a swipe after a choice that added its space keeps one recorded edit, as every strip does.
+    /// A swipe after a choice that added its space keeps one recorded edit, as every strip does.
     private static func testASwipeAfterAChoiceKeepsOneRecord() {
         let rig = AutocorrectRig("so", corrections: [:])
         rig.swipe(["hello", "help"])
@@ -559,7 +557,7 @@ enum TypingSuggestionsTests {
         // Tapping the word already in the field adds nothing.
         kept.choose(1)
         TestSupport.expectEqual(kept.text, "hi world ")
-        // Before a space already there (Sol round 2, run 3): none is added, and the next letter gets its own.
+        // Before a space already there: none is added, and the next letter gets its own.
         let inside = AutocorrectRig(document: FakeDocument(FakeTextHost(text: "x tail", caret: 1)), corrections: ["teh": "the"])
         inside.press(.space)
         inside.tap("teh")
@@ -602,9 +600,9 @@ enum TypingSuggestionsTests {
         }
     }
 
-    // MARK: Round 3
+    // MARK: Fewer, likelier words and spelling matches
 
-    /// Round 2 council (Opus finding 3): "Hey" offered "Heyday" and "Heywood". A form whose odds are less than 1 in
+    /// "Hey" must not offer "Heyday" and "Heywood". A form whose odds are less than 1 in
     /// `Autocorrector.suggestionRatio` (1000) of the strip's first word (the typed word when it is a lexicon word,
     /// else the best form) is not offered.
     private static func testFarLessLikelyFormsAreDropped() {
@@ -643,8 +641,8 @@ enum TypingSuggestionsTests {
         return (Autocorrector(lexicon: AutocorrectCoreTests.lexicon(spellingEntries), model: model, touch: AutocorrectCoreTests.touch), model)
     }
 
-    /// Round 2 council (Opus finding 1): "definately" got no suggestion and "egss" offered "eggs" only in some contexts,
-    /// because the touch model makes a letter three or more keys away almost impossible. Spelling matches
+    /// The touch model makes a letter three or more keys away almost impossible, so without spelling matches
+    /// "definately" gets no suggestion and "egss" offers "eggs" only in some contexts. Spelling matches
     /// (`WordCorrecting.spellingMatches`): for a word outside the lexicon, the lexicon forms within the corrector's edit
     /// limit (an insertion, deletion, substitution or swap of neighbours each), whatever the keys' distance; fewest
     /// edits first, then the word model in the sentence's context, then frequency.
@@ -735,7 +733,7 @@ enum TypingSuggestionsTests {
         TestSupport.expectEqual(others.corrector.spellingCalls.count, before)
     }
 
-    /// The round 2 corrections still hold with spelling matches and the ratio: "teh" is corrected to "the" while typed
+    /// Corrections while typing still hold with spelling matches and the ratio: "teh" is corrected to "the" while typed
     /// and at the space, and the chat words are kept.
     private static func testMisspellingsAndTyposStillCorrect() {
         let (corrector, _) = corrector()

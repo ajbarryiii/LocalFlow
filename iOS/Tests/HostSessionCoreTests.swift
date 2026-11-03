@@ -1121,7 +1121,7 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
     }
 
-    /// P1: a conversion failure the old pipeline queued just before a live reconfiguration replaced its
+    /// A conversion failure the old pipeline queued just before a live reconfiguration replaced its
     /// engine arrives afterwards. It must neither fail the recording nor rebuild the new engine.
     @MainActor
     private static func testStaleConversionFailureAfterReconfigurationIsIgnored() {
@@ -1145,7 +1145,7 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.status?.dictation?.error, .audioSessionFailed)
     }
 
-    /// P1, through the controller and route path: a choice changed while the app is in the background is
+    /// Through the controller and route path: a choice changed while the app is in the background is
     /// only recorded. Route changes keep re-asserting the applied choice under its own category, and the
     /// desired one is applied when the app is next in front.
     @MainActor
@@ -1893,7 +1893,7 @@ enum HostSessionLockTests {
     }
 }
 
-/// "Locked means no dictation" (ARCHITECTURE.md, "Device lock"): `deviceWillLock` latches until
+/// No dictation while locked (ARCHITECTURE.md, "Device lock"): `deviceWillLock` latches until
 /// `deviceDidUnlock`, or until the `appWillEnterForeground` / `appDidBecomeActive` events with protected
 /// data available. iOS posts the lock notification before files become inaccessible, so most tests keep
 /// the intent file readable after it: the latch alone must refuse.
@@ -2116,7 +2116,7 @@ enum HostSessionLockLatchTests {
         expectRecording(h, R, "after unlock")
     }
 
-    /// The bounce after a lock whose unlock notification was missed while suspended, in Codex's order:
+    /// The bounce after a lock whose unlock notification was missed while suspended, in this order:
     /// willEnterForeground while the app state still reads background, an intent reconciled while the app
     /// is inactive (before didBecomeActive), then didBecomeActive. The session survived the lock.
     @MainActor

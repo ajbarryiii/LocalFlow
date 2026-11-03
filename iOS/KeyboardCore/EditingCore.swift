@@ -36,8 +36,8 @@ extension AdjustmentOwner {
     func reportArrived() {}
 }
 
-/// The editing side's bookkeeping, independent of UIKit (ARCHITECTURE.md, "Undo ownership v2" and
-/// "Typing model v2: immediate execution"):
+/// The editing side's bookkeeping, independent of UIKit (ARCHITECTURE.md, "Editing core" and "Undo last
+/// dictation"):
 /// - **Field identity.** A nil `documentIdentifier` never matches anything; a different one ends
 ///   everything that belonged to the old field.
 /// - **Edit generation.** Advances on every edit the current owner did not make: typing, each delete,
@@ -51,8 +51,8 @@ extension AdjustmentOwner {
 ///   Anything else is an outside change.
 /// - **Dictation undo**, through `UndoTracker`, never while text is selected, and failing closed:
 ///   every callback that is not a pending trackpad adjustment's own ends it for good, our own edits'
-///   reports included (UIKit sends none for them, so no allowance is made; a host that reports them,
-///   such as WebKit, loses Undo). No time windows.
+///   reports included (UIKit sends none for them, so no allowance is made; a host that reports them
+///   loses Undo). No time windows.
 final class EditingCore {
     enum CallbackOutcome: Equatable {
         /// An outcome of a pending trackpad adjustment.
@@ -138,8 +138,8 @@ final class EditingCore {
         }
         // Reports arrive in order: those of our own edits come before those of a gesture begun after
         // them, and one of them can look like a gesture's outcome (a probe not yet landed). A report still
-        // owed for an adjustment comes before the echo of any edit made after it (ARCHITECTURE.md, "Typing
-        // model v2": late gesture reports are never echoes), so while one is owed only edits made before
+        // owed for an adjustment comes before the echo of any edit made after it (ARCHITECTURE.md, "Editing
+        // core", Late gesture reports are never echoes), so while one is owed only edits made before
         // `echoCutoff` may be echoed now: none while a finished gesture owes reports (an edit made since ends
         // a gesture, and deleting what was typed can bring back the very state an earlier edit left, so an
         // owed report showing it is no echo).

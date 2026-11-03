@@ -232,10 +232,9 @@ enum DictationSampleBufferTests {
         TestSupport.expectEqual(buffer.level, 0)
     }
 
-    /// Round 10 (owner: the keyboard's wave "kind of slow, consistent"): the level falls with a syllable's end, within two
-    /// buffers (about 0.2 s; round 9's release kept 70% then, a 0.6 s fall), so the keyboard sees a gap between words;
-    /// and ordinary speech (-17 dBFS, the synthetic voice's level) sits clearly below the top, so a louder word still
-    /// shows louder.
+    /// The level falls with a syllable's end, within two buffers (about 0.2 s), so the keyboard sees a gap between
+    /// words; and ordinary speech (-17 dBFS, the synthetic voice's level) sits clearly below the top, so a louder word
+    /// still shows louder.
     private static func testLevelFollowsSyllables() {
         let buffer = DictationSampleBuffer()
         buffer.begin(requestID: Fixture.requestID)
@@ -252,7 +251,7 @@ enum DictationSampleBufferTests {
         _ = buffer.finish(requestID: Fixture.requestID)
     }
 
-    // MARK: Real voices (round 11)
+    // MARK: Real voices
 
     /// 100 ms of a tone whose RMS is `dBFS`.
     private static func buffer(at dBFS: Double) -> [Float] {
@@ -278,9 +277,8 @@ enum DictationSampleBufferTests {
         }
     }
 
-    /// Round 11 (Opus, round 10: the wave was tuned on `say`'s loud voice, and a quiet phrase at about -32 dBFS left the
-    /// row flat; a real voice at arm's length often sits around -35 to -25 dBFS): a soft, a normal and a loud speaker
-    /// (-32, -22 and -12 dBFS) all look clearly active. Each one's syllables reach near the top of the level, where the
+    /// A real voice at arm's length often sits around -35 to -25 dBFS, so a soft, a normal and a loud speaker (-32, -22
+    /// and -12 dBFS) all look clearly active. Each one's syllables reach near the top of the level, where the
     /// keyboard's wave swells (`DotWave.voice`), and dip clearly between syllables, from the first second of speech.
     private static func testSoftNormalAndLoudVoicesAllLookActive() {
         var peaks: [Float] = []

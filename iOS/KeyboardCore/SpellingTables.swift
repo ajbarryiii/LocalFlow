@@ -1,6 +1,6 @@
 import Foundation
 
-/// The spelling channel's edit tables (ARCHITECTURE.md, "Word autocorrect", "Spelling channel"; reference:
+/// The spelling channel's edit tables (ARCHITECTURE.md, "Word autocorrect", Spelling channel; reference:
 /// localflow-swipe `tap/spelling.py` `SpellingTables`): natural-log probabilities of a writer's spelling
 /// errors, the letters a–z as 0–25 and `start` (26) the start of a word. Row-major, 26 columns:
 /// - `sub[c * 26 + x]`: x typed for intended c (26 × 26); −∞ on the diagonal;

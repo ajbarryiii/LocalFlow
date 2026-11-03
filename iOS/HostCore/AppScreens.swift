@@ -160,8 +160,8 @@ enum BouncePhase: Equatable, Sendable {
     }
 }
 
-/// How the start-session screen shows the way back to the app that opened LocalFlow (settled decision: an app cannot
-/// send the user back; they swipe or tap the status bar's link).
+/// How the start-session screen shows the way back to the app that opened LocalFlow (an app cannot send the user
+/// back; they swipe or tap the status bar's link).
 enum SwipeBackCue: Equatable, Sendable {
     /// The status bar's "◀ App" link: an iPhone with a Home button has no swipe along the bottom edge.
     case statusBarLink

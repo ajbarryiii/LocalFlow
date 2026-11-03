@@ -12,7 +12,7 @@ final class KeyboardChrome: ObservableObject {
     @Published var leftHanded = false
 }
 
-/// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"), published
+/// The candidate strip after a swipe (ARCHITECTURE.md, "Swipe typing", Candidate strip), published
 /// only when it opens, changes or closes, so ordinary typing never re-renders the bar. Its words stay
 /// in memory and go when the strip closes.
 @MainActor
@@ -37,7 +37,7 @@ final class NeverCorrectPromptModel: ObservableObject {
 
 /// Where the bar's controls are, in the bar's coordinates (`DictationBarView` reports them as they lay out and
 /// forgets them as they go), so the key area can take every other touch in the bar (ARCHITECTURE.md, "Reach
-/// above the keys"). Read on touches; never published, so it re-renders nothing.
+/// and touch regions", The bar outside its controls). Read on touches; never published, so it re-renders nothing.
 @MainActor
 final class BarControlFrames {
     // An immutable name, read from SwiftUI's Sendable geometry closure.
@@ -116,12 +116,12 @@ struct DictationBarView: View {
     @State private var shown = IslandBud.Shown()
     @State private var cancelPressed = false
 
-    /// The island's grow and shrink: quick and firm, a touch of give and no wobble (owner, round 8: smooth, never slow).
+    /// The island's grow and shrink: quick and firm, a touch of give and no wobble.
     /// The island's body (`IslandBody`) moves with the same spring, so the two keep step.
     static let islandSpring = Animation.spring(response: IslandBud.Motion.island.response,
                                                dampingFraction: IslandBud.Motion.island.dampingFraction)
-    /// What leaves at a change of form goes first, this quickly; what arrives waits as long (Opus, round 8: Undo arrived
-    /// over the outgoing × and "Transcribing…").
+    /// What leaves at a change of form goes first, this quickly; what arrives waits as long, so it never lands over
+    /// what is still leaving.
     static let handover = 0.06
     /// Leaving: a quick fade. Arriving: a fade after `handover`, from a little smaller where `scaleFrom` is under 1.
     static func handing(over reduceMotion: Bool, scaleFrom: CGFloat = 1, anchor: UnitPoint = .center,
@@ -199,7 +199,7 @@ struct DictationBarView: View {
                         }
                         .barControl("strip", in: controls)
                     } else {
-                        // While a dictation runs this is plain text: the cold start's caption, a notice.
+                        // While a dictation runs this is plain text: a notice, or "Open LocalFlow to start a session".
                         Middle(client: client, state: state, height: height - 8, controls: controls, layout: layout,
                                undoArriving: undoInFlight, onAction: onAction)
                     }
@@ -296,7 +296,7 @@ struct DictationBarView: View {
 
 /// Chips when there is something to act on, and a notice whenever one is up; otherwise one line of status
 /// (`BarStatus`). While a dictation runs its room is narrow (beside Cancel), so its words may take two lines; while
-/// recording it shows only the cold start's caption, plain, never a control.
+/// recording it shows only a notice, plain, never a control.
 private struct Middle: View {
     let client: KeyboardDictationClient
     let state: KeyboardViewState
@@ -331,7 +331,7 @@ private struct Middle: View {
         let lines = state.mode.isInProgress ? 2 : 1
         let items = (undoShown ? [Item.undo] : []) + (insertLastShown ? [Item.insertLast] : []) + [Item.status]
         HStack(spacing: 6) {
-            // Outwards from the menu button: left to right, mirrored left-handed (round 11, owner).
+            // Outwards from the menu button: left to right, mirrored left-handed.
             ForEach(layout.leftToRight(fromMenu: items), id: \.self) { item in
                 switch item {
                 case .undo:
@@ -557,8 +557,8 @@ private struct Chip: View {
 }
 
 /// A bar chip, its symbol a little heavier than its words. Dictation's, Undo and "Insert last dictation", are capsules
-/// in the island's fill, edge and ink (round 12, owner: Undo, which Cancel's × becomes, looks like the island; "Insert
-/// last" matches it); "Never correct" is key-coloured, with the key's shadow.
+/// in the island's fill, edge and ink (Undo, which Cancel's × becomes, looks like the island; "Insert last" matches
+/// it); "Never correct" is key-coloured, with the key's shadow.
 private struct ChipLabel: View {
     enum Look { case island, key }
 
@@ -719,9 +719,9 @@ private struct DictationIsland: View {
                             look: dot.look(reduceMotion: reduceMotion, behindMenu: menuOpen), side: 19, pops: reduceMotion ? 0 : bounces)
                 Text("Start").font(.subheadline.weight(.semibold)).lineLimit(1).fixedSize()
             }
-            // A process's first live timer text takes about 55 ms to resolve (round 9: Foundation's attribute-scope
-            // reflection, profiled on the simulator); resolved here while idle, it no longer stalls Start's first frames
-            // (round 8 council, Opus finding 2). A timer that has ended: it never ticks.
+            // A process's first live timer text takes about 55 ms to resolve (Foundation's attribute-scope reflection,
+            // profiled on the simulator); resolved here while idle, it does not stall Start's first frames. A timer
+            // that has ended: it never ticks.
             .background {
                 Text(timerInterval: Date.distantPast...Date.distantPast, countsDown: false)
                     .font(.caption.weight(.semibold).monospacedDigit())
@@ -997,7 +997,7 @@ struct MenuPanelView: View {
                     Label {
                         Text(client.state.sessionSummary)
                     } icon: {
-                        // The session's dot, as on Start (round 11, Opus: it was always aurora).
+                        // The session's dot, as on Start.
                         SessionMark(line: color(palette.markLine), dot: sessionDot.menuColor(palette, reduceMotion: reduceMotion),
                                     look: sessionDot.look(reduceMotion: reduceMotion), side: 18, weight: 1)
                     }

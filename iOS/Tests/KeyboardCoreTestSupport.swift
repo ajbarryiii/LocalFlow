@@ -57,7 +57,7 @@ enum FakeContextModel {
     /// start of the sentence two before the one the caret ends (spanning line breaks); after it, to
     /// the end of the caret's sentence or the next line break, whichever comes first.
     case uikit
-    /// An earlier reading, kept for the original undo regression: right after a line break only "\n"
+    /// An earlier reading, kept so tests see a context of just "\n": right after a line break only "\n"
     /// shows before the caret, further into a line the text after the break; after it, up to the
     /// next line break.
     case lineBreakOnly
@@ -90,7 +90,7 @@ struct FakeTextHost {
     /// As measured in UIKit: until that callback the proxy answers from the context it last reported,
     /// the caret moved by the offset in code units and clamped to that text.
     var provisionalContext: Bool
-    /// As measured in a WKWebView (round 6): every adjustment is reported twice, first with the context
+    /// As measured in a WKWebView: every adjustment is reported twice, first with the context
     /// it was issued in, a frame later as it landed; each report shows the caret as of that adjustment,
     /// in order, and the proxy keeps showing it until the next report.
     var reportsAsIssuedFirst = false

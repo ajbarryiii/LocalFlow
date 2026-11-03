@@ -22,8 +22,8 @@ enum WordChoiceTests {
 
     // MARK: Archaic forms
 
-    /// Round 6 council (Opus finding 2): "neer" offered "ne'er". Archaic poetic contractions are never a correction, a
-    /// suggestion, a completion, a spelling match or a next word, however likely the model finds them.
+    /// "neer" must not offer "ne'er". Archaic poetic contractions are never a correction, a suggestion, a completion, a
+    /// spelling match or a next word, however likely the model finds them.
     private static func testArchaicFormsAreNeverOfferedOrPutIn() {
         for form in ["ne'er", "e'er", "o'er", "e'en", "twas", "tis"] {
             TestSupport.expect(Autocorrector.archaicForms.contains(form), "\(form) is not excluded")
@@ -63,8 +63,8 @@ enum WordChoiceTests {
 
     // MARK: Vowel rivals
 
-    /// Round 6 council (Opus finding 2): "best pizza neer" became "never", and "near" was not even offered. The touch model
-    /// counts a vowel typed for one far from its key as a far miss, yet people misspell vowels: "near" lost on touch alone.
+    /// "best pizza neer" must not become "never" with "near" not even offered. The touch model counts a vowel typed for
+    /// one far from its key as a far miss, yet people misspell vowels: "near" loses on touch alone.
     /// A vowel rival is a lexicon form that differs from a word outside the lexicon (of at least `vowelRivalLength` letters)
     /// by one vowel typed for another on a key not beside it, at least `vowelRivalRatio` as likely as the correction by the
     /// word model in the sentence; the likeliest one.
@@ -160,7 +160,7 @@ enum WordChoiceTests {
 
     // MARK: Apostrophe twins
 
-    /// Round 6 (lead): at a sentence's start "Were you there?" went out as "We're you there?". The corrector picks between
+    /// At a sentence's start "Were you there?" must not go out as "We're you there?". The corrector picks between
     /// a lexicon word and its apostrophe twin (the same letters: "were", "we're") by the word model alone, and before the
     /// next word is typed a sentence's start can't tell them apart. A lexicon word is kept over its twin unless the twin
     /// is at least `twinRatio` times as likely in the sentence.
@@ -219,7 +219,7 @@ enum WordChoiceTests {
 
     // MARK: Apostrophe forms
 
-    /// Round 6 council (Opus finding 5): "ill be back" kept "ill" with no "I'll" offered. A short table of real words
+    /// "ill be back" must not keep "ill" with no "I'll" offered. A short table of real words
     /// commonly typed for a contraction offers the contraction beside the word, while it is typed and after a commit key, in
     /// the typed word's case. Never a correction: Space keeps the word as typed.
     private static func testApostropheFormsAreOfferedNeverCorrected() {
@@ -267,7 +267,7 @@ enum WordChoiceTests {
         TestSupport.expectEqual(off.strip, nil)
     }
 
-    /// Round 6 (the apostrophe-less words people type): every one checked on bundle b34 is corrected but "whats" and "hows",
+    /// Of the apostrophe-less words people type, every one checked on bundle b34 is corrected but "whats" and "hows",
     /// which are lexicon words the corrector keeps. Both are almost always typed for the contraction, as "cant" is.
     private static func testWhatsAndHowsTakeTheirApostrophe() {
         TestSupport.expectEqual(WordAutocorrect.fixedCorrections["whats"], "what's")
@@ -280,7 +280,7 @@ enum WordChoiceTests {
         TestSupport.expectEqual(rig.text, "what's How's ")
     }
 
-    /// Round 6 council (Opus finding 2): "Lets go" stayed "Lets". At a sentence's start "lets" has no subject, so it is
+    /// "Lets go" must not stay "Lets". At a sentence's start "lets" has no subject, so it is
     /// "let's": corrected there whatever the corrector says, in the typed word's case, and reverted like any correction.
     /// Within a sentence ("she lets me") it stays the apostrophe twin it was: kept, with "let's" offered. Only "lets" is in
     /// the table: "its" is as often the word at a sentence's start ("Its battery is low").

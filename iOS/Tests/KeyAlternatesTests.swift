@@ -115,9 +115,9 @@ enum KeyAlternatesTests {
                                 KeyAlternates.frames(count: 3, key: key, width: 402))
     }
 
-    /// Round 1 council (Sol): VoiceOver had no route to the alternates. Each character key with alternates offers
-    /// them as custom actions, the key's own character excluded (activating the key types it), in the row's order;
-    /// the field's own ones on the letters layer only, as the row shows them.
+    /// VoiceOver reaches the alternates: each character key with alternates offers them as custom actions, the key's
+    /// own character excluded (activating the key types it), in the row's order; the field's own ones on the letters
+    /// layer only, as the row shows them.
     private static func testVoiceOverOffersEveryAlternateAsAnAction() {
         TestSupport.expectEqual(KeyAlternates.accessibilityActions(for: "e", layer: .letters, field: .standard),
                                 KeyAlternates.alternates(for: "e"))

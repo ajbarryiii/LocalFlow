@@ -1,7 +1,7 @@
 import Foundation
 
 /// Lexicon-constrained CTC prefix beam search, exactly as the reference `swipe/decode.py`
-/// (ARCHITECTURE.md, "Typing model v4 and swipe typing", step 5).
+/// (ARCHITECTURE.md, "Swipe typing", Decoding pipeline step 5).
 ///
 /// Label keys never repeat a letter, so a prefix grows only to a different letter and staying on
 /// its last letter keeps the prefix. After each frame the `beam` prefixes with the highest total

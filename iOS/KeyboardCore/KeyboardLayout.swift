@@ -90,14 +90,15 @@ struct KeyboardMetrics: Equatable, Sendable {
     static let compactBarControlHeight: Double = 32
 
     /// How far above its top the key area takes touches: the strip of the bar below its controls
-    /// (ARCHITECTURE.md, "Dropped taps: reach, skids and counters").
+    /// (ARCHITECTURE.md, "Reach and touch regions", Reach above the keys).
     static func reachAboveKeys(compact: Bool) -> Double {
         compact ? (compactBarHeight - compactBarControlHeight) / 2 : (barHeight - barControlHeight) / 2
     }
 
     /// Whether a touch at (x, y) in the bar's own coordinates goes to the keys: anywhere in the bar outside every
     /// control's frame (an edge is the control's; each control's tap area is exactly its frame); with no control
-    /// frames known, only the strip below the controls (`reachAboveKeys`). ARCHITECTURE.md, "Reach above the keys".
+    /// frames known, only the strip below the controls (`reachAboveKeys`). ARCHITECTURE.md, "Reach and touch regions",
+    /// The bar outside its controls.
     static func barPointGoesToKeys(x: Double, y: Double, barHeight: Double, compact: Bool, controls: [KeyRect]) -> Bool {
         guard y >= 0, y <= barHeight else { return false }
         guard !controls.isEmpty else { return y >= barHeight - reachAboveKeys(compact: compact) }
@@ -105,7 +106,7 @@ struct KeyboardMetrics: Equatable, Sendable {
     }
 
     /// The Start/Stop capsule's tap area is its frame inset this much at the sides and bottom, where the keys take
-    /// the rest (user decision, 2026-10-18: the capsule is never missed, and fast top-row taps land around it).
+    /// the rest (the capsule is never missed, and fast top-row taps land around it).
     static let startHitInset: Double = 6
 
     /// How far below the key area's top Stop's tap area reaches while dictation is starting or recording: through
@@ -123,8 +124,8 @@ struct KeyboardMetrics: Equatable, Sendable {
         return KeyRect(x: capsule.x + startHitInset, y: 0, width: max(capsule.width - 2 * startHitInset, 0), height: max(bottom, 0))
     }
 
-    /// Cancel's tap area is this wide, and as tall where the bar has room (Opus, round 8: a tap 2 points beside its
-    /// 32-point circle typed a letter).
+    /// Cancel's tap area is this wide, and as tall where the bar has room (a tap 2 points beside its 32-point circle
+    /// must not type a letter).
     static let cancelHitSize: Double = 44
 
     /// Cancel's tap area, in the bar's coordinates, from its circle there: `cancelHitSize` wide about the circle, and as
@@ -296,10 +297,10 @@ enum KeyboardLayout {
     }
 
     /// A point outside the space bar counts as this much farther from it (points): the biggest key gets the
-    /// least of the gaps around it (ARCHITECTURE.md, "A stricter space bar").
+    /// least of the gaps around it (ARCHITECTURE.md, "Reach and touch regions", A stricter space bar).
     static let spaceMissPenalty: Double = 8
     /// The delete key's frame reaches this much further left, towards M, for the nearest key (points)
-    /// (ARCHITECTURE.md, "A wider delete key").
+    /// (ARCHITECTURE.md, "Reach and touch regions", A wider delete key).
     static let deleteReachLeft: Double = 8
 
     /// The key under a touch, or the nearest one, so gaps between keys are never dead. Distances are to the

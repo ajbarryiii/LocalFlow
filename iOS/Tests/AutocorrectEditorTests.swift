@@ -83,8 +83,8 @@ enum AutocorrectEditorTests {
     }
 
     private static func testRecordOwnsOnlyWordsAfterItsOwnSeparator() {
-        // ARCHITECTURE.md, "Word autocorrect", Owned words (code review round 5): the record owns its word only from
-        // a separator the editor typed, or a field start it saw empty, until anything else touches it.
+        // ARCHITECTURE.md, "Word autocorrect", Owned words: the record owns its word only from a separator the
+        // editor typed, or a field start it saw empty, until anything else touches it.
         var record = WordTapRecord()
         TestSupport.expect(!record.owned, "a new record is owned")
         record.edited(deleted: 0, inserted: "ab", point: p(1))
@@ -112,7 +112,7 @@ enum AutocorrectEditorTests {
         record.edited(deleted: 0, inserted: "q", point: p(1))
         record.clear()
         TestSupport.expectEqual(record, WordTapRecord())
-        // Shown by the host (final review): the reading ends with the word right after its separator, or is
+        // Shown by the host: the reading ends with the word right after its separator, or is
         // exactly the word at a field's start; nothing else, and never while unowned.
         record.edited(deleted: 0, inserted: " te", point: p(1))
         TestSupport.expect(record.isShown(before: "so te"), "the word after its space")
@@ -302,8 +302,8 @@ enum AutocorrectEditorTests {
 
     private static func testChatWordsAreKeptAsTyped() {
         // Common chat abbreviations and slang stay as typed in any case, without asking the corrector, even one that
-        // would change them (round 1 council: "lol " became "lil"; round 3: "ur" became "our"). Round 5 changed "alot":
-        // it is no chat word any more but becomes "a lot" (`testRunTogetherWordsBecomeTwoWords`).
+        // would change them ("lol " must not become "lil", nor "ur" become "our"). "alot" is no chat word: it becomes
+        // "a lot" (`testRunTogetherWordsBecomeTwoWords`).
         let chat = ["lol", "lmao", "lmk", "omg", "btw", "idk", "tbh", "imo", "brb", "ty", "thx", "np", "smh", "ikr", "nvm",
                     "ok", "okay", "haha", "hahaha", "ugh", "yay", "gonna", "wanna", "gotta", "kinda", "sorta", "yeah", "nah",
                     "yep", "nope", "ur"]
@@ -338,11 +338,11 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(longer.text, "lol ok ")
     }
 
-    /// Round 4 council (Opus finding 1): "running abit late" went out as "running habit late". Four words typed run
-    /// together become two words, as on Apple's keyboard, whatever the corrector says: "abit", "alot", "aswell" and
-    /// "atleast". The replacement is one correction like any other: Space applies it, a Delete straight after puts the
-    /// typed word back (and remembers it), the strip offers the typed word, and the case follows the typed word. This
-    /// changes round 3's contract, which kept "alot" as typed as a chat word.
+    /// "running abit late" must not go out as "running habit late". Four words typed run together become two words, as
+    /// on Apple's keyboard, whatever the corrector says: "abit", "alot", "aswell" and "atleast". The replacement is one
+    /// correction like any other: Space applies it, a Delete straight after puts the typed word back (and remembers
+    /// it), the strip offers the typed word, and the case follows the typed word. "alot" is not a chat word kept as
+    /// typed.
     private static func testRunTogetherWordsBecomeTwoWords() {
         TestSupport.expectEqual(WordAutocorrect.runTogetherWords, ["abit": "a bit", "alot": "a lot", "aswell": "as well",
                                                                     "atleast": "at least"])
@@ -415,9 +415,9 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(longer.text, "abits ")
     }
 
-    /// Round 4 council (Opus layout): no accented suggestions. A small table of English words that keep their accents
-    /// ("café", "résumé", "naïve", ...) offers the accented form beside the plain word, while it is typed and after a
-    /// commit key, in the typed word's case. Never a correction: Space keeps the word as typed.
+    /// A small table of English words that keep their accents ("café", "résumé", "naïve", ...) offers the accented
+    /// form beside the plain word, while it is typed and after a commit key, in the typed word's case. Never a
+    /// correction: Space keeps the word as typed.
     private static func testAccentedFormsAreOfferedNeverCorrected() {
         let table = WordAutocorrect.accentedForms
         TestSupport.expect(!table.isEmpty && table.count <= 40, "\(table.count) entries")
@@ -517,8 +517,8 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(off.text, "wont ")
     }
 
-    /// Round 2 council (Opus finding 1): "definately " stayed as typed. Very common misspellings that are certain are
-    /// corrected whatever the corrector says, as "cant" is, in the typed word's case, and revert like any correction.
+    /// "definately " must not stay as typed. Very common misspellings that are certain are corrected whatever the
+    /// corrector says, as "cant" is, in the typed word's case, and revert like any correction.
     private static func testCommonMisspellingsAreCorrected() {
         let rig = AutocorrectRig("", corrections: [:])
         for word in ["definately", "Seperate", "RECIEVE", "thier", "tommorow", "untill", "wich"] {
@@ -587,9 +587,9 @@ enum AutocorrectEditorTests {
         TestSupport.expect(table["teh"] == nil, "the corrector decides teh")
     }
 
-    /// Round 2 council (Opus finding 1): after "egss " the strip offered "eggs" only in some contexts. After a commit key
-    /// a word outside the lexicon also offers its best spelling match (one or two edits, whatever the keys' distance):
-    /// suggested only, never put in by the commit key.
+    /// After "egss " the strip must offer "eggs", not only in some contexts. After a commit key a word outside the
+    /// lexicon also offers its best spelling match (one or two edits, whatever the keys' distance): suggested only,
+    /// never put in by the commit key.
     private static func testSpellingMatchesJoinTheStripAfterTheWord() {
         let rig = AutocorrectRig.typingASpace(after: "and", corrections: [:])
         rig.corrector.spelled = ["egss": ["eggs", "egos"]]
@@ -652,9 +652,8 @@ enum AutocorrectEditorTests {
         // Nothing to revert: delete deletes the space.
         rig.heldDelete()
         TestSupport.expectEqual(rig.text, "hello")
-        // Deleting back into the word over the keyboard's own space makes it its own again (round 7, Opus finding 1;
-        // round 5 disowned it): committed again, it is checked again. A space after a space, or a key after punctuation,
-        // has no word.
+        // Deleting back into the word over the keyboard's own space makes it its own again: committed again, it is
+        // checked again. A space after a space, or a key after punctuation, has no word.
         rig.press(.space)
         TestSupport.expectEqual(rig.corrector.calls.count, 2)
         rig.press(.space)
@@ -721,9 +720,8 @@ enum AutocorrectEditorTests {
     }
 
     private static func testOnlyWordsTheKeyboardTypedWholeAreCorrected() {
-        // ARCHITECTURE.md, "Word autocorrect", Owned words (code review round 5): a word that began in the field's
-        // own text is never corrected, nor one after text the keyboard did not type, even after a space it did not
-        // type.
+        // ARCHITECTURE.md, "Word autocorrect", Owned words: a word that began in the field's own text is never
+        // corrected, nor one after text the keyboard did not type, even after a space it did not type.
         for (text, tapped, expected) in [("so te", "h", "so teh "), ("so ", "teh", "so teh "), ("teh", "", "teh ")] {
             let rig = AutocorrectRig(text, corrections: ["teh": "the"])
             rig.tap(tapped)
@@ -825,7 +823,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testUnverifiedCaretContextIsNotCorrected() {
-        // Code review (2026-10-19, P1): a commit key that ends a trackpad probe whose outcome is unknown reads the
+        // A commit key that ends a trackpad probe whose outcome is unknown reads the
         // proxy's text from before the probe landed. The host's caret may be elsewhere (here inside the emoji), so
         // deleting the word from there would delete other text. The key types without a correction.
         let original = "teh\u{1F44D}\u{1F3FD}"
@@ -843,8 +841,8 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(String(String.UnicodeScalarView(harness.document.text.unicodeScalars.filter { $0 != " " })),
                                 original)
         TestSupport.expectEqual(harness.document.text.unicodeScalars.filter { $0 == " " }.count, 1)
-        // Later words this keyboard types whole, after a separator it typed, are corrected again (code review round
-        // 4: after an unconfirmed gesture that is the only kind; "aWordAfterAnUnconfirmedMoveIsCorrectedOnlyWhenAllTyped").
+        // Later words this keyboard types whole, after a separator it typed, are corrected again (after an
+        // unconfirmed gesture that is the only kind).
         for letter in ["t", "e", "h"] { harness.press(.character(letter)) }
         harness.press(.space)
         harness.settle()
@@ -856,7 +854,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testCallbackBetweenCommitKeyDownAndUpIsNotTrusted() {
-        // Code review round 4 (2026-10-19, P1): Space touches down and ends a trackpad probe; WebKit's report of the
+        // Space touches down and ends a trackpad probe; WebKit's report of the
         // adjustment as issued arrives while Space is held and shows the old caret; Space then types at release.
         // That report verifies nothing about where the host has the caret, so the word is not corrected.
         let original = "teh\u{1F44D}\u{1F3FD}x"
@@ -889,7 +887,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testAGestureOrReappearingDisownsTheWord() {
-        // Owned words (code review rounds 4 and 5): only a word this keyboard typed whole, after a separator it also
+        // Owned words: only a word this keyboard typed whole, after a separator it also
         // typed, is corrected; deleting it removes only those characters, wherever the host has the caret. A
         // gesture, deleting past the word's start, or hiding and appearing again (anywhere but the same unchanged
         // field) disowns the word.
@@ -924,7 +922,7 @@ enum AutocorrectEditorTests {
         TestSupport.expectEqual(harness.document.text, "so tehxx ")
         TestSupport.expectEqual(corrector.calls.count, 1)
         // Appearing again does not own the word before the caret (the field is not empty), unless this keyboard was
-        // typing it there and nothing changed while it was hidden (round 5: `KeyboardEditorTests`, "a parked word").
+        // typing it there and nothing changed while it was hidden (`ParkedWordTests`).
         // Here the host app changed the field.
         harness.press(.character("t"))
         harness.hide()
@@ -938,7 +936,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testFieldsWithAutocorrectionOffAreNotCorrected() {
-        // Code review round 4 (2026-10-19, P2): a field that turns autocorrection off (`autocorrectionType == .no`,
+        // A field that turns autocorrection off (`autocorrectionType == .no`,
         // SwiftUI's `.autocorrectionDisabled()`) keeps its literal input.
         let rig = AutocorrectRig("", corrections: ["teh": "the"])
         rig.autocorrectionDisabled = true
@@ -953,9 +951,9 @@ enum AutocorrectEditorTests {
     }
 
     private static func testAnOwnedWordTheProxyDoesNotShowIsNotCorrected() {
-        // Final review (2026-10-19, P1): owned AND shown by the host. A proxy that has not shown our edits yet does
+        // Owned AND shown by the host. A proxy that has not shown our edits yet does
         // not show the word, so it is committed as typed: a lagging proxy means a missed correction, never a wrong
-        // one. (This reverses round 5's "anOwnedWordIsCorrectedWhileTheProxyLags".)
+        // one.
         let rig = AutocorrectRig.typingASpace(after: "so")
         rig.document.host.editContextLagFrames = 3
         rig.tap("teh")
@@ -981,7 +979,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testCharactersTheHostRejectedAreNeverDeleted() {
-        // Final review (2026-10-19, P1): a field capped at 12 characters keeps "prefix helll" of "prefix helllo".
+        // A field capped at 12 characters keeps "prefix helll" of "prefix helllo".
         // The record says "helllo"; the proxy shows "helll", so nothing is corrected, and the separator the
         // correction would have deleted stays.
         let rig = AutocorrectRig("prefix", corrections: ["helllo": "hello", "helll": "hello"])
@@ -1008,7 +1006,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testLayoutChangeDropsTheRecordedPoints() {
-        // Code review (2026-10-19, P2): points recorded in one layout mean nothing in another (a resize or a
+        // Points recorded in one layout mean nothing in another (a resize or a
         // rotation). A layout change keeps the word's characters and drops their points; later taps have theirs.
         var record = WordTapRecord()
         record.edited(deleted: 0, inserted: "a", point: p(1))
@@ -1027,7 +1025,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testLayoutChangeDropsThePointsARevertRestores() {
-        // Code review round 2 (2026-10-19, P2): a layout change between a correction and its revert drops the
+        // A layout change between a correction and its revert drops the
         // points the revert would restore too.
         let rig = AutocorrectRig("", corrections: ["teh": "the"])
         rig.tap("teh", from: 30)
@@ -1042,7 +1040,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testReturnNeverArmsARevert() {
-        // Code review round 2 (2026-10-19, P1): Return can move focus before the proxy reports the new field, so
+        // Return can move focus before the proxy reports the new field, so
         // a Delete right after would delete in the next field. A Return still corrects, but a Delete after it is a
         // plain Delete.
         let rig = AutocorrectRig("", corrections: ["teh": "the"])
@@ -1066,7 +1064,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testStaleReadingAfterHidingIsNotCorrected() {
-        // Code review round 5 (2026-10-19, P1): the keyboard hides and appears again before a move a key
+        // The keyboard hides and appears again before a move a key
         // interrupted reaches the proxy, which still reads "teh" before the caret. The keyboard did not type that
         // word in this appearance, so it is never corrected, wherever the host has the caret.
         let original = "teh\u{1F44D}\u{1F3FD}x"
@@ -1096,7 +1094,7 @@ enum AutocorrectEditorTests {
     }
 
     private static func testReturnIsSentOnItsOwnAfterTheCorrection() {
-        // Code review round 5 (2026-10-19, P2): hosts that act on `text == "\n"` (Send, Next) must still get Return
+        // Hosts that act on `text == "\n"` (Send, Next) must still get Return
         // alone: the correction goes in first, then the Return as its own insertion.
         let rig = AutocorrectRig("", corrections: ["teh": "the"])
         rig.tap("teh")
@@ -1376,7 +1374,7 @@ enum AutocorrectEditorTests {
         let rig = AutocorrectRig.typingASpace(after: "hi", alternatives: ["wrld": ["world", "would"]])
         rig.tap("wrld")
         rig.press(.character(","))
-        // A chosen word ends with one space (round 2), here after the commit key's mark.
+        // A chosen word ends with one space, here after the commit key's mark.
         rig.choose(1)
         TestSupport.expectEqual(rig.text, "hi world, ")
         TestSupport.expectEqual(rig.document.host.caret, 10)

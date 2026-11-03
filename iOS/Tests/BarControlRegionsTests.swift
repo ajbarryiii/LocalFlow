@@ -1,7 +1,7 @@
 import Foundation
 
-/// ARCHITECTURE.md, "Reach above the keys": the bar's control frames, a moved or gone control keeping its
-/// previous frame while it may still be animating there.
+/// ARCHITECTURE.md, "Reach and touch regions", The bar outside its controls: the bar's control frames, a moved
+/// or gone control keeping its previous frame while it may still be animating there.
 enum BarControlRegionsTests {
     static var tests: [TestCase] {
         [

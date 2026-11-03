@@ -33,7 +33,7 @@ enum CursorMotionTests {
     }
 
     private static func testMeasuredGainValues() {
-        // ARCHITECTURE.md, "Measured Apple keyboard behavior": g(1) ≈ 1.04, g(3) ≈ 1.32, g(7) ≈ 1.905,
+        // ARCHITECTURE.md, "Trackpad: activation and motion", Gain: g(1) ≈ 1.04, g(3) ≈ 1.32, g(7) ≈ 1.905,
         // g(15) ≈ 2.567, g(30) ≈ 3.36.
         close(measured.gain(forStep: 0), 1, 1e-12, "g(0)")
         close(measured.gain(forStep: 1), 1.04, 1e-9, "g(1)")
