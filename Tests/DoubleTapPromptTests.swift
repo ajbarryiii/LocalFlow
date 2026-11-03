@@ -1,7 +1,8 @@
 import Foundation
 
-/// Double-tap Hold to Talk for prompt mode (DOUBLE-TAP.md). Times are
-/// injected event timestamps in seconds; no clock is read.
+/// Double-tap Hold to Talk for prompt mode (README.md, "Dictation";
+/// `DoubleTapPromptDetector`). Times are injected event timestamps in seconds;
+/// no clock is read.
 enum DoubleTapPromptTests {
     static func run() {
         testTapThenPressStartsPrompt()

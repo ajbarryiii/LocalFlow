@@ -3,8 +3,10 @@
 Local dictation for Wayland desktops (developed on Hyprland and NixOS): hold
 a key, speak, release, and the text is typed into the focused window.
 Speech recognition runs on the CPU with a ternary or binary Parakeet model;
-nothing leaves the machine, and audio is never written to disk. See `PLAN.md`
-for the design and measurements.
+nothing leaves the machine, and audio is never written to disk. A dictation
+is transcribed while you speak, in 15 s windows that overlap by 2 s, so after
+the key is released only the last window is left. This is new since 0.1.0
+and not yet in a release (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 - `localflowd`: the daemon. It records, transcribes, post-processes (voice
   macros, "press enter", spoken delimiters) and types.
@@ -142,10 +144,12 @@ invalid values stop the daemon with an error. Defaults:
   weights instead of 155 MB). On a Ryzen 9 9950X3D with i8x2, kea-b
   transcribed 2-12 s clips about 8% faster than kea-t end to end; its
   encoder projections were 9-21% faster at 3 s and 3-6% faster at 30 s.
-- `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. i8x2 matched
-  f32's WER over 32,560 dev/test utterances (six near-tie transcript
-  changes) and is 25-28% faster than i8x3, which tracks f32 to rounding; see
-  "Precision validation" in `PLAN.md`.
+- `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. On kea-t, i8x2
+  matched f32's WER over 32,560 dev/test utterances (six near-tie transcript
+  changes) and is 25-28% faster than i8x3, which tracks f32 to rounding. To
+  re-check a new export, save hypotheses at each precision with
+  `lf-transcribe --save-hyps` and compare them with `lf-hypcompare` (both in
+  `lf-bench`).
 - `cpus`: the CPUs the recognizer's threads are pinned to, an array
   (`[0, 1, 2]`) or a list string (`"0-15"`, `"0-7,16-23"`). By default, one
   CPU per physical core the daemon may run on (SMT siblings are skipped),
@@ -750,8 +754,23 @@ nix develop ./linux --command cargo test --release --manifest-path linux/Cargo.t
 
 Run these by hand on the live session; the automated tests use fakes or
 private headless instances and never touch the microphone or the desktop.
-First run the backend smoke tests in the "Desktop I/O" section of
-`linux/PLAN.md` (`lf-mic-smoke`, `lf-type-smoke`).
+First check the microphone and the virtual keyboard on their own with the
+two smoke tools. `lf-mic-smoke` keeps the audio in memory and prints only
+its length, levels and timing; `lf-type-smoke` waits so you can focus a
+text field, then types its argument and prints only counts and timing:
+
+```bash
+nix develop ./linux --command cargo build --release --manifest-path linux/Cargo.toml -p lf-pipewire -p lf-wayland
+linux/target/release/lf-mic-smoke --seconds 5 --cycles 3   # speak; RMS rises, all 3 cycles work
+linux/target/release/lf-mic-smoke --seconds 3 --target <node.name from wpctl inspect>
+linux/target/release/lf-type-smoke --wait 3 'Grüße — “quotes” 👍🏽 日本語'
+linux/target/release/lf-type-smoke --wait 3 --enter 'echo typed'   # in a terminal: runs the command
+```
+
+With the microphone unplugged or disabled, `lf-mic-smoke` fails within 3 s.
+Typed text must come out exactly, also with another layout (Dvorak, say)
+active, and the physical keyboard must keep its layout afterwards.
+
 Items 1-21 use the Hyprland binds in `packaging/hyprland.conf`; "the key" is
 your dictation key.
 
@@ -900,6 +919,11 @@ your dictation key.
     icon comes back. `busctl --user introspect
     org.kde.StatusNotifierItem-$(pgrep -f 'localflowctl tray')-1
     /StatusNotifierItem` lists only state properties.
+33. Long dictations: dictate for about 5, 40 and 90 s, with a pause or two:
+    the text arrives within a moment of releasing the key, including words
+    spoken across the 15 s window edges. `localflowctl cancel` in the middle
+    of a long one types nothing. `pw-top` shows no xruns on the capture
+    stream while recording.
 
 ## License
 

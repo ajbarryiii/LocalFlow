@@ -13,8 +13,8 @@ How to read it:
   a symbol plus `file:line`. Paths are relative to the repository root,
   except that Swift files under `Sources/Dictionary/` and Rust files under
   `linux/crates/` are named from there after their first mention. Line
-  numbers match the commit that last changed this file; if they drift,
-  search for the named symbol.
+  numbers drift as the code changes; when one does, search for the named
+  symbol.
 - **Inferred** marks a statement read from the code's behavior when no
   comment, test or vector states it.
 - Section numbers match the citations in the code. No code cites §2.1–§2.3
@@ -439,9 +439,11 @@ is invented.
 ### §2.2 Snapshots
 
 Each published change is a new immutable `Snapshot`, identified by a
-revision. A dictation decodes with the snapshot taken when it was
-submitted. (`Snapshot`, `lf-daemon/src/dictionary.rs:61-68`;
-`Controller::finish`, `lf-daemon/src/controller.rs:1464-1485`)
+revision. A dictation decodes with the snapshot taken when its recording
+started: it is transcribed while it is recorded. (`Snapshot`,
+`lf-daemon/src/dictionary.rs:61-67`; `Controller::start_recording`,
+`lf-daemon/src/controller.rs:1218-1247`; `Controller::finish`,
+`controller.rs:1533-1555`)
 
 Agent-link project words are boosted together with the dictionary, and the
 dictionary's strength wins on overlap. They are not dictionary changes.
@@ -451,7 +453,7 @@ dictionary's strength wins on overlap. They are not dictionary changes.
 ### §2.3 Decoding
 
 Casing is restored on the raw transcript before `lf_dictation::process`
-(§1.4; the worker's `run`, `lf-daemon/src/worker.rs:427-429`). The biased
+(§1.4; the worker's `finish`, `lf-daemon/src/worker.rs:787-791`). The biased
 decision rule is §1.2's (`token_decision`, `lf-cpu/src/decoder.rs:995-1009`).
 
 ### §2.4 Correction session
@@ -461,23 +463,23 @@ decision rule is §1.2's (`token_decision`, `lf-cpu/src/decoder.rs:995-1009`).
   (`CorrectionSession`, `controller.rs:131-138`; `Retained`,
   `worker.rs:33-43`)
 - A dictation is kept only if all of these hold (`eligible` in the
-  worker's `run`, `worker.rs:432-441`; `Controller::finish`,
-  `controller.rs:1237-1258`):
+  worker's `finish`, `worker.rs:792-799`; `Controller::finish`,
+  `controller.rs:1533-1555`):
   - it is not a macro;
   - it does not press Return;
   - its output is non-empty, at most 4096 bytes and free of control
     characters;
-  - the dictionary revision has not changed since the dictation was
-    submitted.
+  - the dictionary revision has not changed since its recording started.
 - The session lasts 120 s (`CORRECTION_WINDOW`). It is discarded earlier
   by a new recording, a cancel, or any published dictionary change.
   Discarding cancels its check, or marks the check stale.
   (`CORRECTION_WINDOW`, `discard_correction`, `expire_correction`,
   `apply_change`, `start_recording` and `cancel`,
   `controller.rs:127-129,419-443,595-605,1017-1025,1130-1131`)
-- The retained audio is the dictation's encoder projection. Its size is
-  bounded only by `max_recording_seconds` (default 300 s;
-  `lf-daemon/src/config.rs:107,247`).
+- The retained audio is the encoder projection of each of the dictation's
+  15 s windows, at most 16 MiB together (`MAX_RETAINED_BYTES`). A longer
+  dictation is still typed but not kept. (`MAX_RETAINED_BYTES` and
+  `Windows::transcribe`, `worker.rs:36-38,598-640`)
 - `correct-submit` computes every candidate. The worker drops the ones it
   cannot attempt, then takes at most three (pin P8). A newer submit cancels
   a pending check. (`submit_correction`, `controller.rs:501-553`)
@@ -494,7 +496,8 @@ The text commands are `correct-begin`, `correct-submit`, `correct-result`,
 - Error codes include `invalid-entry`, `full`, `not-found`, `storage`,
   `stale` and `too-long`.
 
-`localflowctl correct` drives the user flow through rofi:
+`localflowctl correct` drives the user flow through a picker (rofi or wofi;
+fuzzel and tofi can show only the second prompt):
 
 - It works within two minutes of a dictation.
 - The user edits the dictation's text there; the text already typed into
@@ -529,9 +532,8 @@ and cached by revision and app (`BiasGraphCache`, §3.6).
 
 UserDefaults holds two keys, plus a third on macOS for app limits (§3.6)
 (`DictionaryStorage`,
-`Sources/Dictionary/DictionaryEntry.swift:139-200`;
-`AppState.dictionaryStorageKey` and `dictionaryIgnoreStorageKey`,
-`Sources/AppState.swift:295-332`):
+`Sources/Dictionary/DictionaryEntry.swift:142-237`;
+`DictionaryStorage.entriesKey` and `ignoreKey`, `DictionaryEntry.swift:206-207`):
 
 | Key | Payload |
 |---|---|
@@ -562,8 +564,9 @@ untouched. Edits are refused until an explicit reset removes both keys.
 `AppState.swift:2299-2305,2326-2338`; `testStorage`)
 
 `correction_suggestions_enabled` turns correction suggestions on or off.
-It defaults to on. (`AppState.correctionSuggestionsStorageKey` and
-`isCorrectionSuggestionsEnabled`, `AppState.swift:299,310-319,462`)
+It defaults to on. (`SettingsKeys.correctionSuggestions`,
+`Sources/SettingsKeys.swift:122-123`; `AppState.isCorrectionSuggestionsEnabled`,
+`Sources/AppState.swift:150-159,294`)
 
 iOS uses the same keys and payloads, in the host app's standard
 UserDefaults and never in the App Group. Its UI shows no ignore list but
@@ -864,10 +867,10 @@ and `AppState.dictationApp`, `Sources/AppState.swift`; tests in
 | Vocabulary file | `vocabulary.json` | `vocabulary.json` | `tokenizer.vocab`, with scores checked (§1.3) |
 | How corrections are found | Accessibility watcher on the pasted text (§3.5) | none: entries are added by hand | user-initiated `localflowctl correct` (§2.5) |
 | Strength calibration | the strength verified from a correction | "Find strength": one recording, `StrengthProbe.accepts` accepts a decode that has at least one edit block against the unboosted transcript, where every edit block has the word as its new side and replaces at most `maxExtraReplacedWords` (2) extra words (`StrengthProbe.swift:25-77`, `Tests/StrengthProbeTests.swift`) | the strength verified from a correction |
-| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the recorded samples and the encoder output live only while the probe task runs (`StrengthProbeModel.done`, `iOS/App/DictionaryModel.swift:104-122`; `LocalParakeetService.probeStrength`); the finished result keeps only texts, shown until the sheet closes | projection of the last typed dictation, 120 s (§2.4) |
+| Retained audio | projections ≤ 16 MiB, 90 s (§3.4) | for "Find strength" only: the recorded samples and the encoder output live only while the probe task runs (`StrengthProbeModel.done`, `iOS/App/DictionaryModel.swift:104-122`; `LocalParakeetService.probeStrength`); the finished result keeps only texts, shown until the sheet closes | projections of the last typed dictation, ≤ 16 MiB, 120 s (§2.4) |
 | Candidates that failed at every strength | remembered per dictation (`ExhaustedCandidates`) | not applicable | not remembered (inferred: no such cache in `verify_with_clock`, `worker.rs`) |
 | Full dictionary | nothing verified or offered (`DictionarySuggestionFinder.find`) | not applicable | still verified; `dict-add` then fails with `full` (inferred: no capacity check in `submit_correction` or `verify_with_clock`) |
 | Phrase order before building the graph | first seen (`BiasGraph.phrases`) | first seen | sorted by token sequence (`phrases`); the graph does not depend on order (vectors `graph`, "G2 reversed") |
-| Suggestion UI | overlay, 12 s, Add (or Add to <App> / Add everywhere) / Not now / Don't suggest | not applicable | rofi prompt, Add / Not now / Don't suggest |
+| Suggestion UI | overlay, 12 s, Add (or Add to <App> / Add everywhere) / Not now / Don't suggest | not applicable | picker dialog (rofi, fuzzel, wofi or tofi), Add / Not now / Don't suggest |
 | Project words | none | none | agent-link words are boosted and never end a session (§2.2) |
 | App-specific words | words limited to apps, chosen by the frontmost app at recording start (§3.6) | none | none |
