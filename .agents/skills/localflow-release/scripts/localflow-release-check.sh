@@ -46,6 +46,13 @@ git rev-parse --verify --quiet "$app_commit^{commit}" >/dev/null ||
   fail "FreeFlowBuildTag names $app_commit, which is not a commit here (git fetch origin first)."
 git merge-base --is-ancestor "$app_commit" HEAD ||
   fail "FreeFlowBuildTag names $app_commit, which is not part of HEAD."
+# The release-prep commit changes only release metadata, so the app built
+# from it is the app code commit the build tag names (as in 2.1.1 to 2.1.8).
+unexpected="$(git diff --name-only "$app_commit" HEAD | grep -vxE 'CHANGELOG\.md|Info\.plist|README\.md' || true)"
+[[ -z "$unexpected" ]] ||
+  fail "FreeFlowBuildTag names $app_commit, but HEAD also changes more than release metadata:
+$unexpected
+Set it to beta- and the first 12 hex digits of the commit the release-prep branch started from."
 
 grep -qF "releases/download/$version/LocalFlow-Dev.dmg" README.md ||
   fail "README.md does not link to releases/download/$version/LocalFlow-Dev.dmg."

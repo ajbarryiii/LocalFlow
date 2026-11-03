@@ -48,7 +48,7 @@ then press and hold again within 0.4 seconds) to dictate in prompt mode;
 while it is on, holds shorter than 0.3 seconds are discarded.
 
 The model prepares in the background at startup and stays in memory for the
-session. First device preparation can take a minute or two; Settings and the
+session. First device preparation can take several minutes; Settings and the
 menu show its state. Settings provides a retry if preparation fails.
 Recordings use chunks of up to 15 seconds. Consecutive chunks overlap by 2
 seconds and are joined on a word both heard, so chunk edges do not add sentence

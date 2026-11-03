@@ -8,9 +8,12 @@ description: Prepare and publish a LocalFlow macOS beta release. Use when the us
 ## How releases work
 
 Every LocalFlow release so far (2.0.0 to 2.1.8) is a macOS beta built by hand
-on a Mac and published as a GitHub pre-release:
+on a Mac and published as a GitHub pre-release with an unprefixed tag. Since
+2.1.1 each one has followed the same steps (2.0.0 still used FreeFlow's
+bundle ID, and 2.1.0 was tagged on a merge commit):
 
-- **Tag:** `X.Y.Z`, with no `v` prefix, on the release-prep commit.
+- **Tag:** `X.Y.Z`, with no `v` prefix, on the release-prep commit, whose
+  parent is the app code it ships.
 - **Release:** a pre-release titled `LocalFlow X.Y.Z Beta`, with two assets:
   `LocalFlow-Dev.dmg` and `LocalFlow-Dev.dmg.sha256`.
 - **App:** the Makefile's default identity, `LocalFlow Dev.app` with bundle
@@ -97,43 +100,62 @@ production identity.
    .github/scripts/changelog-section.sh X.Y.Z
    PARAKEET_BUNDLE_DIR="MODEL_BUNDLE" .agents/skills/localflow-release/scripts/localflow-release-check.sh X.Y.Z
    ```
-   The helper checks the version fields, the build tag, the README link, the
-   changelog section, a clean worktree, that the commit is pushed, that the
-   tag is free, and (with `PARAKEET_BUNDLE_DIR`) the model bundle.
+   The helper checks the version fields, the README link, the changelog
+   section, a clean worktree, that the commit is pushed and the tag is free,
+   and (with `PARAKEET_BUNDLE_DIR`) the model bundle. It also checks that the
+   build tag names a commit that differs from this one only in
+   `CHANGELOG.md`, `Info.plist` and `README.md`.
 
 5. **Build, sign and notarize on the Mac.** Signing needs the login
-   keychain, so the user runs this in Terminal on the Mac, not over SSH. Use
-   a clean worktree at the release-prep commit, Xcode with the macOS 26 SDK,
-   and `create-dmg` and `fileicon` from Homebrew. If `make` says the SDK is
-   not supported by the compiler, export
-   `SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"` first.
-   ```bash
-   test -z "$(git status --porcelain)"
+   keychain, so the user runs this in Terminal on the Mac, not over SSH.
+   Write it as a script outside the repository, fill in the three values
+   there (never in the repository), and run it from a clean worktree at the
+   release-prep commit. It needs Xcode with the macOS 26 SDK, and
+   `create-dmg` and `fileicon` from Homebrew. `set -eu` stops it at the
+   first failed step, so a checksum file exists only after every check
+   passed.
+   ```sh
+   #!/bin/sh
+   set -eu
+   DEVELOPER_ID="Developer ID Application: …"   # the signing identity
+   NOTARY_PROFILE="…"                           # notarytool keychain profile
+   MODEL_BUNDLE="…"                             # prepared model bundle
+   # Only if make says the SDK is not supported by the compiler:
+   # export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+   APP="build/LocalFlow Dev.app"
+   DMG="build/LocalFlow Dev.dmg"
+   PARAKEET="$APP/Contents/Resources/Parakeet"
+
+   test -z "$(git status --porcelain)" || { echo "The worktree is not clean"; exit 1; }
    rm -rf build        # a fresh build; no earlier model files are reused
    make check
-   make ARCH=arm64 CODESIGN_IDENTITY="DEVELOPER_ID" PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"
+   make ARCH=arm64 CODESIGN_IDENTITY="$DEVELOPER_ID" PARAKEET_BUNDLE_DIR="$MODEL_BUNDLE"
    # make's signature has no secure timestamp, which notarization needs.
-   codesign --force --options runtime --timestamp --sign "DEVELOPER_ID" \
-     --entitlements FreeFlow.entitlements "build/LocalFlow Dev.app"
-   codesign --verify --deep --strict "build/LocalFlow Dev.app"
-   make dmg ARCH=arm64 CODESIGN_IDENTITY="DEVELOPER_ID" PARAKEET_BUNDLE_DIR="MODEL_BUNDLE"
-   codesign --force --timestamp --sign "DEVELOPER_ID" "build/LocalFlow Dev.dmg"
-   xcrun notarytool submit "build/LocalFlow Dev.dmg" --keychain-profile "NOTARY_PROFILE" --wait
-   xcrun stapler staple "build/LocalFlow Dev.dmg"
-   xcrun stapler validate "build/LocalFlow Dev.dmg"
-   spctl --assess --type open --context context:primary-signature -v "build/LocalFlow Dev.dmg"
-   cp "build/LocalFlow Dev.dmg" build/LocalFlow-Dev.dmg
+   codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" \
+     --entitlements FreeFlow.entitlements "$APP"
+   codesign --verify --deep --strict "$APP"
+
+   # The bundled model must be the intended conversion, byte for byte. The
+   # shipped one lists 4/8/15/30-second functions; the app runs only b15.
+   tr -d ' \n' < "$PARAKEET/bundle.json" | grep -qF '"buckets_seconds":[4,8,15,30]' ||
+     { echo "Unexpected model bundle"; exit 1; }
+   for f in $(cd "$MODEL_BUNDLE" && find Encoder.mlmodelc decoder_joint.f32bin frontend.f32bin vocabulary.json -type f); do
+     cmp -s "$MODEL_BUNDLE/$f" "$PARAKEET/$f" || { echo "Model file differs: $f"; exit 1; }
+   done
+
+   make dmg ARCH=arm64 CODESIGN_IDENTITY="$DEVELOPER_ID" PARAKEET_BUNDLE_DIR="$MODEL_BUNDLE"
+   codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG"
+   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+   xcrun stapler staple "$DMG"
+   xcrun stapler validate "$DMG"
+   spctl --assess --type open --context context:primary-signature -v "$DMG"
+   cp "$DMG" build/LocalFlow-Dev.dmg
    (cd build && shasum -a 256 LocalFlow-Dev.dmg > LocalFlow-Dev.dmg.sha256)
    ```
-   Before `make dmg`, check the bundled model: `Encoder.mlmodelc`,
-   `decoder_joint.f32bin`, `frontend.f32bin` and `vocabulary.json` in
-   `build/LocalFlow Dev.app/Contents/Resources/Parakeet/` must be
-   byte-identical to the source bundle (`cmp`), and its `bundle.json` must
-   be the intended conversion (the shipped one lists 4/8/15/30-second
-   functions; the app runs only the 15-second one). `make dmg` asks Finder
-   to make the Applications alias, so macOS may ask to let Terminal control
-   Finder. Notarization uploads about 230 MB and takes a few minutes; wait
-   until the checksum file exists before publishing.
+   `make dmg` asks Finder to make the Applications alias, so macOS may ask
+   to let Terminal control Finder. Notarization uploads about 230 MB and
+   takes a few minutes; publish only after the script has exited
+   successfully.
 
 6. **Publish, with the user's approval.** Write the notes file: the
    changelog section, then `## Download and installation` with the download

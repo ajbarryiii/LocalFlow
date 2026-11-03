@@ -42,8 +42,8 @@ Preparation loads the 15-second encoder function on the dictation queue and
 runs a synthetic zero-input prediction, without accessing the microphone or
 user content.
 Settings and the menu show preparation status. First-time device preparation
-takes a minute or two (about 90 seconds on an M1 Pro); dictation submitted
-before it finishes waits behind preparation. The runtime and loaded models stay in memory for the
+may still take several minutes; dictation submitted before it finishes waits
+behind preparation. The runtime and loaded models stay in memory for the
 session, so subsequent dictations reuse them. The model's file size is not its runtime RAM footprint: loaded models
 and working buffers require additional memory. Recordings are split into
 15-second chunks that overlap by 2 seconds, each padded to the 15-second
