@@ -200,13 +200,9 @@ struct TapPrior {
         prediction(context: context).logProbs
     }
 
-    /// The mean, over the normalized context's last `surpriseWindow` letters and spaces, of
+    /// `logProbs(context:)` and the recent surprise, from one normalization and one batch of runs. The surprise is
+    /// the mean, over the normalized context's last `surpriseWindow` letters and spaces, of
     /// −log2 P(that character | the context before it); 0 when there are none.
-    mutating func recentSurprise(context: String) -> Double {
-        prediction(context: context).surprise
-    }
-
-    /// Both at once, from one normalization and one batch of runs.
     mutating func prediction(context text: String) -> (logProbs: [Double], surprise: Double) {
         let context = Self.normalizeContext(text)
         let ids = context.unicodeScalars.map { scalar in Self.symbols.firstIndex(of: scalar).map { $0 + 1 } ?? 31 }

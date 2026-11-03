@@ -331,8 +331,6 @@ final class WordLexicon: @unchecked Sendable {
             offsets.text + u32(offsets.formOffsets, form) ..< offsets.text + u32(offsets.formOffsets, form + 1)
         }
 
-        func edgeRange(_ node: Int) -> Range<Int> { u32(offsets.nodeEdges, node) ..< u32(offsets.nodeEdges, node + 1) }
-
         func formRange(_ node: Int) -> Range<Int> { u32(offsets.nodeForms, node) ..< u32(offsets.nodeForms, node + 1) }
 
         func child(of node: Int, letter: UInt8) -> Int? {

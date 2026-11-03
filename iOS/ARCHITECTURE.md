@@ -2946,9 +2946,10 @@ nothing is stored unless the user accepts:
 - **Where:** in the middle of the top row, over the chips, the status line
   and the candidate strip, which after a strip revert stays open underneath
   and shows again only if the offer goes without anything else closing it.
-  Dictation's own UI wins (`NeverCorrectOffer.barShows`): while a dictation
-  is starting, recording or transcribing, or its Undo chip shows, the offer
-  is not shown, and it still ends as below.
+  Dictation's own UI wins (`BarMiddleContent`): while a dictation is
+  starting, recording, transcribing or waiting for the model, while a notice
+  is up, or while its Undo chip shows, the offer is not shown, and it still
+  ends as below.
 - **Accepting** (`acceptNeverCorrect`) adds the word to the store, makes the
   words in memory what the store now holds, ends the offer and closes the
   strip. The word is then never corrected or offered, in this instance and

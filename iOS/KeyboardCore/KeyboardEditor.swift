@@ -41,16 +41,10 @@ struct NeverCorrectOffer: Equatable, Sendable {
     var word: String
     /// As typed, without trailing apostrophes: what the prompt shows.
     var typed: String
-
-    /// Whether the top row shows the offer: dictation's own top-row UI wins, so not while a dictation is
-    /// starting, recording or transcribing, nor while its Undo chip shows. Hidden, the offer still ends as usual.
-    static func barShows(_ offer: NeverCorrectOffer?, dictationInProgress: Bool, dictationUndoShown: Bool) -> Bool {
-        offer != nil && !dictationInProgress && !dictationUndoShown
-    }
 }
 
-/// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model v2: immediate
-/// execution"): keys, the held delete key's deletions, dictated text and its undo, the trackpad and
+/// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model", Immediate
+/// execution): keys, the held delete key's deletions, dictated text and its undo, the trackpad and
 /// host callbacks. `KeyboardInput` adapts it to the key area, the text proxy and timers; tests drive it
 /// with a fake document.
 ///

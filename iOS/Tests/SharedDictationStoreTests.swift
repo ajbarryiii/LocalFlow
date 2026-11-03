@@ -13,7 +13,7 @@ enum SharedDictationStoreTests {
             ("resultMustMatchItsFileName", testResultMustMatchItsFileName),
             ("statusLevelIsSanitized", testStatusLevelIsSanitized),
             ("listsResultRequestIDs", testListsResultRequestIDs),
-            ("deleteResultReportsWhoRemovedIt", testDeleteResultReportsWhoRemovedIt),
+            ("removeResultReportsWhoRemovedIt", testRemoveResultReportsWhoRemovedIt),
             ("purgeExpiredUsesCreatedAt", testPurgeExpiredUsesCreatedAt),
             ("purgeExpiredFallsBackToFileDate", testPurgeExpiredFallsBackToFileDate),
             ("purgeWherePassesEachOutcome", testPurgeWherePassesEachOutcome),
@@ -70,7 +70,7 @@ enum SharedDictationStoreTests {
             TestSupport.expectEqual(store.readStatus(), .absent)
             TestSupport.expectEqual(store.readResult(requestID: Fixture.requestID), .absent)
             TestSupport.expectEqual(store.resultRequestIDs(), [])
-            TestSupport.expect(!store.deleteResult(requestID: Fixture.requestID), "deleted a missing result")
+            TestSupport.expectEqual(store.removeResult(requestID: Fixture.requestID), .alreadyAbsent)
             store.purgeExpiredResults(now: Fixture.now)
             store.purgeResults { _, _ in true }
             TestSupport.expect(!FileManager.default.fileExists(atPath: store.directory.path), "reads created the directory")
@@ -202,13 +202,13 @@ enum SharedDictationStoreTests {
         }
     }
 
-    private static func testDeleteResultReportsWhoRemovedIt() {
+    private static func testRemoveResultReportsWhoRemovedIt() {
         withStore { store in
             try! store.writeResult(Fixture.result())
             try! store.writeResult(Fixture.result(Fixture.otherRequestID))
             let other = SharedDictationStore(directory: store.directory)   // the other process
-            TestSupport.expect(store.deleteResult(requestID: Fixture.requestID), "first delete lost")
-            TestSupport.expect(!other.deleteResult(requestID: Fixture.requestID), "second delete also won")
+            TestSupport.expectEqual(store.removeResult(requestID: Fixture.requestID), .removed)
+            TestSupport.expectEqual(other.removeResult(requestID: Fixture.requestID), .alreadyAbsent)
             TestSupport.expectEqual(store.readResult(requestID: Fixture.requestID), .absent)
             TestSupport.expectEqual(store.readResult(requestID: Fixture.otherRequestID).value?.requestID,
                                     Fixture.otherRequestID)
@@ -400,7 +400,6 @@ enum SharedDictationStoreTests {
             try! store.writeResult(Fixture.result())
             withReadOnlyDirectory(of: store) {
                 TestSupport.expectEqual(store.removeResult(requestID: Fixture.requestID), .failed)
-                TestSupport.expect(!store.deleteResult(requestID: Fixture.requestID), "a failed removal reported success")
             }
             TestSupport.expectEqual(store.readResult(requestID: Fixture.requestID), .value(Fixture.result()))
             TestSupport.expectEqual(store.removeResult(requestID: Fixture.requestID), .removed)

@@ -80,14 +80,12 @@ enum SessionActivityTests {
         TestSupport.expect((SessionActivityMotion.duration(luminanceReduced: false) ?? 1) <= 0.3, "phase changes are slow")
     }
 
-    /// Opus, round 8: the bar said "Session ends after 3 min idle" while the island said "ends in 2:15"; round 9 gave both
-    /// the same words. Round 10 (owner: the words were wordy): the island and the Lock Screen show the countdown beside a
-    /// small timer glyph, "4:58" in the expanded island and "4:53 left" on the Lock Screen, instead of "ends in 4:58" and
-    /// "Session ends in 4:53 if idle". VoiceOver still hears the whole meaning, in the menu's words ("Session ends in 2
-    /// min if idle", whole minutes to the nearest, never under one).
+    /// The bar and the island describe the idle countdown in the same words. The island and the Lock Screen show it
+    /// beside a small timer glyph, "4:58" in the expanded island and "4:53 left" on the Lock Screen, instead of
+    /// "ends in 4:58" and "Session ends in 4:53 if idle". VoiceOver still hears the whole meaning, in the menu's words
+    /// ("Session ends in 2 min if idle", whole minutes to the nearest, never under one).
     private static func testCountdownSpeaksTheBarsWords() {
-        let lead = SessionActivityState.countdownLead, tail = SessionActivityState.countdownTail
-        TestSupport.expectEqual(lead, "ends in")
+        let lead = "ends in", tail = "if idle"
         TestSupport.expectEqual(SessionActivityState.countdownSymbol, "timer")
         TestSupport.expectEqual(SessionActivityState.lockScreenCountdownTail, "left")
         let spoken = SessionActivityState.countdownSpokenLead
