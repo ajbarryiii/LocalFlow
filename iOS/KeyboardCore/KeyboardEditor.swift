@@ -43,8 +43,8 @@ struct NeverCorrectOffer: Equatable, Sendable {
     var typed: String
 }
 
-/// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model v2: immediate
-/// execution"): keys, the held delete key's deletions, dictated text and its undo, the trackpad and
+/// The keyboard's editing side without UIKit (ARCHITECTURE.md, "Typing model", Immediate
+/// execution): keys, the held delete key's deletions, dictated text and its undo, the trackpad and
 /// host callbacks. `KeyboardInput` adapts it to the key area, the text proxy and timers; tests drive it
 /// with a fake document.
 ///

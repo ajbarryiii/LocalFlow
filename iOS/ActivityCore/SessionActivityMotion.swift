@@ -39,8 +39,8 @@ enum SessionActivityMotion {
 }
 
 extension SessionActivityState {
-    /// Round 10 (owner: glyphs, not words): the island and the Lock Screen show the countdown beside this SF Symbol,
-    /// "4:58" in the expanded island and "4:53 left" on the Lock Screen.
+    /// The island and the Lock Screen show the countdown beside this SF Symbol instead of words: "4:58" in the
+    /// expanded island and "4:53 left" on the Lock Screen.
     static let countdownSymbol = "timer"
     static let lockScreenCountdownTail = "left"
     /// What VoiceOver hears before the countdown there.
