@@ -8,16 +8,16 @@
 //! Activations are always synthetic. Only the ternary projections are timed;
 //! attention scores, convolutions, norms, the frontend and the decoder are not.
 
+#[cfg(target_arch = "x86_64")]
+mod peak;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use lf_cpu::gemm_lut::{LutConfig, LutWorkspace};
 use lf_cpu::gemm_ref::{compare, reference};
 use lf_cpu::topology::{Topology, allowed_cpus};
-use lf_cpu::{
-    Encoding, PackedTernary, QuantizedActs, Scratch, ThreadPool, gemm_f32, gemm_i8, gemm_lut,
-};
+use lf_cpu::{PackedTernary, QuantizedActs, Scratch, ThreadPool, gemm_f32, gemm_i8};
 use lf_model::rng::SplitMix64;
 use lf_model::{
     BinaryMatrix, ENCODER_LAYERS, Export, LAYER_TERNARY_MODULES, QuantizedMatrix, TernaryMatrix,
@@ -32,8 +32,6 @@ const FRAMES_PER_SECOND: f64 = 12.5;
 enum Variant {
     F32,
     I8(usize),
-    /// Exact-FP32 lookup tables (`gemm_lut`), configured by `--lut-*`.
-    Lut,
 }
 
 impl Variant {
@@ -43,7 +41,6 @@ impl Variant {
             "i8x1" => Variant::I8(1),
             "i8x2" => Variant::I8(2),
             "i8x3" => Variant::I8(3),
-            "lut" => Variant::Lut,
             _ => return None,
         })
     }
@@ -52,7 +49,6 @@ impl Variant {
         match self {
             Variant::F32 => "f32".into(),
             Variant::I8(n) => format!("i8x{n}"),
-            Variant::Lut => "lut".into(),
         }
     }
 }
@@ -74,7 +70,6 @@ struct Args {
     reps: usize,
     accuracy: bool,
     peak: bool,
-    lut: LutConfig,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -90,7 +85,6 @@ fn parse_args() -> Result<Args, String> {
         reps: 7,
         accuracy: false,
         peak: false,
-        lut: LutConfig::default(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -123,42 +117,18 @@ fn parse_args() -> Result<Args, String> {
             "--reps" => a.reps = value()?.parse().map_err(|_| "bad --reps")?,
             "--accuracy" => a.accuracy = true,
             "--peak" => a.peak = true,
-            "--lut-panel" => {
-                a.lut.panel_vectors = value()?.parse().map_err(|_| "bad --lut-panel")?
-            }
-            "--lut-micro" => {
-                a.lut.micro_frames = value()?.parse().map_err(|_| "bad --lut-micro")?
-            }
-            "--lut-chunk" => {
-                a.lut.chunk_frames = value()?.parse().map_err(|_| "bad --lut-chunk")?
-            }
-            "--lut-kc" => a.lut.kc_groups = value()?.parse().map_err(|_| "bad --lut-kc")?,
-            "--lut-groups" => {
-                let v = value()?;
-                a.lut.frame_groups = match v.as_str() {
-                    "auto" => 0,
-                    _ => v.parse().map_err(|_| "bad --lut-groups")?,
-                };
-            }
-            "--lut-budget-mib" => {
-                let mib: usize = value()?.parse().map_err(|_| "bad --lut-budget-mib")?;
-                a.lut.table_budget = mib.checked_mul(1 << 20).ok_or("bad --lut-budget-mib")?;
-            }
             "-h" | "--help" => {
                 return Err(
                     "usage: lf-gemm-bench [--export DIR]... [--synthetic ternary|binary] \
                      [--cpus 0,1,...] [--cold-mib N] [--threads 1,4,8,16] \
-                     [--frames 25,63,125,188,375] [--variants f32,i8x1,i8x2,i8x3,lut] \
-                     [--warmup N] [--reps N] [--accuracy] [--peak] \
-                     [--lut-panel 4|8] [--lut-micro N] [--lut-chunk FRAMES] \
-                     [--lut-budget-mib N] [--lut-kc GROUPS] [--lut-groups N|auto]"
+                     [--frames 25,63,125,188,375] [--variants f32,i8x1,i8x2,i8x3] \
+                     [--warmup N] [--reps N] [--accuracy] [--peak]"
                         .into(),
                 );
             }
             _ => return Err(format!("unknown argument {flag}")),
         }
     }
-    a.lut.validate()?;
     if a.threads.iter().any(|&t| t == 0 || t > 16) {
         return Err("--threads values must be 1..=16".into());
     }
@@ -281,11 +251,9 @@ impl Buffers {
 }
 
 /// Runs one pass over the selected modules of every layer.
-#[allow(clippy::too_many_arguments)]
 fn run_pass(
     pool: &ThreadPool,
     scratch: &Scratch,
-    lut: &mut LutWorkspace,
     model: &Model,
     buf: &mut Buffers,
     variant: Variant,
@@ -318,7 +286,6 @@ fn run_pass(
                     }
                     gemm_i8::gemm(pool, scratch, w, qa, &mut buf.y);
                 }
-                Variant::Lut => gemm_lut::gemm(pool, lut, w, x, rows, &mut buf.y),
             }
         }
     }
@@ -396,13 +363,12 @@ fn macs_per_frame(model: &Model) -> f64 {
         * model.layers.len() as f64
 }
 
-fn accuracy(model: &Model, lut: LutConfig, lut_ok: bool) {
+fn accuracy(model: &Model) {
     let pool = ThreadPool::new(&[0]);
     let scratch = Scratch::new(
         1,
         gemm_i8::scratch_bytes(4096).max(gemm_f32::scratch_bytes()),
     );
-    let mut lut = LutWorkspace::new(lut).expect("validated config");
     let frames = 63;
     println!("\nAccuracy vs f64 reference, layer 0, {frames} frames, synthetic activations");
     println!("| module | variant | rel RMS error | worst abs / RMS |");
@@ -427,10 +393,6 @@ fn accuracy(model: &Model, lut: LutConfig, lut_ok: bool) {
             gemm_i8::gemm(&pool, &scratch, w, &qa, &mut y);
             row(format!("i8x{n}"), compare(&y, &reference));
         }
-        if lut_ok && w.encoding() == Encoding::Ternary {
-            gemm_lut::gemm(&pool, &mut lut, w, &x, frames, &mut y);
-            row("lut".into(), compare(&y, &reference));
-        }
     }
 }
 
@@ -438,7 +400,7 @@ fn accuracy(model: &Model, lut: LutConfig, lut_ok: bool) {
 /// needs beyond the activations `x` and outputs `y` (which every variant
 /// shares). Workspace is the most any timed configuration needs: every
 /// thread count and frame count in the run, every call shape of a pass.
-fn memory(model: &Model, args: &Args, lut_retained: usize) {
+fn memory(model: &Model, args: &Args) {
     let (mut params, mut bytes) = (0usize, 0usize);
     for w in model.layers.iter().flatten() {
         params += w.rows() * w.cols();
@@ -483,30 +445,6 @@ fn memory(model: &Model, args: &Args, lut_retained: usize) {
                     .unwrap_or(0),
                 "per-thread s8 tiles + quantized activations".to_string(),
             ),
-            Variant::Lut => {
-                let need = configs()
-                    .map(|(th, f)| {
-                        let tables = [(2 * f - 1, 1024), (f, 1024), (f, 4096)]
-                            .iter()
-                            .map(|&(t, k)| {
-                                let p = gemm_lut::Plan::new(&args.lut, th, t, k);
-                                p.groups * p.table_bytes()
-                            })
-                            .max()
-                            .unwrap_or(0);
-                        tables + th * args.lut.kc_groups * args.lut.panel_vectors * 64
-                    })
-                    .max()
-                    .unwrap_or(0);
-                (
-                    need,
-                    format!(
-                        "per-group tables + per-thread index tiles; retained by the \
-                         grow-only workspace in this run: {:.2} MB",
-                        mb(lut_retained)
-                    ),
-                )
-            }
         };
         println!(
             "| {} | {:.1} | {per_weight:.3} | {:.2} | {what} |",
@@ -522,52 +460,14 @@ fn memory(model: &Model, args: &Args, lut_retained: usize) {
 #[cfg(target_arch = "x86_64")]
 fn peak(tier: lf_cpu::Tier, cpus: &[usize], thread_counts: &[usize]) {
     use lf_cpu::Tier;
-    use lf_cpu::peak;
-    use peak::LutAccumulate;
     use std::sync::atomic::{AtomicU64, Ordering};
     const ITERS: u64 = 20_000_000;
     type Probe = (&'static str, fn(u64) -> u64, fn(u64) -> u64);
-    let avx512: [Probe; 9] = [
-        ("VNNI u8xs8", |n| peak::vnni(n) as u64, peak::vnni_macs),
-        ("FMA f32", |n| peak::fma(n) as u64, peak::fma_macs),
-        (
-            "LUT perm+add",
-            |n| peak::lut(n, LutAccumulate::Add) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT perm+fma1",
-            |n| peak::lut(n, LutAccumulate::FmaOne) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT mixed",
-            |n| peak::lut(n, LutAccumulate::Mixed) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT load idx+permi2+add",
-            |n| peak::lut_load(n, false) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT load table+permt2+add",
-            |n| peak::lut_load(n, true) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT sym vpermps+fma",
-            |n| peak::lut_sym(n, true) as u64,
-            peak::lut_macs,
-        ),
-        (
-            "LUT sym vpermps+add",
-            |n| peak::lut_sym(n, false) as u64,
-            peak::lut_macs,
-        ),
-    ];
     let probes: Vec<Probe> = match tier {
-        Tier::Avx512 => avx512.to_vec(),
+        Tier::Avx512 => vec![
+            ("VNNI u8xs8", |n| peak::vnni(n) as u64, peak::vnni_macs),
+            ("FMA f32", |n| peak::fma(n) as u64, peak::fma_macs),
+        ],
         Tier::Avx2 { vnni } => {
             let mut p: Vec<Probe> = vec![
                 (
@@ -594,7 +494,7 @@ fn peak(tier: lf_cpu::Tier, cpus: &[usize], thread_counts: &[usize]) {
             p
         }
     };
-    println!("GMAC/s (LUT rows count 48 multiply-accumulate equivalents per lookup)");
+    println!("GMAC/s");
     print!("| threads |");
     probes.iter().for_each(|(name, _, _)| print!(" {name} |"));
     println!("\n| ---: |{}", " ---: |".repeat(probes.len()));
@@ -637,11 +537,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let lut_ok = gemm_lut::has_path(tier);
-    if !lut_ok && args.variants.iter().any(|v| matches!(v, Variant::Lut)) {
-        eprintln!("the lut variant needs the avx512 tier (this run uses {tier})");
-        return ExitCode::FAILURE;
-    }
     println!(
         "{tier} kernels; pool CPUs in order: {:?} (L3 domains of the default order: {})",
         args.cpus,
@@ -699,40 +594,21 @@ fn main() -> ExitCode {
          vs first | linear_pos ms |"
     );
     println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
-    let mut lut_retained = 0;
     for &threads in &args.threads {
         let pool = ThreadPool::new(&args.cpus[..threads]);
         let scratch = Scratch::new(threads, scratch_bytes);
         let evictor = Evictor::new(threads, args.cold_mib);
-        let mut lut = LutWorkspace::new(args.lut).expect("validated config");
         for &variant in &args.variants {
-            // The lookup-table kernel reads 2-bit codes only.
-            let timed: Vec<usize> = (0..models.len())
-                .filter(|&m| {
-                    !matches!(variant, Variant::Lut)
-                        || models[m].layers[0][0].encoding() == Encoding::Ternary
-                })
-                .collect();
-            if timed.is_empty() {
-                continue;
-            }
             for &frames in &args.frames {
                 let mut time = |pos_only: bool| {
                     time_paired(
-                        timed.len(),
+                        models.len(),
                         args.reps,
                         args.warmup,
                         || evictor.run(&pool),
-                        |i| {
+                        |m| {
                             run_pass(
-                                &pool,
-                                &scratch,
-                                &mut lut,
-                                &models[timed[i]],
-                                &mut buf,
-                                variant,
-                                frames,
-                                pos_only,
+                                &pool, &scratch, &models[m], &mut buf, variant, frames, pos_only,
                             )
                         },
                     )
@@ -740,7 +616,7 @@ fn main() -> ExitCode {
                 let main = time(false);
                 let pos = time(true);
                 let ms = |d: &Duration| d.as_secs_f64() * 1e3;
-                for (i, &m) in timed.iter().enumerate() {
+                for (i, model) in models.iter().enumerate() {
                     let med = median(main[i].iter().map(ms).collect());
                     let min = main[i].iter().map(ms).fold(f64::INFINITY, f64::min);
                     let ratio = median(
@@ -754,7 +630,7 @@ fn main() -> ExitCode {
                     println!(
                         "| {} | {} | {threads} | {frames} | {:.1} | {med:.2} | {min:.2} | \
                          {gmacs:.0} | {ratio:.3} | {:.2} |",
-                        models[m].name,
+                        model.name,
                         variant.name(),
                         frames as f64 / FRAMES_PER_SECOND,
                         median(pos[i].iter().map(ms).collect()),
@@ -762,20 +638,13 @@ fn main() -> ExitCode {
                 }
             }
         }
-        lut_retained = lut_retained.max(lut.bytes());
     }
 
-    if args.variants.iter().any(|v| matches!(v, Variant::Lut)) {
-        println!(
-            "\nlut config: {:?} (frame_groups 0 = threads / 2, at most 4)",
-            args.lut
-        );
-    }
     for model in &models {
-        memory(model, &args, lut_retained);
+        memory(model, &args);
     }
     if args.accuracy {
-        accuracy(&models[0], args.lut, lut_ok);
+        accuracy(&models[0]);
     }
     ExitCode::SUCCESS
 }

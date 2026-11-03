@@ -76,12 +76,17 @@
         postFixup = ''
           wrapProgram $out/bin/localflowctl --prefix PATH : ${lib.makeBinPath [ pkgs.curl ]}
         '';
-        # The whole workspace's tests run in the sandbox, as in CI. The
-        # integration tests that start a private D-Bus session, headless
-        # sway or PipeWire are skipped here; they run in the development
-        # shell (see AGENTS.md).
+        # The workspace's tests run in the sandbox, except lf-bench's: the
+        # benchmark and evaluation tools are not part of the package, and CI
+        # still tests the whole workspace. The integration tests that start
+        # a private D-Bus session, headless sway or PipeWire are skipped
+        # here; they run in the development shell (see AGENTS.md).
         doCheck = true;
-        cargoTestFlags = [ "--workspace" ];
+        cargoTestFlags = [
+          "--workspace"
+          "--exclude"
+          "lf-bench"
+        ];
         env = {
           LF_SKIP_DBUS_TESTS = "1";
           LF_SKIP_COMPOSITOR_TESTS = "1";

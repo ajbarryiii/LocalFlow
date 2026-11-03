@@ -22,12 +22,9 @@ pub mod decoder;
 pub mod dense;
 pub mod gemm_f32;
 pub mod gemm_i8;
-pub mod gemm_lut;
 pub mod gemm_ref;
 pub mod ops;
 pub mod pack;
-#[cfg(target_arch = "x86_64")]
-pub mod peak;
 pub mod pool;
 pub mod quant;
 pub mod tier;
@@ -56,18 +53,6 @@ pub(crate) fn tier_pools(threads: usize) -> Vec<ThreadPool> {
         .into_iter()
         .map(|t| ThreadPool::new(&cpus).with_tier(t))
         .collect()
-}
-
-/// A pool at the AVX-512 tier, if this CPU supports it (for kernels that
-/// exist only there).
-#[cfg(test)]
-pub(crate) fn avx512_pool(cpus: &[usize]) -> Option<ThreadPool> {
-    #[cfg(target_arch = "x86_64")]
-    if Tier::Avx512.supported() {
-        return Some(ThreadPool::new(cpus).with_tier(Tier::Avx512));
-    }
-    let _ = cpus;
-    None
 }
 
 /// `a * b` for size and bounds checks at kernel entry points; panics on
