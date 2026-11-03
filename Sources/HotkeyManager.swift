@@ -15,10 +15,6 @@ final class HotkeyManager {
     var onInputInvalidated: (() -> Void)?
     var onEscapeKeyPressed: (() -> Bool)?
 
-    var currentPressedModifiers: ShortcutModifiers {
-        inputState.currentModifiers
-    }
-
     var hasPressedShortcutInputs: Bool {
         inputState.hasPressedShortcutInputs(configuration: configuration)
     }

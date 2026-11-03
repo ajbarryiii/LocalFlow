@@ -51,45 +51,6 @@ enum SystemAudioStatus {
         return status == noErr
     }
 
-    static func defaultOutputVolume() -> Float? {
-        guard let deviceID = defaultOutputDeviceID() else { return nil }
-
-        if let volume = readVolume(deviceID: deviceID, element: kAudioObjectPropertyElementMain) {
-            return volume
-        }
-
-        var maxChannelVolume: Float?
-        for channel in 1...2 {
-            if let volume = readVolume(deviceID: deviceID, element: AudioObjectPropertyElement(channel)) {
-                maxChannelVolume = max(maxChannelVolume ?? 0, volume)
-            }
-        }
-        return maxChannelVolume
-    }
-
-    private static func readVolume(deviceID: AudioDeviceID, element: AudioObjectPropertyElement) -> Float? {
-        var value: Float32 = 0
-        var size = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: element
-        )
-
-        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
-
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &size,
-            &value
-        )
-
-        return status == noErr ? value : nil
-    }
-
     private static func defaultOutputDeviceID() -> AudioDeviceID? {
         var deviceID: AudioDeviceID = 0
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)

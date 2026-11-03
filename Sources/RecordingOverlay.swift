@@ -212,13 +212,6 @@ final class RecordingOverlayManager {
         }
     }
 
-    func showFailureIndicator() {
-        DispatchQueue.main.async {
-            self.preemptSuggestion()
-            self.showFeedbackPanel()
-        }
-    }
-
     /// Maximum length of an in-pill error message. Anything longer is
     /// truncated with an ellipsis to keep the pill from stretching across
     /// the menu bar; the full text remains available in `os_log` for
@@ -502,8 +495,8 @@ final class RecordingOverlayManager {
             // not get the same wide pill as long ones. ~6.8pt per character
             // plus 60pt of icon and padding chrome, clamped to 180-420pt so
             // very short messages stay readable and very long ones do not
-            // stretch the pill across the menu bar. Bare failure-X marker
-            // (no message) keeps the original 92pt.
+            // stretch the pill across the menu bar. An empty message keeps
+            // the original 92pt.
             let feedbackWidth: CGFloat = {
                 guard let msg = overlayState.errorMessage, !msg.isEmpty else {
                     return 92
@@ -540,12 +533,6 @@ final class RecordingOverlayManager {
 
         guard screenHasNotch else { return baseWidth }
         return max(notchWidth, baseWidth)
-    }
-
-    private func showFeedbackPanel() {
-        lockedOverlayWidth = nil
-        overlayState.phase = .feedback
-        showOverlayPanel(animatedResize: true)
     }
 
     private func dismissAll() {
@@ -842,8 +829,6 @@ struct RecordingOverlayView: View {
         Group {
             if state.phase == .feedback, let message = state.errorMessage {
                 ErrorOverlayView(message: message)
-            } else if state.phase == .feedback {
-                FailureIndicatorView()
             } else if state.phase == .updateAvailable {
                 UpdateAvailableOverlayView(onPress: onUpdateOverlayPressed)
             } else if case .dictionarySuggestion(let id) = state.phase, let suggestion = state.suggestionGate.suggestion {
@@ -903,17 +888,6 @@ struct RecordingOverlayView: View {
 }
 
 // MARK: - Transcribing Indicator
-
-struct FailureIndicatorView: View {
-    var body: some View {
-        Image(systemName: "xmark")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 20, height: 20)
-            .background(Circle().fill(Color.red.opacity(0.92)))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
 
 /// In-pill error toast. Red exclamation icon plus the message text,
 /// rendered inside the standard menu-bar pill. Sized by the manager's

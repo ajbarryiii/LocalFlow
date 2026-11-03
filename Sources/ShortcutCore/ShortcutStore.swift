@@ -133,23 +133,14 @@ struct ShortcutSettings: Equatable {
 
 /// Reads and writes shortcuts in UserDefaults, as JSON-encoded `ShortcutBinding`s.
 struct ShortcutStore {
-    /// The single preset saved by early versions; it seeds Hold to Talk and Tap to Toggle.
-    static let legacyPresetKey = "hotkey_option"
-
     let defaults: UserDefaults
 
-    /// Loads every role. Missing Hold and Tap bindings come from the legacy
-    /// preset and are written back, as are bindings that needed normalizing. A
-    /// custom binding with nothing remembered becomes the remembered one, and
+    /// Loads every role. Missing Hold and Tap bindings get their defaults and
+    /// are written back, as are bindings that needed normalizing. A custom
+    /// binding with nothing remembered becomes the remembered one, and
     /// unreadable remembered bindings are removed.
     func load() -> ShortcutSettings {
-        let legacyPreset = ShortcutPreset(
-            rawValue: defaults.string(forKey: Self.legacyPresetKey) ?? ShortcutPreset.fnKey.rawValue
-        ) ?? .fnKey
-        let fallbacks: [ShortcutRole: ShortcutBinding] = [
-            .hold: legacyPreset.binding,
-            .toggle: legacyPreset.binding.withAddedModifiers(.command)
-        ]
+        let fallbacks: [ShortcutRole: ShortcutBinding] = [.hold: .defaultHold, .toggle: .defaultToggle]
 
         var bindings: [ShortcutRole: ShortcutBinding] = [:]
         var savedCustom: [ShortcutRole: ShortcutBinding] = [:]
