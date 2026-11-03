@@ -2,10 +2,9 @@
 
 A custom keyboard with a dictation button, backed by the bundled Parakeet model
 running in the containing app. [ARCHITECTURE.md](ARCHITECTURE.md) is the
-contract between the components, stated as the code is now;
-[ARCHITECTURE-HISTORY.md](ARCHITECTURE-HISTORY.md) keeps the decision log it
-replaced. Like the macOS app, it builds with `swiftc` and `make` only, with no
-Xcode project and no Swift Package Manager.
+contract between the components, stated as the code is now. Like the macOS
+app, it builds with `swiftc` and `make` only, with no Xcode project and no
+Swift Package Manager.
 
 ## Requirements
 
@@ -245,6 +244,10 @@ Measured on an iPhone 15 Pro running iOS 26.6.2, with 2.4 s of synthetic speech:
 | Neural Engine, later launches | 0.69 s | 0.040 s | 166 MB |
 | CPU only (self-test only) | 61 s | 0.52 s | 3.2 GB |
 
+The Neural Engine preparation is cached across launches. iOS may discard that
+cache (on a nearly full iPhone this has been seen about once a day), and the
+next launch prepares cold again.
+
 ## App Store build
 
 `CHANNEL=appstore` builds the production app: `com.ajbarryiii.localflow.ios`
@@ -335,18 +338,21 @@ dev builds.
 
 ## Using the keyboard
 
-- **Dictation:** the top bar has the mic and stop button, a level meter,
-  cancel, "Insert last dictation", and **Undo** for the last insertion.
+- **Dictation:** the top bar has Start, which grows into Stop with a wave
+  that follows your voice while recording, Cancel, "Insert last dictation",
+  and **Undo** for the last insertion.
   - Undo is offered only until you type, move the cursor, change fields or
     hide the keyboard, or 30 s pass.
   - It removes text only as far as the visible context proves it was the
     dictation.
-  - Start's dot shows the session: green while one is on, amber while none
-    is (Start then opens LocalFlow).
+  - Start's dot shows the session: a heartbeat ring while one is ready,
+    breathing while its model prepares, and still while there is none (Start
+    then opens LocalFlow).
   - **Left-handed** (Home → Keyboard, off by default; applies the next time
     the keyboard appears) puts Start, the recording and Cancel at the bar's
     left and the menu at its right.
-- **Typing:** a basic QWERTY layer with `123` and `#+=`. It has Apple-style
+- **Typing:** QWERTY with `123`, `#+=`, an emoji panel and press-and-hold
+  accents, and swipe typing with a swipe bundle. It has Apple-style
   shift (double-tap for caps lock), auto-capitalization and the double-space
   period. Keys play a light haptic (Typing haptics, on by default; needs Full
   Access).
@@ -362,13 +368,13 @@ dev builds.
     keyboard typed whole, after a space or punctuation it typed, are
     corrected; swiped words, text already in the field, words edited after
     moving the cursor, and secure fields are left alone.
-- **Trackpad:** touch and hold space (about 0.5 s) and the keys blank out.
+- **Trackpad:** touch and hold space (about 0.4 s) and the keys blank out.
   - Drag to move the cursor horizontally, by character, or vertically, by
     line, keeping the column.
   - Faster swipes travel further.
   - Diagnostics → Cursor has sensitivity and acceleration sliders for tuning
     against Apple's keyboard.
-- **Delete:** hold to repeat; after about 3.5 s it deletes whole words.
+- **Delete:** hold to repeat; after about 2.5 s it deletes whole words.
 - Apple's own globe and dictation microphone below the keyboard belong to iOS
   and cannot be replaced. Turning off Settings → General → Keyboard → Enable
   Dictation hides Apple's microphone system-wide.
@@ -397,7 +403,7 @@ draft, the address and draft remain selectable for use in an email app.
 
 ## Manual tests
 
-These need a person at a device, or Sol through computer use at the
+These need a person at a device, or an agent with computer use at the
 simulator. Record results before merge. The device rows are required by
 AGENTS.md.
 
@@ -407,14 +413,14 @@ Setup and session:
 - [x] Device-signed build installs; signatures and entitlements verified (2026-10-09).
 - [x] Model preparation and transcription on a device: Neural Engine cold and warm, and CPU only (self-test, 2026-10-09).
 - [x] Dictation from the keyboard in another app through the bounce, on a device (the user, informally, 2026-10-09).
-- [ ] Onboarding: microphone permission, keyboard + Full Access steps, first model preparation with progress.
-- [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on aurora buttons and tiles, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
+- [ ] Onboarding: microphone permission (the step's pill reads Continue and the system prompt asks; Not now skips; Open Settings once access is off), keyboard + Full Access steps, first model preparation with progress.
+- [ ] Wilderness Labs theme: every screen and sheet (Onboarding, Home, Keyboard setup, Dictionary and its sheets, Diagnostics, Report a bug, the bounce) is dark with readable text on its pills and rows, even with the system in light mode; the Home Screen, Settings and Spotlight icons show the ridge mark.
 - [ ] Bounce on iOS 26: the keyboard opens LocalFlow, "Listening" appears only once audio flows, swipe back, dictation inserts.
 - [ ] Universal-link bounce (TestFlight, or a dev build with `UNIVERSAL_LINK=https://wildernesslabs.ai/localflow-dev/dictate`): Start in another app opens LocalFlow, never Safari, from a cold launch and from the background; the menu's "Open LocalFlow" does too. With the association file unreachable or the app not associated (for example a fresh install before iOS fetches it), the keyboard shows "Open LocalFlow" and nothing else opens. Tapping the link in Notes opens LocalFlow without recording.
 - [ ] Live Activity (iPhone with a Dynamic Island, and one without, for the Lock Screen and the banner): starting a session shows the mark in the island; Start on the keyboard in another app grows the coral dot and the elapsed time, Stop gives way to the transcribing glyph (preparing first after a restart) and then back to ready, each change quick and calm; long-press shows the expanded view with the timer glyph and the time left, or the recording time; with another app's Live Activity running, the minimal view; the Lock Screen view in dark and light; it goes at End session, idle expiry and a phone call; after force-quitting LocalFlow the activity reads "Session ended" once its time is past, and the next launch removes it; with Live Activities off, nothing shows and LocalFlow never asks. No sound or screen wake on any change. Simulator verification (iPhone 17 Pro, iOS 26.4, synthetic microphone, recorded with `simctl io recordVideo`, since screenshots leave out the island) passed on 2026-11-01 for the compact and expanded island, the Lock Screen in dark and light, End session, idle expiry, a killed app's "Session ended" and its removal at the next launch. Not yet checked: the minimal view (no other Live Activity source in the simulator), a phone call, Live Activities turned off, and a device.
 - [ ] Session keep-alive: second dictation without an app switch; the idle countdown resets; the session ends at idle expiry, a call and End session; a lock cancels a dictation in progress but keeps the session.
 - [ ] Model readiness: start a session, then Diagnostics → Release model now; the model stays "Not prepared yet" while idle, and the keyboard's Start keeps its aurora dot (VoiceOver: "Model loads when you dictate"). Swipe to another app and tap Start: the recording island records while preparation runs (VoiceOver: "Model loading"), and after Stop the wait's shimmer pill shows (also with a swipe candidate strip or the Insert last chip showing) until the transcript inserts (brief on a warm model; long after a cold preparation). While the model prepares with the keyboard idle, Start's dot breathes. Release the model again during a dictation: it is released only after the dictation ends.
-- [ ] Status glyphs: with a session, Start's mark dot is aurora and the bar's middle is empty; with none it is ember, and Start stays Start while iOS asks to open LocalFlow (declining leaves it as it was, with "Open LocalFlow to start a session"); VoiceOver reads the session's time left from Start.
+- [ ] Status glyphs: with a session, Start's aurora dot sends out a heartbeat ring and the bar's middle is empty; with none the dot is still, and Start stays Start while iOS asks to open LocalFlow (declining leaves it as it was, with "Open LocalFlow to start a session"); VoiceOver reads the session's time left from Start.
 - [ ] Left-handed (Home → Keyboard, off by default; applies the next time the keyboard appears): Start and the recording island at the bar's left, Cancel on the island's right in reach of the left thumb, the menu, Undo and "Insert last dictation" at the right; Stop's reach takes q and w while recording and p still types; Cancel and Undo work; off, the bar is as before.
 - [ ] Background capture survives a Bluetooth route change, or the session ends with a clear error.
 - [ ] Headphones notice: with AirPods connected and Use iPhone microphone on, the bounce's Listening screen reads "Recording from your iPhone, not your headphones"; with it off, "Recording through your headphones"; with no headphones, no notice. Connecting or disconnecting them while Listening updates it. On an SE-size iPhone while the model prepares, Stop and Cancel stay on screen and the rest scrolls. Simulator verification (synthetic route, `E2E_HEADPHONES`, iPhone 17 Pro and iPhone SE) passed on 2026-10-29; device check pending.
