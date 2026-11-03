@@ -50,33 +50,15 @@ body:
     id: macos
     attributes:
       label: macOS version
-      placeholder: "For example: macOS 15.6"
+      placeholder: "For example: macOS 26.1"
     validations:
       required: true
-
-  - type: dropdown
-    id: architecture
-    attributes:
-      label: Mac type
-      options:
-        - Apple Silicon
-        - Intel
-        - Unknown
-    validations:
-      required: true
-
-  - type: input
-    id: provider
-    attributes:
-      label: Provider and model
-      description: Provider and model names only. Do not include an API key or private URL.
-      placeholder: "For example: Groq / whisper-large-v3-turbo"
 
   - type: textarea
     id: permissions
     attributes:
       label: Relevant permission state
-      description: Note Microphone, Accessibility, or Screen Recording state if relevant.
+      description: Note Microphone or Accessibility state if relevant.
 
   - type: textarea
     id: diagnostics

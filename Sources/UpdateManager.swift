@@ -755,7 +755,7 @@ final class UpdateManager: ObservableObject {
 
     private func performUpdate(downloadURL: URL, expectedSize: Int) async {
         let fm = FileManager.default
-        let tempDir = fm.temporaryDirectory.appendingPathComponent("freeflow-update-\(UUID().uuidString)")
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("localflow-update-\(UUID().uuidString)")
 
         do {
             try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -764,7 +764,7 @@ final class UpdateManager: ObservableObject {
             return
         }
 
-        let dmgPath = tempDir.appendingPathComponent("FreeFlow.dmg")
+        let dmgPath = tempDir.appendingPathComponent("LocalFlow.dmg")
 
         // MARK: Download phase
         updateStatus = .downloading
