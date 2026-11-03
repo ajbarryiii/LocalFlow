@@ -153,8 +153,8 @@ struct LocalFlowSettings {
         nonmutating set { defaults.set(newValue, forKey: Key.autocorrectEnabled) }
     }
 
-    /// Left-handed (round 10, owner): the keyboard's dictation controls mirrored to the bar's left. Off by default, the
-    /// one switch that is; the keyboard reads it when it appears.
+    /// Left-handed: the keyboard's dictation controls mirrored to the bar's left. Off by default, the one switch that
+    /// is; the keyboard reads it when it appears.
     var leftHanded: Bool {
         get { defaults.object(forKey: Key.leftHanded) as? Bool ?? false }
         nonmutating set { defaults.set(newValue, forKey: Key.leftHanded) }

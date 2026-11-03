@@ -16,10 +16,10 @@ enum InputPortKind: String, CaseIterable, Sendable {
     }
 }
 
-/// "Use iPhone microphone" (contract: "Microphone choice"). With it on, the session never enables the
-/// Bluetooth hands-free profile, so headphones stay in high-quality A2DP playback without its added
-/// latency, and the built-in microphone is preferred over any headset or USB microphone. With it off,
-/// the system chooses the input, Bluetooth hands-free included. Pure.
+/// "Use iPhone microphone" (ARCHITECTURE.md, "Capture", Microphone choice). With it on, the session never
+/// enables the Bluetooth hands-free profile, so headphones stay in high-quality A2DP playback without its
+/// added latency, and the built-in microphone is preferred over any headset or USB microphone. With it
+/// off, the system chooses the input, Bluetooth hands-free included. Pure.
 enum MicrophoneRoute {
     /// `AVAudioSession.CategoryOptions` of the `.playAndRecord` session, mirrored.
     enum CategoryOption: String, CaseIterable, Sendable {
@@ -87,9 +87,9 @@ struct CaptureRoute: Equatable, Sendable {
 }
 
 /// What the bounce's Listening screen says about the microphone while Bluetooth headphones are connected
-/// (contract: "Microphone choice"), so nobody expects their headphones to hear them when the iPhone does,
-/// or the other way round. Read from the route in use, not the choice, so it holds when the choice could
-/// not be honored. Content-free. Pure.
+/// (ARCHITECTURE.md, "Capture", Microphone choice), so nobody expects their headphones to hear them when
+/// the iPhone does, or the other way round. Read from the route in use, not the choice, so it holds when
+/// the choice could not be honored. Content-free. Pure.
 enum HeadphonesNotice: Equatable, Sendable {
     /// Bluetooth headphones play while the iPhone microphone records ("Use iPhone microphone" on).
     case iPhoneMicrophone

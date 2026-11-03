@@ -87,7 +87,7 @@ final class MicrophoneCapture: HostCapture {
         let session = AVAudioSession.sharedInstance()
         try router.configureCategory(routeSession)
         requested = AudioSessionTuning.requestPreferences(on: session)
-        // iOS mutes haptics while an app records, which silenced the keyboard's haptics for the whole session.
+        // iOS mutes haptics while an app records, which would silence the keyboard's haptics for the whole session.
         // Failing only leaves them muted, so it doesn't stop capture.
         try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
         try session.setActive(true)
@@ -172,7 +172,7 @@ final class MicrophoneCapture: HostCapture {
 
     /// Every audio object is invalid, including the session this object activated, so there is nothing to
     /// deactivate and nothing to restart: ownership is dropped and only a new foreground `start()` can
-    /// capture again (contract: "Media services reset ends the session").
+    /// capture again (ARCHITECTURE.md, "Capture", Media services reset ends the session).
     private func mediaServicesWereReset() {
         guard activatedSession else { return }
         activatedSession = false

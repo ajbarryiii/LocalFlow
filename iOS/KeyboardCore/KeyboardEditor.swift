@@ -1,6 +1,6 @@
 import Foundation
 
-/// The candidate strip after a swipe (ARCHITECTURE.md, "Typing model v4 and swipe typing"): up to three
+/// The candidate strip after a swipe (ARCHITECTURE.md, "Swipe typing", Candidate strip): up to three
 /// candidates, cased as the inserted word was, best first, and which one is in the field now. Autocorrect's
 /// suggestions after a commit key use it too (ARCHITECTURE.md, "Word autocorrect"). In memory only; never
 /// logged or stored.
@@ -119,9 +119,9 @@ final class KeyboardEditor {
     /// The strip shown after a swipe or a commit key, else while a word is typed, else the next words after a space; nil
     /// when closed.
     var swipeStrip: SwipeStrip? { swipe?.strip ?? typingSuggestions?.strip ?? nextWords?.strip }
-    /// Whether a letter or digit typed now would get the space owed after a swiped word first ("Space
-    /// before a tapped word"), as `press` would decide. For the soft-key-edge prior's context (ARCHITECTURE.md,
-    /// "Soft key edges"); it only reads whether the proxy now shows the word.
+    /// Whether a letter or digit typed now would get the space owed after a swiped word first (ARCHITECTURE.md,
+    /// "Swipe typing", Space before a tapped word), as `press` would decide. For the soft-key-edge prior's context
+    /// (ARCHITECTURE.md, "Soft key edges"); it only reads whether the proxy now shows the word.
     func tappedLetterGetsSpace(now: TimeInterval) -> Bool { pendingSpaceApplies(now: now) }
     /// The text a tapped letter would follow, for the soft-key-edge prior: the text before the caret as this
     /// keyboard knows it (`currentBefore`, which includes own edits the proxy has not shown yet), plus the
@@ -189,15 +189,15 @@ final class KeyboardEditor {
         reportedStrip = swipeStrip
         onSwipeStripChanged?()
     }
-    /// The space owed before the next tapped letter or digit after a swiped word ("Space before a tapped
-    /// word"), and the edit that put the word in. Separate from the strip, which Shift and layer keys close
-    /// while this survives them. In memory only.
+    /// The space owed before the next tapped letter or digit after a swiped word (ARCHITECTURE.md, "Swipe
+    /// typing", Space before a tapped word), and the edit that put the word in. Separate from the strip, which
+    /// Shift and layer keys close while this survives them. In memory only.
     private var pendingSpace: ExpectedDocument.ID? {
         didSet { releaseSwipeEdits() }
     }
-    /// The space a strip choice added after its word ("A tapped word ends with one space"), and the edit that put it
-    /// there: punctuation typed right after takes the space's place and is followed by it ("word, "), as on Apple's
-    /// keyboard. Shift and layer keys keep it; every other key ends it. In memory only.
+    /// The space a strip choice added after its word (ARCHITECTURE.md, "Swipe typing", A tapped word ends with one
+    /// space), and the edit that put it there: punctuation typed right after takes the space's place and is followed
+    /// by it ("word, "), as on Apple's keyboard. Shift and layer keys keep it; every other key ends it. In memory only.
     private var autoSpace: ExpectedDocument.ID? {
         didSet { releaseSwipeEdits() }
     }
@@ -386,7 +386,7 @@ final class KeyboardEditor {
     // MARK: Keys
 
     /// Any key touched down (characters, space, Return, delete, Shift, layer keys): trackpad settlement
-    /// or verification ends on the spot (ARCHITECTURE.md, "Typing model v2"), so nothing the gesture
+    /// or verification ends on the spot (ARCHITECTURE.md, "Trackpad and keys"), so nothing the gesture
     /// still hears from can move the caret before the key acts. A character inserts right after.
     func keyTouchedDown(now: TimeInterval) {
         trackpad.interrupt(at: now)
@@ -1131,7 +1131,7 @@ final class KeyboardEditor {
     }
 
     /// Whether the text before the caret ends with a line break right after something other than whitespace: a Return
-    /// typed after text (round 7).
+    /// typed after text.
     static func followsTextAndBreak(_ before: String) -> Bool {
         guard before.last == "\n", let previous = before.dropLast().last else { return false }
         return !previous.isWhitespace

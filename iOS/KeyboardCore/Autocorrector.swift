@@ -15,14 +15,14 @@ import Foundation
 ///   letter log pInsert + log q, q mixing a repeat of the previous candidate letter, a slip onto its
 ///   neighbours and a uniform stray tap over the letters area; two swapped letters log pTranspose plus both
 ///   taps at their keys) plus `lmWeight` × the word model's log probability given the sentence's words.
-/// - Spelling channel ("Spelling channel"), with `wSpelling` > 0 and `spelling` tables: each step of an
-///   alignment that is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its score above and
-///   spelling, with m the match log above and t(x) the step's tap's touch log likelihood at key x (0 for a
-///   letter without a tap typed as x): typed x at candidate letter c ≠ x, m + sub[c, x] + t(x); candidate
-///   letter c omitted after p (START for the first), dele[p, c]; typed x inserted after candidate letter c
-///   (START before the first, where the motor term still judges it against the first), m + ins[c, x] + t(x);
-///   candidate letters p, c typed as c, p, 2m + trans[p, c] + both taps' touch log likelihoods. Matches and
-///   keep are unchanged. `wSpelling` 0 ignores the tables: the scores are the motor channel's, bit for bit.
+/// - Spelling channel ("Word autocorrect", Spelling channel), with `wSpelling` > 0 and `spelling` tables: each step of
+///   an alignment that is an edit scores logaddexp(motor, log `wSpelling` + spelling), motor its score above and
+///   spelling, with m the match log above and t(x) the step's tap's touch log likelihood at key x (0 for a letter
+///   without a tap typed as x): typed x at candidate letter c ≠ x, m + sub[c, x] + t(x); candidate letter c omitted
+///   after p (START for the first), dele[p, c]; typed x inserted after candidate letter c (START before the first,
+///   where the motor term still judges it against the first), m + ins[c, x] + t(x); candidate letters p, c typed as c,
+///   p, 2m + trans[p, c] + both taps' touch log likelihoods. Matches and keep are unchanged. `wSpelling` 0 ignores the
+///   tables: the scores are the motor channel's, bit for bit.
 /// - Keep scores the typed key with every letter matched, plus `lmWeight` × its model log probability if it
 ///   is a lexicon form, else `lmWeight` × log P("<unk>") + `logOOV`.
 /// - The best form (ties: higher frequency, then alphabetically first) replaces the word only if it beats
@@ -126,8 +126,9 @@ final class Autocorrector: WordCorrecting {
     private var completionContext: [String]?
     private var completionLogProbs: [Double] = []
 
-    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions): `correct`'s result for it, and the
-    /// best `limit` other forms by their odds against keeping it (score minus keep's, as in `alternatives`):
+    /// While a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing): `correct`'s result for
+    /// it, and the best `limit` other forms by their odds against keeping it (score minus keep's, as in
+    /// `alternatives`):
     /// - completions: the forms starting with the word (a range of ids, `WordLexicon.formRange`), scored as the word
     ///   typed so far matched exactly, so by the weighted model log probability in the sentence's context alone;
     /// - typo-tolerant matches: `alternatives` at the suggestion floor (none below `minLength` letters).
@@ -186,8 +187,8 @@ final class Autocorrector: WordCorrecting {
 
     /// While a word is typed, the most by which a form offered may be less likely than the strip's first word (its
     /// odds ratio). Chosen on the bundle's model with invented sentences and centre taps (ARCHITECTURE.md, "Word
-    /// autocorrect", Suggestions): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti" (1 in 1,200)
-    /// but keeps "defiantly" for "defi" (1 in 220).
+    /// autocorrect", Suggestions while typing): it drops "heyday" for "hey" (1 in 3,300) and "meetinghouse" for "meeti"
+    /// (1 in 1,200) but keeps "defiantly" for "defi" (1 in 220).
     static let suggestionRatio = 1000.0
 
     // MARK: Next words
@@ -799,7 +800,7 @@ final class Autocorrector: WordCorrecting {
 /// sum is formed in the reference's order, so scores match its bits whatever is reused. Plain pointers and
 /// comparisons: it runs for every candidate, and the keyboard may be built without optimization. With the
 /// spelling channel the same loops read its precomputed terms (`Autocorrector.SpellingTerms`) instead of the
-/// motor costs; without, they run exactly as before.
+/// motor costs; without, they read only the motor costs.
 private final class Channel {
     private let n: Int
     private let edits: Int

@@ -1,6 +1,6 @@
 import Foundation
 
-/// How the trackpad lays out the host's text (ARCHITECTURE.md, "Field width profiles"): the host's
+/// How the trackpad lays out the host's text (ARCHITECTURE.md, "Field profiles"): the host's
 /// real font and width are unknown to a keyboard, so the layout is emulated with one of two
 /// profiles.
 enum FieldLayout: String, CaseIterable, Codable, Sendable {
@@ -19,15 +19,15 @@ enum FieldLayout: String, CaseIterable, Codable, Sendable {
     var other: FieldLayout { self == .messages ? .fullWidth : .messages }
 }
 
-/// Every field-profile constant, in one place (ARCHITECTURE.md, "Field profile parameters";
+/// Every field-profile constant, in one place (ARCHITECTURE.md, "Field profiles";
 /// measured in iOS 26.4 simulators, calibration report "Field geometry").
 /// - Messages wraps at keyboard width − (2·m + 117.33), with m = 16 on keyboards narrower than
 ///   414 pt and 20 otherwise (243.7 pt on a 393 pt iPhone 15 Pro), body font at the current Dynamic
 ///   Type size, TextKit 1, line-fragment padding 0. That reproduced every observed line break.
-/// - Full width keeps today's tuning: keyboard width − 40 on 16 pt-margin phones, − 48 on 20 pt
+/// - Full width is keyboard width − 40 on 16 pt-margin phones, − 48 on 20 pt
 ///   ones (a guess), the same font and layout.
 /// - The line pitch in both is the layout's real line advance, lineHeight + leading (24.00 pt at the
-///   default size), not `font.lineHeight` (22.29 pt), which made every vertical step 7.7 % short.
+///   default size), not `font.lineHeight` (22.29 pt), which would make every vertical step 7.7 % short.
 struct FieldLayoutParameters: Equatable, Sendable {
     /// The layout a field gets when nothing (an override, a recognized fingerprint) says otherwise.
     var defaultLayout = FieldLayout.fullWidth
@@ -223,7 +223,7 @@ enum FieldLayoutChooser {
 /// Pure, in memory only.
 /// - **Readings.** The proxy's traits are read at every host callback and at each gesture's start (raw
 ///   values, cheap). A reading without a field identity is a placeholder and is never used: measured
-///   at the keyboard's first appearance (iOS 26.4 simulator, round 6), the proxy reports default
+///   at the keyboard's first appearance (iOS 26.4 simulator), the proxy reports default
 ///   traits with no `documentIdentifier` until its first `textDidChange`.
 /// - **Gestures.** A gesture's layout is chosen when it starts, from the latest reading, and holds
 ///   until it ends; a fingerprint that changes meanwhile (the trackpad learning the unit, the traits

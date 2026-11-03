@@ -2,8 +2,8 @@ import Foundation
 
 /// The menu panel's colours (ARCHITECTURE.md, "Top row", menu), as sRGB components so their contrast is testable:
 /// a white card in light mode and a dark grey one in dark mode, with text that reads at WCAG AA (4.5:1) on it, and
-/// "Open LocalFlow" in the brand's accent (`BrandPalette.link`). The round 1 card was the key fill (grey in dark
-/// mode), where Apple's blue measured 1.7:1. Pure.
+/// "Open LocalFlow" in the brand's accent (`BrandPalette.link`). On the key fill (grey in dark mode) Apple's blue
+/// measures 1.7:1. Pure.
 struct MenuPalette: Equatable {
     struct RGB: Equatable {
         var red: Double
@@ -28,8 +28,8 @@ struct MenuPalette: Equatable {
     var secondary: RGB
     /// "Open LocalFlow": aurora on the dark card, a deep aurora on the light one.
     var link: RGB
-    /// The session line's ridge mark: ink with the accent's dot, like every other mark (round 9; it was all aurora). Its
-    /// dot shows the session as Start's does (`SessionDot.menuColor`, round 11), unlit in the card's grey.
+    /// The session line's ridge mark: ink with the accent's dot, like every other mark. Its dot shows the session as
+    /// Start's does (`SessionDot.menuColor`), unlit in the card's grey.
     var markLine: RGB { primary }
     var markDot: RGB { link }
     var unlitDot: RGB { BrandPalette.blend(primary, alpha: 0.38, over: card) }

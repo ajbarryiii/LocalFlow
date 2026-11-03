@@ -55,7 +55,7 @@ enum KeyboardLookTests {
     }
 
     /// A filled control reaches 3:1 against the keyboard's backdrop, or has an edge that does. Edges are hairlines (a
-    /// full point with Increase Contrast): round 4 council (Opus, visual 5), a 1-point edge read as a sticker outline.
+    /// full point with Increase Contrast): a 1-point edge reads as a sticker outline.
     private static func testFillsStandOffTheBackdropOrHaveAnEdge() {
         variants { palette, name in
             for (role, fill) in fills(palette) {
@@ -71,9 +71,9 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Round 8 (owner, on a phone): the aurora buttons were very bright and jarring; the brand colours are for accents.
-    /// No control is filled with a brand hue: the accent keys and the island are greys with grey ink, in both modes and
-    /// with Increase Contrast, as are the highlighted candidate's pill and the swipe trace.
+    /// The brand colours are for accents: a control filled with aurora is very bright and jarring. No control is filled
+    /// with a brand hue: the accent keys and the island are greys with grey ink, in both modes and with Increase
+    /// Contrast, as are the highlighted candidate's pill and the swipe trace.
     private static func testBrandColoursAreAccentsOnly() {
         variants { palette, name in
             for (role, fill) in fills(palette) {
@@ -90,7 +90,8 @@ enum KeyboardLookTests {
 
     /// The island (Start, the recording, the wait for the transcript) is a dark pill in both modes, in the spirit of the
     /// Dynamic Island, with white text: near-black on the dark keyboard, darker than the backdrop with a hairline edge to
-    /// set it off; graphite on the light keyboard, where black across the bar was the heaviest thing on the keyboard.
+    /// set it off; graphite on the light keyboard, where black across the bar would be the heaviest thing on the
+    /// keyboard.
     private static func testTheIslandIsDarkInBothModes() {
         variants { palette, name in
             TestSupport.expect(palette.island.color.luminance < 0.03, "island fill is not dark, \(name)")
@@ -104,9 +105,8 @@ enum KeyboardLookTests {
     }
 
     /// Accents on the backdrop (the readiness dot, an error's symbol, the menu's link) and on the island (the live dot
-    /// the wave settles into, the wait's cool shimmer) reach 3:1, as do the island's lit dots. Round 9 (owner): the dim dot
-    /// field is gone, so the resting row is the line itself, a calm 3:1 or better, and the swell still brightens past it.
-    /// (Round 8 kept resting dots under 3:1, a texture behind the strands.)
+    /// the wave settles into, the wait's cool shimmer) reach 3:1, as do the island's lit dots. There is no dim dot
+    /// field: the resting row is the line itself, a calm 3:1 or better, and the swell still brightens past it.
     private static func testAccentsReachThreeToOne() {
         variants { palette, name in
             for (role, color) in [("aurora", palette.aurora), ("ember", palette.ember)] {
@@ -176,8 +176,8 @@ enum KeyboardLookTests {
     }
 
     /// The candidate Space puts in sits on a pill whose text reads at 4.5:1 on it over the backdrop, with a visible
-    /// edge. Round 8 (owner): no aurora tint or edge; the pill is neutral in both modes, a soft white veil on the dark
-    /// keyboard and the keys' white on the light one, and never the accent keys' or the island's fill.
+    /// edge. No aurora tint or edge: the pill is neutral in both modes, a soft white veil on the dark keyboard and the
+    /// keys' white on the light one, and never the accent keys' or the island's fill.
     private static func testHighlightedCandidateStaysLegible() {
         variants { palette, name in
             TestSupport.expect(palette.pillAlpha > 0 && palette.pillAlpha <= 1, "pill alpha \(palette.pillAlpha)")
@@ -202,12 +202,12 @@ enum KeyboardLookTests {
         TestSupport.expectEqual(BrandPalette.blend(a, alpha: 0.5, over: b), RGB(0.5, 0, 0.5))
     }
 
-    /// Round 6 council (Opus finding 4): the light keyboard's idle line ("Session ends after 5 min idle") measured about
-    /// 3.1:1 (#7E7F85 on #E1E3E7): the system's secondary text is too faint on the light backdrop. There the status line
-    /// takes `statusInk`, the menu's secondary ink, which reads at 4.5:1 or better on the palette's backdrop and on the one
-    /// measured in round 5, deeper with Increase Contrast. It stays a grey well below the candidates' black, so it reads as
-    /// information, not a word to tap (a tap there types the nearest top-row key). The dark keyboard keeps the system's
-    /// secondary text (about 6:1).
+    /// The system's secondary text is too faint on the light backdrop: the light keyboard's idle line ("Session ends
+    /// after 5 min idle") measured about 3.1:1 (#7E7F85 on #E1E3E7). There the status line takes `statusInk`, the
+    /// menu's secondary ink, which reads at 4.5:1 or better on the palette's backdrop and on the measured one, deeper
+    /// with Increase Contrast. It stays a grey well below the candidates' black, so it reads as information, not a word
+    /// to tap (a tap there types the nearest top-row key). The dark keyboard keeps the system's secondary text (about
+    /// 6:1).
     private static func testStatusLineReadsAtAAOnTheBackdrop() {
         let measured = RGB(225 / 255, 227 / 255, 231 / 255)
         for high in [false, true] {
@@ -229,11 +229,9 @@ enum KeyboardLookTests {
         TestSupport.expect(ratio(high, measured) > ratio(normal, measured), "Increase Contrast does not deepen the status line")
     }
 
-    /// Round 8 (owner): quieter. The trace is the label colour's grey, fading towards its tail; at the finger it reaches
-    /// 3:1 against the backdrop.
-    /// Round 9 (Opus, round 8: a light grey trace on the grey keys was almost invisible mid-swipe): at the finger the trace
-    /// stands 3:1 off the keys it crosses as well as off the backdrop, in both modes and with Increase Contrast; it stays
-    /// neutral (a grey) and a little translucent, so it is quiet.
+    /// The trace is the label colour's grey, fading towards its tail. At the finger it stands 3:1 off the keys it
+    /// crosses as well as off the backdrop, in both modes and with Increase Contrast, so it shows on the grey keys
+    /// mid-swipe; it stays neutral (a grey) and a little translucent, so it is quiet.
     private static func testSwipeTrailIsQuietAndNeutral() {
         variants { palette, name in
             TestSupport.expect(palette.trail.red == palette.trail.green && palette.trail.green == palette.trail.blue,
@@ -260,7 +258,7 @@ enum KeyboardLookTests {
             let value = ratio(menu.link, menu.card)
             TestSupport.expect(value >= 4.5, "link on the card, \(name): \(value)")
             TestSupport.expect(sameHue(menu.link, BrandPalette.aurora), "link is not aurora's hue, \(name)")
-            // Round 9 (Opus, round 8): the menu's mark is ink with the aurora dot, like every other mark, not all aurora.
+            // The menu's mark is ink with the aurora dot, like every other mark, not all aurora.
             TestSupport.expectEqual(menu.markLine, menu.primary)
             TestSupport.expectEqual(menu.markDot, menu.link)
         }
@@ -326,13 +324,12 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Round 10 (owner: "prefer intuitive icons to textual descriptions ... balance between these two poles"): the middle
-    /// keeps words only where they earn their space: what the user must act on (Full Access, the microphone, a broken
-    /// install or versions, "Open LocalFlow to start a session" after the launcher failed), an error that says why a
-    /// dictation was lost, a model that cannot load, and a notice. Everything the island's own motion says, or Start's
-    /// dot, goes: the cold start's "Model loading" (round 9 showed it while recording), "Transcribing…" and "Preparing
-    /// model…" in the wait, "Preparing model…" idle, the session line and "Session on", "Model loads when you dictate", and
-    /// "Start opens LocalFlow". Nothing shows beside a chip but a notice.
+    /// The middle keeps words only where they earn their space: what the user must act on (Full Access, the microphone,
+    /// a broken install or versions, "Open LocalFlow to start a session" after the launcher failed), an error that says
+    /// why a dictation was lost, a model that cannot load, and a notice. Everything the island's own motion says, or
+    /// Start's dot, goes: the cold start's "Model loading" while recording, "Transcribing…" and "Preparing model…" in
+    /// the wait, "Preparing model…" idle, the session line and "Session on", "Model loads when you dictate", and "Start
+    /// opens LocalFlow". Nothing shows beside a chip but a notice.
     private static func testBarStatusKeepsWordsWhereTheyEarnTheirSpace() {
         let recording = KeyboardMode.recording(level: 0.5, startedAt: Date())
         func status(_ mode: KeyboardMode, title: String = "", hint: String? = nil, notice: String? = nil, chips: Bool = false) -> BarStatus {
@@ -365,11 +362,9 @@ enum KeyboardLookTests {
         TestSupport.expectEqual(status(.error(.modelFailed), title: "The speech model failed to load", chips: true), .none)
     }
 
-    /// Round 8 (owner): the island. Start is the compact island, holding the mark and "Start"; starting and recording
-    /// grow it across the bar into Stop (the whole island stops), holding the wave and the time; the wait for the
-    /// transcript contracts it into the short processing island with only its shimmer (the middle names the wait).
-    /// This replaces round 4's rule that the capsule keeps the recording Stop's width so Cancel never moves: Cancel now
-    /// sits at the bar's left beside the menu, where no change of the island's width can move it (`IslandLayout`).
+    /// The island. Start is the compact island, holding the mark and "Start"; starting and recording grow it across the
+    /// bar into Stop (the whole island stops), holding the wave and the time; the wait for the transcript contracts it
+    /// into the short processing island with only its shimmer (no words name the wait).
     private static func testIslandTakesItsFormFromTheMode() {
         let startedAt = Date(timeIntervalSince1970: 1_000)
         let cases: [(KeyboardMode, CapsuleContent, IslandForm)] = [
@@ -392,13 +387,12 @@ enum KeyboardLookTests {
         (.needsFullAccess, false), (.configurationError, false), (.incompatible, false),
     ]
 
-    /// Round 11 (owner, after trying round 10's green and amber dots: amber made the logo look worse, and iOS's own
-    /// orange microphone dot means a session is on): the mark's dot is always the brand's aurora, and the session shows in
-    /// its motion. A session ready: a heartbeat, a soft ring rippling out from the dot every few seconds. Its model
-    /// preparing: round 10's breathing. No session, or dictation cannot run here: the same dot, still. With Reduce
-    /// Motion nothing moves, so the dot is lit while a session is on (ready or preparing) and unlit, a neutral grey of the
-    /// same size and place, while none is. Colour never carries the state alone, so Differentiate Without Colour needs no
-    /// case of its own (this replaces round 10's ember dot and the round 11 ember ring). No state draws the dot in ember.
+    /// The mark's dot is always the brand's aurora, and the session shows in its motion: an amber dot makes the logo
+    /// look worse, and iOS's own orange microphone dot means a session is on. A session ready: a heartbeat, a soft ring
+    /// rippling out from the dot every few seconds. Its model preparing: breathing. No session, or dictation cannot run
+    /// here: the same dot, still. With Reduce Motion nothing moves, so the dot is lit while a session is on (ready or
+    /// preparing) and unlit, a neutral grey of the same size and place, while none is. Colour never carries the state
+    /// alone, so Differentiate Without Colour needs no case of its own. No state draws the dot in ember.
     private static func testTheSessionShowsInTheDotsMotion() {
         let looks: [(SessionDot, SessionDot.Look, SessionDot.Look)] = [
             (.ready, .heartbeat, .lit), (.preparing, .breathing, .lit), (.off, .lit, .unlit),
@@ -431,12 +425,12 @@ enum KeyboardLookTests {
             // Unlit: a neutral grey that still shows on the island, well short of the lit dot and the mark's line.
             let unlit = palette.unlitDot, island = palette.island.color
             TestSupport.expect(isGrey(unlit), "the unlit dot has a hue, \(name)")
-            // It reads as a graphic at 3:1 (round 11 council, Opus: 2.6:1 on the dark island was faint).
+            // It reads as a graphic at 3:1 (2.6:1 on the dark island is faint).
             TestSupport.expect(ratio(unlit, island) >= 3, "the unlit dot is faint on the island, \(name): \(ratio(unlit, island))")
             TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.live, island), "the unlit dot looks lit, \(name)")
             TestSupport.expect(ratio(unlit, island) < 0.6 * ratio(palette.island.ink, island), "the unlit dot looks like the line")
         }
-        // The heartbeat: subtle, slow and one place to tune it (owner: judged on a phone).
+        // The heartbeat: subtle, slow and one place to tune it.
         let beat = SessionDot.Heartbeat.self
         TestSupport.expectEqual(beat.period, 3)
         TestSupport.expect(beat.ripple >= 0.8 && beat.ripple <= 1.2 && beat.ripple < beat.period, "the ripple takes \(beat.ripple) s")
@@ -454,9 +448,9 @@ enum KeyboardLookTests {
             let distance = ((mark.dot.x - centre.x) * (mark.dot.x - centre.x) + (mark.dot.y - centre.y) * (mark.dot.y - centre.y)).squareRoot()
             TestSupport.expect(distance + widest <= r - 0.5, "the ripple leaves Start's pill at \(height): \(distance + widest) of \(r)")
         }
-        // It has all but faded by the time it meets the W's line (round 11 council, Opus: at 4.5 pt it crossed the W's
-        // lower points at about a quarter of its opacity). Path and opacity share one timing, so the opacity left when the
-        // ring's outer edge reaches the line follows from how far along its growth that is.
+        // It has all but faded by the time it meets the W's line (a ring reaching 4.5 pt crosses the W's lower points
+        // at about a quarter of its opacity). Path and opacity share one timing, so the opacity left when the ring's
+        // outer edge reaches the line follows from how far along its growth that is.
         let mark = RidgeMark.fitted(in: KeyRect(x: 0, y: 0, width: 19, height: 19), weight: 1.3)
         let clearance = zip(mark.line, mark.line.dropFirst()).map { a, b in
             let dx = b.x - a.x, dy = b.y - a.y
@@ -471,9 +465,8 @@ enum KeyboardLookTests {
         }
     }
 
-    /// Round 11 (Opus, round 10: "No session running" sat beside a green mark under Start's amber dot; the owner: the
-    /// same rule in the menu): the menu's session mark is Start's, the same look from the same state in every case, in
-    /// the card's variant of each colour: the lit dot reads at 3:1 on the card, the unlit one is the card's neutral grey.
+    /// The menu's session mark is Start's, the same look from the same state in every case, in the card's variant of
+    /// each colour: the lit dot reads at 3:1 on the card, the unlit one is the card's neutral grey.
     private static func testMenusDotMatchesStartsDot() {
         variants { palette, name in
             let menu = MenuPalette(dark: name.hasPrefix("dark"), highContrast: name.hasSuffix("high"))
@@ -492,7 +485,7 @@ enum KeyboardLookTests {
                 }
             }
             // With the menu open only its mark moves: Start's, dimmed behind the card, holds still in the same colour, so
-            // two rings never beat out of step (round 11 council, Opus).
+            // two rings never beat out of step.
             for (mode, ready) in sessionCases {
                 let dot = SessionDot(mode: mode, sessionReady: ready)
                 for reduceMotion in [false, true] {

@@ -2,7 +2,7 @@ import CoreML
 import Foundation
 
 /// The swipe encoder: a trajectory and the letter keys in, per-frame log-probabilities out
-/// (ARCHITECTURE.md, "Typing model v4 and swipe typing", step 3). Core ML in the keyboard, a fake in
+/// (ARCHITECTURE.md, "Swipe typing", Decoding pipeline step 3). Core ML in the keyboard, a fake in
 /// tests.
 protocol SwipeEncoding: AnyObject {
     /// `trajectory`: `SwipeResampler.points` × 2 values (x, y per point); `keys`: 26 × 2 (a–z centers),
@@ -60,7 +60,7 @@ struct SwipeBundleManifest: Decodable {
 }
 
 /// The swipe bundle's `bundle.json`, read once and each section decoded on its own, so an invalid section
-/// turns off only its own feature (ARCHITECTURE.md, "Typing model v4 and swipe typing", "Soft key edges" and
+/// turns off only its own feature (ARCHITECTURE.md, "Swipe typing", Bundle, "Soft key edges" and
 /// "Word autocorrect"). Holds the manifests only, never model data.
 struct SwipeBundle: Sendable {
     let directory: URL

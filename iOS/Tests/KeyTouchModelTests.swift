@@ -85,8 +85,8 @@ enum KeyTouchModelTests {
     private static var threshold: Double { (metrics.letterWidth + metrics.keyGap) / 2 }
 
     private static func testCharactersTypeAtReleaseWithTheTouchDownKey() {
-        // Typing model v4: a character's touch-down only signals the key (`.keyDown`); it types at release,
-        // and the key is the one under the touch-down point however far the finger moved.
+        // ARCHITECTURE.md, "Typing model": a character's touch-down only signals the key (`.keyDown`); it types
+        // at release, and the key is the one under the touch-down point however far the finger moved.
         var model = model()
         let a = center(.character("a")), s = center(.character("s"))
         TestSupport.expectEqual(model.began(1, x: a.x, y: a.y), [.keyDown])
@@ -101,9 +101,9 @@ enum KeyTouchModelTests {
     }
 
     private static func testTapRollingOntoAFunctionKeyStillTypesTheLetter() {
-        // Regression (device, 2026-10-13): a tap near a letter's edge that rolled a few points onto space,
-        // delete or Shift before lifting typed nothing. The letter is chosen at touch-down and typed at the
-        // lift (v4); the function key under the lift does nothing.
+        // A tap near a letter's edge that rolls a few points onto space, delete or Shift before lifting still
+        // types: the letter is chosen at touch-down and typed at the lift; the function key under the lift does
+        // nothing.
         let cases: [(KeyAction, KeyAction)] = [
             (.character("v"), .space), (.character("m"), .delete), (.character("z"), .shift),
             (.character("l"), .returnKey),
@@ -120,8 +120,8 @@ enum KeyTouchModelTests {
     }
 
     private static func testHeldTouchSurvivesALayerChange() {
-        // Regression: a finger slid from a letter onto Return (index 30 of 31 letter-layer keys), a
-        // second finger pressed 123, and the first finger's lift read index 30 of the 30 number keys.
+        // A finger slides from a letter onto Return (the letters layer's last key) and a second finger
+        // presses 123: the first finger's lift must not read Return's index among the fewer number keys.
         // Held fingers follow keys by action, never by index; the held letter commits at the second
         // finger's touch-down, before the layer key acts.
         var model = model()
@@ -131,7 +131,7 @@ enum KeyTouchModelTests {
         TestSupport.expectEqual(model.began(2, x: numbers.x, y: numbers.y),
                                 [.keyDown, .type(.character("q")), .type(.layer(.numbers))])
         TestSupport.expectEqual(model.keysChanged(keys(.numbers), layer: .numbers), [])
-        // 31 since the emoji key joined the bottom row (32 letter-layer keys): still fewer than the letters.
+        // 31 number keys against 32 letter-layer keys: still fewer than the letters.
         TestSupport.expectEqual(keys(.numbers).count, 31)
         TestSupport.expectEqual(model.touches.first { $0.id == 1 }?.action, .character("q"))
         TestSupport.expectEqual(model.touches.first { $0.id == 2 }?.action, .layer(.letters))
@@ -140,7 +140,7 @@ enum KeyTouchModelTests {
     }
 
     private static func testHeldCharacterKeepsItsKeyThroughARebuild() {
-        // v4: a held character is never hit-tested again, not even when the keys are rebuilt under it (the
+        // A held character is never hit-tested again, not even when the keys are rebuilt under it (the
         // keyboard returning to letters, say): it types the key it touched down on.
         var model = model(.numbers)
         let one = center(.character("1"), .numbers)
@@ -151,8 +151,8 @@ enum KeyTouchModelTests {
     }
 
     private static func testSpaceRolloverKeepsPressOrder() {
-        // Regression: space down, x down and up, space up before the hold gave "hellox " instead of
-        // "hello x". The space commits first, in press order, and its hold timer stops.
+        // Space down, x down and up, space up before the hold gives "hello x", not "hellox ": the space
+        // commits first, in press order, and its hold timer stops.
         var model = model()
         let space = center(.space), x = center(.character("x"))
         TestSupport.expectEqual(model.began(1, x: space.x, y: space.y), [.keyDown, .startHoldTimer(1)])
@@ -177,7 +177,7 @@ enum KeyTouchModelTests {
     }
 
     private static func testCharacterRolloverCommitsOnce() {
-        // v4 rollover: each new finger commits the held letters first, in press order; a committed letter
+        // Rollover: each new finger commits the held letters first, in press order; a committed letter
         // types nothing more at its lift, and moves change nothing.
         var model = model()
         let h = center(.character("h")), i = center(.character("i")), space = center(.space)
@@ -191,7 +191,7 @@ enum KeyTouchModelTests {
     }
 
     private static func testCancelledCharacterTypesNothing() {
-        // v4: a system-cancelled character touch is not a release: it types nothing.
+        // A system-cancelled character touch is not a release: it types nothing.
         var model = model()
         let a = center(.character("a"))
         _ = model.began(1, x: a.x, y: a.y)
@@ -309,8 +309,8 @@ enum KeyTouchModelTests {
     }
 
     private static func testCancelledDeleteIsNotARelease() {
-        // Regression: a delete touch the system cancels (or the menu opening over the keys) ended like a
-        // release, and a release before the first deletion deletes once.
+        // A delete touch the system cancels (or the menu opening over the keys) does not end like a release,
+        // since a release before the first deletion deletes once.
         var model = model()
         let delete = center(.delete)
         TestSupport.expectEqual(model.began(1, x: delete.x, y: delete.y), [.keyDown, .beginDelete])
@@ -338,8 +338,8 @@ enum KeyTouchModelTests {
 
 extension KeyTouchModelTests {
     fileprivate static func testKeysCarryTheFieldOfTheirPress() {
-        // The round-6 review's P1: a letter pressed in field A was typed into field B on release. Each
-        // finger keeps the field of its touch-down, and what it types carries it to its release or rollover.
+        // A letter pressed in field A is never typed into field B on release. Each finger keeps the field of
+        // its touch-down, and what it types carries it to its release or rollover.
         let fieldA = UUID(), fieldB = UUID()
         var model = model()
         let a = center(.character("a")), s = center(.character("s"))
@@ -356,10 +356,9 @@ extension KeyTouchModelTests {
     }
 
     fileprivate static func testFieldChangeBindsOrEndsFingers() {
-        // The round-8 review's P1 (ARCHITECTURE.md, "Typing model v2"): a finger that touched down before
-        // any identity kept none, and through nil → A → B released into B. A field change binds such
-        // fingers to it, and ends without acting those bound to another identified field. Letters already
-        // committed by rollover are never ended.
+        // ARCHITECTURE.md, "Typing model", Field binding: a finger that touched down before any identity never
+        // releases into B through nil → A → B. A field change binds such fingers to it, and ends without acting
+        // those bound to another identified field. Letters already committed by rollover are never ended.
         let fieldA = UUID(), fieldB = UUID()
         var model = model()
         let a = center(.character("a")), s = center(.character("s")), delete = center(.delete)
@@ -384,7 +383,7 @@ extension KeyTouchModelTests {
     }
 
     fileprivate static func testFieldChangeDropsHeldCharacters() {
-        // v4: a held letter has typed nothing yet; a change to another identified field drops it, so its
+        // A held letter has typed nothing yet; a change to another identified field drops it, so its
         // lift types nothing. Bound to the new field (or to none yet), it types there at its lift.
         let fieldA = UUID(), fieldB = UUID()
         let a = center(.character("a"))
@@ -405,7 +404,7 @@ extension KeyTouchModelTests {
     }
 }
 
-// MARK: Swipe gesture (ARCHITECTURE.md, "Typing model v4 and swipe typing")
+// MARK: Swipe gesture (ARCHITECTURE.md, "Swipe typing", Gesture)
 
 extension KeyTouchModelTests {
     fileprivate static func testSwipeThresholdIsHalfALetterPitch() {
@@ -584,7 +583,7 @@ extension KeyTouchModelTests {
                                         field: nil)])
         TestSupport.expect(!model.collectsSamples(1), "an ended swipe collects samples")
         // Only an exact repeat of the last sample is skipped: a lift where the finger last was, but later,
-        // still counts. (Moves after `skidDuration`, so neither is a skid; 2026-10-18.)
+        // still counts. (Moves after `skidDuration`, so neither is a skid.)
         var still = self.model(swipe: true)
         _ = still.began(1, x: d.x, y: d.y, t: 20)
         _ = still.moved(1, x: d.x + 30, y: d.y, t: 20.2)
@@ -682,12 +681,12 @@ extension KeyTouchModelTests {
     }
 }
 
-// MARK: Threshold crossings between reported positions (code review, 2026-10-15)
+// MARK: Threshold crossings between reported positions
 
 extension KeyTouchModelTests {
     fileprivate static func testAnyCoalescedSamplePastTheThresholdSwipes() {
-        // Regression: promotion looked only at the event's last position, so a move whose coalesced touches
-        // went 25 pt out and came back to 5 pt stayed a tap.
+        // Promotion looks at every coalesced touch, not only the event's last position: a move whose coalesced
+        // touches go 25 pt out and come back to 5 pt swipes.
         let d = center(.character("d"))
         var model = model(swipe: true)
         _ = model.began(1, x: d.x, y: d.y, t: 1)
@@ -695,7 +694,7 @@ extension KeyTouchModelTests {
                           SwipeSample(x: d.x + 5, y: d.y, t: 1.012)]
         TestSupport.expectEqual(model.moved(1, x: d.x + 5, y: d.y, t: 1.012, coalesced: outAndBack), [])
         TestSupport.expect(model.isSwipeActive, "a coalesced touch past the threshold did not make a swipe")
-        // Released after `skidDuration`, so it is no skid (2026-10-18).
+        // Released after `skidDuration`, so it is no skid.
         TestSupport.expectEqual(model.ended(1, x: d.x + 5, y: d.y, t: 1.2),
                                 [.swipe([SwipeSample(x: d.x, y: d.y, t: 1)] + outAndBack + [SwipeSample(x: d.x + 5, y: d.y, t: 1.2)],
                                         field: nil)])
@@ -711,13 +710,12 @@ extension KeyTouchModelTests {
 
 }
 
-// MARK: Skids (ARCHITECTURE.md, "Dropped taps: reach, skids and counters")
+// MARK: Skids (ARCHITECTURE.md, "Swipe typing", Skids)
 
 extension KeyTouchModelTests {
     fileprivate static func testTheLiftNeverStartsASwipe() {
-        // Contract change (2026-10-18), replacing the flick rule of 2026-10-15: only moves turn a touch into a
-        // swipe. A finger first reported past the threshold at its release (it skidded as it lifted) types its
-        // touch-down letter, with its field.
+        // Only moves turn a touch into a swipe. A finger first reported past the threshold at its release (it
+        // skidded as it lifted) types its touch-down letter, with its field.
         let d = center(.character("d")), far = 2 * threshold
         let field = UUID()
         var skid = model(swipe: true)
@@ -865,7 +863,7 @@ extension KeyTouchModelTests {
     }
 }
 
-// MARK: Swipe trace (ARCHITECTURE.md, "Typing model v4 and swipe typing", "Swipe trace")
+// MARK: Swipe trace (ARCHITECTURE.md, "Swipe typing", Swipe trace)
 
 extension KeyTouchModelTests {
     private static func samples(_ times: [TimeInterval]) -> [SwipeSample] {
@@ -1024,8 +1022,8 @@ extension KeyTouchModelTests {
     }
 
     private static func testADecidedTapShowsAndTypesItsDecision() {
-        // ARCHITECTURE.md, "Soft key edges" (2026-10-18): the key is decided at touch-down; the callout shows the
-        // decision and it types at release, with the touch-down field.
+        // ARCHITECTURE.md, "Soft key edges": the key is decided at touch-down; the callout shows the decision and
+        // it types at release, with the touch-down field.
         let field = UUID()
         let d = frame(.character("d")), f = center(.character("f"))
         let x = d.maxX - 2, y = d.midY
@@ -1087,9 +1085,9 @@ extension KeyTouchModelTests {
     }
 
     private static func testAResizeUnderADecidedTapTypesTheTouchedKey() {
-        // ARCHITECTURE.md, "Soft key edges" (code review 2026-10-18): if the keys change under a decided tap's
-        // touch-down point so that its nearest key is no longer the one it touched, the touched key types and
-        // shows, as an undecided tap's re-decision would give.
+        // ARCHITECTURE.md, "Soft key edges": if the keys change under a decided tap's touch-down point so that its
+        // nearest key is no longer the one it touched, the touched key types and shows, as an undecided tap's
+        // re-decision would give.
         let d = frame(.character("d"))
         let x = d.maxX - 2, y = d.midY
         let narrow = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 330, height: KeyboardMetrics.regularHeight),
@@ -1119,9 +1117,9 @@ extension KeyTouchModelTests {
     }
 
     private static func testATapHeldThroughAResizeLosesItsPoint() {
-        // ARCHITECTURE.md, "Word autocorrect" (code review round 2, 2026-10-19): a finger held while the letters
-        // are laid out anew keeps its key (and decision) but carries no point: its touch-down point belongs to the
-        // old geometry. Undecided, it types its touch-down key as is (no re-decision without a point).
+        // ARCHITECTURE.md, "Word autocorrect": a finger held while the letters are laid out anew keeps its key (and
+        // decision) but carries no point: its touch-down point belongs to the old geometry. Undecided, it types its
+        // touch-down key as is (no re-decision without a point).
         let d = center(.character("d"))
         let wider = KeyboardLayout.keys(for: .letters, metrics: KeyboardMetrics(width: 430, height: KeyboardMetrics.regularHeight),
                                         showsGlobe: false)

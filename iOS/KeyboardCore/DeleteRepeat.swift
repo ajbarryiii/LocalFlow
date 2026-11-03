@@ -2,7 +2,7 @@ import Foundation
 
 /// Every held-delete constant, in one place. Times are seconds.
 ///
-/// Measured on Apple's keyboard (ARCHITECTURE.md, "Measured Apple keyboard behavior", and the
+/// Measured on Apple's keyboard (ARCHITECTURE.md, "Delete key", and the
 /// calibration report): the first deletion 0.12 s after touch-down on device (0.087 s in the
 /// simulator), or at lift if the key is released sooner; the first repeat 0.50 s after that (0.494 s
 /// on device), then a character every 0.10 s (0.101 s); after 21 single characters (about 2.52 s after
@@ -58,7 +58,7 @@ struct DeleteRepeat: Equatable, Sendable {
 /// - Every deletion it schedules belongs to its press (`token`) and carries the press's field. A press
 ///   that began while the field had no identity (connecting) binds to the first identity seen after
 ///   it. A deletion in another identified field ends the press, deleting nothing; a missing identity
-///   never blocks one (ARCHITECTURE.md, "Typing model v2").
+///   never blocks one (ARCHITECTURE.md, "Typing model", Field binding).
 /// - A release before the first deletion deletes once. A cancellation (the system's, the menu covering
 ///   the keys, hiding) deletes nothing.
 /// - A focus change to another identified field ends the press.
@@ -129,7 +129,7 @@ struct HeldDeleteKey: Equatable, Sendable {
         press = nil
     }
 
-    /// Another field became current (ARCHITECTURE.md, "Typing model v2"): a press made before any
+    /// Another field became current (ARCHITECTURE.md, "Typing model", Field binding): a press made before any
     /// identity binds to this one; a press bound to a different identified field ends, deleting nothing
     /// (true). One made in this field goes on.
     mutating func fieldChanged(to field: UUID?) -> Bool {

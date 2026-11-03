@@ -8,13 +8,13 @@ enum IslandForm: Equatable, Sendable {
 
 /// Where the top row's parts go for an island form (ARCHITECTURE.md, "Top row"), left to right inside the bar's
 /// padding: the menu button, the middle (status, chips, candidates), Cancel while a dictation is in progress, and the
-/// island, whose right end never moves. While recording the island stays under half the bar (round 9, owner), with
-/// Cancel beside it in the bar's right half, in reach of a right thumb, a clear gap from Stop; starting and recording
-/// are one form, so Cancel never moves while a thumb may aim at it (round 5). The wait's pill is Start's width, and
-/// Cancel keeps the same gap beside it (round 11, owner), sliding in with the contracting island. Left-handed (round 10,
-/// owner), every part is reflected across the bar's middle: the island at the left end, growing rightwards, Cancel on
-/// its right in a left thumb's reach, the menu button at the right end, and the middle's content starting beside it
-/// (round 11). Each part is a horizontal span in the bar's coordinates; all are the control height tall. Pure.
+/// island, whose right end never moves. While recording the island stays under half the bar, with Cancel beside it in
+/// the bar's right half, in reach of a right thumb, a clear gap from Stop; starting and recording are one form, so
+/// Cancel never moves while a thumb may aim at it. The wait's pill is Start's width, and Cancel keeps the same gap
+/// beside it, sliding in with the contracting island. Left-handed, every part is reflected across the bar's middle: the
+/// island at the left end, growing rightwards, Cancel on its right in a left thumb's reach, the menu button at the
+/// right end, and the middle's content starting beside it. Each part is a horizontal span in the bar's coordinates; all
+/// are the control height tall. Pure.
 struct IslandLayout: Equatable, Sendable {
     struct Span: Equatable, Sendable {
         var x: Double
@@ -41,7 +41,7 @@ struct IslandLayout: Equatable, Sendable {
     var middle: Span
     var island: Span
     /// The end of the middle its content starts from: the menu button's, so Undo, "Insert last" and the status line sit
-    /// beside it in either hand (round 11, owner: left-handed, Undo goes on the right too).
+    /// beside it in either hand (left-handed, Undo goes on the right too).
     private(set) var middleStart = End.left
 
     /// The island's end that faces the bar's middle: the end it grows from and Cancel buds off (`IslandBud`).
@@ -56,7 +56,7 @@ struct IslandLayout: Equatable, Sendable {
     static func cancelWidth(controlHeight: Double) -> Double { controlHeight - 6 }
 
     /// Start's width with a `labelWidth` "Start" beside the mark: its padding, the 19-point mark and the gap, never
-    /// narrower than 2.4 times its height (the capsule's width before the island).
+    /// narrower than 2.4 times its height.
     static func startWidth(labelWidth: Double, controlHeight: Double) -> Double {
         max(controlHeight * 2.4, 14 + 19 + 6 + labelWidth + 14)
     }
@@ -95,7 +95,7 @@ struct IslandLayout: Equatable, Sendable {
         let cancelWidth = Self.cancelWidth(controlHeight: controlHeight)
         let recording = min(Self.expandedWidth(barWidth: barWidth, controlHeight: controlHeight),
                             max(end - next - cancelWidth - Self.cancelGap, 0))
-        // The wait's pill is Start's width, so the landing changes only what it holds (round 11, owner).
+        // The wait's pill is Start's width, so the landing changes only what it holds.
         let width = form == .expanded ? recording : min(startWidth, recording)
         island = Span(x: end - width, width: width)
         let cancel = Span(x: island.x - Self.cancelGap - cancelWidth, width: cancelWidth)

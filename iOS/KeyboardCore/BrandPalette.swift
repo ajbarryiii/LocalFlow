@@ -3,7 +3,7 @@ import Foundation
 /// The keyboard's colours (ARCHITECTURE.md, "Keyboard look"). The controls are monochrome: the action keys and caps lock
 /// take the label colour's side (a light key on the dark keyboard, a graphite one on the light), and dictation lives in
 /// a dark island in both modes, in the spirit of the Dynamic Island: near-black on the dark keyboard, graphite on the
-/// light one, where a black slab across the bar was the heaviest thing on the keyboard. The Wilderness Labs colours of the app's
+/// light one, where a black slab across the bar would be the heaviest thing on the keyboard. The Wilderness Labs colours of the app's
 /// `Theme` are accents only, in small things that mark a state: aurora for the mark's dot (on Start, with the session's
 /// heartbeat, and the dot the recording wave settles into) and the menu's link, glacier for the wait's shimmer alone, ember
 /// for an error's symbol. On the light keyboard the bright hues are too pale for glyphs on the backdrop, so those take deeper
@@ -31,8 +31,8 @@ struct BrandPalette: Equatable {
     var island: Fill
     /// The mark's dot on the island (Start's mark, the dot the recording wave settles into): the app's aurora.
     var live: RGB
-    /// The mark's dot unlit, with Reduce Motion while no session can take a dictation (round 11, owner): a dim grey on
-    /// the island, like an LED that is off.
+    /// The mark's dot unlit, with Reduce Motion while no session can take a dictation: a dim grey on the island, like
+    /// an LED that is off.
     var unlitDot: RGB { Self.blend(island.ink, alpha: 0.38, over: island.color) }
     /// The wait's shimmer on the island: a cool glacier white, the keyboard's only glacier.
     var shimmer: RGB
@@ -61,7 +61,7 @@ struct BrandPalette: Equatable {
     /// The keys' fill (`KeyPalette.fill`).
     var keyFill: RGB
     /// The system's keyboard backdrop as measured (iOS 26.4 simulator, Messages): for the contrast contract only. The
-    /// keyboard never draws a backdrop (ARCHITECTURE.md, "Touchable backgrounds").
+    /// keyboard never draws a backdrop (ARCHITECTURE.md, "Keyboard extension", Touchable backgrounds).
     var backdrop: RGB
 
     /// `highContrast`: Increase Contrast, which deepens the light keyboard's accents and the dark island's edge, and

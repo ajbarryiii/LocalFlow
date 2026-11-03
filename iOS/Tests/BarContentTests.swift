@@ -63,8 +63,8 @@ enum BarContentTests {
         TestSupport.expect(!stored.emoji.contains("typed text"), "stored text kept")
     }
 
-    /// Round 2 council (Opus finding 2): the dividers showed just outside the highlighted pill's rounded ends. A divider
-    /// goes between two shown neighbours only when neither is the emphasized candidate.
+    /// Dividers beside the highlighted pill show just outside its rounded ends, so a divider goes between two shown
+    /// neighbours only when neither is the emphasized candidate.
     private static func testNoDividerBesideTheHighlightedCandidate() {
         func dividers(_ shown: [Int], emphasized: Int?) -> [Bool] {
             zip(shown, shown.dropFirst()).map { CandidateStripLayout.showsDivider(between: $0, and: $1, emphasized: emphasized) }
@@ -78,9 +78,9 @@ enum BarContentTests {
         TestSupport.expectEqual(dividers([0, 2], emphasized: 2), [false])
     }
 
-    /// Round 2 council (Opus finding 2): long words shrank to the 0.6 floor (about 9 pt beside 15 pt neighbours). The
-    /// slots are equal; a word shrinks to at most `minimumScale` (0.8) of its size, and when the words do not all fit so,
-    /// the least useful go: the last that is neither the emphasized nor the quoted word, until the rest fit.
+    /// A long word shrunk to the 0.6 floor is about 9 pt beside 15 pt neighbours. The slots are equal; a word shrinks
+    /// to at most `minimumScale` (0.8) of its size, and when the words do not all fit so, the least useful go: the last
+    /// that is neither the emphasized nor the quoted word, until the rest fit.
     private static func testLongCandidatesAreDroppedRatherThanShrunk() {
         TestSupport.expectEqual(CandidateStripLayout.minimumScale, 0.8)
         let strip = SwipeStrip(candidates: ["meeting", "meetings", "meetinghouse"], inserted: 0, live: SwipeStrip.Live(quoted: nil, marked: nil))
@@ -105,14 +105,14 @@ enum BarContentTests {
         TestSupport.expectEqual(shown(committed, [150, 120, 320]).shown, [2])
         TestSupport.expect(shown(committed, [150, 120, 320]).scale < CandidateStripLayout.minimumScale, "the last word did not shrink")
         TestSupport.expectEqual(shown(committed, [150, 120, 900]), CandidateStripLayout.Fit(shown: [2], scale: 0.6))
-        // Unmeasured (no width yet): everything, as before.
+        // Unmeasured (no width yet): everything.
         TestSupport.expectEqual(shown(strip, [55, 62, 102], 0).shown, [0, 1, 2])
         TestSupport.expectEqual(shown(strip, [], 257).shown, [0, 1, 2])
     }
 
-    /// Round 4 council (Opus finding 2): each word shrank on its own, so "yesterday" showed at full size beside a smaller
-    /// "yesterday's". The shown words share one scale: the largest at which the tightest of them fits its slot, never
-    /// above full size, and never below `minimumScale` while a word can still be dropped instead.
+    /// Words that each shrink on their own show "yesterday" at full size beside a smaller "yesterday's". The shown
+    /// words share one scale: the largest at which the tightest of them fits its slot, never above full size, and never
+    /// below `minimumScale` while a word can still be dropped instead.
     private static func testCandidatesShareOneTextSize() {
         let strip = SwipeStrip(candidates: ["yesterday", "yesterday's", "yesterdays"], inserted: 0,
                                live: SwipeStrip.Live(quoted: nil, marked: nil))

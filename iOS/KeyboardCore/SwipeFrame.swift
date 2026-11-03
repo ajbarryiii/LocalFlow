@@ -1,7 +1,7 @@
 import Foundation
 
-/// The width-normalized frame the swipe encoder was trained in (ARCHITECTURE.md, "Typing model v4
-/// and swipe typing", step 1): x from 0.05 at the top row's first key center to 0.95 at its last,
+/// The width-normalized frame the swipe encoder was trained in (ARCHITECTURE.md, "Swipe typing",
+/// Decoding pipeline step 1): x from 0.05 at the top row's first key center to 0.95 at its last,
 /// y down from half a row pitch above the top row's centers, in the same unit as x.
 struct SwipeFrame: Equatable, Sendable {
     private static let letters = "abcdefghijklmnopqrstuvwxyz".map(String.init)

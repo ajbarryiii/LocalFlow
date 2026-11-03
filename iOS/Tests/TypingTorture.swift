@@ -1,7 +1,7 @@
 import Foundation
 
-/// The typing torture test (ARCHITECTURE.md, "Typing model v2: immediate execution", with the timing of
-/// "Typing model v4 and swipe typing": characters act at release or rollover; space and Return at release
+/// The typing torture test (ARCHITECTURE.md, "Typing model", Immediate execution, with that section's
+/// timing: characters act at release or rollover; space and Return at release
 /// or rollover; each edit asserted right after the event that typed it): a seeded script of touches
 /// (taps, holds, rollover; shift, caps lock, layers; space, double space, return, delete), trackpad
 /// gestures (keys at the lift, letters while a probe is out, Shift and layer keys among them, outside
@@ -417,8 +417,8 @@ private final class TortureWorld {
     }
 
     /// Right after a key's release (or its rollover commit, or a held delete's deletion): the field the
-    /// proxy serves already holds the edit, at the oracle's caret (ARCHITECTURE.md, "Typing model v2":
-    /// keys execute immediately). The first disagreement is kept for the step's result.
+    /// proxy serves already holds the edit, at the oracle's caret (ARCHITECTURE.md, "Typing model",
+    /// Immediate execution). The first disagreement is kept for the step's result.
     private func verify(after event: String) {
         guard failure == nil else { return }
         let host = harness.document.host, expected = fields[shown]!
@@ -520,9 +520,9 @@ private final class TortureWorld {
         guard harness.center(action) != nil else { preconditionFailure("the script pressed \(action), not shown") }
         let field = current
         let id = harness.touchDown(action)
-        // Typing model v4: a touch-down types nothing itself; it first commits every earlier finger still
-        // held, in press order: characters, space and return. Modeled once the keyboard has typed them: on a
-        // slow host a letter's case may come from the host.
+        // ARCHITECTURE.md, "Typing model", Rollover: a touch-down types nothing itself; it first commits every
+        // earlier finger still held, in press order: characters, space and return. Modeled once the keyboard
+        // has typed them: on a slow host a letter's case may come from the host.
         var committed = false
         for (earlier, held) in bindings.sorted(by: { $0.key < $1.key }) where !held.committed {
             switch (held.role, held.action) {
@@ -561,7 +561,8 @@ private final class TortureWorld {
     }
 
     /// A layer change re-lays the keys out: a held function key whose key is gone is dropped. A held
-    /// character keeps the key it touched down on (typing model v4: never hit-tested again).
+    /// character keeps the key it touched down on (ARCHITECTURE.md, "Typing model", Characters: never hit-tested
+    /// again).
     private func remapHeldKeys() {
         guard typing.layer != layoutLayer else { return }
         layoutLayer = typing.layer
@@ -778,7 +779,8 @@ private final class TortureWorld {
             interruptContext = nil
             slowBase = nil
             // Every report of the gesture a key ended arrives with no gesture running: a callback that is
-            // not an echo, which starts the timing over (ARCHITECTURE.md, "Typing model v2").
+            // not an echo, which starts the timing over (ARCHITECTURE.md, "Editing core" and "Shift, caps
+            // lock and spacing").
             let deliveries = freeDeliveries
             guard quiet() else { return "the keyboard never settled after a gesture" }
             if freeDeliveries > deliveries { typing.resetTiming() }
@@ -835,8 +837,8 @@ private final class TortureWorld {
         }
     }
 
-    /// The first key after a free gesture's lift ends it at its touch-down (ARCHITECTURE.md, "Typing
-    /// model v2"). Only where the keys act comes from the host: the caret once what the gesture already
+    /// The first key after a free gesture's lift ends it at its touch-down (ARCHITECTURE.md, "Trackpad
+    /// and keys"). Only where the keys act comes from the host: the caret once what the gesture already
     /// issued has landed (observed on a copy, so nothing lands early). The shift follows the text the
     /// keyboard can read there, derived here without asking it: with the gesture's last move landing on a
     /// boundary, the field's own text before that caret within the window the proxy showed as it is around

@@ -144,8 +144,8 @@ enum KeyboardLayoutTests {
     }
 
     private static func testReachAboveTheKeysIsTheBarBelowItsControls() {
-        // ARCHITECTURE.md, "Dropped taps": the key area takes the strip of the bar below its controls, half the
-        // difference of their heights (the controls are centred in the bar).
+        // ARCHITECTURE.md, "Reach and touch regions", Reach above the keys: the key area takes the strip of the bar
+        // below its controls, half the difference of their heights (the controls are centred in the bar).
         TestSupport.expectEqual(KeyboardMetrics.barHeight, 56)
         TestSupport.expectEqual(KeyboardMetrics.barControlHeight, 38)
         TestSupport.expectEqual(KeyboardMetrics.compactBarHeight, 40)
@@ -167,8 +167,8 @@ enum KeyboardLayoutTests {
     }
 
     private static func testTheSpaceBarGetsTheLeastOfItsGaps() {
-        // ARCHITECTURE.md, "A stricter space bar": a point outside the space bar counts as `spaceMissPenalty`
-        // (8 pt) farther from it, so a low tap on the bottom letter row types its letter.
+        // ARCHITECTURE.md, "Reach and touch regions", A stricter space bar: a point outside the space bar counts as
+        // `spaceMissPenalty` (8 pt) farther from it, so a low tap on the bottom letter row types its letter.
         TestSupport.expectEqual(KeyboardLayout.spaceMissPenalty, 8)
         for globe in [false, true] {
             let letters = keys(.letters, globe: globe)
@@ -203,9 +203,9 @@ enum KeyboardLayoutTests {
     }
 
     private static func testTheBarOutsideItsControlsGoesToTheKeys() {
-        // ARCHITECTURE.md, "Reach above the keys" (2026-10-18): any point of the bar outside every control's frame goes
-        // to the keys (each control's tap area is exactly its frame, so no point is dead); with no control frames
-        // reported yet, only the strip below the controls. Code review replaced a 4 pt slop around each control.
+        // ARCHITECTURE.md, "Reach and touch regions", The bar outside its controls: any point of the bar outside every
+        // control's frame goes to the keys (each control's tap area is exactly its frame, so no point is dead); with
+        // no control frames reported yet, only the strip below the controls.
         let bar = KeyboardMetrics.barHeight
         let menu = KeyRect(x: 8, y: 9, width: 38, height: 38), start = KeyRect(x: 300, y: 9, width: 92, height: 38)
         func goes(_ x: Double, _ y: Double, compact: Bool = false, _ controls: [KeyRect] = [menu, start]) -> Bool {
@@ -279,7 +279,8 @@ enum KeyboardLayoutTests {
     }
 
     private static func testTheDeleteKeyReachesTowardsM() {
-        // ARCHITECTURE.md, "A wider delete key": delete's frame counts `deleteReachLeft` (8 pt) further left.
+        // ARCHITECTURE.md, "Reach and touch regions", A wider delete key: delete's frame counts `deleteReachLeft`
+        // (8 pt) further left.
         TestSupport.expectEqual(KeyboardLayout.deleteReachLeft, 8)
         for globe in [false, true] {
             let letters = keys(.letters, globe: globe)
@@ -351,8 +352,8 @@ extension KeyboardLayoutTests {
                                 Array(repeating: nil, count: others.count - 1))
     }
 
-    /// Owner decision 4: only the bottom row differs between fields; the letter rows, and the number and symbol layers
-    /// (but for the emoji key), are the same everywhere, so the keyboard keeps its shape in every app.
+    /// Only the bottom row differs between fields; the letter rows, and the number and symbol layers (but for the emoji
+    /// key), are the same everywhere, so the keyboard keeps its shape in every app.
     private static func testFieldsChangeOnlyTheBottomRow() {
         for width in [375.0, 402] {
             for globe in [false, true] {

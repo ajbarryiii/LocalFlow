@@ -268,8 +268,8 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// Media services were reset: the audio session this app activated is gone (contract: "Media services
-    /// reset ends the session"). A recording fails with `.audioSessionFailed`, since the microphone, not
+    /// Media services were reset: the audio session this app activated is gone (ARCHITECTURE.md, "Capture",
+    /// Media services reset ends the session). A recording fails with `.audioSessionFailed`, since the microphone, not
     /// another app, failed; a finished recording is still transcribed. Capturing again needs a new
     /// foreground start.
     func captureMediaServicesReset() {

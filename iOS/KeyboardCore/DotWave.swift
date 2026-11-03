@@ -2,11 +2,10 @@ import Foundation
 
 /// The recording wave (ARCHITECTURE.md, "Keyboard look"): one row of dots along the island's middle line that shows the
 /// voice, its dots growing and brightening with what was said, and comes to rest in the mark's dot at the right. In
-/// silence it is one calm row of equal dots. Round 9 (owner): ours rather than the reference video's braided strands over
-/// a dim dot grid. Round 10 (owner: "slow, consistent and wavelike"): the row's shape is the voice's own, the last `span`
-/// seconds of it, the newest beside the mark's dot; what was said moves left as it ages, so a syllable is a pulse that
-/// crosses the row (in 0.75 s since round 11, a little quicker than the wait shimmer's sweep). The view records the level (`LevelFollower`) into a `Trace` every frame.
-/// Which dot is how large and bright for a trace and a moment is all here, so the view only draws. Pure.
+/// silence it is one calm row of equal dots. The row's shape is the voice's own, the last `span` seconds of it, the
+/// newest beside the mark's dot; what was said moves left as it ages, so a syllable is a pulse that crosses the row (in
+/// 0.75 s, a little quicker than the wait shimmer's sweep). The view records the level (`LevelFollower`) into a `Trace`
+/// every frame. Which dot is how large and bright for a trace and a moment is all here, so the view only draws. Pure.
 enum DotWave {
     /// One dot, in the box's points: its centre, radius, and brightness from 0 (unlit) to 1.
     struct Dot: Equatable, Sendable {
@@ -21,21 +20,20 @@ enum DotWave {
     /// A dot at rest: its radius and brightness (a calm line, not a texture).
     static let restRadius = 1.4
     static let restBrightness = 0.5
-    /// A dot at the top of the swell, still clear of its neighbours. Round 10 (owner: "a tiny bit bigger"): the dots,
-    /// the swell and the mark's dot are about 16 percent larger than round 9's.
+    /// A dot at the top of the swell, still clear of its neighbours.
     static let fullRadius = 2.85
     /// The mark's dot: its radius at rest, and how much the voice swells it.
     static let markRadius = 2.55
     static let markGrowth = 0.35
-    /// How many seconds of the voice the row shows: a syllable crosses it in this long. Round 11 (owner: "travel across
-    /// faster still? say about 0.75s"; at the shimmer's 1.1 s the wider recording island still read slower than it).
+    /// How many seconds of the voice the row shows: a syllable crosses it in this long, quicker than the shimmer's
+    /// sweep, since at the shimmer's 1.1 s the wider recording island reads slower than it.
     static let span = 0.75
     /// One sweep of the wait's shimmer, in seconds, entering at the left and leaving at the right; the wave keeps its pace.
     static let shimmerPeriod = 1.1
     /// The shimmer's room inside the wait's pill, on each side.
     static let shimmerInset = 11.0
     /// The row reads the voice this long ago at its newest end, so the trace's softening has samples on both sides there
-    /// and the dot beside the mark's never jumps as a new level arrives (round 11; the mark's dot swells with the voice now).
+    /// and the dot beside the mark's never jumps as a new level arrives (the mark's dot swells with the voice).
     static let readDelay = 0.045
     /// The wave's and the shimmer's frame interval: at most 60 frames a second, even on a 120 Hz display.
     static let frameInterval = 1.0 / 60
@@ -150,8 +148,8 @@ enum DotWave {
     }
 
     /// The level the wave draws: the input's, smoothed so it rises with a syllable at once and falls quickly after it
-    /// (round 10: syllables read as distinct pulses; round 9 fell over 0.4 s), without stepping between the levels the
-    /// keyboard reads (about ten a second).
+    /// (so syllables read as distinct pulses), without stepping between the levels the keyboard reads (about ten a
+    /// second).
     struct LevelFollower: Equatable, Sendable {
         /// The time constants of the rise and the fall, in seconds.
         static let rise = 0.025

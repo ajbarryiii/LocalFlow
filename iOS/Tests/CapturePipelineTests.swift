@@ -34,7 +34,7 @@ enum CapturePipelineTests {
         TestSupport.expectEqual(buffer.finish(requestID: Fixture.otherRequestID), [0.5])
     }
 
-    /// P0: R's audio is mid-conversion when R is cancelled and S begins. Those samples must not land in S.
+    /// R's audio is mid-conversion when R is cancelled and S begins. Those samples must not land in S.
     private static func testConversionSpanningCancelAndBeginIsDropped() {
         let h = PipelineHarness()
         h.buffer.begin(requestID: Fixture.requestID)
@@ -86,7 +86,7 @@ enum CapturePipelineTests {
         TestSupport.expectEqual(h.converter.state, [])
     }
 
-    /// P0: a long buffer captured partly before begin. Only the frames after begin are converted.
+    /// A long buffer captured partly before begin. Only the frames after begin are converted.
     private static func testFramesBeforeBeginAreTrimmedBeforeConversion() {
         let h = PipelineHarness()
         h.buffer.begin(requestID: Fixture.requestID)
@@ -132,7 +132,7 @@ enum CapturePipelineTests {
         TestSupport.expect(samples?.contains(3) == false, "audio after the end was kept")
     }
 
-    /// P1: finish with no further callback still clears the converter at once.
+    /// Finish with no further callback still clears the converter at once.
     private static func testBoundaryResetsTheConverterAtOnce() {
         let h = PipelineHarness()
         h.buffer.begin(requestID: Fixture.requestID)
@@ -144,7 +144,7 @@ enum CapturePipelineTests {
         TestSupport.expectEqual(h.converter.state, [])
     }
 
-    /// P1: a boundary during a conversion resets the converter when that conversion returns, with no
+    /// A boundary during a conversion resets the converter when that conversion returns, with no
     /// further callback.
     private static func testBoundaryDuringConversionResetsWhenItReturns() {
         let h = PipelineHarness()

@@ -34,7 +34,7 @@ enum CaptureTimingTests {
                                 CaptureTiming.Decision(keep: 0..<3_200, reachesEnd: false))
     }
 
-    /// P0: a 0.2 s buffer captured partly before begin. Its first 0.05 s is idle audio.
+    /// A 0.2 s buffer captured partly before begin. Its first 0.05 s is idle audio.
     private static func testBufferStraddlingBeginKeepsOnlyLaterFrames() {
         let decision = decide(start: begin - 50_000_000)
         TestSupport.expectEqual(decision.keep, 800..<3_200)   // 0.05 s at 16 kHz trimmed

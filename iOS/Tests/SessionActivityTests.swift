@@ -51,9 +51,9 @@ enum SessionActivityTests {
 
     // MARK: Motion and words
 
-    /// Sol, round 8: with Reduce Motion every phase change of the activity is opacity only: no view grows, shrinks or
-    /// slides as it arrives or leaves, and neither the mark's dot nor the strip's dots change size, so the strip's shape
-    /// shows in brightness alone. Without it, the small scale changes stay. Nothing animates in Always On.
+    /// With Reduce Motion every phase change of the activity is opacity only: no view grows, shrinks or slides as it
+    /// arrives or leaves, and neither the mark's dot nor the strip's dots change size, so the strip's shape shows in
+    /// brightness alone. Without it, the small scale changes stay. Nothing animates in Always On.
     private static func testReduceMotionChangesOnlyOpacity() {
         let handovers: [(Bool) -> SessionActivityMotion.Handover] = [
             SessionActivityMotion.words, SessionActivityMotion.compactTrailing, SessionActivityMotion.minimalDot,

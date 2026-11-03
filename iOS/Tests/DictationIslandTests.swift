@@ -52,8 +52,8 @@ enum DictationIslandTests {
         return trace
     }
 
-    /// Round 9 (owner: the braid over a dim dot field read as the reference video): the wave is one row of dots along the
-    /// middle line, evenly spaced, with no dim field around it: every dot is at least the resting brightness.
+    /// The wave is one row of dots along the middle line, evenly spaced, with no dim field around it: every dot is at
+    /// least the resting brightness.
     private static func testWaveIsOneRowOfDots() {
         let speech = trace(until: 2) { 0.5 + 0.5 * sin($0 * 9) }
         for dots in [held(0), held(0.5), held(1), DotWave.dots(trace: speech, now: 2, width: width, height: height)] {
@@ -72,8 +72,8 @@ enum DictationIslandTests {
         }
     }
 
-    /// Round 10 (owner: "make it a tiny bit bigger"): the dots, the swell's height and the mark's dot are each about 15 to
-    /// 20 percent larger than round 9's (rest 1.2, full 2.45, mark 2.2 pt), the dots still a dot's gap apart.
+    /// The dots, the swell's height and the mark's dot are each about 15 to 20 percent larger than 1.2, 2.45 and 2.2
+    /// points (a resting dot's, a full dot's and the mark's radius), the dots still a dot's gap apart.
     private static func testWaveIsATinyBitBigger() {
         for (now, before) in [(DotWave.restRadius, 1.2), (DotWave.fullRadius, 2.45), (DotWave.markRadius, 2.2)] {
             TestSupport.expect(now >= before * 1.12 && now <= before * 1.25, "\(now) is not a tiny bit bigger than \(before)")
@@ -100,10 +100,9 @@ enum DictationIslandTests {
             .allSatisfy { abs($0.radius - DotWave.restRadius) < 1e-9 }, "an empty trace swells")
     }
 
-    /// Round 10 (owner: "move more with your voice"): loud and quiet look clearly different. A voice held loud swells the
-    /// row at least twice as much as one held at half, and full level is the whole swell; levels outside 0...1 count as
-    /// their nearest end. Bigger is brighter: the swell is one shape, not two. The Live Activity's strip draws the same
-    /// lift (`DotWave.lift`).
+    /// Loud and quiet look clearly different. A voice held loud swells the row at least twice as much as one held at
+    /// half, and full level is the whole swell; levels outside 0...1 count as their nearest end. Bigger is brighter:
+    /// the swell is one shape, not two. The Live Activity's strip draws the same lift (`DotWave.lift`).
     private static func testLouderSwellsTheRow() {
         func growth(_ dots: [DotWave.Dot]) -> Double { dots.map { $0.radius - DotWave.restRadius }.reduce(0, +) }
         let levels = [0, 0.25, 0.5, 0.75, 1.0].map { growth(held($0)) }
@@ -135,12 +134,11 @@ enum DictationIslandTests {
         TestSupport.expect(peaks.count >= 2, "the still strip is one smooth hump, not a voice: \(strip)")
     }
 
-    /// Round 10 (owner: "slow, consistent and wavelike"): the row's shape is the voice's own, not a fixed sine. It shows
-    /// the last `DotWave.span` seconds of the voice, the newest beside the mark's dot at the right; what was said moves
-    /// left as it ages and leaves the row after `span`. The row rises out of the line at the left. Round 11 (owner: "have
-    /// the syllables travel across faster still? say about 0.75s"; the recording island is wider than the wait's pill, so
-    /// round 10's 1.1 s, the shimmer's sweep, still read slower than it): a syllable crosses the row in about 0.75 s,
-    /// while the shimmer keeps its 1.1 s sweep.
+    /// The row's shape is the voice's own, not a fixed sine. It shows the last `DotWave.span` seconds of the voice, the
+    /// newest beside the mark's dot at the right; what was said moves left as it ages and leaves the row after `span`.
+    /// The row rises out of the line at the left. A syllable crosses the row in about 0.75 s, while the shimmer keeps
+    /// its 1.1 s sweep: the recording island is wider than the wait's pill, so at the shimmer's pace the wave reads
+    /// slower than it.
     private static func testTheRowIsTheVoiceMovingLeft() {
         TestSupport.expect(abs(DotWave.span - 0.75) <= 0.05, "a syllable takes \(DotWave.span) s to cross the row")
         TestSupport.expect(DotWave.span < DotWave.shimmerPeriod, "the wave is no faster than the shimmer")
@@ -169,9 +167,9 @@ enum DictationIslandTests {
                                 DotWave.dots(trace: syllable(until: 0.5), now: 0.5, width: width, height: height))
     }
 
-    /// Round 10 (owner): syllables read as distinct pulses. The level follows the input quickly up (most of a jump within
-    /// 50 ms) and quickly down (under a fifth within 0.2 s; round 9 kept half after 0.1 s, a 0.4 s fall), never
-    /// overshooting; two syllables 0.25 s apart show as two pulses with a dip between them.
+    /// Syllables read as distinct pulses. The level follows the input quickly up (most of a jump within 50 ms) and
+    /// quickly down (under a fifth within 0.2 s), never overshooting; two syllables 0.25 s apart show as two pulses
+    /// with a dip between them.
     private static func testSyllablesAreDistinctPulses() {
         var follower = DotWave.LevelFollower()
         TestSupport.expectEqual(follower.value, 0)
@@ -273,8 +271,8 @@ enum DictationIslandTests {
     }
 
     /// The wait's shimmer matches the wave: one row of dots on the middle line with a brighter, larger spot that moves
-    /// left to right as the sweep runs; inside the pill, and nothing in no room. Round 10 (Opus, round 9: 6 dots): 8 or
-    /// 9 of them. Round 11 (owner: the wait's pill is Start's width): 10 to 12 on a phone, at least 10 in landscape.
+    /// left to right as the sweep runs; inside the pill, and nothing in no room. In the wait's pill, Start's width, it
+    /// has 10 to 12 dots on a phone and at least 10 in landscape.
     private static func testShimmerSweepsAlongTheRow() {
         let pill = layout(402, KeyboardMetrics.barControlHeight, .processing).island.width
         let w = pill - 2 * DotWave.shimmerInset, h = 24.0
@@ -327,14 +325,13 @@ enum DictationIslandTests {
                                         IslandLayout.startWidth(labelWidth: 36, controlHeight: height))
             }
         }
-        // Start is never narrower than before the island (2.4 times its height), and grows with its label.
+        // Start is never narrower than 2.4 times its height, and grows with its label.
         TestSupport.expectEqual(IslandLayout.startWidth(labelWidth: 0, controlHeight: 38), 38 * 2.4)
         TestSupport.expect(IslandLayout.startWidth(labelWidth: 80, controlHeight: 38) > 38 * 2.4, "Start does not fit its label")
     }
 
-    /// Round 9 (owner): the speaking pill was too wide; it stays under half the keyboard's width on every phone and in
-    /// both orientations, anchored where Start is, and still has room for the wave, the time and the stop glyph. This
-    /// replaces round 8's contract that the recording island spans the bar from Cancel to its right end.
+    /// The recording island stays under half the keyboard's width on every phone and in both orientations, anchored
+    /// where Start is, and still has room for the wave, the time and the stop glyph.
     private static func testRecordingIslandIsUnderHalfTheBar() {
         for bar in barWidths {
             for height in controlHeights {
@@ -351,13 +348,10 @@ enum DictationIslandTests {
         }
     }
 
-    /// Round 9 (owner): Cancel within a right thumb's reach, beside the island, a clear gap from it (Cancel discards the
-    /// dictation, so a near miss for Stop must not hit it); its centre in the bar's right half. Start has no Cancel.
-    /// Starting and recording are one form, so Cancel never moves while a thumb may be aiming at it (round 5). Round 11
-    /// (owner: "have cancel dictation x stay the same distance away from the shimmer pill, as it is from the active
-    /// dictation pill"): at Stop it slides in with the contracting island to the same 12-point gap beside the wait's
-    /// pill, and stays there through the wait. This replaces round 9's contract that the wait left Cancel where it was,
-    /// which stranded it about 100 points from the pill (Opus, round 10).
+    /// Cancel within a right thumb's reach, beside the island, a clear gap from it (Cancel discards the dictation, so a
+    /// near miss for Stop must not hit it); its centre in the bar's right half. Start has no Cancel. Starting and
+    /// recording are one form, so Cancel never moves while a thumb may be aiming at it. At Stop it slides in with the
+    /// contracting island to the same 12-point gap beside the wait's pill, and stays there through the wait.
     private static func testCancelKeepsItsGapToTheIslandInEveryForm() {
         for bar in barWidths {
             for height in controlHeights {
@@ -380,8 +374,8 @@ enum DictationIslandTests {
         }
     }
 
-    /// Cancel's tap area is 44 points wide around its circle (Opus, round 8: a tap 2 points beside its 32-point circle
-    /// typed "w"), as tall as fits in the bar above the strip below the controls, so it never reaches down into the keys or
+    /// Cancel's tap area is 44 points wide around its circle (a tap 2 points beside its 32-point circle must not type
+    /// "w"), as tall as fits in the bar above the strip below the controls, so it never reaches down into the keys or
     /// the strip that goes to them. Between it and Stop's tap area the keys keep a clear strip, and Stop's reach into the
     /// top row covers only the keys under the island.
     private static func testCancelHasA44PointTargetApartFromStop() {
@@ -421,10 +415,9 @@ enum DictationIslandTests {
     }
 
     /// The wait contracts the island to a pill that holds only its shimmer, much shorter than the recording, so it reads
-    /// as the recording winding down. Round 11 (owner: "have the preparation state pill be the same width as the start
-    /// dictation button"): exactly Start's width, so the landing changes only what it holds, never its width; round 10's
-    /// pill was 1.9 times its height. Its right end is Start's. The middle, between the menu and Cancel as while
-    /// recording, keeps room for a notice.
+    /// as the recording winding down. It is exactly Start's width, so the landing changes only what it holds, never its
+    /// width. Its right end is Start's. The middle, between the menu and Cancel as while recording, keeps room for a
+    /// notice.
     private static func testTheWaitsPillIsStartsWidth() {
         for bar in barWidths {
             for height in controlHeights {
@@ -442,8 +435,8 @@ enum DictationIslandTests {
         TestSupport.expectEqual(wide.island.width, 120)
     }
 
-    /// Round 11 (Opus, round 10; owner: Cancel slides into what was Stop a moment before): a quick second tap on Stop, a
-    /// double tap or one the user thinks did not register, must never cancel the dictation or type a letter. For
+    /// Cancel slides into what was Stop a moment before, so a quick second tap on Stop, a double tap or one the user
+    /// thinks did not register, must never cancel the dictation or type a letter. For
     /// `BarControlRegions.stopGuard` (about 0.4 s) after the recording ends, no point of the island's former area, in the
     /// bar or in its reach into the top row, goes to the keys or to Cancel, in either hand, upright or in landscape; then
     /// Cancel, settled beside the wait's pill, takes taps again. It holds whether the user tapped Stop (the guard starts
@@ -536,7 +529,7 @@ enum DictationIslandTests {
         }
     }
 
-    /// Menu, middle, Cancel and island lie left to right inside the bar's padding (round 11: in the wait too),
+    /// Menu, middle, Cancel and island lie left to right inside the bar's padding (in the wait too),
     /// the spacing apart, without overlap; the middle takes what is left, never a negative width, even in a bar too narrow
     /// for everything.
     private static func testBarPartsNeverOverlap() {
@@ -563,7 +556,7 @@ enum DictationIslandTests {
         }
     }
 
-    // MARK: Left-handed (round 10, owner)
+    // MARK: Left-handed
 
     /// The span reflected across the bar's middle.
     private static func mirrored(_ span: IslandLayout.Span, in bar: Double) -> IslandLayout.Span {
@@ -572,7 +565,7 @@ enum DictationIslandTests {
 
     /// Left-handed, the bar's parts are the right-handed ones reflected across its middle: Start and the island at the
     /// left end, growing rightwards, Cancel on the island's right, the menu button at the right end, the middle between.
-    /// Off, the layout is exactly today's.
+    /// Off, the layout is exactly the right-handed one.
     private static func testLeftHandedMirrorsTheDictationControls() {
         for bar in barWidths + [120] {
             for height in controlHeights {
@@ -592,9 +585,9 @@ enum DictationIslandTests {
         }
     }
 
-    /// Every round 9 contract holds mirrored: the recording island under half the bar, Cancel beside it in the bar's left
-    /// half (a left thumb's), a clear gap from Stop and (round 11) from the wait's pill, with its 44-point target apart
-    /// from Stop's and the menu's.
+    /// Every layout contract holds mirrored: the recording island under half the bar, Cancel beside it in the bar's
+    /// left half (a left thumb's), a clear gap from Stop and from the wait's pill, with its 44-point target apart from
+    /// Stop's and the menu's.
     private static func testLeftHandedKeepsEveryContractMirrored() {
         for bar in barWidths {
             for compact in [false, true] {
@@ -611,7 +604,7 @@ enum DictationIslandTests {
                 TestSupport.expect(recording.island.width < bar / 2, "the island is half the bar or more at \(bar)")
                 TestSupport.expect(cancel.x + cancel.width / 2 < bar / 2, "Cancel is not in the left half at \(bar): \(cancel)")
                 TestSupport.expectEqual(cancel.x - recording.island.maxX, IslandLayout.cancelGap)
-                // Round 11: the wait keeps the same gap, mirrored.
+                // The wait keeps the same gap, mirrored.
                 TestSupport.expect(abs(waiting.cancel!.x - waiting.island.maxX - IslandLayout.cancelGap) < 1e-9,
                                    "Cancel is \(waiting.cancel!.x - waiting.island.maxX) pt from the wait at \(bar)")
                 TestSupport.expect(waiting.cancel!.x + waiting.cancel!.width / 2 < bar / 2, "Cancel leaves the left half at \(bar)")
@@ -644,10 +637,10 @@ enum DictationIslandTests {
         TestSupport.expect(reached.allSatisfy { $0.frame.midX < width / 2 }, "Stop reaches the right half")
     }
 
-    /// Round 11 (owner: "the undo dictation button should be on the right side as well"): the middle's content starts
-    /// beside the menu button, so left-handed the bar is a true mirror. Right-handed, Undo, "Insert last" and the status
-    /// line sit left to right from the menu button on the left; left-handed, the same items run from the menu button on
-    /// the right, Undo beside it. The candidate strip spans the middle in either hand.
+    /// The middle's content starts beside the menu button, so left-handed the bar is a true mirror. Right-handed, Undo,
+    /// "Insert last" and the status line sit left to right from the menu button on the left; left-handed, the same
+    /// items run from the menu button on the right, Undo beside it. The candidate strip spans the middle in either
+    /// hand.
     private static func testTheMiddleStartsBesideTheMenuInEitherHand() {
         for bar in barWidths {
             for form in forms {

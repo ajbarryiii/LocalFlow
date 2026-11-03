@@ -3,8 +3,8 @@ import Foundation
 /// How the session's Live Activity moves when its phase changes (ARCHITECTURE.md, "Live Activity"): one quick spring, a
 /// little give in what arrives (the trailing side growing out of the island's edge, the recording dot popping in, the
 /// mark's dot swelling while recording, lit dots a touch larger). With Reduce Motion every change is opacity only:
-/// nothing grows, shrinks or slides, and the strip's shape shows in brightness alone (Sol, round 8). Nothing animates in
-/// Always On. Pure.
+/// nothing grows, shrinks or slides, and the strip's shape shows in brightness alone. Nothing animates in Always On.
+/// Pure.
 enum SessionActivityMotion {
     /// How a view arrives and leaves.
     enum Handover: Equatable, Sendable {

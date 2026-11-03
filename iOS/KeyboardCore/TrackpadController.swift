@@ -19,7 +19,7 @@ protocol TrackpadHost: AnyObject {
 /// A session ends one of two ways: completed (it settled after the lift, timed out settling, or a key
 /// ended it) or aborted (a stale field or generation, an outside change, an ambiguous report, a system
 /// cancellation, hiding). `onFinished` says which. Typing never waits on a session (ARCHITECTURE.md,
-/// "Typing model v2"): a key ends it on the spot (`interrupt`).
+/// "Trackpad and keys"): a key ends it on the spot (`interrupt`).
 ///
 /// The context snapshot lives only in the session and is dropped when it ends; on cancelling or hiding,
 /// at once. The learned offset unit, and whether the field reports each adjustment twice, are kept for
@@ -108,7 +108,7 @@ final class TrackpadController: AdjustmentOwner {
         session?.end(at: timestamp)
     }
 
-    /// A key was typed, or dictated text inserted (ARCHITECTURE.md, "Typing model v2"): the session ends
+    /// A key was typed, or dictated text inserted (ARCHITECTURE.md, "Trackpad and keys"): the session ends
     /// on the spot. Nothing more is issued; an outstanding probe's outcome is abandoned, and the caret is
     /// wherever the host has it once what was already issued lands (the proxy applies adjustments and
     /// edits in order).

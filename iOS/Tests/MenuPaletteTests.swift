@@ -17,7 +17,7 @@ enum MenuPaletteTests {
         TestSupport.expect(abs(MenuPalette.contrast(white, black) - 21) < 1e-9, "white on black")
         TestSupport.expect(abs(MenuPalette.contrast(white, white) - 1) < 1e-9, "white on white")
         TestSupport.expectEqual(MenuPalette.contrast(white, black), MenuPalette.contrast(black, white))
-        // Round 1 council: Apple's dark blue on the old grey card.
+        // Apple's dark blue on a grey card reads under 2:1.
         let blue = MenuPalette.RGB(0, 145.0 / 255, 1), grey = MenuPalette.RGB(104.0 / 255, 104.0 / 255, 104.0 / 255)
         TestSupport.expect(MenuPalette.contrast(blue, grey) < 2, "the old pair")
     }
@@ -39,10 +39,10 @@ enum MenuPaletteTests {
         }
     }
 
-    /// Round 4 council (Opus finding 4): the card was inset 8 points but the keys only 3 to 6, so slivers of dimmed keys
-    /// showed at its edges and corners. The card covers every key it lies over, rounded corners included, on the Pro, the
-    /// SE and in landscape, and every letter, number and symbol layout: over the three rows above the bottom row when its
-    /// content fits there (the bottom row shows whole below it), otherwise over all four.
+    /// A card inset 8 points beside keys inset only 3 to 6 shows slivers of dimmed keys at its edges and corners. The
+    /// card covers every key it lies over, rounded corners included, on the Pro, the SE and in landscape, and every
+    /// letter, number and symbol layout: over the three rows above the bottom row when its content fits there (the
+    /// bottom row shows whole below it), otherwise over all four.
     private static func testMenuCardLeavesNoKeyPeekingOut() {
         let radius = KeyboardMetrics.keyCornerRadius, cardRadius = MenuCover.cornerRadius
         /// Whether the rounded `key` lies inside the rounded `card`: inside its rectangle, and at each of the card's
@@ -87,10 +87,10 @@ enum MenuPaletteTests {
         TestSupport.expect(MenuCover.dimmedAlpha > 0.2 && MenuCover.dimmedAlpha < 0.6, "dimmed alpha \(MenuCover.dimmedAlpha)")
     }
 
-    /// Round 6 council (Opus finding 7): at the default text size the card, which covers whole rows of keys, left about 45
-    /// points of empty card under the width choice. Content shorter than the card spreads to fill it: the space left over goes
-    /// half above and half below the divider between the session and the tip, so the card's two parts sit at its top and
-    /// bottom. Content that fills the card or scrolls in it gets none.
+    /// At the default text size the card, which covers whole rows of keys, would leave about 45 points of empty card
+    /// under the width choice. Content shorter than the card spreads to fill it: the space left over goes half above
+    /// and half below the divider between the session and the tip, so the card's two parts sit at its top and bottom.
+    /// Content that fills the card or scrolls in it gets none.
     private static func testShortContentFillsTheMenuCard() {
         for (width, height) in [(402.0, KeyboardMetrics.regularHeight), (375, KeyboardMetrics.regularHeight),
                                 (874, KeyboardMetrics.compactHeight)] {

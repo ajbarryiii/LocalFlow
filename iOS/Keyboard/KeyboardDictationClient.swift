@@ -248,7 +248,7 @@ final class KeyboardDictationClient: ObservableObject {
         playHaptic(.press)
         guard openingHost else {
             // After the frame that starts the island's grow: the host's start (capture, the Live Activity) then runs
-            // beside the spring rather than ahead of its first frames (round 8 council, Opus finding 2).
+            // beside the spring rather than ahead of its first frames.
             DispatchQueue.main.async { [notifier] in notifier?.post(.intent) }
             return
         }

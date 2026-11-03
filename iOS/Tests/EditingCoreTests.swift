@@ -34,11 +34,11 @@ enum EditingCoreTests {
     }
 
     private static func testCaretMovedToAnotherNewlineIsNeverUndone() {
-        // The third keyboard review's P0: a dictation ending in "\n", then the host moves the caret to
-        // another line break and reports it. Undo must not delete anything there, whatever the context
-        // shows, and not after the caret comes back either. With the measured context the insertion is
-        // proven in place; a context of just "\n" proves nothing about a short insertion, so Undo is
-        // never offered there at all (the original bug offered it and deleted the other "\n").
+        // A dictation ending in "\n", then the host moves the caret to another line break and reports it.
+        // Undo must not delete anything there, whatever the context shows, and not after the caret comes
+        // back either. With the measured context the insertion is proven in place; a context of just "\n"
+        // proves nothing about a short insertion, so Undo is never offered there at all (offering it there
+        // would delete the other "\n").
         for model in [FakeContextModel.uikit, .lineBreakOnly] {
             let (core, document) = core("First note.\nSecond note.\n", model: model)
             core.insertDictation("Send this\n", now: 10)
@@ -72,7 +72,7 @@ enum EditingCoreTests {
     }
 
     private static func testOwnEditReportsAreNeverOutsideButEndUndo() {
-        // A host that reports our insertion (WebKit echoes edits): the report is our own edit's, never an
+        // A host that reports our insertion: the report is our own edit's, never an
         // outside change, so the generation stays (nothing bound to it ends); but Undo fails closed.
         let (core, document) = core("Earlier note. ")
         document.editCallbackDelay = 1
@@ -124,9 +124,9 @@ enum EditingCoreTests {
     }
 
     private static func testOwnEditReportsComeBeforeAGesturesOwn() {
-        // Found by the typing torture test: a gesture began right after typing, and the report of the
-        // typing (showing the field before the gesture's probe had landed) was taken for the probe's
-        // "unchanged" outcome, which taught the wrong unit. Reports arrive in order: ours come first.
+        // A gesture begins right after typing: the report of the typing (showing the field before the
+        // gesture's probe has landed) must not be taken for the probe's "unchanged" outcome, which would
+        // teach the wrong unit. Reports arrive in order: ours come first.
         let (core, document) = core("Notes: ")
         document.editCallbackDelay = 1
         core.userEdit()
@@ -219,8 +219,8 @@ enum EditingCoreTests {
     }
 
     private static func testSelectionCallbackAtAnIdenticalPassageEndsUndo() {
-        // The fourth review's P0: the host moved the caret to an older passage with the same anchors and
-        // reported it with selectionDidChange, which was taken as ours. Selection callbacks are never
+        // The host moves the caret to an older passage with the same anchors and reports it with
+        // selectionDidChange, which must not be taken as ours. Selection callbacks are never
         // attributed to insertions or deletions.
         let passage = "Team, send this\n"
         let (core, document) = core(passage + passage + passage + "Team, ")
@@ -243,9 +243,9 @@ enum EditingCoreTests {
     }
 
     private static func testHostMoveToAnIdenticalPassageEndsUndoEarlyOrLate() {
-        // The round-6 review's P0: UIKit sends no callback for our insertText and reports the host moving
-        // the caret with textDidChange. An allowance for the insertion's callback, even a brief one, let
-        // a move to an older passage with the same anchors (here 0.2 s after the insertion) count as the
+        // UIKit sends no callback for our insertText and reports the host moving the caret with
+        // textDidChange. An allowance for the insertion's callback, even a brief one, would let a move to
+        // an older passage with the same anchors (here 0.2 s after the insertion) count as the
         // insertion's report. No allowance is made: any callback but a pending trackpad adjustment's ends
         // the undo.
         let passage = "Team, send this\n"
@@ -298,8 +298,8 @@ enum EditingCoreTests {
     }
 
     private static func testUndoNeverTakesANeighbourItMergedWith() {
-        // The fourth review's P1: a lone "\n" inserted after "\r" forms one "\r\n" character, so one
-        // deleteBackward removed the "\r" that was there before; a combining mark merges the same way.
+        // A lone "\n" inserted after "\r" forms one "\r\n" character, so one deleteBackward could
+        // remove the "\r" that was there before; a combining mark merges the same way.
         let (crlf, crlfDocument) = core("Line one\r", model: .whole)
         crlf.insertDictation("\n", now: 10)
         TestSupport.expect(!crlf.canUndo(now: 10.1), "offered across a merged \\r\\n")
@@ -318,8 +318,8 @@ enum EditingCoreTests {
     }
 
     private static func testHeldDeleteNeverReachesAnotherField() {
-        // The fourth review's P1: delete pressed in A, focus moved before its first deletion (0.12 s), and
-        // the timer deleted in B. The press is bound to A; a focus change also ends it outright.
+        // Delete pressed in A, focus moved before its first deletion (0.12 s): the timer must not delete
+        // in B. The press is bound to A; a focus change also ends it outright.
         let (core, document) = core("Field A text.")
         var key = HeldDeleteKey()
         let press = key.began(at: 100, documentID: document.documentID)

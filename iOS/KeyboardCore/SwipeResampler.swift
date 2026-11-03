@@ -1,7 +1,7 @@
 import Foundation
 
 /// Resamples a swipe to the encoder's fixed-length trajectory, exactly as the reference
-/// `swipe/features.py` does (ARCHITECTURE.md, "Typing model v4 and swipe typing", step 2).
+/// `swipe/features.py` does (ARCHITECTURE.md, "Swipe typing", Decoding pipeline step 2).
 enum SwipeResampler {
     static let points = 64
 

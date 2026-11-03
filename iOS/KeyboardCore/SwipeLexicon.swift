@@ -1,7 +1,7 @@
 import Foundation
 
 /// The swipe lexicon: the binary "LFLX" version 1 trie of `swipe/lexicon_bin.py`, read in place
-/// (ARCHITECTURE.md, "Typing model v4 and swipe typing", step 4). All integers are little-endian:
+/// (ARCHITECTURE.md, "Swipe typing", Decoding pipeline step 4). All integers are little-endian:
 ///
 ///     magic "LFLX", version u32 = 1, node_count N, edge_count E, word_count W, blob_bytes B (u32)
 ///     edge_start u32[N+1], edge_letter u8[E], edge_child u32[E]

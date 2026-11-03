@@ -2,9 +2,9 @@ import Foundation
 
 /// How the open menu covers the keyboard (ARCHITECTURE.md, "Top row", menu): one calm layer. The keys and the bar's
 /// controls other than the menu button fade alike to `dimmedAlpha` over the system's backdrop, which is never tinted
-/// (a tint over the keyboard's area would show a seam under the band iOS draws above it, "Touchable backgrounds"),
-/// and the card lies over the keys so that none peeks out at its edges or corners: it reaches `overhang` past the
-/// keys' outer edges, its corners rounded to match theirs. Pure.
+/// (a tint over the keyboard's area would show a seam under the band iOS draws above it, "Keyboard extension",
+/// Touchable backgrounds), and the card lies over the keys so that none peeks out at its edges or corners: it reaches
+/// `overhang` past the keys' outer edges, its corners rounded to match theirs. Pure.
 enum MenuCover {
     /// The keys' and the bar controls' opacity while the menu is open.
     static let dimmedAlpha = 0.35

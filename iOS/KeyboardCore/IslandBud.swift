@@ -1,11 +1,11 @@
 import Foundation
 
-/// Cancel's × as a bud of the dictation island (ARCHITECTURE.md, "Top row"; round 12, owner): starting a dictation it
-/// buds off the island's end that faces the bar's middle and pinches free as the island grows; at Stop it slides with
-/// the contracting island; when the text lands it travels to Undo's place, stretching on the way, and becomes Undo; with
-/// no text, or on Cancel, the island absorbs it. The island, the bud and the neck between them are drawn as one body in
-/// the island's fill (`IslandBodyView`), so the × and Undo look like the island. This is its motion and shape, as values
-/// along the bar's centre line in the bar's coordinates; what takes taps is unchanged (`IslandLayout`). Pure.
+/// Cancel's × as a bud of the dictation island (ARCHITECTURE.md, "Top row"): starting a dictation it buds off the
+/// island's end that faces the bar's middle and pinches free as the island grows; at Stop it slides with the
+/// contracting island; when the text lands it travels to Undo's place, stretching on the way, and becomes Undo; with no
+/// text, or on Cancel, the island absorbs it. The island, the bud and the neck between them are drawn as one body in
+/// the island's fill (`IslandBodyView`), so the × and Undo look like the island. This is its motion and shape, as
+/// values along the bar's centre line in the bar's coordinates; what takes taps is unchanged (`IslandLayout`). Pure.
 enum IslandBud {
     /// A damped spring as SwiftUI's `spring(response:dampingFraction:)` moves a value: unit mass, stiffness
     /// (2π/response)², damping 4π·dampingFraction/response. The island drawn here keeps step with its content, which

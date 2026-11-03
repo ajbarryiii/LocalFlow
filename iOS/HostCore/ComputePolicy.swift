@@ -25,9 +25,9 @@ enum ComputeFailureHint: String, Sendable {
     case backgroundNeuralEngineNeedsEntitlement
 }
 
-/// The compute policy is fixed (contract: "No compute-policy picker"): the live app always uses the
-/// Neural Engine, about 165 MB at peak with its preparation cached across launches. The CPU runtime
-/// (about 3.2 GB) is measured only by the self-test, and nothing ever falls back to it.
+/// The compute policy is fixed (ARCHITECTURE.md, "Transcription", No compute-policy picker): the live app
+/// always uses the Neural Engine, about 165 MB at peak with its preparation cached across launches. The
+/// CPU runtime (about 3.2 GB) is measured only by the self-test, and nothing ever falls back to it.
 enum ComputePolicy {
     /// Core ML compute units, mirrored so this file stays Foundation-only.
     enum Units: String, Sendable { case cpuAndNeuralEngine, cpuOnly }

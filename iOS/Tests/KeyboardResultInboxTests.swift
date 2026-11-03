@@ -356,8 +356,8 @@ enum KeyboardResultInboxTests {
         }
     }
 
-    /// Regression (review): another claimant removed the newest offered result. Tapping the chip finds
-    /// its file absent; dropping it lets the older result be offered instead of being hidden.
+    /// Another claimant removed the newest offered result. Tapping the chip finds its file absent;
+    /// dropping it lets the older result be offered instead of being hidden.
     private static func testExternallyClaimedOfferMovesToOlder() {
         withStore { store in
             let older = Fixture.result(Fixture.requestID, text: "Synthetic older sentence", createdAt: Fixture.now + 1)
@@ -393,7 +393,7 @@ enum KeyboardResultInboxTests {
         try! Data().write(to: directory)   // a file where the directory should be: listing fails
         TestSupport.expectEqual(store.listResultRequestIDs(), nil)
         TestSupport.expectEqual(store.resultRequestIDs(), [])
-        // Regression (review): a parent without search permission is a failure, not "no directory".
+        // A parent without search permission is a failure, not "no directory".
         try! FileManager.default.removeItem(at: directory)
         try! store.writeResult(Fixture.result())
         try! FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: parent.path)
@@ -413,8 +413,8 @@ enum KeyboardResultInboxTests {
         TestSupport.expectEqual(SharedDictationStore(directory: nested).listResultRequestIDs(), [])
     }
 
-    /// Regression (review): a listing that fails acknowledges nothing, keeps what was read before, and
-    /// is retried after `retryInterval`, not on every pass.
+    /// A listing that fails acknowledges nothing, keeps what was read before, and is retried after
+    /// `retryInterval`, not on every pass.
     private static func testFailedListingKeepsStateAndRetries() {
         let parent = TestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -466,8 +466,8 @@ enum KeyboardResultInboxTests {
         TestSupport.expectEqual(inbox.results.map(\.requestID), [Fixture.otherRequestID])
     }
 
-    /// Regression (review): a result whose purge fails is never kept in memory once expired, and the
-    /// purge is retried on a slow cadence, not on every pass.
+    /// A result whose purge fails is never kept in memory once expired, and the purge is retried on a
+    /// slow cadence, not on every pass.
     private static func testFailedPurgeRetriesSlowly() {
         withStore { store in
             let result = Fixture.result(createdAt: Fixture.now)
@@ -497,8 +497,8 @@ enum KeyboardResultInboxTests {
         }
     }
 
-    /// Regression (review): a failed listing schedules its own retry. With `.result` missed, a reported
-    /// completion triggers the read; if the status moves on before the retry, the result is still found.
+    /// A failed listing schedules its own retry. With `.result` missed, a reported completion triggers
+    /// the read; if the status moves on before the retry, the result is still found.
     private static func testFailedListingRetriesAfterTheTriggerIsGone() {
         let parent = TestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }

@@ -123,7 +123,7 @@ enum MicrophoneRouteTests {
         { MainActor.assumeIsolated { body() } }
     }
 
-    /// P1: a change deferred from the background must not move the input while the category options
+    /// A change deferred from the background must not move the input while the category options
     /// still belong to the applied choice. Route changes re-assert only the applied choice; the next
     /// configuration applies the desired one.
     @MainActor
@@ -309,7 +309,7 @@ enum MicrophoneRouteTests {
         }
     }
 
-    /// P1: the 1 s check settles an unsuccessful request; its own notifications then arrive late and
+    /// The 1 s check settles an unsuccessful request; its own notifications then arrive late and
     /// repeatedly, with every reason a request can cause. None of them requests again.
     @MainActor
     private static func testLateAndRepeatedEchoesAfterSettlementNeverRequest() {

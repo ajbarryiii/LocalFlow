@@ -1,6 +1,6 @@
 import Foundation
 
-/// "Undo last dictation" (ARCHITECTURE.md, "Undo ownership v2"): whether it may be offered, and how
+/// Undo last dictation (ARCHITECTURE.md, "Undo last dictation"): whether it may be offered, and how
 /// to carry it out. Ownership is proven by anchors, never by timing. Pure.
 ///
 /// - **Anchors.** At insertion: up to `anchorLength` characters of the context before the caret
@@ -13,8 +13,8 @@ import Foundation
 ///   empty document, the exact whole context. Both ends of what is deleted must be character
 ///   boundaries in the current context, so a deletion never takes a neighbouring character the
 ///   insertion merged with ("\r" + "\n", a letter + a combining mark).
-/// - **Attribution.** None here: no callback ever counts as this undo's (ARCHITECTURE.md, "Typing
-///   model v2": Undo is unchanged and fails closed). UIKit sends none for `insertText` or `deleteBackward`, so none is
+/// - **Attribution.** None here: no callback ever counts as this undo's (ARCHITECTURE.md, "Undo last
+///   dictation", Invalidation: Undo fails closed). UIKit sends none for `insertText` or `deleteBackward`, so none is
 ///   owed; any callback that is not a pending trackpad adjustment's ends the undo for good (the owner,
 ///   `EditingCore`, invalidates it), our own edits' reports included. A host that edits without
 ///   callbacks is a residual risk the anchors mitigate.

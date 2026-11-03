@@ -26,10 +26,9 @@ enum KeyboardMessagesTests {
         return status
     }
 
-    /// Round 10 (owner: "prefer intuitive icons to textual descriptions"): the idle line's words are only for a model that
-    /// cannot load, which the user needs to know; the session's state is the dot on Start (`SessionDot`), a model that
-    /// loads when the user dictates or is preparing says so to VoiceOver only (`spokenStatus`). Round 4 to 9 showed "Model
-    /// loads when you dictate", "Preparing model…" and the session line here.
+    /// The idle line's words are only for a model that cannot load, which the user needs to know; the session's state
+    /// is the dot on Start (`SessionDot`), a model that loads when the user dictates or is preparing says so to
+    /// VoiceOver only (`spokenStatus`).
     private static func testHintOnlyNamesAModelThatCannotLoad() {
         let now = Fixture.now
         TestSupport.expectEqual(KeyboardMessages.hint(for: status(model: .failed), now: now), "Model failed to load")
@@ -52,14 +51,11 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.hint(for: nil, now: Fixture.now), nil)
     }
 
-    /// Round 4 council (Opus finding 5): "Preparing model…" in the middle sat beside a "Preparing" capsule. Both waits
-    /// for a transcript show only an indicator in the capsule (the processing island's shimmer since round 8, a spinner
-    /// before), as transcription did; the middle names the wait and
-    /// VoiceOver hears it from the capsule's label.
-    /// Sol, round 8: VoiceOver hears the mode and the time while recording from Stop's value. Round 9 (owner): the island
-    /// is narrower and no longer holds dictation's text (a notice, the cold start's caption, "Open LocalFlow to start a
-    /// session"); the middle does, as plain text VoiceOver reaches on its own, so the island's value no longer repeats it.
-    /// It is empty when Start or the wait shows.
+    /// Both waits for a transcript show only an indicator in the capsule (the processing island's shimmer), never
+    /// "Preparing model…" beside a "Preparing" capsule; VoiceOver hears the wait from the capsule's label. VoiceOver
+    /// hears the mode and the time while recording from Stop's value. The island holds none of dictation's text (a
+    /// notice, "Open LocalFlow to start a session"); the middle does, as plain text VoiceOver reaches on its own, so
+    /// the island's value does not repeat it. It is empty for the wait, and on Start without a `detail`.
     private static func testVoiceOverReadsWhatTheIslandShows() {
         let startedAt = Fixture.now, now = Fixture.now + 75
         let recording = KeyboardMode.recording(level: 0.4, startedAt: startedAt)
@@ -72,8 +68,8 @@ enum KeyboardMessagesTests {
         for mode in [KeyboardMode.ready, .transcribing, .waitingForModel, .error(.modelFailed), .hostUnavailable, .needsFullAccess] {
             TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: mode, detail: nil, now: now), "")
         }
-        // Round 10: the words the bar no longer shows are the island's value: the cold start's caption after the time,
-        // the idle status on Start. The wait names itself in the label.
+        // The words the bar does not show are the island's value: the cold start's caption after the time, the idle
+        // status on Start. The wait names itself in the label.
         TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: recording, detail: KeyboardMessages.modelLoadingCaption, now: now),
                                 "Recording, \(time). Model loading")
         TestSupport.expectEqual(KeyboardMessages.islandAccessibilityValue(for: .ready, detail: "Session ends in 5 min if idle", now: now),
@@ -88,10 +84,10 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(status(.starting, KeyboardMessages.openLocalFlow), .text(KeyboardMessages.openLocalFlow, attention: false))
     }
 
-    /// Round 10 (owner): the bar trades status words for marks, but VoiceOver still speaks every state in words. What
-    /// the bar no longer shows is Start's (or the recording's) value: the session's time left, a model that loads or is
-    /// loading, Start opening LocalFlow; the wait is the island's label; an error, a notice and "Open LocalFlow to start
-    /// a session" are still the middle's words. Every state has words somewhere.
+    /// The bar shows marks rather than status words, but VoiceOver still speaks every state in words. What the bar does
+    /// not show is Start's (or the recording's) value: the session's time left, a model that loads or is loading, Start
+    /// opening LocalFlow; the wait is the island's label; an error, a notice and "Open LocalFlow to start a session"
+    /// are the middle's words. Every state has words somewhere.
     private static func testVoiceOverSpeaksEveryStateInWords() {
         let now = Fixture.now
         func spoken(_ mode: KeyboardMode, _ model: HostStatus.Model = .ready, failed: Bool = false, host: Bool = true) -> String? {
@@ -134,7 +130,7 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(CapsuleContent(mode: .transcribing), .processing)
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .waitingForModel), "Preparing model")
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .transcribing), "Transcribing")
-        // Round 10 (owner): the wait shows only the shimmer pill; its words are the label's (round 9 named it in the middle).
+        // The wait shows only the shimmer pill; its words are the label's.
         TestSupport.expectEqual(BarStatus(mode: .waitingForModel, title: KeyboardMessages.title(for: .waitingForModel, launcherFailed: false),
                                           hint: nil, notice: nil, chipsShown: false), .none)
         TestSupport.expectEqual(BarStatus(mode: .transcribing, title: KeyboardMessages.title(for: .transcribing, launcherFailed: false),
@@ -148,9 +144,8 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.capsuleAccessibilityLabel(for: .recording(level: 0, startedAt: Fixture.now)), "Stop dictation")
     }
 
-    /// Round 4 council (Opus, visual 4): the idle bar shows that dictation is ready. Only a live host's active session
-    /// counts, and only while its model can load (not failed or missing); a model that loads when the user dictates is
-    /// ready enough.
+    /// The idle bar shows that dictation is ready. Only a live host's active session counts, and only while its model
+    /// can load (not failed or missing); a model that loads when the user dictates is ready enough.
     private static func testSessionReadyNeedsALiveSessionAndAUsableModel() {
         let now = Fixture.now
         for model in [HostStatus.Model.notPrepared, .preparing, .ready] {
@@ -173,8 +168,8 @@ enum KeyboardMessagesTests {
         TestSupport.expectEqual(KeyboardMessages.title(for: .transcribing, launcherFailed: false), "Transcribing…")
     }
 
-    /// Owner decision 2: a tap on the bar's text types the top-row key under it, so no status line or title says
-    /// "Tap"; it describes. The idle line without a session names what Start does.
+    /// A tap on the bar's text types the top-row key under it, so no status line or title says "Tap"; it describes.
+    /// The idle line without a session names what Start does.
     private static func testStatusTextNeverInvitesATap() {
         TestSupport.expectEqual(KeyboardMessages.title(for: .hostUnavailable, launcherFailed: false), "Start opens LocalFlow")
         let modes: [KeyboardMode] = [.needsFullAccess, .configurationError, .incompatible, .starting,
@@ -193,9 +188,8 @@ enum KeyboardMessagesTests {
     }
 
     /// The session ends after its idle time, not at a fixed moment, in the words of the Live Activity's countdown, "ends
-    /// in", to the nearest minute (round 9, `SessionActivityTests.countdownSpeaksTheBarsWords`). Round 10 (owner: "session
-    /// ends in 5 mins if idle" was wordy on the keyboard): the bar shows the session as the dot on Start; the menu keeps
-    /// the time left, and VoiceOver hears the same words from Start.
+    /// in", to the nearest minute (`SessionActivityTests.countdownSpeaksTheBarsWords`). The bar shows the session as
+    /// the dot on Start; the menu keeps the time left, and VoiceOver hears the same words from Start.
     private static func testMenuKeepsTheTimeLeft() {
         let now = Fixture.now
         let live = status(model: .ready)
@@ -208,8 +202,8 @@ enum KeyboardMessagesTests {
                                           notice: nil, chipsShown: false), .none)
     }
 
-    /// Round 1 council: on a 375-point phone "Listening · preparing model" truncated beside Cancel and the labelled
-    /// Stop capsule, after 22 characters ("Listening · preparing…"). The line still says the model is loading.
+    /// The line fits a 375-point phone, where "Listening · preparing model" truncates after 22 characters beside Cancel
+    /// and the labelled Stop capsule ("Listening · preparing…"), and still says the model is loading.
     private static func testRecordingWhileTheModelLoadsFitsASmallPhone() {
         let line = KeyboardMessages.listeningWhilePreparing
         TestSupport.expect(line.count <= 23, "\(line) is longer than a 375-point phone shows")
@@ -217,17 +211,17 @@ enum KeyboardMessagesTests {
         TestSupport.expect(line.contains("model"), "\(line) does not say the model is loading")
     }
 
-    /// Round 2 council (Sol finding 1): at the largest text size the menu's first screen was all session status. At the
-    /// accessibility sizes the actions ("Open LocalFlow" and the text width) come first, then the status and the tip
-    /// (which then points above); otherwise the status leads and the width choice follows its tip.
+    /// At the largest text size the session status alone can fill the menu's first screen, so at the accessibility
+    /// sizes the actions ("Open LocalFlow" and the text width) come first, then the status and the tip (which then
+    /// points above); otherwise the status leads and the width choice follows its tip.
     private static func testTheLargestTextSizesPutTheMenusActionsFirst() {
         TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: false), [.session, .details, .open, .divider, .tip, .picker])
         TestSupport.expectEqual(KeyboardMessages.menuItems(accessibilitySize: true), [.open, .picker, .divider, .session, .details, .tip])
         TestSupport.expect(KeyboardMessages.layoutTipAbove.hasSuffix("above."), "the tip does not point above")
     }
 
-    /// Round 6 council (Opus finding 7): "Wrong line? Switch this field to:" did not say what lands on the wrong line. The
-    /// tip names it (the cursor the trackpad moves), says when to switch, and still ends at the choice it points to.
+    /// "Wrong line? Switch this field to:" does not say what lands on the wrong line. The tip names it (the cursor the
+    /// trackpad moves), says when to switch, and still ends at the choice it points to.
     private static func testTheWidthTipSaysWhatLandsOnTheWrongLine() {
         for (tip, end) in [(KeyboardMessages.layoutTipBelow, ":"), (KeyboardMessages.layoutTipAbove, "above.")] {
             let line = KeyboardMessages.trackpadTip + tip

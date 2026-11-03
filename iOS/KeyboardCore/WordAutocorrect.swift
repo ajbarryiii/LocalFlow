@@ -96,8 +96,8 @@ enum WordAutocorrect {
     /// the contraction, as the corrector already corrects "dont".
     static let fixedCorrections: [String: String] = ["cant": "can't", "wont": "won't", "whats": "what's", "hows": "how's"]
 
-    /// Corrections made at a sentence's start only, whatever the corrector says (round 7, Opus finding 2: "Lets go" stayed
-    /// "Lets"): with no subject before it "lets" can't be the verb, so it is "let's". Within a sentence it is left to the
+    /// Corrections made at a sentence's start only, whatever the corrector says ("Lets go" must not stay "Lets"): with
+    /// no subject before it "lets" can't be the verb, so it is "let's". Within a sentence it is left to the
     /// corrector and the apostrophe twins ("she lets me"). Only words as unambiguous there: not "its" ("Its battery is low").
     static let sentenceStartCorrections: [String: String] = ["lets": "let's"]
 
@@ -274,7 +274,8 @@ enum WordAutocorrect {
         return Review(correction: correction, typed: typed, choices: choices.count > 1 ? choices : [])
     }
 
-    /// The strip while a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions), and what a choice replaces.
+    /// The strip while a word is typed (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing), and what a
+    /// choice replaces.
     struct Typing: Equatable {
         var strip: SwipeStrip
         /// The word so far as typed, trailing apostrophes included: what keeping it leaves.

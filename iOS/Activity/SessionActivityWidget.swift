@@ -76,8 +76,8 @@ enum ActivityLook {
     }
 }
 
-/// State changes: quick and settled, never a slow fade (the owner: smooth, but snappy). None in Always On, where the
-/// system draws no animation anyway (`SessionActivityMotion`).
+/// State changes: quick and settled, never a slow fade. None in Always On, where the system draws no animation anyway
+/// (`SessionActivityMotion`).
 private struct PhaseMotion: ViewModifier {
     let value: SessionActivityState.Phase
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -225,8 +225,8 @@ private struct PhaseTimer: View {
     }
 }
 
-/// The ready session's countdown glyph (round 10: in place of "ends in" and "Session ends in … if idle"), which VoiceOver
-/// reads as the words it replaces.
+/// The ready session's countdown glyph, standing for "Session ends in … if idle", which VoiceOver reads as those
+/// words.
 private struct CountdownGlyph: View {
     let size: CGFloat
 

@@ -69,13 +69,13 @@ enum NextWordTests {
         TestSupport.expectEqual(corrector.nextWords(context: "a bit ", limit: 3), ["late"])
         // One form per spelling, the likelier; a contraction typed without its apostrophe is offered with it.
         TestSupport.expectEqual(corrector.nextWords(context: "i ", limit: 3), ["can't", "think"])
-        // Sol review (round 5, run 2): the previous word is a repeat in any spelling ("cant" after "can't").
+        // The previous word is a repeat in any spelling ("cant" after "can't").
         TestSupport.expectEqual(corrector.nextWords(context: "i can't ", limit: 3), ["think"])
     }
 
-    /// Round 6 council (Opus finding 1): after a sentence's end the model spreads its probability over many first words, so
-    /// only "I" passed the floor and the strip showed it alone. There the floor is lower (`sentenceStartFloor`): the likely
-    /// first words show, best first. Within a sentence the floor is unchanged.
+    /// After a sentence's end the model spreads its probability over many first words, so at the usual floor only "I"
+    /// would pass and the strip would show it alone. There the floor is lower (`sentenceStartFloor`): the likely first
+    /// words show, best first. Within a sentence the floor is unchanged.
     private static func testASentenceStartOffersItsLikelyFirstWords() {
         let starters: [String: Double] = ["i": 0.11, "i'm": 0.022, "the": 0.015, "my": 0.014, "you": 0.012, "soon": 0.004]
         let model = TypingSuggestionsTests.CountingModel(starters, byPrevious: ["hmm": ["i": 0.02, "the": 0.015]])
@@ -147,9 +147,9 @@ enum NextWordTests {
         TestSupport.expectEqual(spaced.strip, nil)
     }
 
-    /// Round 6 council (Opus finding 1): a lone "I" in the middle of the bar read as a stray divider or a second caret, and
-    /// made the whole middle one "I" button. A strip whose only word is a single letter does not show: the status line
-    /// stays. Two words, or one longer word, show as before.
+    /// A lone "I" in the middle of the bar reads as a stray divider or a second caret, and makes the whole middle one
+    /// "I" button. A strip whose only word is a single letter does not show: the status line stays. Two words, or one
+    /// longer word, do show.
     private static func testALoneLetterIsNoStrip() {
         for (context, words, shown) in [("ok. ", ["i"], nil), ("ok. ", ["a"], nil), ("ok. ", ["i", "the"], plain(["I", "the"])),
                                         ("ok. ", ["i", "a"], plain(["I", "a"])), ("ok. ", ["way"], plain(["way"]))] as
@@ -276,7 +276,7 @@ enum NextWordTests {
         swiped.press(.space)
         swiped.swipe(["your", "you"])
         TestSupport.expectEqual(swiped.strip, SwipeStrip(candidates: ["your", "you"], inserted: 0))
-        // Sol review (round 5, lead run 1): a swiped word's choice that adds the space keeps its strip first, and once
+        // A swiped word's choice that adds the space keeps its strip first, and once
         // Shift closes that strip the next words follow, as after the space key.
         swiped.corrector.following["see you "] = ["later"]
         swiped.choose(1)
@@ -353,9 +353,9 @@ enum NextWordTests {
         TestSupport.expectEqual(moved.strip, nil)
     }
 
-    /// Sol review (round 5, run 1): the editor's copy of the text before the caret is not proof. The host took the space
-    /// back before reporting it: the tap types nothing ("seeyou " before). A proxy whose window is longer than the
-    /// editor's copy, showing the same space, still takes the tap.
+    /// The editor's copy of the text before the caret is not proof. The host took the space back before reporting it:
+    /// the tap types nothing (not "seeyou "). A proxy whose window is longer than the editor's copy, showing the same
+    /// space, still takes the tap.
     private static func testATapNeedsTheProxyToShowTheSpace() {
         let rig = AutocorrectRig("", corrections: [:])
         rig.corrector.following = ["see ": ["you"]]
@@ -383,8 +383,8 @@ enum NextWordTests {
         TestSupport.expectEqual(windowed.text, long + " now ")
     }
 
-    /// Round 6 council (Opus finding 3): a Return after text in Messages showed the status line, where Apple's keyboard
-    /// offers its first words. After a Return this keyboard typed right after text, the proxy showing the line break, the
+    /// A Return after text in Messages must not leave the status line, where Apple's keyboard offers its first words.
+    /// After a Return this keyboard typed right after text, the proxy showing the line break, the
     /// strip offers the next line's first words as after a sentence's end; not in an empty field, not after a Return that
     /// follows another, and not where the host took no line break (a field whose Return acts instead).
     private static func testAReturnAfterTextOffersFirstWords() {
@@ -421,8 +421,8 @@ enum NextWordTests {
             rig.press(.returnKey)
             TestSupport.expectEqual(rig.strip, nil)
         }
-        // Sol review (round 7, run 1): a proxy that shows the line break late, with no callback, brings the strip when it
-        // does; one that shows only the line (here the break alone) shows it too, and a tap applies.
+        // A proxy that shows the line break late, with no callback, brings the strip when it does; one that shows
+        // only the line (here the break alone) shows it too, and a tap applies.
         let late = AutocorrectRig("", corrections: [:])
         late.corrector.following = ["": ["i", "the"]]
         late.tap("ok")
@@ -442,7 +442,7 @@ enum NextWordTests {
         windowed.choose(1)
         windowed.document.lateBefore = nil
         TestSupport.expectEqual(windowed.text, "ok\nthe ")
-        // Sol review (round 7, run 2): focus moved to an empty field before any callback; the Return goes there, and
+        // Focus moved to an empty field before any callback; the Return goes there, and
         // the text of the field it left does not count.
         let moved = AutocorrectRig("", corrections: [:])
         moved.corrector.following = ["": ["i", "the"]]
@@ -472,9 +472,8 @@ enum NextWordTests {
         TestSupport.expectEqual(off.strip, nil)
     }
 
-    /// Round 6 council (Opus finding 3): after Delete removed a swiped word the strip fell back to the status line. When
-    /// what is left before the caret is a word and a space, the next words show as they would after that space; otherwise
-    /// nothing.
+    /// After Delete removes a swiped word the strip must not fall back to the status line: when what is left before the
+    /// caret is a word and a space, the next words show as they would after that space; otherwise nothing.
     private static func testDeletingASwipedWordPredictsAgain() {
         let rig = AutocorrectRig("", corrections: [:])
         rig.corrector.following = ["see ": ["you", "the"]]
@@ -604,8 +603,8 @@ enum ParkedWordTests {
         TestSupport.expectEqual(rig.text, "see accommodate ")
     }
 
-    /// Sol review (round 5, lead run 1), and seen in Messages: after appearing the host reports the field unchanged, a
-    /// callback the editor cannot tell from an outside edit; the word stays its own. A callback that moves the caret
+    /// Seen in Messages: after appearing the host reports the field unchanged, a callback the editor cannot tell from
+    /// an outside edit; the word stays its own. A callback that moves the caret
     /// drops it for good.
     private static func testAnUnchangedCallbackAfterAppearingKeepsIt() {
         let rig = typing()
@@ -754,8 +753,7 @@ enum ParkedWordTests {
         TestSupport.expectEqual(restarted.text, "see accomm ")
     }
 
-    /// Sol review (round 5, run 1): a callback that reaches the hidden editor late never takes the word, so the next
-    /// editor still finds it.
+    /// A callback that reaches the hidden editor late never takes the word, so the next editor still finds it.
     private static func testCallbacksWhileHiddenLeaveIt() {
         let first = typing()
         first.hide()
@@ -767,8 +765,8 @@ enum ParkedWordTests {
         TestSupport.expectEqual(next.strip, TypingSuggestionsTests.live(["accommodate", "accommodation"]))
     }
 
-    /// Sol review (round 5, run 1): the next controller loads autocorrect's model after it appears; the word it took
-    /// back gets its strip when the model is there, without another key.
+    /// The next controller loads autocorrect's model after it appears; the word it took back gets its strip when the
+    /// model is there, without another key.
     private static func testTheStripComesWithTheModel() {
         let first = typing()
         first.hide()

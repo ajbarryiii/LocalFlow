@@ -166,8 +166,8 @@ enum LocalFlowSettingsTests {
 
     // MARK: Typing
 
-    /// Autocorrect and soft key edges are on by default, like the other switches (a contract change: they were
-    /// off while experimental), and turning one off is stored and leaves the other alone.
+    /// Autocorrect and soft key edges are on by default, like the other switches, and turning one off is stored and
+    /// leaves the other alone.
     private static func testTypingSwitchesAreOnByDefaultAndStoreOff() {
         withSettings { settings, defaults in
             TestSupport.expect(settings.autocorrectEnabled, "autocorrect off by default")
@@ -190,9 +190,9 @@ enum LocalFlowSettingsTests {
         }
     }
 
-    /// Round 10 (owner, accessibility): "Left-handed" mirrors the keyboard's dictation controls. Unlike every other switch
-    /// it is off by default; it is stored in the App Group beside the keyboard's other settings, where the keyboard reads
-    /// it, and a stray non-Bool value reads as off.
+    /// "Left-handed" mirrors the keyboard's dictation controls. Unlike every other switch it is off by default; it is
+    /// stored in the App Group beside the keyboard's other settings, where the keyboard reads it, and a stray non-Bool
+    /// value reads as off.
     private static func testLeftHandedIsOffByDefaultAndStoresOn() {
         withSettings { settings, defaults in
             TestSupport.expect(!settings.leftHanded, "left-handed is on by default")

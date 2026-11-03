@@ -1,10 +1,11 @@
 import Foundation
 
-/// The completion ranking on ordinary short phrases (ARCHITECTURE.md, "Word autocorrect", Suggestions, Evaluation): 90
-/// invented messages about shopping, plans, work and family, each cut after the first letters of a word, with the word
-/// meant. Measured on the shipped word model, which the host tests do not have: the test runs only when
-/// `LF_AUTOCORRECT_BUNDLE` names a swipe bundle directory (`LF_AUTOCORRECT_BUNDLE=<bundle> make -C iOS test`) and
-/// guards the counts measured on bundle b34. Every phrase is invented.
+/// The completion ranking on ordinary short phrases (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing,
+/// Evaluation): 90 invented messages about shopping, plans, work and family, each cut after the first letters of a
+/// word, with the word meant. Measured on the shipped word model, which the host tests do not have: the test runs
+/// only when `LF_AUTOCORRECT_BUNDLE` names a swipe bundle directory
+/// (`LF_AUTOCORRECT_BUNDLE=<bundle> make -C iOS test`) and guards the counts measured on bundle b34. Every phrase is
+/// invented.
 enum CompletionEvaluation {
     static var tests: [TestCase] {
         [("ordinaryPhrasesKeepTheirCompletions", testOrdinaryPhrasesKeepTheirCompletions)]
@@ -104,8 +105,7 @@ enum CompletionEvaluation {
         ("Buy some ", "f", "food"),
     ]
 
-    /// Bundle b34 (round 5): the word meant was the first completion offered in 57 cases, and among the three offered
-    /// in 70.
+    /// Bundle b34: the word meant is the first completion offered in 57 cases, and among the three offered in 70.
     static let firstAtLeast = 57
     static let threeAtLeast = 70
 

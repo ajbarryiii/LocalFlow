@@ -1,14 +1,14 @@
 import Accelerate
 import Foundation
 
-/// A word model for autocorrect (ARCHITECTURE.md, "Word autocorrect", word models; reference: localflow-swipe
+/// A word model for autocorrect (ARCHITECTURE.md, "Word autocorrect", Word models; reference: localflow-swipe
 /// `tap/wordlm.py`): natural-log probabilities of words given the previous words of their sentence
 /// (`Autocorrector.sentenceWords`), normalized over the lexicon's forms, "<unk>" and "</s>". A word outside
 /// the vocabulary gets the probability of "<unk>". Main thread only: models may cache by context.
 protocol WordModel: AnyObject {
     func logProbs(context: [String], words: [String]) -> [Double]
     /// `logProbs` of every form of `lexicon`, by form id, in one call: what suggestions while typing rank completions
-    /// by, once per context (ARCHITECTURE.md, "Word autocorrect", Suggestions).
+    /// by, once per context (ARCHITECTURE.md, "Word autocorrect", Suggestions while typing).
     func logProbs(context: [String], allFormsOf lexicon: WordLexicon) -> [Double]
     /// Whether the word has its own probability (not "<unk>"'s).
     func inVocab(_ word: String) -> Bool
