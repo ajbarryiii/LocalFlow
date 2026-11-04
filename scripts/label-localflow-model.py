@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 import sys
 
+MODEL_NAME = "kea-b-0.1"
+# Kea-B' (wilderness-labs-stt relabel stage 4 run b100-main): its parakeet-binary-v1 export.
+EXPORT_SHA256 = "ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995"
+
 
 def label_bundle(directory):
     directory = Path(directory).resolve()
@@ -12,6 +16,9 @@ def label_bundle(directory):
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("model") not in ("localflow", "parakeet-v2-ternary"):
         raise ValueError("Unexpected model identity")
+    # The bundled NOTICE describes this model only; refuse to name other weights after it.
+    if manifest.get("export_sha256") != EXPORT_SHA256:
+        raise ValueError(f"Bundle is not the {MODEL_NAME} export")
     files = manifest["files"]
     # Validate before updating metadata hashes. Never bless changed weights.
     for name, digest in files.items():
@@ -27,10 +34,10 @@ def label_bundle(directory):
         path = directory / name
         metadata = json.loads(path.read_text())
         provenance = metadata.setdefault("provenance", {})
-        provenance.update(model="localflow", base_model="kea-t")
+        provenance.update(model="localflow", base_model=MODEL_NAME)
         path.write_text(json.dumps(metadata, indent=2) + "\n")
         files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest.update(model="localflow", display_name="LocalFlow", base_model="kea-t")
+    manifest.update(model="localflow", display_name="LocalFlow", base_model=MODEL_NAME)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 

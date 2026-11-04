@@ -12,8 +12,8 @@
 
 ---
 
-A native macOS menu-bar dictation app using the bundled [kea-t](https://huggingface.co/rajb3/kea-t)
-English speech model, derived from NVIDIA Parakeet v2. Speech recognition
+A native macOS menu-bar dictation app using the bundled kea-b-0.1 English
+speech model, a 1-bit derivative of NVIDIA Parakeet v2. Speech recognition
 runs on the Mac. There is no API key, provider account, network
 transcription, LLM cleanup, translation, Edit Mode or screen capture.
 

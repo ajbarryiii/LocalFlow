@@ -23,12 +23,20 @@ class StartupBenchmarkTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"invented test bytes")
                 files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-            manifest = {"export_sha256": "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503",
-                        "encoder": "C6s8", "layout": "plain", "files": files}
+            manifest = {"export_sha256": "ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995",
+                        "encoder": "B1Q", "layout": "plain", "files": files}
             def write():
                 (directory / "bundle.json").write_text(json.dumps(manifest))
             write()
             self.assertEqual(benchmark.verify_bundle(directory), manifest)
+            for key, other in (("export_sha256", "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503"),
+                               ("encoder", "C6s8")):
+                kept, manifest[key] = manifest[key], other
+                write()
+                with self.assertRaises(ValueError):
+                    benchmark.verify_bundle(directory)
+                manifest[key] = kept
+            write()
             for unsafe in ("../escape", "/absolute"):
                 files[unsafe] = "invented"
                 write()

@@ -33,9 +33,9 @@ def swift_sources():
 def verify_bundle(directory):
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "bundle.json").read_text())
-    if (manifest.get("export_sha256") != "a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503"
-            or manifest.get("encoder") != "C6s8" or manifest.get("layout") != "plain"):
-        raise ValueError("Expected the pinned final C6s8 export")
+    if (manifest.get("export_sha256") != "ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995"
+            or manifest.get("encoder") != "B1Q" or manifest.get("layout") != "plain"):
+        raise ValueError("Expected the pinned kea-b-0.1 B1Q bundle")
     required = {"frontend.json", "frontend.f32bin", "decoder_joint.json", "decoder_joint.f32bin",
                 "vocabulary.json", "Encoder.mlmodelc/model.mil", "Encoder.mlmodelc/weights/weight.bin"}
     if not required.issubset(manifest["files"]):
@@ -118,7 +118,7 @@ def main():
          "The blue lantern is beside the green notebook."], 60)
     fixtures = output / "fixtures"
     run([executable, "fixtures", speech, fixtures], 60)
-    report = {"schema": 1, "export_sha256": manifest["export_sha256"], "encoder": "C6s8 plain",
+    report = {"schema": 1, "export_sha256": manifest["export_sha256"], "encoder": f"{manifest['encoder']} {manifest['layout']}",
               "hardware": subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip(),
               "macOS": platform.mac_ver()[0], "repeats": args.repeats,
               "cache_evidence": "new copied bundle path then same-path fresh process; no cache deletion or Instruments cache events",
