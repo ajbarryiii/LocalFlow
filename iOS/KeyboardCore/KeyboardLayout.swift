@@ -137,6 +137,13 @@ struct KeyboardMetrics: Equatable, Sendable {
         return KeyRect(x: circle.midX - cancelHitSize / 2, y: top, width: cancelHitSize, height: bottom - top)
     }
 
+    /// The candidate strip's tap area, in the bar's coordinates, from its frame there: its width and the bar's full
+    /// height, so a tap just above or below a suggestion never types a top-row letter (AJ, 2026-11-04, narrowing the
+    /// keys' reach into the bar of 2026-10-18). ARCHITECTURE.md, "Reach and touch regions".
+    static func candidateTapArea(strip: KeyRect, barHeight: Double) -> KeyRect {
+        KeyRect(x: strip.x, y: 0, width: strip.width, height: barHeight)
+    }
+
     /// Whether a touch at (x, y) in the key area's coordinates is the Start capsule's: inside `start`, its tap area
     /// in the bar's coordinates, which reaches into the keys only while capturing (an edge is the capsule's).
     static func keyPointGoesToStart(x: Double, y: Double, barHeight: Double, start: KeyRect?) -> Bool {

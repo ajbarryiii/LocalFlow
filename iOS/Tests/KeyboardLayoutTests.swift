@@ -13,6 +13,7 @@ enum KeyboardLayoutTests {
             ("reachAboveTheKeysIsTheBarBelowItsControls", testReachAboveTheKeysIsTheBarBelowItsControls),
             ("theSpaceBarGetsTheLeastOfItsGaps", testTheSpaceBarGetsTheLeastOfItsGaps),
             ("theBarOutsideItsControlsGoesToTheKeys", testTheBarOutsideItsControlsGoesToTheKeys),
+            ("theCandidateStripTakesTheBarsFullHeight", testTheCandidateStripTakesTheBarsFullHeight),
             ("startReachesUpAndStopReachesIntoTheTopRow", testStartReachesUpAndStopReachesIntoTheTopRow),
             ("theDeleteKeyReachesTowardsM", testTheDeleteKeyReachesTowardsM),
             ("letterPitchIsTheTopRowPitch", testLetterPitchIsTheTopRowPitch),
@@ -227,6 +228,31 @@ enum KeyboardLayoutTests {
         let compactBar = KeyboardMetrics.compactBarHeight
         TestSupport.expect(goes(150, compactBar - 3.5, compact: true, []) && !goes(150, compactBar - 4.5, compact: true, []),
                            "landscape strip without frames")
+    }
+
+    private static func testTheCandidateStripTakesTheBarsFullHeight() {
+        // ARCHITECTURE.md, "Reach and touch regions" (AJ, 2026-11-04: taps on a suggestion typed a top-row letter): the
+        // candidate strip's tap area is its width and the bar's full height, so no point above or below a suggestion
+        // goes to the keys; beside the strip the keys still take the bar.
+        for compact in [false, true] {
+            let bar = compact ? KeyboardMetrics.compactBarHeight : KeyboardMetrics.barHeight
+            let words = (compact ? KeyboardMetrics.compactBarControlHeight : KeyboardMetrics.barControlHeight) - 8
+            let strip = KeyRect(x: 54, y: (bar - words) / 2, width: 230, height: words)
+            let area = KeyboardMetrics.candidateTapArea(strip: strip, barHeight: bar)
+            TestSupport.expectEqual(area, KeyRect(x: strip.x, y: 0, width: strip.width, height: bar))
+            let start = KeyboardMetrics.startTapArea(capsule: KeyRect(x: 300, y: (bar - words - 8) / 2, width: 92, height: words + 8),
+                                                     barHeight: bar, compact: compact, capturing: false)
+            func goes(_ x: Double, _ y: Double) -> Bool {
+                KeyboardMetrics.barPointGoesToKeys(x: x, y: y, barHeight: bar, compact: compact, controls: [area, start])
+            }
+            for x in [strip.x, strip.midX, strip.maxX] {
+                for y in stride(from: 0, through: bar, by: 0.5) {
+                    TestSupport.expect(!goes(x, y), "(\(x), \(y)) on the strip goes to the keys, compact \(compact)")
+                }
+            }
+            TestSupport.expect(goes(strip.x - 0.5, bar - 1) && goes(strip.maxX + 0.5, bar - 1),
+                               "beside the strip the keys lost the bar, compact \(compact)")
+        }
     }
 
     private static func testStartReachesUpAndStopReachesIntoTheTopRow() {
