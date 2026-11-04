@@ -1,31 +1,34 @@
 # Bundled LocalFlow speech model
 
-LocalFlow's model, kea-t, is the ternary derivative of NVIDIA Parakeet v2 from the completed `main-M1-P2-lr5e-4` training run from
-`ajbarryiii/wilderness-labs-stt`, selected at step 250,000. Its packed export
-SHA-256 is `a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503`.
-The full development-set mean WER reported after rebuilding that export is
-6.0856%. This is an English speech model.
+LocalFlow's model, kea-b-0.1, is a 1-bit derivative of NVIDIA Parakeet v2. It
+is Kea-B′, run `b100-main` of stage 4 of the relabel work in
+`ajbarryiii/wilderness-labs-stt`: kea-b (the binary run `main-binB-m1-lr2e-4`
+at step 250,000) trained for 97,137 more steps on transcripts from a stronger
+teacher, with 8-bit decoder weights. Its `parakeet-binary-v1` export SHA-256 is
+`ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995`. This is an
+English speech model. `NOTICE` lists its changes, training data and labels.
 
-Inference uses the M1 Pro optimization experiment's plain-layout C6s8
-multifunction Core ML encoder, with 4/8/15/30-second functions of which the
-app runs only the 15-second one,
-`cpuAndNeuralEngine`, a native vDSP feature extractor, and the native FP32
-Accelerate TDT decoder (F2). C6s8 stores a sparse mask and grouped ternary
-lookup tables. The encoder graph uses FP16 values and FP16-rounded row scales;
-the decoder remains FP32. The generated model targets macOS 26 or newer.
+Inference uses a plain-layout B1Q Core ML encoder with only the 15-second
+function (`b15`), `cpuAndNeuralEngine`, a native vDSP feature extractor, and
+the native FP32 Accelerate TDT decoder (F2). B1Q stores each binary projection
+as 1-bit codes expanded through a {-1, +1} lookup table, then multiplied by an
+FP16 per-row scale. The encoder graph uses FP16 values; the decoder remains
+FP32. The generated model targets macOS 26 or newer.
 
-The prior WP7 experiment used **pilot P2 weights**, not this final export.
-Its paired results on a shared M1 Pro were informational: total latency was
-0.34/0.39/0.52/0.77 times the published Core ML baseline for 2/4/8/15 seconds.
-Plain C6s8 outperformed its ANE-layout variant; GPU configurations were slower.
-Those figures and the pilot's numerical eligibility records do not establish
-performance or accuracy of this newly converted final model.
+On a shared M1 Pro (macOS 27.0, 2026-11-03), through LocalFlow's own runtime
+on 150 test-clean and 150 test-other LibriSpeech utterances, kea-b-0.1 had a
+WER of 1.98% and 4.12%, against 1.98% and 4.30% for the earlier kea-t. Its
+bundle is 138 MB against kea-t's 384 MB, and process plus Neural Engine memory
+after loading was 222–286 MB against 442 MB. The warm 15-second encoder call
+took 59.2 ms against 49.5 ms: the Neural Engine skips kea-t's zero weights,
+and binary weights have none. End-to-end transcription times were within 1%.
+These are informational measurements on a shared machine.
 
 Native source adaptations come from the upstream `parakeet-ios` branch at
-commit `79f0b0a42f3be518ff52da3980fa53e0f10816f2`. The relevant experiment
-documentation is `finetune/parakeet-ternary/ios/README.md`, sections WP4 and
-WP7. Only inference code is included; diagnostic capture and benchmark
-record writing are excluded.
+commit `79f0b0a42f3be518ff52da3980fa53e0f10816f2`. The bundle is built by the
+upstream 1-bit converter, `finetune/parakeet-binary-coreml/prepare_bundle.py`
+at commit `396df9869c03600381d5c9566e67886997ffb982`. Only inference code is
+included; diagnostic capture and benchmark record writing are excluded.
 
 This fork uses the bundled Parakeet model exclusively. No provider credentials,
 model selector, network transcription, realtime socket, LLM cleanup, translation,
@@ -33,11 +36,10 @@ Edit Mode, or app/screenshot context capture is included. English dictation,
 deterministic voice macros, local history/retry, and paste behavior remain.
 Microphone and Accessibility are the only dictation permissions.
 
-The app loads, warms and uses only the 15-second encoder function (`b15`).
-The bundle's 4-, 8- and 30-second functions are never loaded: the Neural
-Engine holds memory for every loaded function, and with transcription while
-recording a smaller function would save at most one short chunk's encoder
-time after release. Settings offers a retry when preparation fails.
+The app loads, warms and uses only the 15-second encoder function (`b15`),
+the only function the bundle holds. The Neural Engine holds memory for every
+loaded function, and with transcription while recording a smaller function
+would save at most one short chunk's encoder time after release. Settings offers a retry when preparation fails.
 Preparation loads the 15-second encoder function on the dictation queue and
 runs a synthetic zero-input prediction, without accessing the microphone or
 user content.
@@ -53,25 +55,25 @@ buffers, Core ML calls, and decoder steps; an in-progress Core ML load or
 prediction must finish before cancellation returns.
 
 Weights are not stored in Git. `scripts/prepare-parakeet.py` converts only
-the pinned final export using the upstream pinned Mac Python environment.
-Run it through the upstream `ios/macguard`, with `--upstream STT_CHECKOUT`,
-`--export FINAL_EXPORT`, and `--output MODEL_BUNDLE`. Output must be in the
-upstream's allowed artifact area. It verifies the export hash and writes a
-bundle manifest with per-file SHA-256 hashes. Runtime verifies those hashes
-before loading. Preserve the generated bundle outside the checkout.
+the pinned export using the upstream pinned Mac Python environment. Run it
+through the upstream `ios/macguard`, with `--upstream STT_CHECKOUT` (at the
+converter commit above), `--export KEA_B_EXPORT`, and `--output MODEL_BUNDLE`.
+Output must be in the upstream's allowed artifact area. It verifies the export
+and tokenizer hashes and writes a bundle manifest with per-file SHA-256
+hashes. Runtime verifies those hashes before loading. Preserve the generated
+bundle outside the checkout.
 
-The upstream experiment built 2/4/8/15-second functions. `prepare-parakeet.py`
-replaces that bucket set with 4/8/15/30 seconds for this conversion only (the
-app now runs only the 15-second function), and
-extends the shared folded relative-position tables from 188 to 376 encoder
-frames. Shorter functions slice the same centre positions, whose values depend
-only on position. The upstream accuracy gates did not cover the 30-second
-function, which the app never loads.
+The converter sizes the folded relative-position table for the 15-second
+function's 188 encoder frames. The earlier kea-t bundle also carried 4-, 8-
+and 30-second functions that the app never loaded; leaving them out saves
+52 MB, and the 15-second function's outputs are bitwise identical either way.
 
 The bundle model ID is `localflow`, with display name LocalFlow and
-`kea-t` recorded as its base model. The build can relabel a
-previous Parakeet bundle after verifying its existing hashes; only metadata
-and the corresponding hashes change. Encoder and decoder weights are unchanged.
+`kea-b-0.1` recorded as its base model. The build relabels the copied bundle
+after verifying its existing hashes; only metadata and the corresponding
+hashes change. Encoder and decoder weights are unchanged. The build refuses
+any bundle whose export is not kea-b-0.1's, so no other weights ship under
+this notice.
 
 Build locally with:
 

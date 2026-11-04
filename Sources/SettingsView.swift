@@ -10,7 +10,7 @@ struct LocalModelSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("LocalFlow").font(.headline)
-            Text("Ternary speech model derived from NVIDIA Parakeet v2.")
+            Text("1-bit speech model derived from NVIDIA Parakeet v2.")
                 .font(.caption).foregroundStyle(.secondary)
             Text("English dictation processed entirely on this Mac. Audio and transcripts are never sent to a model provider.")
                 .foregroundStyle(.secondary)

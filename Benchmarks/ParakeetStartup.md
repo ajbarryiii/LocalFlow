@@ -1,11 +1,11 @@
 # Parakeet startup
 
 The app loads, warms and uses only the 15-second Core ML encoder function
-(`b15`), using the same completed 250,000-step ternary Parakeet checkpoint
-already shipped with the app. The bundle still contains 4-, 8- and 30-second
-functions; they are never loaded. No second model, runtime, kernel payload,
-permission request or production logging is added. The MLX experiment code
-has been removed.
+(`b15`). The bundled model is kea-b-0.1, whose bundle holds only that
+function. Sections before "Results: kea-b-0.1" measured the earlier kea-t
+bundle, which also carried 4-, 8- and 30-second functions that were never
+loaded. No second model, runtime, kernel payload, permission request or
+production logging is added. The MLX experiment code has been removed.
 
 Earlier versions prepared b15 first and then the other functions in the
 background, choosing the smallest ready function per chunk and splitting
@@ -29,9 +29,11 @@ inputs through padding. Recordings are split into 15-second chunks that
 overlap by 2 seconds and are joined on a word both heard; this does not
 impose a 15-second recording limit.
 
-The final checkpoint export SHA-256 is
-`a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503`.
-The existing C6s8 compiled bundle and frontend/decoder/vocabulary remain unchanged.
+kea-b-0.1's export SHA-256 is
+`ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995`, and its
+encoder is the plain-layout B1Q bundle that `scripts/prepare-parakeet.py`
+builds. kea-t's was
+`a287e97719c451b785be2cd01ecc861fcaa010ebaa4ff2841783ec78fcd61503` (C6s8).
 
 ## Reproduce
 
@@ -69,7 +71,21 @@ specialization and the first inference are included. The runner verifies each
 transcript and that every encoder pass used b15. The optional bucket observer
 is installed only by the synthetic harness; the app records nothing.
 
-## Results: shared M1 Pro, macOS 27.0, 2026-10-05
+## Results: kea-b-0.1, shared M1 Pro, macOS 27.0, 2026-11-03
+
+[The timing record](parakeet-startup-results-kea-b-0.1.json) has one repeat.
+Times run from CLI initialization to the first matched transcript.
+
+| Initial preparation | New-path first transcript | Same-path fresh-process first transcript | New-path peak group RSS |
+| --- | ---: | ---: | ---: |
+| 15-second ANE function | 30.19 s | 1.30 s | 248 MiB |
+
+Every synthetic fixture matched, including the 18- and 33-second recordings
+that need more than one chunk. kea-t's 15-second-only arm took 94.27 s and
+0.83 s in the 2026-10-05 run below; that run used an earlier harness, so the
+comparison is indicative only.
+
+## Results: kea-t, shared M1 Pro, macOS 27.0, 2026-10-05
 
 Superseded: this section measured runtimes that loaded more than one
 function, with the earlier harness arms (`all`, `fifteen-first`,
@@ -135,7 +151,7 @@ manifest that differs from the bundle's. Other entries under `Models` are
 removed. Any failure falls back to the bundle, including a store copy that
 fails the integrity check or Core ML's first load. The clone shares the
 bundle's blocks until an update replaces the bundle; then the store costs
-about 370 MB.
+about the bundle's size (138 MB for kea-b-0.1, 370 MB for kea-t).
 
 In a synthetic smoke run of the real service with a temporary store, b15
 preparation took 216.96 s on the first process (install plus cold, on a busy

@@ -135,9 +135,10 @@ production identity.
      --entitlements FreeFlow.entitlements "$APP"
    codesign --verify --deep --strict "$APP"
 
-   # The bundled model must be the intended conversion, byte for byte. The
-   # shipped one lists 4/8/15/30-second functions; the app runs only b15.
-   tr -d ' \n' < "$PARAKEET/bundle.json" | grep -qF '"buckets_seconds":[4,8,15,30]' ||
+   # The bundled model must be the intended conversion, byte for byte:
+   # kea-b-0.1, holding only the 15-second function the app runs.
+   tr -d ' \n' < "$PARAKEET/bundle.json" | grep -qF '"base_model":"kea-b-0.1"' &&
+     tr -d ' \n' < "$PARAKEET/bundle.json" | grep -qF '"buckets_seconds":[15]' ||
      { echo "Unexpected model bundle"; exit 1; }
    for f in $(cd "$MODEL_BUNDLE" && find Encoder.mlmodelc decoder_joint.f32bin frontend.f32bin vocabulary.json -type f); do
      cmp -s "$MODEL_BUNDLE/$f" "$PARAKEET/$f" || { echo "Model file differs: $f"; exit 1; }

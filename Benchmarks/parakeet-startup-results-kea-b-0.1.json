@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "export_sha256": "ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995",
+  "encoder": "B1Q plain",
+  "hardware": "Apple M1 Pro",
+  "macOS": "27.0",
+  "repeats": 1,
+  "cache_evidence": "new copied bundle path then same-path fresh process; no cache deletion or Instruments cache events",
+  "limitations": [
+    "Synthetic smoke on a shared Mac; no accuracy or controlled performance claim.",
+    "First-path loads are not proven uncached specialization."
+  ],
+  "runs": [
+    {
+      "encoder_seconds": 15,
+      "first_transcript_ready_seconds": 30.194361042,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.238735167
+        },
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.137082
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.229133875
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.28463175
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.488364667
+        },
+        {
+          "audio_seconds": 33,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.810500541
+        }
+      ],
+      "preparation_seconds": 29.955618709,
+      "repeated_preparation_seconds": 0.000158666,
+      "schema": 2,
+      "phase": "new-path",
+      "repeat": 1,
+      "process_wall_seconds": 33.630166958000004,
+      "guard_peak_group_rss_kib": 253456,
+      "guard_swap_growth_kib": 0
+    },
+    {
+      "encoder_seconds": 15,
+      "first_transcript_ready_seconds": 1.302395084,
+      "fixtures": [
+        {
+          "audio_seconds": 14,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.320291542
+        },
+        {
+          "audio_seconds": 2,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.441532708
+        },
+        {
+          "audio_seconds": 4,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.282159209
+        },
+        {
+          "audio_seconds": 7,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.280924917
+        },
+        {
+          "audio_seconds": 18,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 0.659836875
+        },
+        {
+          "audio_seconds": 33,
+          "buckets_used": [
+            15
+          ],
+          "expected_match": true,
+          "transcription_seconds": 1.136184667
+        }
+      ],
+      "preparation_seconds": 0.982086875,
+      "repeated_preparation_seconds": 0.000173209,
+      "schema": 2,
+      "phase": "same-path-fresh-process",
+      "repeat": 1,
+      "process_wall_seconds": 5.098339999999993,
+      "guard_peak_group_rss_kib": 183120,
+      "guard_swap_growth_kib": 0
+    }
+  ]
+}
