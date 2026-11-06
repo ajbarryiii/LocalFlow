@@ -1426,17 +1426,22 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.capture.hasPendingRequest, false)
     }
 
-    /// iOS authenticates the user before running the control's intent. With protected data still unavailable the
-    /// lock latch stays and nothing starts in the background; once available, the call itself lifts a latch the
-    /// suspended app never saw lifted.
+    /// iOS authenticates the user before running the control's intent. Inside `lockWriteWindow` after the latch, when
+    /// a locking iPhone still reads protected data as available, or with it unavailable, the latch stays and nothing
+    /// starts in the background; past the window with it available, the call lifts a latch the suspended app never
+    /// saw lifted.
     @MainActor
     private static func testControlNeverStartsWhileLocked() {
         let h = CoreHarness()
         defer { h.cleanup() }
         h.clock.isForeground = false
         h.core.foregroundChanged()
-        h.clock.protectedDataAvailable = false
         h.core.deviceWillLock()
+        h.clock.now += HostSessionPolicy.lockWriteWindow - 1
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        TestSupport.expectEqual(h.core.isLocked, true)
+        h.clock.now += 5
+        h.clock.protectedDataAvailable = false
         TestSupport.expectEqual(h.control(), .needsForeground)
         TestSupport.expectEqual(h.core.session, .inactive)
         TestSupport.expectEqual(h.capture.startCount, 0)
@@ -1475,7 +1480,7 @@ enum HostSessionCoreTests {
         h.clock.isForeground = false
         h.core.foregroundChanged()
         TestSupport.expectEqual(h.control(), .startedInBackground)
-        h.core.controlNeedsForeground()
+        TestSupport.expectEqual(h.core.controlNeedsForeground(), .needsForeground)
         TestSupport.expectEqual(h.core.session, .inactive)
         TestSupport.expectEqual(h.capture.isRunning, false)
         TestSupport.expectEqual(h.status?.error, nil)
@@ -1484,6 +1489,18 @@ enum HostSessionCoreTests {
         h.core.appDidBecomeActive()
         TestSupport.expectEqual(h.core.session, .active)
         TestSupport.expectEqual(h.capture.startCount, 2)
+
+        // The app arrived in front while the controller waited for ActivityKit: its activation events found the
+        // session active, so the start happens at once instead of waiting for an arrival that already came.
+        h.core.userEndSession()
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.control(), .startedInBackground)
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.controlNeedsForeground(), .started)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.capture.startCount, 4)
     }
 }
 

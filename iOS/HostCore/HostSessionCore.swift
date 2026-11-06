@@ -262,7 +262,10 @@ final class HostSessionCore {
             return .ended
         }
         // iOS authenticated the user before running the intent; a suspended app may have missed the unlock.
-        unlatchIfProtectedDataAvailable()
+        if isLocked, HostSessionPolicy.controlProvesUnlock(now: now, lockedAt: lockedAt,
+                                                           isProtectedDataAvailable: environment.isProtectedDataAvailable()) {
+            isLocked = false
+        }
         if noteForeground(now), !isLocked {
             transcriber.prepare()
             startSession(now)
@@ -277,12 +280,19 @@ final class HostSessionCore {
     }
 
     /// The background start's Live Activity does not show: the session ends at once, as the user's End, and the
-    /// start waits for the foreground instead.
-    func controlNeedsForeground() {
+    /// start waits for the foreground instead, or starts again at once when the app arrived in front meanwhile (its
+    /// activation events came before this). Returns `.started` or `.needsForeground`.
+    @discardableResult
+    func controlNeedsForeground() -> SessionControlOutcome {
         let now = environment.now()
+        defer { flush(now) }
         endSession(.user, now)
-        controlStartRequestedAt = now
-        flush(now)
+        if noteForeground(now), !isLocked {
+            transcriber.prepare()
+            startSession(now)
+            return .started
+        }
+        return requestForegroundStart(now)
     }
 
     private func requestForegroundStart(_ now: Date) -> SessionControlOutcome {

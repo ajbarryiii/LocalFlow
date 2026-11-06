@@ -136,6 +136,13 @@ enum HostSessionPolicy {
         return issuedAt.timeIntervalSince(lockedAt) > lockWriteWindow
     }
 
+    /// The session control runs only after iOS authenticated the user on this iPhone. Its press proves an unlock the
+    /// app missed only with protected data available past `lockWriteWindow` after the latch: inside that window a
+    /// locking iPhone still reads it available (ARCHITECTURE.md, "Session control", Toggle).
+    static func controlProvesUnlock(now: Date, lockedAt: Date?, isProtectedDataAvailable: Bool) -> Bool {
+        isProtectedDataAvailable && intentProvesUnlock(issuedAt: now, lockedAt: lockedAt)
+    }
+
     /// Whether the bounce screen stays up. It outlives the swipe back only while its dictation is in
     /// progress; once that ends with the app in the background, the keyboard shows the outcome and the
     /// bounce closes, so a later return to LocalFlow shows Home rather than an old outcome.

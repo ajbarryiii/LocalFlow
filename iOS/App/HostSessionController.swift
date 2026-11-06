@@ -136,7 +136,13 @@ final class HostSessionController: ObservableObject, SessionControlHandling {
         launch()
         guard let core else { return .unavailable }
         switch core.controlToggleSession() {
-        case .ended, .started:
+        case .ended:
+            return .done
+        case .started:
+            // In front but perhaps only inactive (Control Center over the app): the intent may show the activity now.
+            // Capture in the foreground does not depend on it, so a refusal only leaves the session without one.
+            syncActivity(mayStart: true)
+            _ = await activity.settle()
             return .done
         case .needsForeground:
             return .needsApp
@@ -146,8 +152,7 @@ final class HostSessionController: ObservableObject, SessionControlHandling {
             if await activity.settle() { return .done }
             // Ended meanwhile for another reason: nothing to start in front.
             guard core.session == .active, core.sessionID == sessionID else { return .done }
-            core.controlNeedsForeground()
-            return .needsApp
+            return core.controlNeedsForeground() == .started ? .done : .needsApp
         }
     }
 

@@ -22,8 +22,9 @@ protocol SessionControlHandling: AnyObject {
 /// into the app, which performs it, and the widget extension, whose control names it.
 struct ToggleFlowSessionIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Flow Session"
-    /// On a locked iPhone, iOS asks for Face ID or the passcode first: the control never starts a session while locked.
-    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
+    /// On a locked iPhone, iOS asks for Face ID or the passcode on this iPhone first (an unlocked Apple Watch does not
+    /// count): the control never starts a session while locked.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     /// Background only: with a foreground mode iOS treats the control as a launcher that opens the app.
     static let supportedModes: IntentModes = [.background]
 

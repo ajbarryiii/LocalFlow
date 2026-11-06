@@ -1100,9 +1100,10 @@ Center or on the Lock Screen.
   app in the background when it is not running. It has no parameters, no
   dialog and no result value; when the start needs the app it fails with
   "Open LocalFlow to start the session." (see Foreground).
-  - `authenticationPolicy` is `.requiresAuthentication`: on a locked iPhone
-    iOS asks for Face ID or the passcode before it runs, so the control never
-    starts a session while locked.
+  - `authenticationPolicy` is `.requiresLocalDeviceAuthentication`: on a
+    locked iPhone iOS asks for Face ID or the passcode on the iPhone itself
+    (an unlocked Apple Watch does not count) before it runs, so the control
+    never starts a session while locked.
   - `supportedModes` is `[.background]` only, so iOS treats the control as
     an action, never as a launcher that opens the app; the App Store bundle
     check requires it.
@@ -1113,10 +1114,16 @@ Center or on the Lock Screen.
   - A session `starting` or `active` ends, as the user's End
     ([Session](#session)).
   - With no session and the app in the foreground, it starts as
-    `userStartSession` does.
-  - With no session and the app in the background, the call lifts the lock
-    latch when protected data is available, as the foreground events do
-    ([Device lock](#device-lock)). With the latch still set, or microphone
+    `userStartSession` does, and the controller lets the Live Activity driver
+    start the activity during the intent (`mayStart`), even with the app only
+    inactive (Control Center over it). A refusal leaves the session without
+    an activity, as any foreground start.
+  - With no session and the app in the background, the call lifts a lock
+    latch the suspended app never saw lifted
+    ([Device lock](#device-lock)) only with protected data available more
+    than `lockWriteWindow` after the latch was set, since a locking iPhone
+    still reads it available inside that window
+    (`HostSessionPolicy.controlProvesUnlock`). With the latch still set, or microphone
     permission not granted (the prompt and "Microphone off" need the app),
     the start needs the foreground. Otherwise the model starts preparing and
     capture starts in the background; a capture start that fails ends the
@@ -1125,7 +1132,9 @@ Center or on the Lock Screen.
   lets the Live Activity driver start the activity (`mayStart`) and waits for
   ActivityKit's answer (`settle()`) before the intent returns. With Live
   Activities off, or the request refused, the session ends at once, as the
-  user's End (`controlNeedsForeground`), and the start needs the foreground.
+  user's End (`controlNeedsForeground`), and the start needs the foreground;
+  when the app arrived in front during the wait, it starts again there at
+  once, as `userStartSession` does.
 - **Foreground.** When the start needs the foreground, the intent fails
   (`SessionControlNeedsApp`) and the core remembers the start for
   `controlForegroundWindow` (30 s): the app's next arrival in the foreground

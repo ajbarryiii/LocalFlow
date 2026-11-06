@@ -176,7 +176,7 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ] && [ -f "$activity_plist" ]; 
             fail "$target: Metadata.appintents is missing (no session control intent)"
             continue
         fi
-        for needle in '"ToggleFlowSessionIntent"' 'com.apple.link.systemProtocol.AudioRecording' '"authenticationPolicy":1' '"supportedModes":1' '"openAppWhenRun":false'; do
+        for needle in '"ToggleFlowSessionIntent"' 'com.apple.link.systemProtocol.AudioRecording' '"authenticationPolicy":2' '"supportedModes":1' '"openAppWhenRun":false'; do
             grep -Fq "$needle" "$actions" || fail "$target: the App Intents metadata lacks $needle"
         done
     done
