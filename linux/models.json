@@ -1,15 +1,22 @@
 {
   "kea-b": {
-    "repo": "rajb3/kea-b",
-    "rev": "cfb1353488655282683ba699c402ae3b16b6de30",
+    "repo": "wildernesslabs/kea-b-0.1",
+    "rev": "757a8f465e4f6f45a933f1e8fe2f5b3b4b46cdd3",
     "files": {
       "LICENSE": "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
-      "NOTICE": "314119184052a636e9002f69dd36a2077d32d5e487bbe5ba958da9f646ede56a",
-      "export.safetensors": "9873d2f1a53127c673d0201db98cd3ba859ba432f334fef55e9e24fd057b9651",
-      "manifest.json": "f3737a538da81939aabe04acd5334afd0e3cd4160ec113bd889e771b67991dbd",
+      "NOTICE": "0cffe5ac42fe37549d9ac0a6fbd830fcaafc58391a86bc65f166458dcdb95d01",
+      "export.safetensors": "ec05526ed7aa7c742ee970c09724b1b8ccfaef6eb10f2ff1a11b031e9dfc4995",
+      "manifest.json": "0bc0a2a768de2bf47e9470238fcf3befbc8f5a3aba104a629c1d8cb1f71c4a7f",
       "tokenizer/tokenizer.model": "5a3a82c48998709f9bc9f5db2924d99a899d20bf82550ca52272da7c7557b0a0",
       "tokenizer/tokenizer.vocab": "dbe7ec6bd066c4526080940e1614e6582b9161515e856c2c39a1d49267c88cbc",
       "tokenizer/vocab.txt": "70b25deed256d79365a3c290d6191c31cc2315d952faf18d5c3a334f46e4866e"
+    },
+    "from": {
+      "export.safetensors": "compat/export.safetensors",
+      "manifest.json": "compat/manifest.json",
+      "tokenizer/tokenizer.model": "compat/tokenizer/tokenizer.model",
+      "tokenizer/tokenizer.vocab": "compat/tokenizer/tokenizer.vocab",
+      "tokenizer/vocab.txt": "compat/tokenizer/vocab.txt"
     }
   },
   "kea-t": {

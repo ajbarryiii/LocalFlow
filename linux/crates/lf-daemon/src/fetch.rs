@@ -2,8 +2,9 @@
 //! Hugging Face and installs it where the daemon looks for it.
 //!
 //! The exports are pinned in `linux/models.json` (repository, revision and
-//! every file's SHA-256), the same pins the flake's `kea-b` and `kea-t`
-//! packages use. Files are downloaded with `curl` (HTTPS only, redirects
+//! every file's SHA-256, and where a file sits in the repository when that
+//! differs from its place in the export), the same pins the flake's `kea-b`
+//! and `kea-t` packages use. Files are downloaded with `curl` (HTTPS only, redirects
 //! too) into a temporary directory beside the destination, checked against
 //! the pins and the daemon's own export checks, and only then moved into
 //! place with one rename, so the destination never holds a partial export.
@@ -51,6 +52,10 @@ pub struct Pins {
     pub rev: String,
     /// Relative path -> lowercase hex SHA-256.
     pub files: BTreeMap<String, String>,
+    /// Pinned file -> its path in the repository, for files stored
+    /// somewhere other than their place in the export (`from` in
+    /// `models.json`).
+    pub from: BTreeMap<String, String>,
 }
 
 impl Pins {
@@ -105,11 +110,25 @@ impl Pins {
                     return Err(bad(&format!("{required} is not pinned")));
                 }
             }
+            let mut from = BTreeMap::new();
+            if let Some(v) = m.get("from") {
+                let entries = v.as_object().ok_or_else(|| bad("from is not an object"))?;
+                for (path, source) in entries {
+                    if !files.contains_key(path) {
+                        return Err(bad(&format!("from names {path:?}, which is not pinned")));
+                    }
+                    match source.as_str() {
+                        Some(src) if is_file_path(src) => from.insert(path.clone(), src.to_owned()),
+                        _ => return Err(bad(&format!("bad source for {path}"))),
+                    };
+                }
+            }
             out.push(Pins {
                 name: name.clone(),
                 repo: repo.to_owned(),
                 rev: rev.to_owned(),
                 files,
+                from,
             });
         }
         Ok(out)
@@ -117,7 +136,8 @@ impl Pins {
 
     /// The download URL of one pinned file (the flake fetches the same).
     pub fn url(&self, file: &str) -> String {
-        format!("{HOST}/{}/resolve/{}/{file}", self.repo, self.rev)
+        let source = self.from.get(file).map_or(file, String::as_str);
+        format!("{HOST}/{}/resolve/{}/{source}", self.repo, self.rev)
     }
 
     /// The files in download order: the tensor file last, so a bad pin or
@@ -710,7 +730,6 @@ mod tests {
         assert_eq!(names, ["kea-b", "kea-t"]);
         assert_eq!(DEFAULT_MODEL, "kea-b");
         for p in &pins {
-            assert_eq!(p.repo, format!("rajb3/{}", p.name));
             for file in [
                 "export.safetensors",
                 "manifest.json",
@@ -723,15 +742,70 @@ mod tests {
                 assert!(p.files.contains_key(file), "{}: {file}", p.name);
             }
         }
+        // kea-b is Kea-B 0.1, whose runtime export is the repository's
+        // `compat/` view; its license files are at the top level.
         let b = Pins::find("kea-b").unwrap().unwrap();
+        assert_eq!(b.repo, "wildernesslabs/kea-b-0.1");
+        for file in ["export.safetensors", "manifest.json", "tokenizer/vocab.txt"] {
+            assert_eq!(
+                b.url(file),
+                format!(
+                    "https://huggingface.co/wildernesslabs/kea-b-0.1/resolve/{}/compat/{file}",
+                    b.rev
+                )
+            );
+        }
         assert_eq!(
-            b.url("tokenizer/vocab.txt"),
+            b.url("NOTICE"),
             format!(
-                "https://huggingface.co/rajb3/kea-b/resolve/{}/tokenizer/vocab.txt",
+                "https://huggingface.co/wildernesslabs/kea-b-0.1/resolve/{}/NOTICE",
                 b.rev
             )
         );
+        let t = Pins::find("kea-t").unwrap().unwrap();
+        assert_eq!(t.repo, "rajb3/kea-t");
+        assert_eq!(
+            t.url("tokenizer/vocab.txt"),
+            format!(
+                "https://huggingface.co/rajb3/kea-t/resolve/{}/tokenizer/vocab.txt",
+                t.rev
+            )
+        );
         assert!(Pins::find("kea-z").unwrap().is_none());
+    }
+
+    #[test]
+    fn files_can_come_from_elsewhere_in_the_repository() {
+        let h = "a".repeat(64);
+        let rev = "b".repeat(40);
+        let doc = |from: &str| {
+            format!(
+                r#"{{"m": {{"repo": "o/m", "rev": "{rev}", "files": {{
+                    "manifest.json": "{h}", "export.safetensors": "{h}"}}, "from": {from}}}}}"#
+            )
+        };
+        let pins = Pins::parse(&doc(r#"{"export.safetensors": "view/export.safetensors"}"#))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            pins.url("export.safetensors"),
+            format!("https://huggingface.co/o/m/resolve/{rev}/view/export.safetensors")
+        );
+        assert_eq!(
+            pins.url("manifest.json"),
+            format!("https://huggingface.co/o/m/resolve/{rev}/manifest.json")
+        );
+        for bad in [
+            // Only pinned files can be redirected.
+            r#"{"NOTICE": "view/NOTICE"}"#,
+            r#"{"manifest.json": "../manifest.json"}"#,
+            r#"{"manifest.json": "/manifest.json"}"#,
+            r#"{"manifest.json": "a//manifest.json"}"#,
+            r#"{"manifest.json": 1}"#,
+            "[]",
+        ] {
+            assert!(Pins::parse(&doc(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -817,6 +891,12 @@ mod tests {
             files: files
                 .iter()
                 .map(|(k, v)| (k.clone(), lf_model::manifest::sha256_hex(v)))
+                .collect(),
+            // Like Kea-B 0.1's `compat/` view: the export's files are stored
+            // in a subdirectory of the repository, but installed at the top.
+            from: [TENSOR_FILE, "manifest.json"]
+                .into_iter()
+                .map(|f| (f.to_owned(), format!("view/{f}")))
                 .collect(),
         };
         (pins, files)
@@ -932,6 +1012,13 @@ mod tests {
             got.iter()
                 .all(|u| u.starts_with("https://huggingface.co/synthetic/test/resolve/"))
         );
+        // Files stored elsewhere in the repository are fetched from there
+        // and installed at their place in the export (`assert_holds`).
+        let rev = "c".repeat(40);
+        assert!(got.contains(&format!(
+            "https://huggingface.co/synthetic/test/resolve/{rev}/view/{TENSOR_FILE}"
+        )));
+        assert!(!dest.join("view").exists());
         // Nothing else beside it, and the data directory is private.
         assert_eq!(entries(&parent), ["model"]);
         assert_eq!(fs::metadata(&parent).unwrap().mode() & 0o777, 0o700);

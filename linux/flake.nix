@@ -106,12 +106,14 @@
       # The published model exports, pinned to a Hugging Face revision in
       # models.json (`localflowctl fetch-model` reads the same pins). The
       # export files' hashes are the ones in each export's manifest.json,
-      # which the daemon checks again when it loads the model. Both models
-      # are derived from NVIDIA's parakeet-tdt-0.6b-v2 and licensed
-      # CC-BY-4.0 (see LICENSE and NOTICE in the export). kea-b has 1-bit
-      # weights (parakeet-binary-v1) and is the recommended model; kea-t has
-      # ternary weights (parakeet-ternary-v1): slightly lower WER, twice the
-      # weight memory, a little slower.
+      # which the daemon checks again when it loads the model. `from` gives
+      # a file's path in the repository when it is not the file's place in
+      # the export (Kea-B 0.1 keeps its runtime export in `compat/`). Both
+      # models are derived from NVIDIA's parakeet-tdt-0.6b-v2 and licensed
+      # CC-BY-4.0 (see LICENSE and NOTICE in the export). kea-b is Kea-B 0.1,
+      # with 1-bit weights (parakeet-binary-v1), and is the recommended
+      # model; kea-t has ternary weights (parakeet-ternary-v1): higher WER,
+      # twice the weight memory, slower.
       models = lib.importJSON ./models.json;
 
       # An export directory in the store. Files are copied, not linked: the
@@ -131,7 +133,7 @@
               lib.mapAttrsToList (path: sha256: ''
                 install -D -m 444 ${
                   pkgs.fetchurl {
-                    url = "https://huggingface.co/${m.repo}/resolve/${m.rev}/${path}";
+                    url = "https://huggingface.co/${m.repo}/resolve/${m.rev}/${m.from.${path} or path}";
                     name = "${name}-${baseNameOf path}";
                     inherit sha256;
                   }

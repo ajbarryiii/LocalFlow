@@ -8,6 +8,7 @@ use lf_asr::dictionary::{self, DictionaryEntry};
 use lf_asr::{BiasGraph, Projection};
 use lf_chunk::{Chunk, Word};
 use lf_io_api::wipe::Wiped;
+use lf_model::WeightFormat;
 
 use crate::config::Precision;
 use crate::dictionary::Snapshot;
@@ -213,7 +214,7 @@ pub const WARM_UP_SECONDS: usize = 15;
 
 /// Where to get a model when `export_path` holds none.
 pub const MODEL_HINT: &str = "run `localflowctl fetch-model` to install kea-b \
-     (https://huggingface.co/rajb3/kea-b) there, or point export_path at an export";
+     (https://huggingface.co/wildernesslabs/kea-b-0.1) there, or point export_path at an export";
 
 /// Fails with [`MODEL_HINT`] when `export` has no `manifest.json`. Other
 /// errors (permissions, I/O) are left to the loader, which reports them.
@@ -227,7 +228,25 @@ pub fn check_export(export: &Path) -> Result<(), String> {
     }
 }
 
-pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> RecognizerFactory {
+/// The precision used when the configuration sets none. Binary models run
+/// with one INT8 activation part: Kea-B 0.1 was trained through that
+/// quantizer, and a second part, which doubles the projections' work,
+/// changed its dev-set WER by at most 0.06 points per set. Ternary models
+/// keep two, which matched f32 on kea-t.
+pub fn default_precision(format: WeightFormat) -> Precision {
+    match format {
+        WeightFormat::Binary => Precision::Int8(1),
+        WeightFormat::Ternary => Precision::Int8(2),
+    }
+}
+
+/// Loads the export at `export`; `precision` `None` is the model's default
+/// ([`default_precision`]).
+pub fn asr_factory(
+    export: PathBuf,
+    cpus: Vec<usize>,
+    precision: Option<Precision>,
+) -> RecognizerFactory {
     Box::new(move || {
         check_export(&export)?;
         lf_asr::tier().map_err(|e| e.to_string())?;
@@ -236,6 +255,7 @@ pub fn asr_factory(export: PathBuf, cpus: Vec<usize>, precision: Precision) -> R
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
         let model = lf_asr::Model::load(&exp, lf_asr::DecoderStorage::F16)
             .map_err(|e| format!("model export {}: {e}", export.display()))?;
+        let precision = precision.unwrap_or_else(|| default_precision(exp.format));
         let format = exp.format.name();
         drop(exp);
         let mut transcriber = lf_asr::Transcriber::new(model, &cpus, precision.to_asr());
@@ -263,14 +283,23 @@ mod tests {
     #[test]
     fn a_missing_export_says_where_to_get_a_model() {
         let dir = std::env::temp_dir().join(format!("lf-no-model-{}", std::process::id()));
-        let Err(e) = asr_factory(dir.clone(), vec![0], Precision::Int8(2))() else {
+        let Err(e) = asr_factory(dir.clone(), vec![0], None)() else {
             panic!("loaded a model from an empty path");
         };
         assert_eq!(
             e,
             format!("no model export at {}; {MODEL_HINT}", dir.display())
         );
-        assert!(MODEL_HINT.contains("https://huggingface.co/rajb3/kea-b"));
+        assert!(MODEL_HINT.contains("https://huggingface.co/wildernesslabs/kea-b-0.1"));
         assert!(MODEL_HINT.contains("localflowctl fetch-model"));
+    }
+
+    #[test]
+    fn binary_models_default_to_one_activation_part() {
+        // Kea-B 0.1 was trained through the i8x1 activation quantizer; i8x2
+        // is twice the projection work for no accuracy gain on binary models.
+        assert_eq!(default_precision(WeightFormat::Binary), Precision::Int8(1));
+        // On kea-t, i8x2 matches f32; i8x1 was never validated there.
+        assert_eq!(default_precision(WeightFormat::Ternary), Precision::Int8(2));
     }
 }

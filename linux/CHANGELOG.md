@@ -9,6 +9,16 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 
 ### Changed
 
+- The recommended model is now
+  [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1): `kea-b` in
+  `localflowctl fetch-model` and the flake installs it instead of Kea-B 0.0.
+  It is more accurate at the same size and speed. An existing kea-b export
+  is kept until you run `localflowctl fetch-model --force`.
+- 1-bit models now run with one INT8 activation part (`i8x1`) unless
+  `precision` is set, instead of two. Kea-B 0.1 was trained for it, and
+  transcription takes about a third less time. Ternary models still default
+  to `i8x2`.
+
 - Dictations are transcribed while you speak: audio goes to the recognizer
   as it is captured, and every 15 s window (windows overlap by 2 s) is
   transcribed as soon as it is complete, so after the key is released only
