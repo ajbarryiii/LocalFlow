@@ -4,8 +4,8 @@ import AppIntents
 enum SessionControlStep: Sendable {
     /// The session ended or started.
     case done
-    /// The start needs the app in front.
-    case continueInForeground
+    /// The start needs the app in front, which the user opens.
+    case needsApp
     /// The build cannot run a session (it is misconfigured).
     case unavailable
 }
@@ -14,8 +14,6 @@ enum SessionControlStep: Sendable {
 @MainActor
 protocol SessionControlHandling: AnyObject {
     func toggleSessionFromControl() async -> SessionControlStep
-    /// The intent could not continue in the foreground.
-    func controlForegroundDeclined()
 }
 
 /// The session control's action (ARCHITECTURE.md, "Session control"): starts a Flow session, or ends the one
@@ -26,7 +24,8 @@ struct ToggleFlowSessionIntent: AudioRecordingIntent, LiveActivityIntent {
     static let title: LocalizedStringResource = "Flow Session"
     /// On a locked iPhone, iOS asks for Face ID or the passcode first: the control never starts a session while locked.
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
-    static let supportedModes: IntentModes = [.background, .foreground(.dynamic)]
+    /// Background only: with a foreground mode iOS treats the control as a launcher that opens the app.
+    static let supportedModes: IntentModes = [.background]
 
     /// Set by the app as it launches; never in the extension, where `perform` throws.
     @MainActor static var handler: SessionControlHandling?
@@ -39,16 +38,16 @@ struct ToggleFlowSessionIntent: AudioRecordingIntent, LiveActivityIntent {
             return .result()
         case .unavailable:
             throw SessionControlUnavailable()
-        case .continueInForeground:
-            do {
-                try await continueInForeground(nil, alwaysConfirm: false)
-            } catch {
-                handler.controlForegroundDeclined()
-                throw error
-            }
-            return .result()
+        case .needsApp:
+            throw SessionControlNeedsApp()
         }
     }
+}
+
+/// The start needs the app: microphone permission, Live Activities, or a capture iOS would not start in the
+/// background. Opening the app soon starts the session there.
+struct SessionControlNeedsApp: Error, CustomLocalizedStringResourceConvertible {
+    var localizedStringResource: LocalizedStringResource { "Open LocalFlow to start the session." }
 }
 
 /// The intent ran where no session can start: in the extension, or in a misconfigured build.

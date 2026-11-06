@@ -168,14 +168,15 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ] && [ -f "$activity_plist" ]; 
     expect "$activity_plist" NSExtension.NSExtensionPointIdentifier com.apple.widgetkit-extension activity
     expect_bool "$app_plist" NSSupportsLiveActivities true app
     # The session control's App Intent, which iOS learns from each bundle's metadata: an audio recording intent
-    # that asks for authentication (ARCHITECTURE.md, "Session control").
+    # that asks for authentication and runs in the background only, so the control is never a launcher
+    # (ARCHITECTURE.md, "Session control").
     for target in app activity; do
         case "$target" in app) actions="$app/Metadata.appintents/extract.actionsdata" ;; *) actions="$activity/Metadata.appintents/extract.actionsdata" ;; esac
         if [ ! -f "$actions" ]; then
             fail "$target: Metadata.appintents is missing (no session control intent)"
             continue
         fi
-        for needle in '"ToggleFlowSessionIntent"' 'com.apple.link.systemProtocol.AudioRecording' '"authenticationPolicy":1'; do
+        for needle in '"ToggleFlowSessionIntent"' 'com.apple.link.systemProtocol.AudioRecording' '"authenticationPolicy":1' '"supportedModes":1' '"openAppWhenRun":false'; do
             grep -Fq "$needle" "$actions" || fail "$target: the App Intents metadata lacks $needle"
         done
     done

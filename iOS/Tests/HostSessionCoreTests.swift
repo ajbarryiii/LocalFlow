@@ -1407,8 +1407,8 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.capture.startCount, 1)
     }
 
-    /// A start waiting for the foreground is forgotten once the window passes or the continuation is declined, so
-    /// opening the app later never turns the microphone on by itself.
+    /// A start waiting for the foreground is forgotten once the window passes, so opening the app later never turns
+    /// the microphone on by itself.
     @MainActor
     private static func testControlForegroundStartIsForgotten() {
         let h = CoreHarness()
@@ -1419,15 +1419,6 @@ enum HostSessionCoreTests {
         TestSupport.expectEqual(h.control(), .needsForeground)
         h.clock.now += HostSessionPolicy.controlForegroundWindow + 0.1
         h.core.tick()
-        h.clock.isForeground = true
-        h.core.appDidBecomeActive()
-        TestSupport.expectEqual(h.core.session, .inactive)
-
-        h.clock.isForeground = false
-        h.core.foregroundChanged()
-        TestSupport.expectEqual(h.control(), .needsForeground)
-        h.core.controlForegroundDeclined()
-        h.clock.now += 1
         h.clock.isForeground = true
         h.core.appDidBecomeActive()
         TestSupport.expectEqual(h.core.session, .inactive)

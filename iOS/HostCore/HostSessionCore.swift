@@ -285,11 +285,6 @@ final class HostSessionCore {
         flush(now)
     }
 
-    /// The intent could not continue in the foreground: the start it asked for is forgotten.
-    func controlForegroundDeclined() {
-        controlStartRequestedAt = nil
-    }
-
     private func requestForegroundStart(_ now: Date) -> SessionControlOutcome {
         controlStartRequestedAt = now
         return .needsForeground

@@ -1098,13 +1098,14 @@ Center or on the Lock Screen.
   compiled into the app and the extension) is an `AudioRecordingIntent` and a
   `LiveActivityIntent`, so iOS runs it in the app's process, launching the
   app in the background when it is not running. It has no parameters, no
-  dialog and no result value.
+  dialog and no result value; when the start needs the app it fails with
+  "Open LocalFlow to start the session." (see Foreground).
   - `authenticationPolicy` is `.requiresAuthentication`: on a locked iPhone
     iOS asks for Face ID or the passcode before it runs, so the control never
     starts a session while locked.
-  - `supportedModes` is `[.background, .foreground(.dynamic)]`: it runs in
-    the background and continues in the foreground only when the start needs
-    the app (see Foreground).
+  - `supportedModes` is `[.background]` only, so iOS treats the control as
+    an action, never as a launcher that opens the app; the App Store bundle
+    check requires it.
   - It reaches the host through `ToggleFlowSessionIntent.handler`, which the app
     sets as it launches (`HostSessionController`). The extension never sets
     it; `perform` there throws.
@@ -1125,13 +1126,12 @@ Center or on the Lock Screen.
   ActivityKit's answer (`settle()`) before the intent returns. With Live
   Activities off, or the request refused, the session ends at once, as the
   user's End (`controlNeedsForeground`), and the start needs the foreground.
-- **Foreground.** When the start needs the foreground, the intent calls
-  `continueInForeground(alwaysConfirm: false)`. The core remembers the start
-  for `controlForegroundWindow` (10 s): the app's next arrival in the
-  foreground within it starts the session as `userStartSession` does, where
-  the permission prompt or "Microphone off" can show. A declined or failed
-  continuation (`controlForegroundDeclined`), any session start or end, and
-  the window passing forget it.
+- **Foreground.** When the start needs the foreground, the intent fails
+  (`SessionControlNeedsApp`) and the core remembers the start for
+  `controlForegroundWindow` (30 s): the app's next arrival in the foreground
+  within it, opened by the user, starts the session as `userStartSession`
+  does, where the permission prompt or "Microphone off" can show. Any session
+  start or end, and the window passing, forget it.
 - **Metadata.** iOS learns the intent from `Metadata.appintents` in the app
   and in the extension ([Build and targets](#build-and-targets-iosmakefile)).
   The App Store bundle check requires both.
@@ -3302,9 +3302,10 @@ merge (AGENTS.md).
   and on the Lock Screen; with the app not running, suspended and in front:
   a press starts a session (Live Activity, microphone indicator) without
   opening the app, the keyboard then dictates without a bounce, and the next
-  press ends it; on a locked iPhone it asks for Face ID first; with the
-  microphone not yet allowed, or Live Activities off, it opens the app and
-  starts there.
+  press ends it; on a locked iPhone it asks for Face ID first; it shows as an
+  action, not as opening the app; with the microphone not yet allowed, or
+  Live Activities off, it says to open LocalFlow, and opening it within 30 s
+  starts the session there.
 - **Live Activity:** the compact, minimal and expanded island and the Lock
   Screen while ready, recording, transcribing and preparing, in dark and
   light; the morph as recording starts and stops; the activity going at End

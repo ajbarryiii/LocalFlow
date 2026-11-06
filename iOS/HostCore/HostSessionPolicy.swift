@@ -99,9 +99,9 @@ enum HostSessionPolicy {
         return false
     }
 
-    /// How long a session control start that needs the app waits for it to arrive in the foreground
+    /// How long a session control start that needs the app waits for the user to open it
     /// (ARCHITECTURE.md, "Session control", Foreground).
-    static let controlForegroundWindow: TimeInterval = 10
+    static let controlForegroundWindow: TimeInterval = 30
 
     /// The app arrived in front soon enough after the press to start its session. Fails closed on a backward
     /// clock jump past the tolerance.

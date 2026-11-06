@@ -139,7 +139,7 @@ final class HostSessionController: ObservableObject, SessionControlHandling {
         case .ended, .started:
             return .done
         case .needsForeground:
-            return .continueInForeground
+            return .needsApp
         case .startedInBackground:
             let sessionID = core.sessionID
             syncActivity(mayStart: true)
@@ -147,12 +147,8 @@ final class HostSessionController: ObservableObject, SessionControlHandling {
             // Ended meanwhile for another reason: nothing to start in front.
             guard core.session == .active, core.sessionID == sessionID else { return .done }
             core.controlNeedsForeground()
-            return .continueInForeground
+            return .needsApp
         }
-    }
-
-    func controlForegroundDeclined() {
-        core?.controlForegroundDeclined()
     }
 
     func cancelDictation() {
