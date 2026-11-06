@@ -6,7 +6,7 @@ import UIKit
 /// runtime, the timer, the `.intent` observation and the UIKit lifecycle events. It mirrors the core's
 /// state into SwiftUI and decides when the bounce screen shows.
 @MainActor
-final class HostSessionController: ObservableObject {
+final class HostSessionController: ObservableObject, SessionControlHandling {
     static let shared = HostSessionController()
 
     @Published private(set) var session: HostStatus.Session = .inactive
@@ -128,6 +128,33 @@ final class HostSessionController: ObservableObject {
         core?.userStopDictation()
     }
 
+    // MARK: Session control (ARCHITECTURE.md, "Session control")
+
+    /// A press of the session control, run by iOS as `ToggleFlowSessionIntent`, possibly in a process it has just
+    /// launched in the background. A background start shows its Live Activity before this returns, or ends.
+    func toggleSessionFromControl() async -> SessionControlStep {
+        launch()
+        guard let core else { return .unavailable }
+        switch core.controlToggleSession() {
+        case .ended, .started:
+            return .done
+        case .needsForeground:
+            return .continueInForeground
+        case .startedInBackground:
+            let sessionID = core.sessionID
+            syncActivity(mayStart: true)
+            if await activity.settle() { return .done }
+            // Ended meanwhile for another reason: nothing to start in front.
+            guard core.session == .active, core.sessionID == sessionID else { return .done }
+            core.controlNeedsForeground()
+            return .continueInForeground
+        }
+    }
+
+    func controlForegroundDeclined() {
+        core?.controlForegroundDeclined()
+    }
+
     func cancelDictation() {
         core?.userCancelDictation()
     }
@@ -216,13 +243,14 @@ final class HostSessionController: ObservableObject {
         syncActivity()   // a change held for `SessionActivityPolicy.minimumWaitDisplay` lands on a tick
     }
 
-    /// Only an active app may start an activity; one that is merely inactive is still on its way.
-    private func syncActivity() {
+    /// Only an active app may start an activity, one that is merely inactive is still on its way, unless the
+    /// session control's intent is running (`mayStart`).
+    private func syncActivity(mayStart: Bool = false) {
         guard let core else { return }
         activity.sync(SessionActivityInput(sessionID: core.sessionID, session: core.session,
                                            sessionExpiresAt: core.sessionExpiresAt, dictation: core.current,
                                            model: core.transcriber.modelState),
-                      isForeground: UIApplication.shared.applicationState == .active, now: Date())
+                      mayStart: mayStart || UIApplication.shared.applicationState == .active, now: Date())
     }
 
     private func refresh() {

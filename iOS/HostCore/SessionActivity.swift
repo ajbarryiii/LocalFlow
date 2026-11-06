@@ -28,6 +28,8 @@ protocol SessionActivityBackend: AnyObject {
     func update(_ content: SessionActivityContent)
     /// Ends the activity this run started and removes it at once.
     func end()
+    /// Waits until ActivityKit has answered every call made so far; whether the activity this run started exists.
+    func settle() async -> Bool
 }
 
 /// Which state the activity shows for the host's state, and when that state goes stale. Pure.
@@ -90,7 +92,9 @@ final class SessionActivityDriver {
         backend.endLeftovers()
     }
 
-    func sync(_ input: SessionActivityInput, isForeground: Bool, now: Date) {
+    /// `mayStart`: ActivityKit would start an activity now, because the app is active or the session control's
+    /// intent is running.
+    func sync(_ input: SessionActivityInput, mayStart: Bool, now: Date) {
         let desired = SessionActivityPolicy.state(for: input)
         if let current = shown, desired == nil || current.sessionID != input.sessionID {
             backend.end()
@@ -108,13 +112,28 @@ final class SessionActivityDriver {
             shown = (input.sessionID, content, now)
             return
         }
-        // ActivityKit starts an activity only in the foreground. Switched off or refused: nothing, and no prompt.
-        guard isForeground, refusedSessionID != input.sessionID, backend.areActivitiesEnabled else { return }
+        // ActivityKit starts an activity only in the foreground or in a Live Activity intent. Switched off or
+        // refused: nothing, and no prompt.
+        guard mayStart, refusedSessionID != input.sessionID, backend.areActivitiesEnabled else { return }
         let content = SessionActivityContent(state: desired, staleDate: SessionActivityPolicy.staleDate(for: desired, now: now))
         if backend.start(content) {
             shown = (input.sessionID, content, now)
         } else {
             refusedSessionID = input.sessionID
         }
+    }
+
+    /// Whether the activity the driver shows exists once ActivityKit has answered (ARCHITECTURE.md, "Live
+    /// Activity", Settle). A request refused once queued counts as refused: forgotten, and not asked again for
+    /// that session.
+    func settle() async -> Bool {
+        guard let before = shown else { return false }
+        let exists = await backend.settle()
+        guard let current = shown, current.sessionID == before.sessionID else { return false }
+        if !exists {
+            refusedSessionID = current.sessionID
+            shown = nil
+        }
+        return exists
     }
 }

@@ -18,6 +18,19 @@ struct HostEnvironment {
                                       _ spokenNumbersEnabled: Bool) -> (text: String, pressEnter: Bool)
 }
 
+/// What a press of the session control did (ARCHITECTURE.md, "Session control").
+enum SessionControlOutcome: Equatable, Sendable {
+    /// A starting or active session ended, as the user's End.
+    case ended
+    /// The app is in front: the session starts as `userStartSession` starts it.
+    case started
+    /// Capture is running in the background. The caller shows the session's Live Activity now, or calls
+    /// `controlNeedsForeground`.
+    case startedInBackground
+    /// The start needs the app in front; it is remembered for `HostSessionPolicy.controlForegroundWindow`.
+    case needsForeground
+}
+
 /// The host side of the protocol: session lifecycle, idle expiry, reconciliation, run recovery,
 /// watchdog, capture supervision, transcription and status publishing. `HostSessionController` (App)
 /// drives it from timers, Darwin notifications and UIKit events and mirrors its state into SwiftUI.
@@ -60,6 +73,8 @@ final class HostSessionCore {
     private var sessionGeneration: UInt64 = 0
     /// A session start waiting for the foreground (the permission prompt was answered elsewhere).
     private var pendingStart: UInt64?
+    /// A session control press whose start needs the app in front, and when it was made.
+    private var controlStartRequestedAt: Date?
     private var transcription: Transcription?
     private var needsPublish = false
     private var lastStatusAt: Date?
@@ -157,6 +172,10 @@ final class HostSessionCore {
             drainClosing(now)   // the tail never arrived (a stalled engine): transcribe what did
         }
         if pendingStart != nil, !slot.isInProgress { endSession(.startFailed(.audioSessionFailed), now) }
+        if let requested = controlStartRequestedAt,
+           !HostSessionPolicy.isControlStartFresh(requestedAt: requested, now: now) {
+            controlStartRequestedAt = nil
+        }
         endSessionIfIdleExpired(now)
         releaseModelIfPending()
         let live = session != .inactive || foreground || slot.isInProgress
@@ -182,6 +201,14 @@ final class HostSessionCore {
         let now = environment.now()
         if noteForeground(now) {
             if let pending = pendingStart { continueSessionStart(pending, now) }
+            // The session control's start that needed the app (ARCHITECTURE.md, "Session control", Foreground).
+            if let requested = controlStartRequestedAt {
+                controlStartRequestedAt = nil
+                if session == .inactive, !isLocked, HostSessionPolicy.isControlStartFresh(requestedAt: requested, now: now) {
+                    transcriber.prepare()
+                    startSession(now)
+                }
+            }
             // A choice made while the app could not apply it takes effect now that it is in front.
             if session == .active, capture.needsReconfiguration { reconfigureCapture(now) }
             reconcilePass(.activation, now)
@@ -220,6 +247,52 @@ final class HostSessionCore {
         let now = environment.now()
         endSession(.user, now)
         flush(now)
+    }
+
+    // MARK: Session control (ARCHITECTURE.md, "Session control")
+
+    /// A press of the session control, which iOS runs as an `AudioRecordingIntent` after authenticating the user:
+    /// ends a starting or active session, or starts one, in the background when the app is there.
+    func controlToggleSession() -> SessionControlOutcome {
+        let now = environment.now()
+        defer { flush(now) }
+        guard isLaunched else { return requestForegroundStart(now) }
+        if session != .inactive {
+            endSession(.user, now)
+            return .ended
+        }
+        // iOS authenticated the user before running the intent; a suspended app may have missed the unlock.
+        unlatchIfProtectedDataAvailable()
+        if noteForeground(now), !isLocked {
+            transcriber.prepare()
+            startSession(now)
+            return .started
+        }
+        // The prompt and "Microphone off" need the app, and nothing starts while locked.
+        guard !isLocked, capture.permission == .granted else { return requestForegroundStart(now) }
+        transcriber.prepare()
+        startSession(now, inBackground: true)
+        // A capture start iOS refused ended the session as a failed start.
+        return session == .active ? .startedInBackground : requestForegroundStart(now)
+    }
+
+    /// The background start's Live Activity does not show: the session ends at once, as the user's End, and the
+    /// start waits for the foreground instead.
+    func controlNeedsForeground() {
+        let now = environment.now()
+        endSession(.user, now)
+        controlStartRequestedAt = now
+        flush(now)
+    }
+
+    /// The intent could not continue in the foreground: the start it asked for is forgotten.
+    func controlForegroundDeclined() {
+        controlStartRequestedAt = nil
+    }
+
+    private func requestForegroundStart(_ now: Date) -> SessionControlOutcome {
+        controlStartRequestedAt = now
+        return .needsForeground
     }
 
     /// The bounce screen's Stop: transcribe what was recorded.
@@ -331,7 +404,8 @@ final class HostSessionCore {
         // A request read past the deadline (no tick since, as after a resume) never joins the expired session.
         endSessionIfIdleExpired(now)
         guard let isForeground = HostSessionPolicy.reconcileForeground(
-            trigger: trigger, isForeground: environment.isForeground(), hasBeenForeground: hasBeenForeground) else { return }
+            trigger: trigger, isForeground: environment.isForeground(), hasBeenForeground: hasBeenForeground,
+            sessionLive: session != .inactive) else { return }
         let intent = store.readIntent()
         switch HostReconciler.action(intent: intent, current: slot.current, knownRequestIDs: knownRequestIDs.set,
                                      isForeground: isForeground, sessionActive: session == .active, now: now) {
@@ -616,21 +690,24 @@ final class HostSessionCore {
 
     // MARK: Session
 
-    private func startSession(_ now: Date) {
+    /// `inBackground`: the session control's start, with permission granted and the latch clear, which iOS lets
+    /// capture start in the background.
+    private func startSession(_ now: Date, inBackground: Bool = false) {
         guard session == .inactive else { return }
         sessionGeneration &+= 1
         session = .starting
         sessionID = UUID()
         sessionError = nil
+        controlStartRequestedAt = nil
         needsPublish = true
-        continueSessionStart(sessionGeneration, now)
+        continueSessionStart(sessionGeneration, now, inBackground: inBackground)
     }
 
-    private func continueSessionStart(_ generation: UInt64, _ now: Date) {
+    private func continueSessionStart(_ generation: UInt64, _ now: Date, inBackground: Bool = false) {
         guard generation == sessionGeneration, session == .starting else { return }
-        // A session never starts in the background (capture and the permission prompt need the front), nor
-        // while locked.
-        guard environment.isForeground(), !isLocked else {
+        // A session never starts in the background (capture and the permission prompt need the front), except
+        // the session control's, nor while locked.
+        guard environment.isForeground() || inBackground, !isLocked else {
             pendingStart = generation
             return
         }
@@ -683,6 +760,7 @@ final class HostSessionCore {
         guard session != .inactive else { return }
         sessionGeneration &+= 1
         pendingStart = nil
+        controlStartRequestedAt = nil
         if let phase = slot.phase, slot.isInProgress,
            let outcome = HostSessionPolicy.sessionEndOutcome(reason, phase: phase) {
             endInProgress(outcome, now)

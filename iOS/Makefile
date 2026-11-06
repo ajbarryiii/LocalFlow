@@ -119,6 +119,9 @@ KEYBOARD_SWIFT_SOURCES ?= $(call swift_sources,Keyboard)
 ACTIVITY_SWIFT_SOURCES ?= $(call swift_sources,Activity)
 ACTIVITYCORE_SOURCES ?= $(call swift_sources,ActivityCore)
 ACTIVITY_ATTRIBUTES_SOURCES ?= Activity/SessionActivityAttributes.swift
+# The session control's App Intent (ARCHITECTURE.md, "Session control"): the app performs it, the extension's control
+# names it, and both bundles carry its App Intents metadata.
+SESSION_CONTROL_INTENT_SOURCES ?= Activity/SessionControlIntent.swift
 # The ridge mark, drawn as the keyboard draws it; KeyboardLayout has its box type; DotWave the swell the strip shares with
 # the keyboard's wave. All are Foundation only.
 ACTIVITY_KEYBOARDCORE_SOURCES ?= KeyboardCore/RidgeMark.swift KeyboardCore/KeyboardLayout.swift KeyboardCore/DotWave.swift
@@ -147,7 +150,7 @@ DICTATION_CORE_SOURCES ?= ../Sources/LocalDictationCore.swift ../Sources/SpokenN
 # TextInsertionFormatter uses it, so the app, the keyboard and the host tests compile it.
 INSERTION_CONTEXT_SOURCES ?= ../Sources/InsertionContextFormatter.swift
 APP_SOURCES = $(APP_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(HOSTCORE_SOURCES) $(PARAKEET_SOURCES) $(DICTIONARY_SOURCES) $(DICTATION_CORE_SOURCES) \
-	$(ACTIVITYCORE_SOURCES) $(ACTIVITY_ATTRIBUTES_SOURCES) $(APP_KEYBOARDCORE_SOURCES)
+	$(ACTIVITYCORE_SOURCES) $(ACTIVITY_ATTRIBUTES_SOURCES) $(SESSION_CONTROL_INTENT_SOURCES) $(APP_KEYBOARDCORE_SOURCES)
 KEYBOARD_SOURCES = $(KEYBOARD_SWIFT_SOURCES) $(SHARED_SOURCES) $(INSERTION_CONTEXT_SOURCES) $(KEYBOARDCORE_SOURCES)
 ACTIVITY_SOURCES = $(ACTIVITY_SWIFT_SOURCES) $(ACTIVITYCORE_SOURCES) $(ACTIVITY_KEYBOARDCORE_SOURCES)
 
@@ -161,6 +164,9 @@ ACTIVITY_BINARY = $(OBJ_DIR)/LocalFlowActivity
 APP_ENTITLEMENTS = $(OBJ_DIR)/LocalFlow.xcent
 KEYBOARD_ENTITLEMENTS = $(OBJ_DIR)/LocalFlowKeyboard.xcent
 ACTIVITY_ENTITLEMENTS = $(OBJ_DIR)/LocalFlowActivity.xcent
+# Swift const values of the intent's source, from each binary's compile, for its Metadata.appintents.
+APP_CONST_VALUES = $(OBJ_DIR)/appintents/LocalFlow.swiftconstvalues
+ACTIVITY_CONST_VALUES = $(OBJ_DIR)/appintents/LocalFlowActivity.swiftconstvalues
 APP_SIGNATURE = $(APP_BUNDLE)/_CodeSignature/CodeResources
 ICON_CATALOG = $(OBJ_DIR)/Assets.xcassets
 IPA = $(BUILD_DIR)/LocalFlow.ipa
@@ -187,6 +193,28 @@ KEYBOARD_LINK_FLAGS = -Xlinker -e -Xlinker _NSExtensionMain
 # @main widget bundle; with the bundle's own main as the entry, the process exits as soon as WidgetKit launches it.
 ACTIVITY_SWIFT_FLAGS = -module-name LocalFlowActivity -application-extension
 ACTIVITY_LINK_FLAGS = $(KEYBOARD_LINK_FLAGS)
+
+# App Intents metadata, as Xcode makes it (ARCHITECTURE.md, "Build and targets"). The compile emits the intent
+# source's const values through an output file map naming only that file (the other outputs stay temporary), with
+# Xcode's protocol list; appintentsmetadataprocessor then writes the bundle's Metadata.appintents.
+APPINTENTS_PROTOCOLS = Config/AppIntentsConstProtocols.json
+TOOLCHAIN_DIR := $(abspath $(dir $(shell xcrun -f swiftc))/../..)
+# $(1): the const values file. Its output file map sits beside it.
+const_values_flags = -emit-const-values -output-file-map "$(1).map.json" \
+	-Xfrontend -const-gather-protocols-file -Xfrontend "$(abspath $(APPINTENTS_PROTOCOLS))"
+# $(1): the const values file.
+write_const_values_map = mkdir -p "$(dir $(1))" && rm -f "$(1)" && \
+	printf '{"%s": {"const-values": "%s"}}\n' "$(SESSION_CONTROL_INTENT_SOURCES)" "$(abspath $(1))" > "$(1).map.json"
+# $(1): module, $(2): bundle identifier, $(3): bundle directory, $(4): binary, $(5): const values file.
+appintents_metadata = list="$(5).lists" && printf '%s\n' "$(SESSION_CONTROL_INTENT_SOURCES)" > "$$list.sources" && \
+	printf '%s\n' "$(5)" > "$$list.values" && rm -rf "$(3)/Metadata.appintents" && \
+	xcrun appintentsmetadataprocessor --toolchain-dir "$(TOOLCHAIN_DIR)" --module-name $(1) --sdk-root "$(SDK_PATH)" \
+		--xcode-version "$(XCODE_BUILD)" --platform-family iOS --deployment-target $(DEPLOYMENT_TARGET) \
+		--bundle-identifier $(2) --output "$(3)" --target-triple $(TARGET) --binary-file "$(4)" \
+		--source-file-list "$$list.sources" --swift-const-vals-list "$$list.values" --compile-time-extraction \
+		--deployment-aware-processing --no-app-shortcuts-localization > "$$list.log" 2>&1 && \
+	[ -f "$(3)/Metadata.appintents/extract.actionsdata" ] && grep -q '"ToggleFlowSessionIntent"' "$(3)/Metadata.appintents/extract.actionsdata" || \
+		{ cat "$$list.log" >&2; echo "No App Intents metadata for $(1)" >&2; exit 1; }
 
 ifeq ($(PLATFORM),simulator)
 # The simulator reads entitlements from these sections, as Xcode arranges for
@@ -356,9 +384,10 @@ ifeq ($(PLATFORM),simulator)
 	@derq query -f xml -i "$@" -o "$@.der" --raw
 endif
 
-$(APP_BINARY): $(APP_SOURCES) $(CONFIG_STAMP) $(LINKED_APP_ENTITLEMENTS) Makefile
+$(APP_BINARY): $(APP_SOURCES) $(CONFIG_STAMP) $(LINKED_APP_ENTITLEMENTS) $(APPINTENTS_PROTOCOLS) Makefile
 	@mkdir -p "$(@D)"
-	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) -module-name LocalFlow \
+	@$(call write_const_values_map,$(APP_CONST_VALUES))
+	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) -module-name LocalFlow $(call const_values_flags,$(APP_CONST_VALUES)) \
 		$(call embedded_entitlements,$(APP_ENTITLEMENTS)) -o "$@" $(APP_SOURCES)
 
 $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITLEMENTS) Makefile
@@ -366,9 +395,11 @@ $(KEYBOARD_BINARY): $(KEYBOARD_SOURCES) $(CONFIG_STAMP) $(LINKED_KEYBOARD_ENTITL
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) $(KEYBOARD_SWIFT_FLAGS) $(KEYBOARD_LINK_FLAGS) \
 		$(call embedded_entitlements,$(KEYBOARD_ENTITLEMENTS)) -o "$@" $(KEYBOARD_SOURCES)
 
-$(ACTIVITY_BINARY): $(ACTIVITY_SOURCES) $(CONFIG_STAMP) $(LINKED_ACTIVITY_ENTITLEMENTS) Makefile
+$(ACTIVITY_BINARY): $(ACTIVITY_SOURCES) $(CONFIG_STAMP) $(LINKED_ACTIVITY_ENTITLEMENTS) $(APPINTENTS_PROTOCOLS) Makefile
 	@mkdir -p "$(@D)"
+	@$(call write_const_values_map,$(ACTIVITY_CONST_VALUES))
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SWIFT_OPTIMIZATION) $(ACTIVITY_SWIFT_FLAGS) $(ACTIVITY_LINK_FLAGS) \
+		$(call const_values_flags,$(ACTIVITY_CONST_VALUES)) \
 		$(call embedded_entitlements,$(ACTIVITY_ENTITLEMENTS)) -o "$@" $(ACTIVITY_SOURCES)
 
 $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY) $(APP_ENTITLEMENTS) $(KEYBOARD_ENTITLEMENTS) \
@@ -382,6 +413,8 @@ $(APP_SIGNATURE): $(APP_BINARY) $(KEYBOARD_BINARY) $(ACTIVITY_BINARY) $(APP_ENTI
 	@cp "$(APP_BINARY)" "$(APP_BUNDLE)/LocalFlow"
 	@cp "$(KEYBOARD_BINARY)" "$(APPEX_BUNDLE)/LocalFlowKeyboard"
 	@cp "$(ACTIVITY_BINARY)" "$(ACTIVITY_APPEX_BUNDLE)/LocalFlowActivity"
+	@$(call appintents_metadata,LocalFlow,$(BUNDLE_ID),$(APP_BUNDLE),$(APP_BINARY),$(APP_CONST_VALUES))
+	@$(call appintents_metadata,LocalFlowActivity,$(ACTIVITY_BUNDLE_ID),$(ACTIVITY_APPEX_BUNDLE),$(ACTIVITY_BINARY),$(ACTIVITY_CONST_VALUES))
 	@$(call info_plist,Config/LocalFlow-Info.plist,$(APP_BUNDLE)/Info.plist,$(BUNDLE_ID))
 	@plutil -replace CFBundleURLTypes.0.CFBundleURLName -string "$(BUNDLE_ID)" "$(APP_BUNDLE)/Info.plist"
 	@plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes -json '["$(URL_SCHEME)"]' "$(APP_BUNDLE)/Info.plist"

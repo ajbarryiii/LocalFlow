@@ -64,15 +64,28 @@ enum HostSessionPolicyTests {
     private static func testReconcileForegroundFlag() {
         typealias Policy = HostSessionPolicy
         for trigger in [ReconcileTrigger.launch, .intentSignal, .poll, .activation] {
-            TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: true, hasBeenForeground: false), true)
-            TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: true), false)
-            // A prewarmed process never reconciles: it could only reject.
-            TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: false), nil)
+            for live in [false, true] {
+                TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: true, hasBeenForeground: false,
+                                                                   sessionLive: live), true)
+                TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: true,
+                                                                   sessionLive: live), false)
+            }
+            // A prewarmed process never reconciles without a session: it could only reject.
+            TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: false,
+                                                               sessionLive: false), nil)
+            // The session control started one in the background: the keyboard dictates into it without a bounce.
+            TestSupport.expectEqual(Policy.reconcileForeground(trigger: trigger, isForeground: false, hasBeenForeground: false,
+                                                               sessionLive: true), false)
         }
         // A URL is only a hint: in the background it neither admits nor rejects, whatever came before.
-        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: false), nil)
-        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: true), nil)
-        TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: true, hasBeenForeground: false), true)
+        for live in [false, true] {
+            TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: false,
+                                                               sessionLive: live), nil)
+            TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: false, hasBeenForeground: true,
+                                                               sessionLive: live), nil)
+            TestSupport.expectEqual(Policy.reconcileForeground(trigger: .urlOpen, isForeground: true, hasBeenForeground: false,
+                                                               sessionLive: live), true)
+        }
     }
 
     private static func testStarvationAndElapsedCap() {

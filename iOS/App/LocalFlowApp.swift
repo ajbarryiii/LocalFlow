@@ -10,6 +10,8 @@ struct LocalFlowApp: App {
         #if LOCALFLOW_SELFTEST
         SelfTest.startIfRequested()
         #endif
+        // Before iOS can run the session control's intent in a process it launched for it.
+        ToggleFlowSessionIntent.handler = HostSessionController.shared
         DisplayFace.styleLargeTitles()
     }
 

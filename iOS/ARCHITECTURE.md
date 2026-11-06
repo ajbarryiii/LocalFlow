@@ -31,7 +31,10 @@ keyboards entirely. Those fields are out of scope.
 1. **Keyboard extensions cannot use the microphone** and have a small memory
    limit (tens of MB). The model (about 330 MB compiled encoder) and audio
    capture live in the containing app.
-2. **An app cannot start recording from the background.** It can keep
+2. **An app cannot start recording from the background**, except while
+   iOS runs one of its `AudioRecordingIntent`s, which must show a Live
+   Activity as recording starts or iOS stops the recording
+   ([Session control](#session-control-activity-hostcore)). It can keep
    recording in the background if the audio session was activated in the
    foreground and the `audio` background mode is declared.
 3. **Extensions have no supported API to open their containing app.** The
@@ -49,18 +52,22 @@ keyboards entirely. Those fields are out of scope.
    entitlement, which LocalFlow does not have.
 6. The encoder targets the `ios19` Core ML opset, so the deployment target is
    **iOS 26.0**.
-7. **A Live Activity starts only from the foreground**, and its views run in
+7. **A Live Activity starts only from the foreground**, or while iOS runs
+   one of the app's `LiveActivityIntent`s, and its views run in
    a separate WidgetKit extension that cannot animate on its own: only content
    updates (with transitions of at most two seconds) and live timers move it.
    iOS leaves the Dynamic Island out of screenshots and screen recordings.
 
 These lead to the "Flow session" design:
 
-- A session starts **only in the foreground and unlocked**, in one of two
-  ways: the user taps "Start session" in the app, or the app arrives in the
-  foreground (by the bounce or by the user) while a fresh `record` intent
-  from the keyboard is waiting. The host then admits that request and starts
-  recording at once, and the user swipes back.
+- A session starts **only at the user's request and unlocked**, in one of
+  three ways: the user taps "Start session" in the app; the app arrives in
+  the foreground (by the bounce or by the user) while a fresh `record` intent
+  from the keyboard is waiting, and the host admits that request and starts
+  recording at once, and the user swipes back; or the user presses the
+  session control (the Action button, Control Center or the Lock Screen),
+  which starts it without opening the app
+  ([Session control](#session-control-activity-hostcore)).
 - While the session is active, the app keeps one `AVAudioEngine` input
   running, in the background too, so later dictations start with no app
   switch. **Between dictations, captured buffers are dropped in the tap
@@ -85,7 +92,8 @@ iOS/
   App/                     containing app (SwiftUI, AVFoundation, Core ML, UIKit lifecycle)
   Keyboard/                keyboard extension (UIKit key area, SwiftUI top row, Core ML swipe encoder)
   ActivityCore/            the Live Activity's content state: app, Live Activity extension and tests
-  Activity/                Live Activity extension (WidgetKit, SwiftUI) and its ActivityKit attributes
+  Activity/                widget extension (WidgetKit, SwiftUI): the Live Activity, its ActivityKit
+                           attributes, and the session control and its App Intent
   Tests/                   dependency-free executable tests run on the macOS host
   Config/                  Info.plist, entitlements and privacy manifest templates
   scripts/                 build helpers and the App Store bundle checker
@@ -97,7 +105,8 @@ iOS/
   runner. UIKit, SwiftUI, AVFoundation and Core ML belong in
   `App/` and `Keyboard/`.
 - The app is compiled from `App/`, `Shared/`, `HostCore/`, `ActivityCore/`,
-  `Activity/SessionActivityAttributes.swift` and these macOS sources:
+  `Activity/SessionActivityAttributes.swift`,
+  `Activity/SessionControlIntent.swift` and these macOS sources:
   - `Sources/Parakeet/*.swift`: the model runtime (`LocalParakeetService`).
   - `Sources/Dictionary/*.swift`: the custom dictionary
     ([Custom dictionary](#custom-dictionary)).
@@ -531,9 +540,11 @@ drives it ([Host app](#host-app-app)).
 
 ### Session
 
-- **Start.** `userStartSession` (foreground and unlocked only) and the
-  admission of a request without a session start one. Capture starts only in
-  the foreground and unlocked; otherwise the start waits (`pendingStart`)
+- **Start.** `userStartSession` (foreground and unlocked only), the
+  admission of a request without a session, and the session control
+  (`controlToggleSession`, [Session control](#session-control-activity-hostcore))
+  start one. Capture starts only in the foreground and unlocked, or in the
+  session control's background start; otherwise the start waits (`pendingStart`)
   while a request is in progress, and with none in progress it ends as a
   failed start (`.audioSessionFailed`). The session is `starting` until
   capture is running, then `active`. `userStartSession` and every admission
@@ -624,7 +635,9 @@ The core reconciles:
 `.inactive` counts. A URL open is only a hint: before the app actually arrives
 in the foreground it does nothing, and the arrival reconciles with freshness
 judged at that moment. A process that has never been in the foreground (a
-prewarmed launch) skips reconciliation.
+prewarmed launch) skips reconciliation while no session is starting or
+active; a session the control started in the background reconciles as usual,
+so the keyboard dictates into it without a bounce.
 
 Applying the reconciler's actions:
 
@@ -697,7 +710,8 @@ Applying the reconciler's actions:
 synthetic source in self-test builds, a fake in tests.
 
 - `start()` configures and activates the audio session and starts the
-  engine; it is foreground-only and is what starts a session.
+  engine; it is foreground-only, except in the session control's background
+  start, and is what starts a session.
 - `restart()` rebuilds the engine inside the audio session that is already
   active, without activating anything, so it is allowed in the background and
   while locked. It throws when that audio session is gone.
@@ -1004,8 +1018,9 @@ no buttons.
   change and on every tick.
   - **Launch.** Every activity an earlier run left is ended at once, before a
     session can start.
-  - **Start.** Only with the app active (ActivityKit's rule), the user's Live
-    Activities switch on, and a session `active`. A start the system refuses
+  - **Start.** Only with the app active (ActivityKit's rule) or while the
+    session control's intent runs (`mayStart`), the user's Live Activities
+    switch on, and a session `active`. A start the system refuses
     is not asked again for that session. The app never prompts or explains
     when Live Activities are off; iOS asks the user itself on the first
     activity.
@@ -1015,6 +1030,10 @@ no buttons.
     `preparing`) shows at least `minimumWaitDisplay` (0.5 s) before giving
     way to anything but `recording`, so a fast transcription reads as a beat
     rather than a flicker; a new recording and a session's end are never held.
+  - **Settle.** `settle()` waits until ActivityKit has answered every call
+    made so far and reports whether the activity the driver shows exists. A
+    request ActivityKit refused once queued counts as refused: the driver
+    forgets it and does not ask again for that session.
   - **End.** The moment the session ends for any reason, or a different
     session is current, with the immediate dismissal policy.
   - **Stale date.** `ready`: `endsAt` plus `staleGrace` (30 s); `recording`:
@@ -1058,8 +1077,64 @@ no buttons.
 - **Build.** `LocalFlowActivity.appex` (`$(BUNDLE_ID).activity`), a
   `com.apple.widgetkit-extension` linked with the `_NSExtensionMain` entry
   point as Xcode links every extension; no entitlements beyond the signing
-  identity's, no App Group, no push, no resources. The app's Info.plist sets
-  `NSSupportsLiveActivities`.
+  identity's, no App Group, no push, no resources other than its App Intents
+  metadata. Its widget bundle also holds the session control
+  ([Session control](#session-control-activity-hostcore)). The app's
+  Info.plist sets `NSSupportsLiveActivities`.
+
+## Session control (Activity/, HostCore/)
+
+The "Flow Session" control starts a Flow session, or ends the one running,
+without opening the app. The user puts it on the Action button, in Control
+Center or on the Lock Screen.
+
+- **Control.** `SessionControl` (`Activity/SessionControlWidget.swift`, in
+  the extension's widget bundle) is a `ControlWidgetButton` showing the SF
+  Symbol `waveform` and named "Flow Session". It is a button, not a toggle:
+  a toggle's state is read in the extension, which reads no files, settings
+  or App Group. The session's Live Activity and the microphone indicator
+  show whether a session runs.
+- **Intent.** `ToggleFlowSessionIntent` (`Activity/SessionControlIntent.swift`,
+  compiled into the app and the extension) is an `AudioRecordingIntent` and a
+  `LiveActivityIntent`, so iOS runs it in the app's process, launching the
+  app in the background when it is not running. It has no parameters, no
+  dialog and no result value.
+  - `authenticationPolicy` is `.requiresAuthentication`: on a locked iPhone
+    iOS asks for Face ID or the passcode before it runs, so the control never
+    starts a session while locked.
+  - `supportedModes` is `[.background, .foreground(.dynamic)]`: it runs in
+    the background and continues in the foreground only when the start needs
+    the app (see Foreground).
+  - It reaches the host through `ToggleFlowSessionIntent.handler`, which the app
+    sets as it launches (`HostSessionController`). The extension never sets
+    it; `perform` there throws.
+- **Toggle** (`HostSessionCore.controlToggleSession`, tested):
+  - A session `starting` or `active` ends, as the user's End
+    ([Session](#session)).
+  - With no session and the app in the foreground, it starts as
+    `userStartSession` does.
+  - With no session and the app in the background, the call lifts the lock
+    latch when protected data is available, as the foreground events do
+    ([Device lock](#device-lock)). With the latch still set, or microphone
+    permission not granted (the prompt and "Microphone off" need the app),
+    the start needs the foreground. Otherwise the model starts preparing and
+    capture starts in the background; a capture start that fails ends the
+    session as a failed start, and the start needs the foreground.
+- **Its Live Activity is required.** After a background start, the controller
+  lets the Live Activity driver start the activity (`mayStart`) and waits for
+  ActivityKit's answer (`settle()`) before the intent returns. With Live
+  Activities off, or the request refused, the session ends at once, as the
+  user's End (`controlNeedsForeground`), and the start needs the foreground.
+- **Foreground.** When the start needs the foreground, the intent calls
+  `continueInForeground(alwaysConfirm: false)`. The core remembers the start
+  for `controlForegroundWindow` (10 s): the app's next arrival in the
+  foreground within it starts the session as `userStartSession` does, where
+  the permission prompt or "Microphone off" can show. A declined or failed
+  continuation (`controlForegroundDeclined`), any session start or end, and
+  the window passing forget it.
+- **Metadata.** iOS learns the intent from `Metadata.appintents` in the app
+  and in the extension ([Build and targets](#build-and-targets-iosmakefile)).
+  The App Store bundle check requires both.
 
 ## Keyboard extension (Keyboard/)
 
@@ -3032,6 +3107,11 @@ app reads only the count. The models are fixed.
   - Simulator builds embed the entitlements in each executable's
     `__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The extensions
     are signed before the app.
+  - The app and the Live Activity also emit the Swift const values of
+    `Activity/SessionControlIntent.swift` (`-emit-const-values` through an
+    output file map, with Xcode's protocol list in
+    `Config/AppIntentsConstProtocols.json`), and `appintentsmetadataprocessor`
+    turns them into each bundle's `Metadata.appintents`, as Xcode does.
   - Every build compiles the app icon into `Assets.car` with `actool`,
     records Xcode's build metadata (`DTXcode`, `DTSDKBuild` and the rest) in
     every Info.plist, copies each target's privacy manifest, and copies the
@@ -3131,7 +3211,9 @@ app reads only the count. The models are fixed.
    until it appears again ("Word autocorrect", Owned
    words). What it persists about fields is content-free: trait fingerprints
    and layout choices.
-6. Capture requires a session started in the foreground. Recording requires a
+6. Capture requires a session the user started: in the foreground, or with
+   the session control after iOS authenticated the user; a background start
+   whose Live Activity does not show ends at once. Recording requires a
    fresh keyboard intent that the host admits. Recording ends at the maximum
    duration or when the keyboard has been gone too long. Device lock cancels
    a dictation in progress and admits none until unlock; the session ends at
@@ -3216,6 +3298,13 @@ merge (AGENTS.md).
   cancelled at lock, dictation from another app after unlock without opening
   LocalFlow, a session that idles out while locked, then the first bounce
   after unlock starting a new session).
+- **Session control:** the control on the Action button, in Control Center
+  and on the Lock Screen; with the app not running, suspended and in front:
+  a press starts a session (Live Activity, microphone indicator) without
+  opening the app, the keyboard then dictates without a bounce, and the next
+  press ends it; on a locked iPhone it asks for Face ID first; with the
+  microphone not yet allowed, or Live Activities off, it opens the app and
+  starts there.
 - **Live Activity:** the compact, minimal and expanded island and the Lock
   Screen while ready, recording, transcribing and preparing, in dark and
   light; the morph as recording starts and stops; the activity going at End

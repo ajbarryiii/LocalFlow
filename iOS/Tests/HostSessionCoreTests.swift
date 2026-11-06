@@ -54,6 +54,14 @@ enum HostSessionCoreTests {
             ("recordingStreamsWhileRecorded", isolated(testRecordingStreamsWhileRecorded)),
             ("staleRequestNeverFeedsANewerStream", isolated(testStaleRequestNeverFeedsANewerStream)),
             ("cancelLockAndExpiryCancelTheStream", isolated(testCancelLockAndExpiryCancelTheStream)),
+            ("controlStartsInTheBackground", isolated(testControlStartsInTheBackground)),
+            ("controlInTheForegroundStartsAsTheUser", isolated(testControlInTheForegroundStartsAsTheUser)),
+            ("controlWaitsForTheForegroundForPermission", isolated(testControlWaitsForTheForegroundForPermission)),
+            ("controlForegroundStartIsForgotten", isolated(testControlForegroundStartIsForgotten)),
+            ("controlNeverStartsWhileLocked", isolated(testControlNeverStartsWhileLocked)),
+            ("controlBackgroundStartFailureWaitsForTheForeground",
+             isolated(testControlBackgroundStartFailureWaitsForTheForeground)),
+            ("controlWithoutItsActivityEnds", isolated(testControlWithoutItsActivityEnds)),
         ]
     }
 
@@ -1315,6 +1323,177 @@ enum HostSessionCoreTests {
         TestSupport.expect(h.transcriber.begunStreams.last!.isCancelled, "the session end kept the stream")
         TestSupport.expectEqual(h.transcriber.begunStreams.count, 5)
     }
+
+    // MARK: Session control (ARCHITECTURE.md, "Session control")
+
+    /// A press with the app in the background, in a process never in the foreground: capture and the model start
+    /// there, the keyboard's next record is admitted without a bounce, and the next press ends the session.
+    @MainActor
+    private static func testControlStartsInTheBackground() {
+        let h = CoreHarness(launch: false)
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.core.launch()
+        TestSupport.expectEqual(h.control(), .startedInBackground)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.status?.session, .active)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        TestSupport.expectEqual(h.transcriber.prepareCount, 1)
+        h.writeIntent(.record, R)
+        h.core.reconcile(.intentSignal)
+        TestSupport.expectEqual(h.core.current?.requestID, R)
+        TestSupport.expectEqual(h.core.current?.phase, .starting)
+        TestSupport.expectEqual(h.control(), .ended)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, nil)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
+        TestSupport.expectEqual(h.capture.isRunning, false)
+        // Nothing is left waiting: the app arriving in front starts nothing.
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .inactive)
+    }
+
+    /// With the app in front (Control Center pulled over it), a press starts the session as Start does, and the next
+    /// press ends it as End does, cancelling a recording in progress.
+    @MainActor
+    private static func testControlInTheForegroundStartsAsTheUser() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        TestSupport.expectEqual(h.control(), .started)
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+        h.record(R)
+        TestSupport.expectEqual(h.control(), .ended)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.dictation?.phase, .cancelled)
+        TestSupport.expectEqual(h.status?.dictation?.error, .sessionInactive)
+        TestSupport.expectEqual(h.status?.error, nil)
+    }
+
+    /// Without microphone permission the start needs the app: nothing starts or prompts in the background, and the
+    /// app's arrival in front within the window starts the session there, prompt and "Microphone off" included.
+    @MainActor
+    private static func testControlWaitsForTheForegroundForPermission() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        h.capture.permission = .undetermined
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.capture.hasPendingRequest, false)
+        h.clock.now += HostSessionPolicy.controlForegroundWindow - 1
+        h.core.tick()
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .starting)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.capture.hasPendingRequest }, "no prompt in front")
+        h.capture.answer(true)
+        TestSupport.expect(TestSupport.waitUntil(timeout: 2) { h.core.session == .active }, "grant ignored")
+        h.core.userEndSession()
+
+        // Denied: the session fails in front, where Home shows "Microphone off".
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        h.capture.permission = .denied
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        TestSupport.expectEqual(h.status?.error, nil)
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .microphonePermissionDenied)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+    }
+
+    /// A start waiting for the foreground is forgotten once the window passes or the continuation is declined, so
+    /// opening the app later never turns the microphone on by itself.
+    @MainActor
+    private static func testControlForegroundStartIsForgotten() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.capture.permission = .undetermined
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        h.clock.now += HostSessionPolicy.controlForegroundWindow + 0.1
+        h.core.tick()
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .inactive)
+
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        h.core.controlForegroundDeclined()
+        h.clock.now += 1
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .inactive)
+        _ = TestSupport.waitUntil(timeout: 0.1) { false }
+        TestSupport.expectEqual(h.capture.hasPendingRequest, false)
+    }
+
+    /// iOS authenticates the user before running the control's intent. With protected data still unavailable the
+    /// lock latch stays and nothing starts in the background; once available, the call itself lifts a latch the
+    /// suspended app never saw lifted.
+    @MainActor
+    private static func testControlNeverStartsWhileLocked() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        h.clock.protectedDataAvailable = false
+        h.core.deviceWillLock()
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.capture.startCount, 0)
+        h.clock.now += 30
+        h.clock.protectedDataAvailable = true
+        TestSupport.expectEqual(h.control(), .startedInBackground)
+        TestSupport.expectEqual(h.core.isLocked, false)
+        TestSupport.expectEqual(h.capture.startCount, 1)
+    }
+
+    /// A capture start iOS refuses in the background ends as a failed start; the app's arrival in front starts it.
+    @MainActor
+    private static func testControlBackgroundStartFailureWaitsForTheForeground() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        h.capture.failStart = true
+        TestSupport.expectEqual(h.control(), .needsForeground)
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.status?.error, .audioSessionFailed)
+        h.capture.failStart = false
+        h.clock.now += 2
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.status?.error, nil)
+    }
+
+    /// A background start whose Live Activity does not show ends at once, as the user's End, and waits for the
+    /// foreground instead.
+    @MainActor
+    private static func testControlWithoutItsActivityEnds() {
+        let h = CoreHarness()
+        defer { h.cleanup() }
+        h.clock.isForeground = false
+        h.core.foregroundChanged()
+        TestSupport.expectEqual(h.control(), .startedInBackground)
+        h.core.controlNeedsForeground()
+        TestSupport.expectEqual(h.core.session, .inactive)
+        TestSupport.expectEqual(h.capture.isRunning, false)
+        TestSupport.expectEqual(h.status?.error, nil)
+        h.clock.now += 3
+        h.clock.isForeground = true
+        h.core.appDidBecomeActive()
+        TestSupport.expectEqual(h.core.session, .active)
+        TestSupport.expectEqual(h.capture.startCount, 2)
+    }
 }
 
 // MARK: Harness
@@ -1327,6 +1506,9 @@ private final class CoreHarness {
         var isForeground = true
         /// `UIApplication.isProtectedDataAvailable`: false once files are unreadable after a lock.
         var protectedDataAvailable = true
+        /// iOS is running the session control's `AudioRecordingIntent`, the one place capture may start in the
+        /// background.
+        var controlRunning = false
     }
 
     @MainActor
@@ -1424,6 +1606,13 @@ private final class CoreHarness {
 
     func keepCaptureFresh() { fakeCapture?.resumeDelivery() }
 
+    /// A press of the session control: what iOS runs as its intent.
+    func control() -> SessionControlOutcome {
+        clock.controlRunning = true
+        defer { clock.controlRunning = false }
+        return core.controlToggleSession()
+    }
+
     /// Admits `requestID` from the foreground and waits until it is recording.
     func record(_ requestID: UUID) {
         writeIntent(.record, requestID)
@@ -1479,7 +1668,8 @@ private final class FakeCapture: HostCapture {
     }
 
     func start() throws {
-        TestSupport.expect(clock.isForeground, "a session was started in the background")
+        TestSupport.expect(clock.isForeground || clock.controlRunning,
+                           "a session was started in the background outside the session control")
         guard !failStart else { throw CocoaError(.featureUnsupported) }
         startCount += 1
         try router.configureCategory(routeSession)

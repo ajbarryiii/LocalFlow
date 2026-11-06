@@ -89,12 +89,24 @@ enum HostSessionPolicy {
     /// - A URL open is only a hint. Before the app actually arrives in the foreground it does nothing,
     ///   so it can neither admit, prepare nor reject; the arrival re-reads the intent, and freshness is
     ///   judged then.
-    /// - A process that has never been in the foreground (a prewarmed launch) skips: without a session
-    ///   it could only reject, and would reject for good the request its own bounce is about to admit.
-    static func reconcileForeground(trigger: ReconcileTrigger, isForeground: Bool, hasBeenForeground: Bool) -> Bool? {
+    /// - A process that has never been in the foreground (a prewarmed launch) skips while no session is
+    ///   starting or active: it could only reject, and would reject for good the request its own bounce is
+    ///   about to admit. A session the session control started in the background reconciles as usual.
+    static func reconcileForeground(trigger: ReconcileTrigger, isForeground: Bool, hasBeenForeground: Bool,
+                                    sessionLive: Bool) -> Bool? {
         if isForeground { return true }
-        guard trigger != .urlOpen, hasBeenForeground else { return nil }
+        guard trigger != .urlOpen, hasBeenForeground || sessionLive else { return nil }
         return false
+    }
+
+    /// How long a session control start that needs the app waits for it to arrive in the foreground
+    /// (ARCHITECTURE.md, "Session control", Foreground).
+    static let controlForegroundWindow: TimeInterval = 10
+
+    /// The app arrived in front soon enough after the press to start its session. Fails closed on a backward
+    /// clock jump past the tolerance.
+    static func isControlStartFresh(requestedAt: Date, now: Date) -> Bool {
+        DictationProtocol.isFresh(requestedAt, ttl: controlForegroundWindow, now: now)
     }
 
     /// No input since `lastInputAt` for `captureStarvationTimeout`. A backward clock jump is not

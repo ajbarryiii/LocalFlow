@@ -167,6 +167,18 @@ if [ -f "$app_plist" ] && [ -f "$keyboard_plist" ] && [ -f "$activity_plist" ]; 
     # The session's Live Activity: a WidgetKit extension, allowed by the app.
     expect "$activity_plist" NSExtension.NSExtensionPointIdentifier com.apple.widgetkit-extension activity
     expect_bool "$app_plist" NSSupportsLiveActivities true app
+    # The session control's App Intent, which iOS learns from each bundle's metadata: an audio recording intent
+    # that asks for authentication (ARCHITECTURE.md, "Session control").
+    for target in app activity; do
+        case "$target" in app) actions="$app/Metadata.appintents/extract.actionsdata" ;; *) actions="$activity/Metadata.appintents/extract.actionsdata" ;; esac
+        if [ ! -f "$actions" ]; then
+            fail "$target: Metadata.appintents is missing (no session control intent)"
+            continue
+        fi
+        for needle in '"ToggleFlowSessionIntent"' 'com.apple.link.systemProtocol.AudioRecording' '"authenticationPolicy":1'; do
+            grep -Fq "$needle" "$actions" || fail "$target: the App Intents metadata lacks $needle"
+        done
+    done
     for key in LocalFlowAppGroupIdentifier LocalFlowURLScheme LocalFlowUniversalLink; do
         [ -z "$(kind "$activity_plist" "$key")" ] || fail "activity: $key is present (it reads no shared files or links)"
     done
