@@ -43,6 +43,14 @@ final class LiveActivityBackend: SessionActivityBackend {
         }
     }
 
+    func settle() async -> Bool {
+        while let queue {
+            await queue.value
+            if pending == 0 { break }
+        }
+        return activity != nil
+    }
+
     private func request(_ content: SessionActivityContent) -> Bool {
         do {
             activity = try Activity.request(attributes: SessionActivityAttributes(), content: Self.content(content))

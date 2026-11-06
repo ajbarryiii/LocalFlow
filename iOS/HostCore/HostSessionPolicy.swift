@@ -89,12 +89,24 @@ enum HostSessionPolicy {
     /// - A URL open is only a hint. Before the app actually arrives in the foreground it does nothing,
     ///   so it can neither admit, prepare nor reject; the arrival re-reads the intent, and freshness is
     ///   judged then.
-    /// - A process that has never been in the foreground (a prewarmed launch) skips: without a session
-    ///   it could only reject, and would reject for good the request its own bounce is about to admit.
-    static func reconcileForeground(trigger: ReconcileTrigger, isForeground: Bool, hasBeenForeground: Bool) -> Bool? {
+    /// - A process that has never been in the foreground (a prewarmed launch) skips while no session is
+    ///   starting or active: it could only reject, and would reject for good the request its own bounce is
+    ///   about to admit. A session the session control started in the background reconciles as usual.
+    static func reconcileForeground(trigger: ReconcileTrigger, isForeground: Bool, hasBeenForeground: Bool,
+                                    sessionLive: Bool) -> Bool? {
         if isForeground { return true }
-        guard trigger != .urlOpen, hasBeenForeground else { return nil }
+        guard trigger != .urlOpen, hasBeenForeground || sessionLive else { return nil }
         return false
+    }
+
+    /// How long a session control start that needs the app waits for the user to open it
+    /// (ARCHITECTURE.md, "Session control", Foreground).
+    static let controlForegroundWindow: TimeInterval = 30
+
+    /// The app arrived in front soon enough after the press to start its session. Fails closed on a backward
+    /// clock jump past the tolerance.
+    static func isControlStartFresh(requestedAt: Date, now: Date) -> Bool {
+        DictationProtocol.isFresh(requestedAt, ttl: controlForegroundWindow, now: now)
     }
 
     /// No input since `lastInputAt` for `captureStarvationTimeout`. A backward clock jump is not
@@ -122,6 +134,13 @@ enum HostSessionPolicy {
     static func intentProvesUnlock(issuedAt: Date, lockedAt: Date?) -> Bool {
         guard let lockedAt else { return false }
         return issuedAt.timeIntervalSince(lockedAt) > lockWriteWindow
+    }
+
+    /// The session control runs only after iOS authenticated the user on this iPhone. Its press proves an unlock the
+    /// app missed only with protected data available past `lockWriteWindow` after the latch: inside that window a
+    /// locking iPhone still reads it available (ARCHITECTURE.md, "Session control", Toggle).
+    static func controlProvesUnlock(now: Date, lockedAt: Date?, isProtectedDataAvailable: Bool) -> Bool {
+        isProtectedDataAvailable && intentProvesUnlock(issuedAt: now, lockedAt: lockedAt)
     }
 
     /// Whether the bounce screen stays up. It outlives the swipe back only while its dictation is in

@@ -2,12 +2,14 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-/// The Live Activity extension (ARCHITECTURE.md, "Live Activity"): the session in the Dynamic Island and on the Lock
-/// Screen. It draws only `SessionActivityState`, the phase and its timers, and reads nothing else.
+/// The widget extension: the session's Live Activity (ARCHITECTURE.md, "Live Activity") in the Dynamic Island and on
+/// the Lock Screen, which draws only `SessionActivityState`, the phase and its timers, and reads nothing else; and the
+/// session control ("Session control").
 @main
 struct LocalFlowActivityBundle: WidgetBundle {
     var body: some Widget {
         SessionActivityWidget()
+        SessionControl()
     }
 }
 
