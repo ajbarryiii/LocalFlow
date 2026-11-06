@@ -7,6 +7,16 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 
 ## [Unreleased]
 
+### Added
+
+- A settings window and correction dialogs, `localflow-gui` (prototype,
+  built with Rune; the flake's `localflow-gui` package). Its changes go to a
+  new `settings.json` beside `config.json`, whose keys replace
+  `config.json`'s, so a read-only `config.json` from Home Manager can still
+  be adjusted. `"picker": "gui"` uses its dialogs for `localflowctl correct`
+  and `dict review`, and `auto` prefers them when `localflow-gui` is
+  installed.
+
 ### Changed
 
 - The recommended model is now

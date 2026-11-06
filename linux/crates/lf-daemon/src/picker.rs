@@ -31,9 +31,12 @@
 //!
 //! `"picker"` in `config.json` picks one: `"auto"` (the default) takes, for
 //! each operation, the first tool on `PATH` that supports it, in the order
-//! rofi, fuzzel, wofi, tofi. Verdicts, from each version's manual and
-//! source as packaged in nixpkgs, and run in a private headless sway:
+//! gui (`localflow-gui`), rofi, fuzzel, wofi, tofi. Verdicts, from each
+//! version's manual and source as packaged in nixpkgs, and run in a private
+//! headless sway:
 //!
+//! - **gui** (`localflow-gui`, LocalFlow's own windows): edit and choose.
+//!   See [`gui`].
 //! - **rofi** (2.0.0): edit and choose. See [`rofi`].
 //! - **fuzzel** (1.14.1): choose only. It can prefill its box only with
 //!   `--search=TEXT` on its command line (its configuration file has no
@@ -70,6 +73,7 @@
 //!   chooses its mode from `argv[0]`, so it is started as `tofi`.
 
 pub mod fuzzel;
+pub mod gui;
 pub mod rofi;
 pub mod tofi;
 pub mod wofi;
@@ -103,6 +107,7 @@ const ROWS: [(&str, Option<&str>); 3] = [
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    Gui,
     Rofi,
     Fuzzel,
     Wofi,
@@ -111,11 +116,12 @@ pub enum Kind {
 
 impl Kind {
     /// In `auto` order.
-    pub const ALL: [Kind; 4] = [Kind::Rofi, Kind::Fuzzel, Kind::Wofi, Kind::Tofi];
+    pub const ALL: [Kind; 5] = [Kind::Gui, Kind::Rofi, Kind::Fuzzel, Kind::Wofi, Kind::Tofi];
 
-    /// Its name, which is also its program name and its `picker` value.
+    /// Its `picker` value.
     pub fn name(self) -> &'static str {
         match self {
+            Kind::Gui => "gui",
             Kind::Rofi => "rofi",
             Kind::Fuzzel => "fuzzel",
             Kind::Wofi => "wofi",
@@ -123,10 +129,18 @@ impl Kind {
         }
     }
 
+    /// The program looked up on `PATH`.
+    pub fn program(self) -> &'static str {
+        match self {
+            Kind::Gui => "localflow-gui",
+            k => k.name(),
+        }
+    }
+
     pub fn supports(self, op: Op) -> bool {
         match op {
             Op::Choose => true,
-            Op::Edit => matches!(self, Kind::Rofi | Kind::Wofi),
+            Op::Edit => matches!(self, Kind::Gui | Kind::Rofi | Kind::Wofi),
         }
     }
 }
@@ -148,7 +162,7 @@ pub enum Choice {
 
 impl Choice {
     /// The accepted values, for error messages.
-    pub const VALUES: &str = "auto, rofi, fuzzel, wofi, tofi";
+    pub const VALUES: &str = "auto, gui, rofi, fuzzel, wofi, tofi";
 
     pub fn parse(s: &str) -> Option<Choice> {
         if s == "auto" {
@@ -174,7 +188,7 @@ pub enum Probe {
 
 /// Looks `kind` up on `PATH` and checks what it depends on.
 pub fn probe(kind: Kind) -> Probe {
-    let Some(path) = find_in_path(kind.name()) else {
+    let Some(path) = find_in_path(kind.program()) else {
         return Probe::Missing;
     };
     if kind == Kind::Wofi
@@ -217,19 +231,21 @@ pub enum NoPicker {
 impl std::fmt::Display for NoPicker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NoPicker::NoneFound(Op::Edit) => {
-                f.write_str("no picker that can edit text was found (install rofi or wofi)")
-            }
-            NoPicker::NoneFound(Op::Choose) => {
-                f.write_str("no picker was found (install rofi, fuzzel, wofi or tofi)")
-            }
+            NoPicker::NoneFound(Op::Edit) => f.write_str(
+                "no picker that can edit text was found (install localflow-gui, rofi or wofi)",
+            ),
+            NoPicker::NoneFound(Op::Choose) => f.write_str(
+                "no picker was found (install localflow-gui, rofi, fuzzel, wofi or tofi)",
+            ),
             NoPicker::Unsupported(k, _) => write!(
                 f,
                 "{} cannot edit text without putting it on its command line; \
-                 set \"picker\" to \"rofi\", \"wofi\" or \"auto\" to correct dictations",
+                 set \"picker\" to \"gui\", \"rofi\", \"wofi\" or \"auto\" to correct dictations",
                 k.name()
             ),
-            NoPicker::Missing(k) => write!(f, "{} is not installed (not found on PATH)", k.name()),
+            NoPicker::Missing(k) => {
+                write!(f, "{} is not installed (not found on PATH)", k.program())
+            }
             NoPicker::Refused(k, why) => write!(f, "{} is not used: {why}", k.name()),
         }
     }
@@ -402,6 +418,7 @@ impl Picker {
             return Err(Failure::Unsafe);
         }
         match self.kind {
+            Kind::Gui => Ok(gui::edit(prefill)),
             Kind::Rofi => rofi::edit(prefill),
             Kind::Wofi => wofi::edit(prefill),
             Kind::Fuzzel | Kind::Tofi => Err(Failure::Unsupported),
@@ -411,6 +428,7 @@ impl Picker {
     /// The invocation that shows `rows`.
     pub fn choose_invocation(&self, rows: String) -> Invocation {
         match self.kind {
+            Kind::Gui => gui::choose(rows),
             Kind::Rofi => rofi::choose(rows),
             Kind::Fuzzel => fuzzel::choose(rows),
             Kind::Wofi => wofi::choose(rows),
@@ -672,7 +690,13 @@ pub(crate) mod tests {
                 for s in &seen {
                     assert!(!s.contains("ynthetic") && !s.contains("quoted"), "{kind:?}");
                 }
-                assert!(read(&dir, "config").contains("ynthetic"), "{kind:?}");
+                // It reaches the picker through its configuration
+                // descriptor or stdin.
+                assert!(
+                    read(&dir, "config").contains("ynthetic")
+                        || read(&dir, "stdin").contains("ynthetic"),
+                    "{kind:?}"
+                );
             }
             let _ = p.suggest(WORD);
             for s in [read(&dir, "args"), read(&dir, "arg0"), read(&dir, "env")] {
@@ -697,7 +721,7 @@ pub(crate) mod tests {
     #[test]
     fn dismissal_and_exit_statuses() {
         let dir = TempDir::new("picker-exit");
-        for kind in [Kind::Rofi, Kind::Fuzzel, Kind::Wofi] {
+        for kind in [Kind::Gui, Kind::Rofi, Kind::Fuzzel, Kind::Wofi] {
             let p = fake(&dir, kind, "echo leaked >&2; exit 1");
             assert!(p.suggest(WORD).unwrap() == Answer::Dismissed, "{kind:?}");
             let p = fake(&dir, kind, "echo 0; exit 10");
@@ -730,7 +754,7 @@ pub(crate) mod tests {
     #[test]
     fn answers_map_to_rows() {
         let dir = TempDir::new("picker-rows");
-        for kind in [Kind::Rofi, Kind::Wofi] {
+        for kind in [Kind::Gui, Kind::Rofi, Kind::Wofi] {
             for (out, want) in [("0", ADD), ("1", NOT_NOW), ("2", DONT_SUGGEST)] {
                 let p = fake(&dir, kind, &format!("echo {out}"));
                 assert!(p.suggest(WORD).unwrap() == Answer::Chose(want), "{kind:?}");
@@ -799,7 +823,7 @@ pub(crate) mod tests {
     #[test]
     fn floods_and_bad_output_are_refused() {
         let dir = TempDir::new("picker-flood");
-        for kind in [Kind::Rofi, Kind::Wofi] {
+        for kind in [Kind::Gui, Kind::Rofi, Kind::Wofi] {
             // Megabytes on both streams neither block nor get through.
             let p = fake(
                 &dir,
@@ -836,16 +860,31 @@ pub(crate) mod tests {
         let p = |s: &str| PathBuf::from(s);
         let installed = |names: &'static [&'static str]| {
             move |k: Kind| {
-                if names.contains(&k.name()) {
-                    Probe::Found(PathBuf::from(format!("/bin/{}", k.name())))
+                if names.contains(&k.program()) {
+                    Probe::Found(PathBuf::from(format!("/bin/{}", k.program())))
                 } else {
                     Probe::Missing
                 }
             }
         };
         let pick = |c, op, names| select(c, op, installed(names)).map(|p| (p.kind, p.program));
-        // auto: rofi first, then fuzzel, wofi, tofi; edit skips those that
-        // cannot.
+        // auto: LocalFlow's own windows first, then rofi, fuzzel, wofi,
+        // tofi; edit skips those that cannot.
+        let with_gui = &["localflow-gui", "rofi", "fuzzel", "wofi", "tofi"];
+        for op in [Op::Edit, Op::Choose] {
+            assert_eq!(
+                pick(Choice::Auto, op, with_gui),
+                Ok((Kind::Gui, p("/bin/localflow-gui")))
+            );
+        }
+        assert_eq!(
+            pick(Choice::Only(Kind::Gui), Op::Edit, &["rofi"]).unwrap_err(),
+            NoPicker::Missing(Kind::Gui)
+        );
+        assert_eq!(
+            NoPicker::Missing(Kind::Gui).to_string(),
+            "localflow-gui is not installed (not found on PATH)"
+        );
         let all = &["rofi", "fuzzel", "wofi", "tofi"];
         assert_eq!(
             pick(Choice::Auto, Op::Edit, all),

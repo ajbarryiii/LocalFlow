@@ -208,9 +208,10 @@ invalid values stop the daemon with an error. Defaults:
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
 - `picker`: the menu `localflowctl correct` and `dict review` show text in:
-  `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"` or `"tofi"`. `auto` takes, for
-  each dialog, the first of rofi, fuzzel, wofi and tofi on `PATH` that can
-  show it. fuzzel and tofi cannot prefill an input box without putting the
+  `"auto"`, `"gui"`, `"rofi"`, `"fuzzel"`, `"wofi"` or `"tofi"`. `"gui"` is
+  LocalFlow's own windows (`localflow-gui`, see "Settings window").
+  `auto` takes, for each dialog, the first of localflow-gui, rofi, fuzzel,
+  wofi and tofi on `PATH` that can show it. fuzzel and tofi cannot prefill an input box without putting the
   text on their command line, so they only show the suggestion dialog
   (`dict review`, and the second step of `correct`); with one of them
   configured, `correct` says so and does nothing. wofi is not used while
@@ -231,6 +232,27 @@ invalid values stop the daemon with an error. Defaults:
   `localflowctl` keeps working either way.
 
 Check a configuration with `localflowd --check-config`.
+
+### Settings window (prototype)
+
+`localflow-gui` (`nix build ./linux#localflow-gui`; built from `linux/gui`,
+a Cargo workspace of its own, with [Rune](https://github.com/anomalyco/rune))
+is a settings window and the correction dialogs:
+
+- `localflow-gui` opens the settings. Changes are kept until **Apply**,
+  which writes them to `settings.json` beside `config.json` and restarts
+  the daemon (`systemctl --user try-restart localflowd`) when a key it reads
+  changed. A reset icon next to a setting takes it back to `config.json`.
+- `settings.json` holds only keys whose value differs from `config.json`'s;
+  its keys replace `config.json`'s wherever the configuration is read, so a
+  `config.json` Home Manager links read-only into the Nix store still works.
+  It must be a private file (not a symlink, owned by you, no group or other
+  permissions); delete it to go back to `config.json` alone.
+- `localflow-gui edit` and `localflow-gui choose` are the `"gui"` picker:
+  the text comes on stdin and the answer goes to stdout; Escape or closing
+  the window does nothing. They are built without Rune's accessibility
+  bridge. An input method (fcitx5, IBus) sees what is typed in the edit
+  box, as in any other window.
 
 ## Run
 
@@ -400,7 +422,7 @@ localflowctl correct
 ```
 
 Bind it to a key (see the snippets in `packaging/`). Within two minutes of a
-dictation being typed, it opens a picker (rofi or wofi; see `picker` above)
+dictation being typed, it opens a picker (localflow-gui, rofi or wofi; see `picker` above)
 with that dictation's text; edit it
 to what you meant and press Return (Escape does nothing). **It never
 changes the text already typed into the other app**: fix that there as
@@ -682,8 +704,9 @@ also works on compositors that have the protocol (Hyprland, below).
    LocalFlow asks for no particular key. Change them later in the
    desktop's shortcut settings (GNOME Settings > Keyboard > Keyboard
    Shortcuts; KDE System Settings > Keyboard > Shortcuts).
-3. `localflowctl correct` needs rofi or wofi, which need layer-shell (KDE has it,
-   GNOME does not); bind it as an ordinary custom shortcut.
+3. `localflowctl correct` needs localflow-gui, or rofi or wofi, which need
+   layer-shell (KDE has it, GNOME does not); bind it as an ordinary custom
+   shortcut.
 
 Behaviour:
 
@@ -750,7 +773,7 @@ and phrase sections, `lf-asr` the bias graph and decision rule, and
 and correction sections. Chunked transcription (pause shortening, the 15 s
 windows and how their transcripts are joined) is pinned by
 `testdata/chunking-vectors.json`, run by `lf-chunk` and the Swift app; its
-expected values come from the Swift implementation. The picker tests use fake rofi, fuzzel, wofi and
+expected values come from the Swift implementation. The picker tests use fake localflow-gui, rofi, fuzzel, wofi and
 tofi scripts that record their arguments, environment, configuration and
 stdin; one also checks that the installed rofi reads the generated
 configuration back (it is skipped when rofi is not on `PATH`). The tray is

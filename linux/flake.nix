@@ -141,12 +141,76 @@
               '') m.files
             )
           );
+
+      # localflow-gui (prototype): the settings window and the correction
+      # dialogs, drawn with Rune. A Cargo workspace of its own (gui/), so
+      # Rune's dependencies stay out of the localflow package. It builds
+      # lf-daemon for the configuration and picker types.
+      localflow-gui = pkgs.rustPlatform.buildRustPackage {
+        pname = "localflow-gui";
+        version = "0.1.0";
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.toml
+            ./crates
+            ./models.json
+            ./gui/Cargo.toml
+            ./gui/Cargo.lock
+            ./gui/src
+          ];
+        };
+        cargoRoot = "gui";
+        buildAndTestSubdir = "gui";
+        cargoLock = {
+          lockFile = ./gui/Cargo.lock;
+          # Rune is a pinned git revision (it is not on crates.io).
+          allowBuiltinFetchGit = true;
+        };
+        nativeBuildInputs = [
+          pkgs.makeBinaryWrapper
+          pkgs.pkg-config
+          pkgs.rustPlatform.bindgenHook
+        ];
+        buildInputs = with pkgs; [
+          libxkbcommon
+          pipewire
+          wayland
+        ];
+        # winit and wgpu load the display and GPU libraries at run time.
+        postFixup = ''
+          wrapProgram $out/bin/localflow-gui --prefix LD_LIBRARY_PATH : ${
+            lib.makeLibraryPath (
+              with pkgs;
+              [
+                libGL
+                libxkbcommon
+                vulkan-loader
+                wayland
+                xorg.libX11
+                xorg.libXcursor
+                xorg.libXi
+                xorg.libxcb
+              ]
+            )
+          }
+        '';
+        meta = {
+          description = "LocalFlow's settings window and correction dialogs (prototype)";
+          homepage = "https://github.com/ajbarryiii/LocalFlow";
+          license = lib.licenses.mit;
+          mainProgram = "localflow-gui";
+          platforms = [ "x86_64-linux" ];
+        };
+      };
     in
     {
       # `default` is the program. `kea-b` and `kea-t` are model exports:
       # `export_path` can be "${localflow.packages.<system>.kea-b}".
+      # `localflow-gui` is the prototype settings window.
       packages.${system} = lib.mapAttrs model models // {
         default = localflow;
+        inherit localflow-gui;
       };
 
       devShells.${system}.default = pkgs.mkShell {

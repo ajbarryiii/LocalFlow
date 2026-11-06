@@ -1,0 +1,30 @@
+[package]
+name = "lf-gui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "LocalFlow's windows on Linux (settings, corrections), drawn with Rune"
+
+[[bin]]
+name = "localflow-gui"
+path = "src/main.rs"
+
+[dependencies]
+# The configuration, its settings layer and the picker values.
+lf-daemon = { path = "../crates/lf-daemon" }
+# Rune is pre-release: a pinned rev of its `dev` branch. Without its default
+# features: no accessibility bridge (a picker must not expose dictated text
+# to other programs on the session bus), no D-Bus services, no Metal, no
+# audio decoding, no SVG images.
+rune = { git = "https://github.com/anomalyco/rune", rev = "1ad9cf69a22c86e9803b257220eae8ee6456c9ce", default-features = false, features = ["embedded-fonts"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "1ad9cf69a22c86e9803b257220eae8ee6456c9ce" }
+serde_json = "1"
+
+# Its own workspace: Rune's dependencies stay out of linux/Cargo.lock and the
+# localflow package.
+[workspace]
+
+[profile.release]
+codegen-units = 16
+lto = "thin"
