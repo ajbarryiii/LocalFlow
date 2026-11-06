@@ -67,7 +67,7 @@ fn dictates_librispeech_with_the_real_model() {
     let rig = Rig::start(
         "real-model",
         capture.clone(),
-        asr_factory(export, cpus, Precision::Int8(3)),
+        asr_factory(export, cpus, Some(Precision::Int8(3))),
         common::settings(),
         true,
     );

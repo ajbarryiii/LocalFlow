@@ -82,7 +82,8 @@ impl Output {
 pub struct Config {
     /// Directory holding `export.safetensors`, `manifest.json` and `tokenizer/`.
     pub export_path: PathBuf,
-    pub precision: Precision,
+    /// `None`: the model's default (`recognizer::default_precision`).
+    pub precision: Option<Precision>,
     /// CPUs for the recognizer's pinned thread pool. `None`: one CPU per
     /// physical core the daemon may run on (SMT siblings skipped), whole L3
     /// domains largest first, at most 16 (`lf_asr::topology`).
@@ -156,7 +157,7 @@ impl Config {
     pub fn defaults(data_dir: &Path) -> Config {
         Config {
             export_path: data_dir.join("model"),
-            precision: Precision::Int8(2),
+            precision: None,
             cpus: None,
             press_enter: true,
             spoken_delimiters: true,
@@ -224,10 +225,11 @@ impl Config {
                     c.export_path = p;
                 }
                 "precision" => {
-                    c.precision = v
-                        .as_str()
-                        .and_then(Precision::parse)
-                        .ok_or("precision must be one of f32, i8x1, i8x2, i8x3")?;
+                    c.precision = Some(
+                        v.as_str()
+                            .and_then(Precision::parse)
+                            .ok_or("precision must be one of f32, i8x1, i8x2, i8x3")?,
+                    );
                 }
                 "cpus" => c.cpus = Some(parse_cpus(v)?),
                 "press_enter" => c.press_enter = boolean(v, "press_enter")?,
@@ -545,7 +547,8 @@ mod tests {
         let c = parse("{}").unwrap();
         assert_eq!(c, Config::defaults(Path::new("/data/localflow")));
         assert_eq!(c.export_path, Path::new("/data/localflow/model"));
-        assert_eq!(c.precision, Precision::Int8(2));
+        // Unset: the model's own default (`recognizer::default_precision`).
+        assert_eq!(c.precision, None);
         assert!(!c.history && c.press_enter && c.spoken_delimiters && c.spoken_numbers);
         assert_eq!(c.min_recording_seconds, 0.3);
     }
@@ -576,7 +579,11 @@ mod tests {
         );
         assert_eq!(parse("{}").unwrap().key_delay_ms, 1);
         assert_eq!(c.export_path, Path::new("/models/export"));
-        assert_eq!(c.precision, Precision::Int8(2));
+        assert_eq!(c.precision, Some(Precision::Int8(2)));
+        assert_eq!(
+            parse(r#"{"precision": "i8x1"}"#).unwrap().precision,
+            Some(Precision::Int8(1))
+        );
         assert_eq!(c.cpus, Some(vec![0, 1, 2, 3, 8]));
         assert!(!c.press_enter && !c.spoken_delimiters && !c.spoken_numbers && !c.history);
         assert!(!c.dictation_options().spoken_numbers);

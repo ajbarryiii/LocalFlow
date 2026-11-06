@@ -60,18 +60,19 @@ derived from NVIDIA's
 [parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
 and licensed CC-BY-4.0 (attribution in each export's `NOTICE`):
 
-- [kea-b](https://huggingface.co/rajb3/kea-b) (recommended): 1-bit weights,
-  105 MB.
+- kea-b, [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1)
+  (recommended): 1-bit weights, 105 MB. It was trained for the INT8
+  activations it runs with here (see `precision` below).
 - [kea-t](https://huggingface.co/rajb3/kea-t): ternary weights, 181 MB,
-  slightly lower WER (1.33% vs 1.45% on 40 LibriSpeech test-clean clips),
-  and slower (see `export_path` below).
+  slightly higher WER (6.84% vs 6.77% averaged over the Open ASR
+  Leaderboard test sets, as published with Kea-B 0.1), and slower.
 
 The daemon checks every file against the SHA-256 hashes in `manifest.json`
 when it loads. To install one where the daemon looks for it (the
 configuration's `export_path`, else `~/.local/share/localflow/model`):
 
 ```bash
-localflowctl fetch-model          # kea-b
+localflowctl fetch-model          # kea-b (Kea-B 0.1)
 localflowctl fetch-model kea-t    # or the ternary model
 ```
 
@@ -97,10 +98,14 @@ In a Home Manager or NixOS configuration that has this flake as the input
 `export_path` unset.
 
 Or download the repository by hand (`git lfs` must be installed;
-`hf download rajb3/kea-b --local-dir …` works too):
+`hf download wildernesslabs/kea-b-0.1 --local-dir …` works too). Kea-B 0.1's
+export is the repository's `compat/` directory, so point `export_path` at
+that (its license and attribution are in the repository's `LICENSE` and
+`NOTICE`):
 
 ```bash
-git clone https://huggingface.co/rajb3/kea-b ~/.local/share/localflow/model
+git clone https://huggingface.co/wildernesslabs/kea-b-0.1 ~/models/kea-b-0.1
+# config.json: "export_path": "/home/<you>/models/kea-b-0.1/compat"
 ```
 
 ## Configure
@@ -113,7 +118,7 @@ invalid values stop the daemon with an error. Defaults:
 {
   "version": 1,
   "export_path": "<XDG_DATA_HOME>/localflow/model",
-  "precision": "i8x2",
+  "precision": "i8x1 for 1-bit models, i8x2 for ternary ones",
   "cpus": "one per physical core, at most 16",
   "press_enter": true,
   "spoken_delimiters": true,
@@ -139,14 +144,23 @@ invalid values stop the daemon with an error. Defaults:
   `manifest.json`, `tokenizer/`), in either format: ternary
   (`parakeet-ternary-v1`, e.g. [kea-t](https://huggingface.co/rajb3/kea-t))
   or binary (`parakeet-binary-v1`, e.g.
-  [kea-b](https://huggingface.co/rajb3/kea-b)). The format is read from
-  `manifest.json`. Binary weights stay at 1 bit in memory (79 MB of encoder
-  weights instead of 155 MB). On a Ryzen 9 9950X3D with i8x2, kea-b
-  transcribed 2-12 s clips about 8% faster than kea-t end to end; its
-  encoder projections were 9-21% faster at 3 s and 3-6% faster at 30 s.
-- `precision`: `f32`, `i8x1`, `i8x2` (default) or `i8x3`. On kea-t, i8x2
-  matched f32's WER over 32,560 dev/test utterances (six near-tie transcript
-  changes) and is 25-28% faster than i8x3, which tracks f32 to rounding. To
+  [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1)'s `compat/`).
+  The format is read from `manifest.json`. Binary weights stay at 1 bit in
+  memory (79 MB of encoder weights instead of 155 MB). On a Ryzen 9 9950X3D,
+  both at i8x2, Kea-B 0.0 transcribed 2-12 s clips about 8% faster than
+  kea-t end to end; its encoder projections were 9-21% faster at 3 s and
+  3-6% faster at 30 s. Kea-B 0.1 runs at about the same speed as Kea-B 0.0.
+- `precision`: `f32`, `i8x1`, `i8x2` or `i8x3`, the number of INT8 parts
+  each frame's activations are split into. Unset, it is `i8x1` for binary
+  models and `i8x2` for ternary ones. Kea-B 0.1 was trained through the
+  `i8x1` quantizer (per frame, max |x| / 127, rounded half to even). On
+  22,391 LibriSpeech, AMI, VoxPopuli and YODAS dev utterances of up to 30 s
+  on a 9950X3D, `i8x1` was within 0.06 WER points of `i8x2` on every set
+  (LibriSpeech 3.37% vs 3.36%, the others 9.97% vs 9.95%) and took 24-34%
+  less time per utterance (LibriSpeech 15.7 vs 23.7 ms on average). On
+  kea-t, i8x2 matched f32's WER over 32,560 dev/test utterances (six
+  near-tie transcript changes) and is 25-28% faster than i8x3, which tracks
+  f32 to rounding. To
   re-check a new export, save hypotheses at each precision with
   `lf-transcribe --save-hyps` and compare them with `lf-hypcompare` (both in
   `lf-bench`).
