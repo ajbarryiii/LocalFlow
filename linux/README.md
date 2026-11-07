@@ -360,23 +360,25 @@ being the same package:
 ### Waybar indicator
 
 `localflowctl watch --waybar` prints one JSON object per change for a
-Waybar custom module. Every text is six characters wide, so in a monospace
-Nerd Font (JetBrainsMono Nerd Font, say) the module and the clock beside it
-never move. Classes (also the `alt`) and what each shows:
+Waybar custom module. Every text is six cells of a monospace font wide, so
+the module and the clock beside it never move. It looks like the iPhone
+keyboard's dictation island: a white wave settling into an aurora dot while
+you speak, and a glacier-white shimmer while it transcribes. Classes (also
+the `alt`) and what each shows:
 
 | Class | Text | Tooltip |
 |---|---|---|
 | `idle` | microphone | LocalFlow: ready |
 | `loading` | clock (the model is loading) | LocalFlow: loading the model |
-| `recording` | a row of dots ending in a full, bright dot; the dots before it grow and brighten with your voice, newest on the right, and rest small and dim in silence | LocalFlow: listening |
-| `transcribing` | hourglass | LocalFlow: transcribing |
+| `recording` | a row of small white dots ending in a larger aurora dot; your voice crosses the row as pulses, newest beside the aurora dot, the dots growing and brightening with it, and the row rests small and dim in silence | LocalFlow: listening |
+| `transcribing` | the row at rest, without the aurora dot, with a brighter spot sweeping across it | LocalFlow: transcribing |
 | `typing` | keyboard | LocalFlow: typing |
 | `nomic` | microphone with a slash (idle with no microphone) | LocalFlow: no microphone |
 | `offline` | power-off (the daemon is not running) | LocalFlow isn’t running |
 
 A prompt dictation (double-tap and hold; `tag=prompt` in `watch` lines)
-puts `›` in the first character and adds the class `prompt` while it
-records, transcribes and types (`"class": ["recording", "prompt"]`, tooltip
+puts `›` in the first cell and adds the class `prompt` while it records,
+transcribes and types (`"class": ["recording", "prompt"]`, tooltip
 "LocalFlow: listening (prompt dictation)"). While an agent needs your
 approval (see [Coding agents](#coding-agents)), a raised hand takes the
 glyph's place, except without a microphone, which keeps its slashed
@@ -384,23 +386,39 @@ microphone. It keeps retrying every 2 s while the daemon is down, so
 Waybar never needs restarting. Override the glyphs with `format-icons`
 keyed by `alt` if you like.
 
-The wave's dots are `•` and `●` (U+2022, U+25CF), which common fonts such
-as DejaVu have, and the glyphs are Font Awesome's, which stock Waybar's
-style asks for, so with Font Awesome installed no Nerd Font is needed. The
-wave is Pango markup, which Waybar reads in custom modules by default: it
-is set in the `monospace` font (`<span font_family="monospace">`), so its
-six cells are equally wide even in a proportional bar font, and dimmer
-dots are `<span alpha="60%">•</span>`. Leave the module's `escape` off, or
-the tags show as text.
+The wave shows about the last half second of your voice: each level line
+from the daemon (every 66 ms) moves it one dot, and a syllable rises at once
+and fades within a few dots, so it crosses the row as a pulse. It rises out
+of the line at its left end, as on the keyboard. While transcribing,
+`localflowctl` itself draws the shimmer ten frames a second, a sweep every
+1.1 s; in every other state it writes only when the state changes.
+
+The dots are `•` and `●` (U+2022, U+25CF), which common fonts such as DejaVu
+have, and the glyphs are Font Awesome's, which stock Waybar's style asks
+for, so with Font Awesome installed no Nerd Font is needed. The rows are
+Pango markup, which Waybar reads in custom modules by default. They are set
+in the `monospace` font (`<span font_family="monospace">`), so their cells
+are equally wide even in a proportional bar font. Each dot is at half the
+bar font's size with a sliver of space after it, so eight fit where five
+characters would and two full dots never touch; dimmer dots add `alpha`,
+and `rise` lifts the smaller dots onto the bar's middle line (tuned for a
+bar font of about 13 px). The aurora dot's colour (#6DFFA8) is fixed in the
+markup, so it shows on any bar; everything else takes the module's colour.
+Leave the module's `escape` off, or the tags show as text.
 
 `min-length: 6` makes the module at least six average characters of the
 bar's font wide, and `align: 0.5` centres the text in that width. A text
 that fits leaves the width alone; a wider one widens the module and moves
 the clock. In a monospace bar font that is also fontconfig's `monospace`
-(`fc-match monospace`), every text is exactly six cells, so nothing moves.
-In a proportional font, such as stock Waybar's DejaVu
-Sans, the wave and most glyphs fit; the keyboard and the slashed
-microphone are a little wider and move the clock by about a pixel.
+(`fc-match monospace`), every text is six cells. The rows mix sizes, and
+each size's characters are rounded to whole pixels, so at some font sizes a
+row is a pixel or two wider than a glyph's text (JetBrainsMono at 12 or
+15 px, for one), which would nudge the clock as a dictation starts. The CSS
+below sets a `min-width` a little wider than six cells, which holds the
+module's width whatever the text: nothing moves with a JetBrainsMono bar
+at 12, 13 or 15 px, nor with stock Waybar's proportional DejaVu Sans at
+those sizes, where the keyboard and the slashed microphone are a little
+wider than six characters.
 
 ```jsonc
 "custom/localflow": {
@@ -412,24 +430,28 @@ microphone are a little wider and move the clock by about a pixel.
 }
 ```
 
-The LocalFlow colours (coral while recording, glacier while working or
-waiting on you, ember for a problem), including the agent classes (see
+The LocalFlow colours: white while recording, glacier white (the
+keyboard's shimmer) while transcribing, glacier while loading, typing or
+waiting on you, and ember for a problem, including the agent classes (see
 [Coding agents](#coding-agents)):
 
 ```css
 #custom-localflow {
-  padding-left: 6px;
-  padding-right: 6px;
+  min-width: 4.05em;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 #custom-localflow.idle,
 #custom-localflow.offline {
   color: rgba(255, 255, 255, 0.4);
 }
 #custom-localflow.recording {
-  color: #ff7d5e;
+  color: #ffffff;
+}
+#custom-localflow.transcribing {
+  color: #abf2fc;
 }
 #custom-localflow.loading,
-#custom-localflow.transcribing,
 #custom-localflow.typing,
 #custom-localflow.agent-input {
   color: #67e8f9;
@@ -917,9 +939,12 @@ your dictation key.
     daemon sees.
 17. Waybar indicator (`localflowctl watch --waybar` in a terminal, or the
     custom module): idle shows the dim microphone; holding the key shows a
-    coral wave of dots ending in a full dot at once, and the dots before it
-    follow your voice, calmly; release shows the hourglass,
-    the keyboard, then idle. The clock beside it never moves. Disconnect the
+    row of white dots ending in an aurora dot at once, and your syllables
+    cross the row as pulses; release shows the glacier-white shimmer
+    sweeping the row until the text is ready (it stops at once when typing
+    starts), then the keyboard, then idle. The clock beside it never moves,
+    and with `watch --waybar` in a terminal no line is printed while idle.
+    Disconnect the
     microphone (or turn the headset off): `nomic` (the microphone with a
     slash) within a second or two, and back to idle when reconnected. With
     `input_device` set, only that device counts. Stop the daemon: `offline`

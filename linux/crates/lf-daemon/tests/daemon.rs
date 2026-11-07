@@ -1339,6 +1339,87 @@ fn hold_to_prompt_by_double_tap_and_hold() {
     let _ = bar.wait();
 }
 
+/// While transcribing, `watch --waybar` draws the shimmer's frames on its
+/// own, with no new watch line; in every other state it writes only what a
+/// line changes.
+#[test]
+fn localflowctl_waybar_shimmers_only_while_transcribing() {
+    use lf_daemon::waybar::{SHIMMER_FRAME, shimmer};
+    // A stand-in daemon that sends the watch lines the test hands it.
+    let dir = TempDir::new("waybar-shimmer");
+    let rd = runtime_dir(&dir);
+    private_dir(&rd.join("localflow"));
+    let listener = std::os::unix::net::UnixListener::bind(rd.join("localflow/ctl.sock")).unwrap();
+    let (send, to_send) = std::sync::mpsc::channel::<&'static str>();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().unwrap();
+        let mut request = [0u8; 256];
+        let _ = conn.read(&mut request);
+        for fields in to_send {
+            if conn
+                .write_all(format!("localflow/1 ok {fields}\n").as_bytes())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let (mut child, lines) = spawn_ctl(&rd, &["watch", "--waybar"]);
+    let object = |wait: Duration| -> Option<serde_json::Value> {
+        let line = lines.recv_timeout(wait).ok()?;
+        Some(serde_json::from_str(&line).unwrap())
+    };
+    let soon = Duration::from_secs(10);
+    // Several frames' worth of quiet.
+    let quiet = SHIMMER_FRAME * 6;
+
+    send.send("state=idle model=ready mic=present").unwrap();
+    assert_eq!(object(soon).unwrap()["class"], "idle");
+    assert!(object(quiet).is_none(), "idle: more objects");
+
+    // The wait: its first frame at once, then frames from a timer.
+    send.send("state=transcribing model=ready mic=present")
+        .unwrap();
+    let first = object(soon).unwrap();
+    assert_eq!(first["class"], "transcribing");
+    assert_eq!(first["text"], shimmer(Duration::ZERO, false));
+    let began = Instant::now();
+    let mut texts = vec![first["text"].as_str().unwrap().to_owned()];
+    let span = Duration::from_secs(1);
+    while let Some(v) = object(span.saturating_sub(began.elapsed())) {
+        assert_eq!(v["class"], "transcribing", "{v}");
+        texts.push(v["text"].as_str().unwrap().to_owned());
+    }
+    // Ten a second: allow for a loaded machine, but frames must come.
+    assert!(texts.len() >= 5, "{} frames in 1 s", texts.len());
+    assert!(texts.windows(2).all(|w| w[0] != w[1]), "a frame repeated");
+
+    // Each other state: its object, then nothing more.
+    for (fields, class) in [
+        ("state=typing model=ready mic=present", "typing"),
+        (
+            "state=recording mode=hold model=ready mic=present level=0",
+            "recording",
+        ),
+        ("state=idle model=ready mic=present", "idle"),
+    ] {
+        send.send(fields).unwrap();
+        // A frame may already be on its way.
+        let v = loop {
+            let v = object(soon).unwrap();
+            if v["class"] != "transcribing" {
+                break v;
+            }
+        };
+        assert_eq!(v["class"], class);
+        assert!(object(quiet).is_none(), "{class}: frames after the wait");
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(send);
+    server.join().unwrap();
+}
+
 #[test]
 fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
     let dir = TempDir::new("waybar");
@@ -1400,8 +1481,8 @@ fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
     assert_eq!(v["class"], "recording");
     let wave = v["text"].as_str().unwrap();
     assert_eq!(
-        lf_daemon::waybar::plain(wave).chars().count(),
-        lf_daemon::waybar::WIDTH
+        lf_daemon::waybar::cells(wave),
+        lf_daemon::waybar::WIDTH as f64
     );
     // Listening shows at once: the wave ends in its full anchor dot.
     assert!(

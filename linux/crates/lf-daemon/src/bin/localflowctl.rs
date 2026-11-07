@@ -957,6 +957,17 @@ impl Watch {
     /// The next line's `ok` fields; a daemon error, a lost connection or a
     /// bad line is a failure, and a closed stdout is [`Failure::Closed`].
     fn next(&mut self) -> Result<String, Failure> {
+        loop {
+            // Without `until`, only a line or a failure ends the wait.
+            if let Some(fields) = self.next_until(None)? {
+                return Ok(fields);
+            }
+        }
+    }
+
+    /// As [`Watch::next`], but `Ok(None)` once `until` passes without a
+    /// whole line (a part of one stays buffered for the next call).
+    fn next_until(&mut self, until: Option<Instant>) -> Result<Option<String>, Failure> {
         let mut chunk = [0u8; MAX_LINE];
         let end = loop {
             if let Some(end) = self.buf.iter().position(|&b| b == b'\n') {
@@ -965,8 +976,16 @@ impl Watch {
             if self.buf.len() >= MAX_LINE {
                 return Err(Failure::Protocol("line too long".into()));
             }
-            let timeout = self.deadline.map(remaining).transpose()?;
+            let first = self.deadline.map(remaining).transpose()?;
+            let until_left = until.map(|u| u.saturating_duration_since(Instant::now()));
+            let timeout = match (first, until_left) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             if !wait_readable(&self.stream, timeout, self.follow_stdout)? {
+                if until.is_some_and(|u| Instant::now() >= u) {
+                    return Ok(None);
+                }
                 return Err(Failure::Timeout);
             }
             let n = match self.stream.read(&mut chunk) {
@@ -991,7 +1010,7 @@ impl Watch {
         self.buf.drain(..=end);
         self.deadline = None;
         match reply {
-            Some(ClientReply::Ok(fields)) => Ok(fields),
+            Some(ClientReply::Ok(fields)) => Ok(Some(fields)),
             Some(ClientReply::Error(code)) => Err(Failure::Daemon(code)),
             None => Err(Failure::Protocol("malformed reply".into())),
         }
@@ -1110,7 +1129,10 @@ fn watch(args: &Args) -> Result<(), Failure> {
 
 /// `watch --waybar`: runs until stdout is closed. A lost connection is
 /// retried at once; while the daemon is unreachable the offline object is
-/// shown and the connection retried every [`WAYBAR_RETRY`].
+/// shown and the connection retried every [`WAYBAR_RETRY`]. While the
+/// daemon is transcribing, the shimmer's next frame is drawn when it is
+/// due ([`Indicator::next_frame`]) even without a new line; in every other
+/// state nothing is written until a line changes the object.
 fn watch_waybar(args: &Args) {
     let mut out = std::io::stdout().lock();
     let mut indicator = Indicator::default();
@@ -1123,16 +1145,35 @@ fn watch_waybar(args: &Args) {
         last = object;
         ok
     };
+    // When the wait for a transcript began, while it lasts: the shimmer's
+    // clock. It survives a reconnect, as the indicator's frame does.
+    let mut waiting: Option<Instant> = None;
     let mut retried = false;
     loop {
         let began = Instant::now();
         let mut connected = false;
         if let Ok(mut w) = Watch::open(args, true) {
             loop {
-                match w.next() {
-                    Ok(fields) => {
+                let due = waiting
+                    .zip(indicator.next_frame())
+                    .map(|(since, next)| since + next);
+                match w.next_until(due) {
+                    Ok(Some(fields)) => {
                         connected = true;
-                        if let Some(object) = indicator.update(&fields)
+                        let object = indicator.update(&fields);
+                        waiting = indicator
+                            .next_frame()
+                            .map(|_| waiting.unwrap_or_else(Instant::now));
+                        if let Some(object) = object
+                            && !show(&mut out, object)
+                        {
+                            return;
+                        }
+                    }
+                    // The shimmer's next frame is due.
+                    Ok(None) => {
+                        if let Some(object) =
+                            waiting.and_then(|since| indicator.tick(since.elapsed()))
                             && !show(&mut out, object)
                         {
                             return;
@@ -1151,6 +1192,8 @@ fn watch_waybar(args: &Args) {
             continue;
         }
         retried = false;
+        // Offline ends a wait: the next one starts its sweep again.
+        waiting = None;
         // An unchanged offline object is not written again, so a closed
         // stdout is noticed by the wait instead.
         if !show(&mut out, indicator.offline()) || sleep_unless_stdout_gone(WAYBAR_RETRY) {

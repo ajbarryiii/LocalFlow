@@ -30,23 +30,28 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 ### Changed
 
 - The Waybar indicator (`localflowctl watch --waybar`) looks like the
-  iPhone app's: a wave of round dots while recording instead of bars, and
-  every state six characters wide, so the module and the clock beside it
-  no longer move. The wave ends in a full, bright dot, so it reads as
-  listening from the first moment, even in silence. The dots before it
-  grow and brighten with your voice at the iPhone's pace, a syllable
-  crossing in about two thirds of a second, and fade over a couple of
-  cells after a word; in silence they rest as a row of small dim dots.
-  They are standard characters with Pango markup, set in the `monospace`
-  font so the clock holds still while you speak even when the bar's font
-  is proportional, and need no Nerd Font (keep the module's `escape` off).
-  Each state has its own glyph: a clock while the model loads, the
-  hourglass while transcribing, a keyboard while typing, the microphone
-  with a slash without a microphone, power-off when LocalFlow isn’t
-  running, and a raised hand while an agent needs your approval (unless
-  there is no microphone). A prompt dictation shows `›` before the wave.
-  Tooltips use plain words ("LocalFlow: ready", "2 dictionary suggestions
-  waiting"). The README's CSS uses the iPhone app's colours and adds
+  iPhone keyboard's dictation island, and every state is six cells wide, so
+  the module and the clock beside it no longer move. While recording it
+  shows a row of small white dots instead of bars, ending in a larger
+  aurora dot, so it reads as listening from the first moment, even in
+  silence. Your voice crosses the row in about half a second: a syllable
+  rises at once beside the aurora dot and fades within a few dots, so
+  syllables read as separate pulses, and the row rises out of the line at
+  its left end; in silence the dots rest small and dim. While transcribing,
+  the row rests without the aurora dot and a glacier-white spot sweeps
+  across it every 1.1 s, drawn by `localflowctl` itself ten times a second
+  and only in that state. The dots are standard characters with Pango
+  markup, at half the bar font's size and set in the `monospace` font, so
+  the clock holds still while you speak even when the bar's font is
+  proportional, and need no Nerd Font (keep the module's `escape` off); the
+  aurora dot's colour is in the markup, so it shows without the README's
+  CSS. Each other state has its own glyph: a clock while the model loads, a
+  keyboard while typing, the microphone with a slash without a microphone,
+  power-off when LocalFlow isn’t running, and a raised hand while an agent
+  needs your approval (unless there is no microphone). A prompt dictation
+  shows `›` before the dots. Tooltips use plain words ("LocalFlow: ready",
+  "2 dictionary suggestions waiting"). The README's CSS uses the iPhone
+  keyboard's colours, gives the module a fixed `min-width`, and adds
   `min-length` and `align` to the module.
 - The recommended model is now
   [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1): `kea-b` in
