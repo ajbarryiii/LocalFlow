@@ -236,10 +236,13 @@ impl Settings {
     }
 }
 
-/// The window's keys: Escape closes (see [`Settings::close`]).
+/// The window's keys: Escape closes (see [`Settings::close`]). Holding it
+/// does nothing more, so the question it may raise needs a second press.
 pub fn key(s: &mut Settings, e: &KeyEvent, tx: &mut Tx) -> bool {
     if e.key == Key::Escape && e.mods == Mods::default() {
-        s.close(tx);
+        if !tx.key_repeat() {
+            s.close(tx);
+        }
         return true;
     }
     false
@@ -958,6 +961,20 @@ mod tests {
         press(&mut rt, "close-anyway");
         assert!(rt.state.closed);
         assert_eq!(d.settings(), None);
+
+        // Holding Escape (auto-repeat) does not answer the question.
+        let mut rt = d.window();
+        press(&mut rt, "switch-history");
+        escape(&mut rt);
+        for _ in 0..5 {
+            rt.repeat_key(KeyEvent {
+                key: Key::Escape,
+                mods: Mods::default(),
+            });
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(!rt.state.closed && rt.state.dirty(), "still asking");
+        assert!(rt.find("close-anyway").is_some());
 
         // A change after the question takes it back.
         let mut rt = d.window();
