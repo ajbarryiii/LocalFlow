@@ -149,11 +149,21 @@ mod tests {
     }
 
     fn first(dir: &Path) -> Listener {
-        match claim(dir, "") {
-            Ok(Instance::First(l)) => l,
-            Ok(Instance::Forwarded) => panic!("forwarded"),
-            Err(e) => panic!("{e}"),
+        // Other tests in this process start child processes (Rune runs
+        // `fc-list` for its first window). Until it execs, such a child
+        // holds a copy of every open file, the lock of a window just closed
+        // included, so a claim right after the close can find it held by
+        // nobody that answers. Only the test process forks like this:
+        // try again.
+        let mut error = String::new();
+        for _ in 0..3 {
+            match claim(dir, "") {
+                Ok(Instance::First(l)) => return l,
+                Ok(Instance::Forwarded) => panic!("forwarded"),
+                Err(e) => error = e,
+            }
         }
+        panic!("{error}")
     }
 
     #[test]
