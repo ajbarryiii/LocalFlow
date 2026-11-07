@@ -1,6 +1,12 @@
 //! `$XDG_CONFIG_HOME/localflow/config.json`. A missing file means defaults;
 //! an invalid file stops the daemon. Error messages name fields, never their
 //! values (macros are user content).
+//!
+//! `settings.json` beside it holds what the settings window
+//! (`localflow-gui`) changed: its keys replace the config file's, so a
+//! config file Home Manager links read-only into the Nix store can still be
+//! adjusted from the window. It is a private file (a regular file, not a
+//! symlink, owned by the user, no group or other permissions).
 
 use std::path::{Path, PathBuf};
 
@@ -9,7 +15,7 @@ use lf_keyboard::Rmlvo;
 use serde_json::{Map, Value};
 
 use crate::log::Level;
-use crate::private_file::{ReadError, read_regular};
+use crate::private_file::{ModeRule, ReadError, SyncDir, read_private, read_regular, write_atomic};
 
 /// Largest accepted config file.
 const MAX_CONFIG_BYTES: u64 = 1 << 20;
@@ -153,6 +159,132 @@ const MAX_DEVICE_NAME: usize = 256;
 /// Largest accepted `key_delay_ms`.
 pub const MAX_KEY_DELAY_MS: u64 = 50;
 
+/// `settings.json` beside the config file `config`.
+pub fn settings_path(config: &Path) -> PathBuf {
+    config.with_file_name("settings.json")
+}
+
+/// The config file's keys and the settings file's, before they are
+/// combined.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Layers {
+    pub file: Map<String, Value>,
+    pub settings: Map<String, Value>,
+}
+
+impl Layers {
+    /// Reads both files; a missing one is empty. Each is checked on its own
+    /// first, so an error names the file that has it.
+    pub fn load(path: &Path, data_dir: &Path) -> Result<Layers, String> {
+        let name = || path.display();
+        let file = match read_regular(path, MAX_CONFIG_BYTES) {
+            Ok(Some(b)) => object(&b, data_dir).map_err(|e| format!("config {}: {e}", name()))?,
+            Ok(None) => Map::new(),
+            // `read_regular` checks neither owner nor mode.
+            Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
+                return Err(format!("config {} is not a regular file", name()));
+            }
+            Err(ReadError::TooLarge) => {
+                return Err(format!("config {} is larger than 1 MiB", name()));
+            }
+            Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
+                return Err(format!("config {}: {e}", name()));
+            }
+        };
+        let settings_file = settings_path(path);
+        let sname = || settings_file.display();
+        let settings = match read_private(&settings_file, MAX_CONFIG_BYTES, ModeRule::NoGroupOther)
+        {
+            Ok(Some(b)) => {
+                object(&b, data_dir).map_err(|e| format!("settings {}: {e}", sname()))?
+            }
+            Ok(None) => Map::new(),
+            Err(ReadError::NotRegular) => {
+                return Err(format!("settings {} is not a regular file", sname()));
+            }
+            Err(ReadError::WrongOwner) => {
+                return Err(format!("settings {} is owned by another user", sname()));
+            }
+            Err(ReadError::Mode(m)) => {
+                return Err(format!(
+                    "settings {} has mode {m:04o}; it must not be readable or writable by group or others",
+                    sname()
+                ));
+            }
+            Err(ReadError::TooLarge) => {
+                return Err(format!("settings {} is larger than 1 MiB", sname()));
+            }
+            Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
+                return Err(format!("settings {}: {e}", sname()));
+            }
+        };
+        Ok(Layers { file, settings })
+    }
+
+    /// The settings' keys over the file's.
+    pub fn combined(&self) -> Map<String, Value> {
+        let mut map = self.file.clone();
+        for (k, v) in &self.settings {
+            map.insert(k.clone(), v.clone());
+        }
+        map
+    }
+
+    /// The configuration the two files make.
+    pub fn config(&self, data_dir: &Path) -> Result<Config, String> {
+        Config::from_map(&self.combined(), data_dir)
+    }
+}
+
+/// `bytes` as a JSON object that is a valid configuration on its own.
+fn object(bytes: &[u8], data_dir: &Path) -> Result<Map<String, Value>, String> {
+    // serde_json errors quote no input, only line and column.
+    let value: Value = serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {e}"))?;
+    let Value::Object(map) = value else {
+        return Err("top level must be an object".into());
+    };
+    Config::from_map(&map, data_dir)?;
+    Ok(map)
+}
+
+/// Replaces the settings file beside `config_path` with `settings` (mode
+/// 0600), once the configuration they make with the config file is valid;
+/// no settings remove the file. Returns that configuration.
+pub fn write_settings(
+    config_path: &Path,
+    data_dir: &Path,
+    settings: &Map<String, Value>,
+) -> Result<Config, String> {
+    let mut layers = Layers::load(config_path, data_dir)?;
+    layers.settings = settings.clone();
+    let config = layers.config(data_dir)?;
+    let path = settings_path(config_path);
+    if settings.is_empty() {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("settings {}: {e}", path.display())),
+        }
+        return Ok(config);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut bytes = serde_json::to_vec_pretty(&Value::Object(settings.clone()))
+        .map_err(|e| format!("settings: {e}"))?;
+    bytes.push(b'\n');
+    // The daemon refuses a larger file.
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "settings {} would be larger than 1 MiB",
+            path.display()
+        ));
+    }
+    write_atomic(&path, &bytes, SyncDir::Yes)
+        .map_err(|e| format!("settings {}: {e}", path.display()))?;
+    Ok(config)
+}
+
 impl Config {
     pub fn defaults(data_dir: &Path) -> Config {
         Config {
@@ -182,23 +314,10 @@ impl Config {
     /// Reads `path`; a missing file yields the defaults. Symlinks are
     /// followed and neither owner nor mode is checked: home-manager links
     /// the config into the read-only Nix store.
+    /// `settings.json` beside it, when there is one, replaces its keys
+    /// (see the module docs).
     pub fn load(path: &Path, data_dir: &Path) -> Result<Config, String> {
-        let name = || path.display();
-        let bytes = match read_regular(path, MAX_CONFIG_BYTES) {
-            Ok(Some(b)) => b,
-            Ok(None) => return Ok(Config::defaults(data_dir)),
-            // `read_regular` checks neither owner nor mode.
-            Err(ReadError::NotRegular | ReadError::WrongOwner | ReadError::Mode(_)) => {
-                return Err(format!("config {} is not a regular file", name()));
-            }
-            Err(ReadError::TooLarge) => {
-                return Err(format!("config {} is larger than 1 MiB", name()));
-            }
-            Err(ReadError::Open(e) | ReadError::Metadata(e) | ReadError::Read(e)) => {
-                return Err(format!("config {}: {e}", name()));
-            }
-        };
-        Config::parse(&bytes, data_dir).map_err(|e| format!("config {}: {e}", name()))
+        Layers::load(path, data_dir)?.config(data_dir)
     }
 
     pub fn parse(bytes: &[u8], data_dir: &Path) -> Result<Config, String> {
@@ -208,8 +327,13 @@ impl Config {
         let Value::Object(map) = value else {
             return Err("top level must be an object".into());
         };
+        Config::from_map(&map, data_dir)
+    }
+
+    /// [`Config::parse`] for a parsed JSON object.
+    pub fn from_map(map: &Map<String, Value>, data_dir: &Path) -> Result<Config, String> {
         let mut c = Config::defaults(data_dir);
-        for (key, v) in &map {
+        for (key, v) in map {
             match key.as_str() {
                 "version" => {
                     if v.as_u64() != Some(1) {
@@ -860,6 +984,128 @@ mod tests {
         std::os::unix::fs::symlink(&target, &path).unwrap();
         let c = Config::load(&path, Path::new("/d")).unwrap();
         assert!(!c.press_enter);
+    }
+
+    /// A read-only config file in the store, as Home Manager installs it.
+    fn store_config(t: &crate::testing::TempDir, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let target = t.path().join("store-config.json");
+        std::fs::write(&target, body).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let path = t.path().join("config.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        path
+    }
+
+    fn settings(json: &str) -> Map<String, Value> {
+        match serde_json::from_str(json).unwrap() {
+            Value::Object(m) => m,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn settings_replace_the_config_files_keys() {
+        let t = crate::testing::TempDir::new("config-settings");
+        let path = store_config(
+            &t,
+            r#"{"version": 1, "press_enter": false, "key_delay_ms": 0, "prompt_tag": "[a]"}"#,
+        );
+        let d = Path::new("/d");
+        // Without settings, the file alone.
+        let c = Config::load(&path, d).unwrap();
+        assert!(!c.press_enter && c.key_delay_ms == 0 && c.prompt_tag == "[a]");
+
+        // Written settings win over the file; the file's other keys stay.
+        let c = write_settings(
+            &path,
+            d,
+            &settings(r#"{"press_enter": true, "spoken_numbers": false}"#),
+        )
+        .unwrap();
+        assert!(c.press_enter && !c.spoken_numbers && c.key_delay_ms == 0);
+        assert_eq!(Config::load(&path, d).unwrap(), c);
+        let layers = Layers::load(&path, d).unwrap();
+        assert_eq!(
+            layers.settings,
+            settings(r#"{"press_enter": true, "spoken_numbers": false}"#)
+        );
+        assert_eq!(layers.file["prompt_tag"], "[a]");
+
+        // A private file: 0600, not a symlink.
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(settings_path(&path)).unwrap();
+        assert!(meta.is_file());
+        assert_eq!(meta.mode() & 0o7777, 0o600);
+
+        // Settings that make an invalid configuration are not written.
+        let e = write_settings(&path, d, &settings(r#"{"key_delay_ms": 51}"#)).unwrap_err();
+        assert!(e.contains("key_delay_ms"), "{e}");
+        assert!(Config::load(&path, d).unwrap().press_enter);
+
+        // Settings too large for the daemon to load are not written, though
+        // every value is valid.
+        let big: Vec<Value> = (0..300)
+            .map(|i| serde_json::json!({"command": format!("synthetic {i}"), "payload": "x".repeat(4000)}))
+            .collect();
+        let mut too_big = Map::new();
+        too_big.insert("voice_macros".into(), Value::Array(big));
+        let e = write_settings(&path, d, &too_big).unwrap_err();
+        assert!(e.contains("larger than 1 MiB"), "{e}");
+        assert!(Config::load(&path, d).unwrap().press_enter);
+
+        // No settings remove the file: back to the config file alone.
+        let c = write_settings(&path, d, &Map::new()).unwrap();
+        assert!(!c.press_enter);
+        assert!(!settings_path(&path).exists());
+        assert_eq!(Config::load(&path, d).unwrap(), c);
+        // Removing a file that is gone already is fine.
+        write_settings(&path, d, &Map::new()).unwrap();
+    }
+
+    #[test]
+    fn settings_without_a_config_file_apply_over_the_defaults() {
+        let t = crate::testing::TempDir::new("config-settings-only");
+        let path = t.path().join("localflow/config.json");
+        let d = Path::new("/d");
+        let c = write_settings(&path, d, &settings(r#"{"history": true}"#)).unwrap();
+        assert!(c.history);
+        assert_eq!(Config::load(&path, d).unwrap(), c);
+    }
+
+    #[test]
+    fn a_bad_settings_file_is_refused_and_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = crate::testing::TempDir::new("config-settings-bad");
+        let path = store_config(&t, r#"{"version": 1}"#);
+        let s = settings_path(&path);
+        let d = Path::new("/d");
+
+        // An invalid value: the error names the settings file and the key,
+        // not the value.
+        std::fs::write(
+            &s,
+            r#"{"prompt_tag": 7, "voice_macros": "synthetic-secret"}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let e = Config::load(&path, d).unwrap_err();
+        assert!(e.starts_with(&format!("settings {}", s.display())), "{e}");
+        assert!(!e.contains("ecret"), "{e}");
+
+        // Readable by others.
+        std::fs::write(&s, r#"{"history": true}"#).unwrap();
+        std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = Config::load(&path, d).unwrap_err();
+        assert!(e.contains("mode 0644"), "{e}");
+
+        // A symlink, even to a private file.
+        std::fs::remove_file(&s).unwrap();
+        let target = t.path().join("elsewhere.json");
+        std::fs::write(&target, r#"{"history": true}"#).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&target, &s).unwrap();
+        assert!(Config::load(&path, d).is_err());
     }
 
     #[test]

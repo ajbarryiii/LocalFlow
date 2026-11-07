@@ -8,7 +8,7 @@
 //! killed.
 //!
 //! `localflowctl correct` teaches the custom dictionary from a correction of
-//! the last dictation, in a picker (rofi or wofi; see `lf_daemon::picker`);
+//! the last dictation, in a picker (rofi, wofi or localflow-gui; see `lf_daemon::picker`);
 //! it never changes the text already typed. `localflowctl dict …` manages
 //! the dictionary; `dict suggest` queues a word for review (agents use it)
 //! and `dict review` offers each pending suggestion in a picker (rofi,
@@ -43,8 +43,6 @@
 //! - 128 + N: interrupted by signal N (`fetch-model`, after cleaning up).
 
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,7 +56,7 @@ use lf_daemon::protocol::{
     monotonic_ns, parse_dec, parse_reply, printable_fields, reply_field, request_line,
     valid_set_name,
 };
-use lf_daemon::server::peer_uid;
+use lf_daemon::server::{self, ConnectError, peer_uid};
 use lf_daemon::tray::{Tray, TrayError};
 use lf_daemon::waybar::{Class, Indicator};
 use lf_daemon::{dictionary, paths, t3};
@@ -94,7 +92,7 @@ commands:
             typing it) to teach the dictionary; the text already typed is not
             changed. A word the audio confirms is offered for adding.
             The picker is the configuration's \"picker\": rofi, fuzzel,
-            wofi or tofi (default auto: the first installed)
+            wofi, tofi or gui (default auto: the first installed)
   dict      add (strength 0.25 to 8, default 1), remove, list the custom
             dictionary; ignored lists words never suggested, unignore
             allows one again; suggest queues a word for review, review
@@ -959,6 +957,17 @@ impl Watch {
     /// The next line's `ok` fields; a daemon error, a lost connection or a
     /// bad line is a failure, and a closed stdout is [`Failure::Closed`].
     fn next(&mut self) -> Result<String, Failure> {
+        loop {
+            // Without `until`, only a line or a failure ends the wait.
+            if let Some(fields) = self.next_until(None)? {
+                return Ok(fields);
+            }
+        }
+    }
+
+    /// As [`Watch::next`], but `Ok(None)` once `until` passes without a
+    /// whole line (a part of one stays buffered for the next call).
+    fn next_until(&mut self, until: Option<Instant>) -> Result<Option<String>, Failure> {
         let mut chunk = [0u8; MAX_LINE];
         let end = loop {
             if let Some(end) = self.buf.iter().position(|&b| b == b'\n') {
@@ -967,8 +976,16 @@ impl Watch {
             if self.buf.len() >= MAX_LINE {
                 return Err(Failure::Protocol("line too long".into()));
             }
-            let timeout = self.deadline.map(remaining).transpose()?;
+            let first = self.deadline.map(remaining).transpose()?;
+            let until_left = until.map(|u| u.saturating_duration_since(Instant::now()));
+            let timeout = match (first, until_left) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             if !wait_readable(&self.stream, timeout, self.follow_stdout)? {
+                if until.is_some_and(|u| Instant::now() >= u) {
+                    return Ok(None);
+                }
                 return Err(Failure::Timeout);
             }
             let n = match self.stream.read(&mut chunk) {
@@ -993,7 +1010,7 @@ impl Watch {
         self.buf.drain(..=end);
         self.deadline = None;
         match reply {
-            Some(ClientReply::Ok(fields)) => Ok(fields),
+            Some(ClientReply::Ok(fields)) => Ok(Some(fields)),
             Some(ClientReply::Error(code)) => Err(Failure::Daemon(code)),
             None => Err(Failure::Protocol("malformed reply".into())),
         }
@@ -1112,7 +1129,10 @@ fn watch(args: &Args) -> Result<(), Failure> {
 
 /// `watch --waybar`: runs until stdout is closed. A lost connection is
 /// retried at once; while the daemon is unreachable the offline object is
-/// shown and the connection retried every [`WAYBAR_RETRY`].
+/// shown and the connection retried every [`WAYBAR_RETRY`]. While the
+/// daemon is transcribing, the shimmer's next frame is drawn when it is
+/// due ([`Indicator::next_frame`]) even without a new line; in every other
+/// state nothing is written until a line changes the object.
 fn watch_waybar(args: &Args) {
     let mut out = std::io::stdout().lock();
     let mut indicator = Indicator::default();
@@ -1125,16 +1145,35 @@ fn watch_waybar(args: &Args) {
         last = object;
         ok
     };
+    // When the wait for a transcript began, while it lasts: the shimmer's
+    // clock. It survives a reconnect, as the indicator's frame does.
+    let mut waiting: Option<Instant> = None;
     let mut retried = false;
     loop {
         let began = Instant::now();
         let mut connected = false;
         if let Ok(mut w) = Watch::open(args, true) {
             loop {
-                match w.next() {
-                    Ok(fields) => {
+                let due = waiting
+                    .zip(indicator.next_frame())
+                    .map(|(since, next)| since + next);
+                match w.next_until(due) {
+                    Ok(Some(fields)) => {
                         connected = true;
-                        if let Some(object) = indicator.update(&fields)
+                        let object = indicator.update(&fields);
+                        waiting = indicator
+                            .next_frame()
+                            .map(|_| waiting.unwrap_or_else(Instant::now));
+                        if let Some(object) = object
+                            && !show(&mut out, object)
+                        {
+                            return;
+                        }
+                    }
+                    // The shimmer's next frame is due.
+                    Ok(None) => {
+                        if let Some(object) =
+                            waiting.and_then(|since| indicator.tick(since.elapsed()))
                             && !show(&mut out, object)
                         {
                             return;
@@ -1153,6 +1192,8 @@ fn watch_waybar(args: &Args) {
             continue;
         }
         retried = false;
+        // Offline ends a wait: the next one starts its sweep again.
+        waiting = None;
         // An unchanged offline object is not written again, so a closed
         // stdout is noticed by the wait instead.
         if !show(&mut out, indicator.offline()) || sleep_unless_stdout_gone(WAYBAR_RETRY) {
@@ -1211,74 +1252,17 @@ fn io_failure(e: std::io::Error) -> Failure {
     }
 }
 
-/// Connects without blocking past `deadline` (a Unix stream connect blocks
-/// while the listen backlog is full).
+/// Connects without blocking past `deadline` (see [`server::connect`]).
 fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, Failure> {
-    let bytes = path.as_os_str().as_bytes();
-    // SAFETY: zeroed sockaddr_un is valid; the path fits (checked below).
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.len() >= addr.sun_path.len() {
-        return Err(Failure::Unreachable(format!(
-            "socket path {} is too long",
-            path.display()
-        )));
-    }
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    for (dst, &src) in addr.sun_path.iter_mut().zip(bytes) {
-        *dst = src as libc::c_char;
-    }
-    // SAFETY: plain socket creation; the descriptor is owned immediately.
-    let fd = unsafe {
-        libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
-            0,
-        )
-    };
-    if fd < 0 {
-        return Err(Failure::Protocol(
-            std::io::Error::last_os_error().to_string(),
-        ));
-    }
-    // SAFETY: `fd` is a fresh descriptor owned by nothing else.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    loop {
-        use std::os::fd::AsRawFd;
-        // SAFETY: `addr` is a valid sockaddr_un of `len` bytes.
-        let rc = unsafe {
-            libc::connect(
-                fd.as_raw_fd(),
-                (&addr as *const libc::sockaddr_un).cast(),
-                len,
-            )
-        };
-        if rc == 0 {
-            break;
+    server::connect(path, deadline).map_err(|e| match e {
+        ConnectError::Absent => Failure::Unreachable("localflowd is not running".into()),
+        ConnectError::Timeout => Failure::Timeout,
+        ConnectError::TooLong => {
+            Failure::Unreachable(format!("socket path {} is too long", path.display()))
         }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::EINTR) => continue,
-            Some(libc::EAGAIN) => {
-                if Instant::now() >= deadline {
-                    return Err(Failure::Timeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Some(libc::ENOENT | libc::ECONNREFUSED) => {
-                return Err(Failure::Unreachable("localflowd is not running".into()));
-            }
-            _ => {
-                return Err(Failure::Unreachable(format!(
-                    "cannot connect to {}: {err}",
-                    path.display()
-                )));
-            }
+        ConnectError::Socket(e) => Failure::Protocol(e.to_string()),
+        ConnectError::Connect(e) => {
+            Failure::Unreachable(format!("cannot connect to {}: {e}", path.display()))
         }
-    }
-    let stream = UnixStream::from(fd);
-    stream
-        .set_nonblocking(false)
-        .map_err(|e| Failure::Protocol(e.to_string()))?;
-    Ok(stream)
+    })
 }

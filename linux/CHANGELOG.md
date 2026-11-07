@@ -7,8 +7,55 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 
 ## [Unreleased]
 
+### Added
+
+- A settings window and correction dialogs, `localflow-gui` (prototype,
+  built with Rune; the flake's `localflow-gui` package). Its changes go to a
+  new `settings.json` beside `config.json`, whose keys replace
+  `config.json`'s, so a read-only `config.json` from Home Manager can still
+  be adjusted. `"picker": "gui"` uses its dialogs for `localflowctl correct`
+  and `dict review`; `auto` uses them only for the suggestion dialog, and only
+  when no menu tool (rofi, fuzzel, wofi, tofi) is installed. Escape closes
+  the settings window, and launching it again brings the open one forward.
+  The windows have the iPhone app's dark look. Settings not applied yet
+  show a dot, and an invalid value is explained under its field. If the
+  daemon does not restart after **Apply**, the window says the settings
+  were saved and keeps saying so, with **Retry**, until a restart works; a
+  daemon started outside its systemd user unit is not silently skipped,
+  the window asks you to restart it (also when it is busy or does not
+  answer within half a second). **Speed** names `precision` from
+  Fastest to Slowest. Adding a voice macro puts the cursor in its Say
+  field. The dialogs' smallest size fits every choice.
+
 ### Changed
 
+- The Waybar indicator (`localflowctl watch --waybar`) looks like the
+  iPhone keyboard's dictation island, and every state is six cells wide, so
+  the module and the clock beside it no longer move. While recording it
+  shows a row of small white dots instead of bars, ending in a larger
+  aurora dot, so it reads as listening from the first moment, even in
+  silence. Your voice crosses the row in about half a second: a syllable
+  rises at once beside the aurora dot and fades within a few dots, so
+  syllables read as separate pulses, and the row rises out of the line at
+  its left end; in silence the dots rest small and dim. As on the keyboard,
+  the dots follow your own voice, measured against the recording's recent
+  loudest moment, so a soft, a normal and a loud voice all swell to full
+  dots on their syllables and a quiet room stays at rest. While transcribing,
+  the row rests without the aurora dot and a glacier-white spot sweeps
+  across it every 1.1 s, drawn by `localflowctl` itself ten times a second
+  and only in that state. The dots are standard characters with Pango
+  markup, at half the bar font's size and set in the `monospace` font, so
+  the clock holds still while you speak even when the bar's font is
+  proportional, and need no Nerd Font (keep the module's `escape` off); the
+  aurora dot's colour is in the markup, so it shows without the README's
+  CSS. Each other state has its own glyph: a clock while the model loads, a
+  keyboard while typing, the microphone with a slash without a microphone,
+  power-off when LocalFlow isn’t running, and a raised hand while an agent
+  needs your approval (unless there is no microphone). A prompt dictation
+  shows `›` before the dots. Tooltips use plain words ("LocalFlow: ready",
+  "2 dictionary suggestions waiting"). The README's CSS uses the iPhone
+  keyboard's colours, gives the module a fixed `min-width`, and adds
+  `min-length` and `align` to the module.
 - The recommended model is now
   [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1): `kea-b` in
   `localflowctl fetch-model` and the flake installs it instead of Kea-B 0.0.

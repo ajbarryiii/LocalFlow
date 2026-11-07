@@ -160,7 +160,10 @@ invalid values stop the daemon with an error. Defaults:
   less time per utterance (LibriSpeech 15.7 vs 23.7 ms on average). On
   kea-t, i8x2 matched f32's WER over 32,560 dev/test utterances (six
   near-tie transcript changes) and is 25-28% faster than i8x3, which tracks
-  f32 to rounding. To
+  f32 to rounding. `f32` is the slowest: `lf-gemm-bench` on synthetic
+  binary weights (8 threads of a 9950X3D, 3 s of audio) timed the encoder
+  projections at 5.5 ms for `i8x1`, 10.0 for `i8x2`, 14.6 for `i8x3` and
+  21.0 for `f32`. To
   re-check a new export, save hypotheses at each precision with
   `lf-transcribe --save-hyps` and compare them with `lf-hypcompare` (both in
   `lf-bench`).
@@ -208,9 +211,11 @@ invalid values stop the daemon with an error. Defaults:
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
 - `picker`: the menu `localflowctl correct` and `dict review` show text in:
-  `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"` or `"tofi"`. `auto` takes, for
-  each dialog, the first of rofi, fuzzel, wofi and tofi on `PATH` that can
-  show it. fuzzel and tofi cannot prefill an input box without putting the
+  `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"`, `"tofi"` or `"gui"`. `"gui"` is
+  LocalFlow's own windows (`localflow-gui`, see "Settings window").
+  `auto` takes, for each dialog, the first of rofi, fuzzel, wofi, tofi and
+  localflow-gui on `PATH` that can show it (localflow-gui only for the
+  suggestion dialog; see "Settings window"). fuzzel and tofi cannot prefill an input box without putting the
   text on their command line, so they only show the suggestion dialog
   (`dict review`, and the second step of `correct`); with one of them
   configured, `correct` says so and does nothing. wofi is not used while
@@ -231,6 +236,42 @@ invalid values stop the daemon with an error. Defaults:
   `localflowctl` keeps working either way.
 
 Check a configuration with `localflowd --check-config`.
+
+### Settings window (prototype)
+
+`localflow-gui` (`nix build ./linux#localflow-gui`; built from `linux/gui`,
+a Cargo workspace of its own, with [Rune](https://github.com/anomalyco/rune))
+is a settings window and the correction dialogs:
+
+- `localflow-gui` opens the settings. Changes are kept until **Apply**,
+  which writes them to `settings.json` beside `config.json` and restarts
+  the daemon (`systemctl --user try-restart localflowd`) when a key it reads
+  changed; a cyan dot marks each setting not applied yet. If the restart
+  fails, the settings are still saved, and the window says so, with
+  **Retry**, until a restart works (a later **Apply** restarts too). A
+  daemon that answers but doesn't run as the `localflowd` user unit (one
+  started by `exec-once`, say) is left running, and the window asks you to
+  restart it; with no daemon running, saving is enough. A reset
+  icon next to a setting takes it back to `config.json`. A text field with
+  an invalid value is outlined, with what to fix under it. **Speed** is
+  `precision`, from the fastest: Auto (the model's own), Fastest (`i8x1`),
+  Fast (`i8x2`), Slow (`i8x3`) and Slowest (`f32`). **Type with** is `output`:
+  Wayland, Desktop portal (`portal`) or Kernel device (`uinput`).
+  Escape closes it, asking first when there are changes not applied. One
+  settings window runs per user: launching it again brings that window
+  forward (passing on `XDG_ACTIVATION_TOKEN` when the launcher sets it;
+  Hyprland otherwise needs the `focus_on_activate` window rule).
+- `settings.json` holds only keys whose value differs from `config.json`'s;
+  its keys replace `config.json`'s wherever the configuration is read, so a
+  `config.json` Home Manager links read-only into the Nix store still works.
+  It must be a private file (not a symlink, owned by you, no group or other
+  permissions); delete it to go back to `config.json` alone.
+- `localflow-gui edit` and `localflow-gui choose` are the `"gui"` picker:
+  the text comes on stdin and the answer goes to stdout; Escape or closing
+  the window does nothing. They are built without Rune's accessibility
+  bridge. An input method (fcitx5, IBus) sees what is typed in the edit
+  box, as in any other window, so `auto` uses localflow-gui only for the
+  suggestion dialog; set `"picker": "gui"` to correct in it too.
 
 ## Run
 
@@ -319,33 +360,113 @@ being the same package:
 ### Waybar indicator
 
 `localflowctl watch --waybar` prints one JSON object per change for a
-Waybar custom module. Classes (also the `alt`): `idle`, `loading` (model
-loading), `recording` (text is a scrolling level graph), `transcribing`,
-`typing`, `nomic` (idle with no microphone), `offline` (daemon not
-running). A prompt dictation (double-tap and hold; `tag=prompt` in
-`watch` lines) adds the class `prompt` while it records, transcribes and
-types (`"class": ["recording", "prompt"]`, tooltip "LocalFlow: recording
-(prompt)"). It keeps retrying every 2 s while the daemon is down, so Waybar
-never needs restarting. The default text uses Nerd Font glyphs; override
-them with `format-icons` keyed by `alt` if you like.
+Waybar custom module. Every text is six cells of a monospace font wide, so
+the module and the clock beside it never move. It looks like the iPhone
+keyboard's dictation island: a white wave settling into an aurora dot while
+you speak, and a glacier-white shimmer while it transcribes. Classes (also
+the `alt`) and what each shows:
+
+| Class | Text | Tooltip |
+|---|---|---|
+| `idle` | microphone | LocalFlow: ready |
+| `loading` | clock (the model is loading) | LocalFlow: loading the model |
+| `recording` | a row of small white dots ending in a larger aurora dot; your voice crosses the row as pulses, newest beside the aurora dot, the dots growing and brightening with it, and the row rests small and dim in silence | LocalFlow: listening |
+| `transcribing` | the row at rest, without the aurora dot, with a brighter spot sweeping across it | LocalFlow: transcribing |
+| `typing` | keyboard | LocalFlow: typing |
+| `nomic` | microphone with a slash (idle with no microphone) | LocalFlow: no microphone |
+| `offline` | power-off (the daemon is not running) | LocalFlow isn’t running |
+
+A prompt dictation (double-tap and hold; `tag=prompt` in `watch` lines)
+puts `›` in the first cell and adds the class `prompt` while it records,
+transcribes and types (`"class": ["recording", "prompt"]`, tooltip
+"LocalFlow: listening (prompt dictation)"). While an agent needs your
+approval (see [Coding agents](#coding-agents)), a raised hand takes the
+glyph's place, except without a microphone, which keeps its slashed
+microphone. It keeps retrying every 2 s while the daemon is down, so
+Waybar never needs restarting. Override the glyphs with `format-icons`
+keyed by `alt` if you like.
+
+The wave shows about the last half second of your voice: each level line
+from the daemon (every 66 ms) moves it one dot, and a syllable rises at once
+and fades within a few dots, so it crosses the row as a pulse. It rises out
+of the line at its left end, as on the keyboard. As on the keyboard too, the
+dots follow your own voice rather than a fixed scale: they are measured
+against the recording's recent loudest moment (held for 1.2 s, then sinking
+6 dB a second, never below −30 dBFS), down to 27 dB under it and never below
+−45 dBFS. So a soft, a normal and a loud voice all swell to full dots on
+their syllables and dip between them, and a quiet room stays at rest.
+
+While transcribing, `localflowctl` itself draws the shimmer ten frames a
+second, a sweep every 1.1 s; in every other state it writes only when the
+state changes.
+
+The dots are `•` and `●` (U+2022, U+25CF), which common fonts such as DejaVu
+have, and the glyphs are Font Awesome's, which stock Waybar's style asks
+for, so with Font Awesome installed no Nerd Font is needed. The rows are
+Pango markup, which Waybar reads in custom modules by default. They are set
+in the `monospace` font (`<span font_family="monospace">`), so their cells
+are equally wide even in a proportional bar font. Each dot is at half the
+bar font's size with a sliver of space after it, so eight fit where five
+characters would and two full dots never touch; dimmer dots add `alpha`,
+and `rise` lifts the smaller dots onto the bar's middle line (tuned for a
+bar font of about 13 px). The aurora dot's colour (#6DFFA8) is fixed in the
+markup, so it shows on any bar; everything else takes the module's colour.
+Leave the module's `escape` off, or the tags show as text.
+
+`min-length: 6` makes the module at least six average characters of the
+bar's font wide, and `align: 0.5` centres the text in that width. A text
+that fits leaves the width alone; a wider one widens the module and moves
+the clock. In a monospace bar font that is also fontconfig's `monospace`
+(`fc-match monospace`), every text is six cells. The rows mix sizes, and
+each size's characters are rounded to whole pixels, so at some font sizes a
+row is a pixel or two wider than a glyph's text (JetBrainsMono at 12 or
+15 px, for one), which would nudge the clock as a dictation starts. The CSS
+below sets a `min-width` a little wider than six cells, which holds the
+module's width whatever the text: nothing moves with a JetBrainsMono bar
+at 12, 13 or 15 px, nor with stock Waybar's proportional DejaVu Sans at
+those sizes, where the keyboard and the slashed microphone are a little
+wider than six characters.
 
 ```jsonc
 "custom/localflow": {
     "exec": "localflowctl watch --waybar",
     "return-type": "json",
-    "restart-interval": 5
+    "restart-interval": 5,
+    "min-length": 6,
+    "align": 0.5
 }
 ```
 
+The LocalFlow colours: white while recording, glacier white (the
+keyboard's shimmer) while transcribing, glacier while loading, typing or
+waiting on you, and ember for a problem, including the agent classes (see
+[Coding agents](#coding-agents)):
+
 ```css
-#custom-localflow.recording { color: #f38ba8; }
-#custom-localflow.transcribing,
-#custom-localflow.typing { color: #f9e2af; }
-#custom-localflow.nomic { color: #e64553; }
-#custom-localflow.offline,
-#custom-localflow.loading { opacity: 0.5; }
-/* A prompt dictation (double-tap and hold), after the rules above. */
-#custom-localflow.prompt { color: #89b4fa; }
+#custom-localflow {
+  min-width: 4.05em;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+#custom-localflow.idle,
+#custom-localflow.offline {
+  color: rgba(255, 255, 255, 0.4);
+}
+#custom-localflow.recording {
+  color: #ffffff;
+}
+#custom-localflow.transcribing {
+  color: #abf2fc;
+}
+#custom-localflow.loading,
+#custom-localflow.typing,
+#custom-localflow.agent-input {
+  color: #67e8f9;
+}
+#custom-localflow.nomic,
+#custom-localflow.agent-approval {
+  color: #f5c66b;
+}
 ```
 
 ### Tray icon
@@ -400,7 +521,7 @@ localflowctl correct
 ```
 
 Bind it to a key (see the snippets in `packaging/`). Within two minutes of a
-dictation being typed, it opens a picker (rofi or wofi; see `picker` above)
+dictation being typed, it opens a picker (rofi, wofi or localflow-gui; see `picker` above)
 with that dictation's text; edit it
 to what you meant and press Return (Escape does nothing). **It never
 changes the text already typed into the other app**: fix that there as
@@ -488,13 +609,10 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
 - **Waybar:**
   - Bind the module's `on-click` to `localflowctl dict review` to approve
     suggestions with a click.
-  - Style the new classes:
-
-    ```css
-    #custom-localflow.agent-approval { color: #fab387; }
-    #custom-localflow.agent-input { color: #a6e3a1; }
-    #custom-localflow.suggestion { font-weight: bold; }
-    ```
+  - The CSS under [Waybar indicator](#waybar-indicator) styles the agent
+    classes: `agent-approval` in ember, `agent-input` in glacier. The number
+    of agents needing you shows beside the microphone, or beside a raised
+    hand while one needs approval.
 
 ## Text output and desktops
 
@@ -682,8 +800,9 @@ also works on compositors that have the protocol (Hyprland, below).
    LocalFlow asks for no particular key. Change them later in the
    desktop's shortcut settings (GNOME Settings > Keyboard > Keyboard
    Shortcuts; KDE System Settings > Keyboard > Shortcuts).
-3. `localflowctl correct` needs rofi or wofi, which need layer-shell (KDE has it,
-   GNOME does not); bind it as an ordinary custom shortcut.
+3. `localflowctl correct` needs rofi or wofi, which need layer-shell
+   (or localflow-gui, which does not) (KDE has it, GNOME does not); bind it as an ordinary custom
+   shortcut.
 
 Behaviour:
 
@@ -750,7 +869,7 @@ and phrase sections, `lf-asr` the bias graph and decision rule, and
 and correction sections. Chunked transcription (pause shortening, the 15 s
 windows and how their transcripts are joined) is pinned by
 `testdata/chunking-vectors.json`, run by `lf-chunk` and the Swift app; its
-expected values come from the Swift implementation. The picker tests use fake rofi, fuzzel, wofi and
+expected values come from the Swift implementation. The picker tests use fake localflow-gui, rofi, fuzzel, wofi and
 tofi scripts that record their arguments, environment, configuration and
 stdin; one also checks that the installed rofi reads the generated
 configuration back (it is skipped when rofi is not on `PATH`). The tray is
@@ -826,12 +945,18 @@ your dictation key.
     from HFP to A2DP. `playerctl -l` (if installed) lists the players the
     daemon sees.
 17. Waybar indicator (`localflowctl watch --waybar` in a terminal, or the
-    custom module): idle shows the microphone; holding the key shows a moving
-    level graph that follows your voice; release shows the hourglass, then
-    idle. Disconnect the microphone (or turn the headset off): `nomic`
-    within a second or two, and back to idle when reconnected. With
-    `input_device` set, only that device counts. Stop the daemon: `offline`;
-    start it again: idle within about 2 s, without restarting Waybar.
+    custom module): idle shows the dim microphone; holding the key shows a
+    row of white dots ending in an aurora dot at once, and your syllables
+    cross the row as pulses; release shows the glacier-white shimmer
+    sweeping the row until the text is ready (it stops at once when typing
+    starts), then the keyboard, then idle. The clock beside it never moves,
+    and with `watch --waybar` in a terminal no line is printed while idle.
+    Disconnect the
+    microphone (or turn the headset off): `nomic` (the microphone with a
+    slash) within a second or two, and back to idle when reconnected. With
+    `input_device` set, only that device counts. Stop the daemon: `offline`
+    (power-off); start it again: idle within about 2 s, without restarting
+    Waybar.
     `journalctl --user -u localflowd` shows `microphone: absent/present`
     but no device names.
 18. Hold to Prompt: in a terminal or chat box, tap the key once quickly, then
