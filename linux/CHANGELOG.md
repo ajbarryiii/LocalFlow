@@ -17,9 +17,22 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
   and `dict review`; `auto` uses them only for the suggestion dialog, and only
   when no menu tool (rofi, fuzzel, wofi, tofi) is installed. Escape closes
   the settings window, and launching it again brings the open one forward.
+  The windows have the iPhone app's dark look. Settings not applied yet
+  show a dot, an invalid value is explained under its field, and if the
+  daemon does not restart after **Apply** the window says the settings
+  were saved and offers **Retry**.
 
 ### Changed
 
+- The Waybar indicator (`localflowctl watch --waybar`) looks like the
+  iPhone app's: a wave of round dots while recording instead of bars, and
+  every state six characters wide, so the module and the clock beside it
+  no longer move. Each state has its own glyph: a clock while the model
+  loads, the hourglass while transcribing, a keyboard while typing, the
+  microphone with a slash without a microphone, and power-off when
+  LocalFlow isn’t running. A prompt dictation shows `›` before the wave.
+  Tooltips use plain words ("LocalFlow: ready"). The README's CSS uses the
+  iPhone app's colours and adds `min-length` and `align` to the module.
 - The recommended model is now
   [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1): `kea-b` in
   `localflowctl fetch-model` and the flake installs it instead of Kea-B 0.0.

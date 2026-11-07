@@ -15,8 +15,10 @@
 use std::sync::Mutex;
 
 use rune::tok::space;
-use rune::{Cx, El, Key, KeyEvent, TextEdit, Tx, col, icon, row};
-use rune_kit::{Button, ButtonVariant, Kit, TextArea};
+use rune::{Cx, El, Key, KeyEvent, TextEdit, Tx, col, el, row};
+use rune_kit::{Button, TextArea};
+
+use crate::look;
 
 /// The answer for `main` to print once the window has closed.
 pub static ANSWER: Mutex<Option<Outcome>> = Mutex::new(None);
@@ -66,8 +68,18 @@ impl Edit {
     }
 }
 
-pub fn edit_view(s: &Edit, cx: &mut Cx<Edit>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+/// The dialogs' margin, and the gap between the text and the buttons.
+const PAD: f32 = 16.0;
+/// A pill button's height (`look::primary`).
+const BUTTON: f32 = 28.0;
+/// The ridge mark's side.
+const MARK: f32 = 20.0;
+
+pub fn edit_view(s: &Edit, _cx: &mut Cx<Edit>) -> El {
+    let k = look::kit();
+    // The box is a card on the window, as the settings' fields are.
+    let mut boxed = k.clone();
+    boxed.c.bg_base = look::card();
     let field = TextArea::new(&s.edit)
         .label("Correction")
         .width(None)
@@ -86,33 +98,40 @@ pub fn edit_view(s: &Edit, cx: &mut Cx<Edit>) -> El {
             }
             _ => false,
         })
-        .build(&k);
+        .build(&boxed)
+        // A longer text than the window was sized for still fits: the box
+        // takes the room, and the buttons stay at the bottom.
+        .grow(1.0)
+        .min_h(0.0);
     let buttons = row()
         .key("buttons")
         .gap(space::S2)
-        .justify_end()
+        .center_y()
+        .child(look::mark(MARK))
+        .child(el().grow(1.0))
         .child(
-            Button::new("Cancel")
-                .variant(ButtonVariant::Ghost)
-                .on_press_tx(|s: &mut Edit, tx| dismiss(&mut s.outcome, tx))
-                .build(&k)
-                .key("cancel"),
+            look::secondary(
+                &k,
+                Button::new("Cancel").on_press_tx(|s: &mut Edit, tx| dismiss(&mut s.outcome, tx)),
+            )
+            .key("cancel"),
         )
         .child(
-            Button::new("Correct")
-                .variant(ButtonVariant::Contrast)
-                .shortcut("Enter")
-                .on_press_tx(|s: &mut Edit, tx| s.accept(tx))
-                .build(&k)
-                .key("correct"),
+            look::primary(
+                &k,
+                Button::new("Fix")
+                    .shortcut("Enter")
+                    .on_press_tx(|s: &mut Edit, tx| s.accept(tx)),
+            )
+            .key("fix"),
         );
     col()
         .key("edit-window")
         .w_full()
         .h_full()
-        .padding(16.0)
+        .padding(PAD)
         .gap(space::S3)
-        .fill(k.c.bg_base)
+        .fill(look::screen())
         .child(field)
         .child(buttons)
 }
@@ -134,24 +153,21 @@ impl Choose {
     }
 }
 
-pub fn choose_view(s: &Choose, cx: &mut Cx<Choose>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+pub fn choose_view(s: &Choose, _cx: &mut Cx<Choose>) -> El {
+    let k = look::kit();
     let mut list = col().key("rows").gap(space::S2).w_full();
     for (i, label) in s.rows.iter().enumerate() {
-        let variant = if i == s.selected {
-            ButtonVariant::Contrast
+        let b = Button::new(label.clone())
+            .on_press_tx(move |s: &mut Choose, tx| finish(&mut s.outcome, Outcome::Chose(i), tx));
+        // The highlighted row, which Enter chooses, is the pill.
+        let b = if i == s.selected {
+            look::primary(&k, b)
         } else {
-            ButtonVariant::Neutral
+            look::secondary(&k, b)
         };
         list = list.child(
             row().key(format!("row-{i}")).w_full().child(
-                Button::new(label.clone())
-                    .variant(variant)
-                    .on_press_tx(move |s: &mut Choose, tx| {
-                        finish(&mut s.outcome, Outcome::Chose(i), tx)
-                    })
-                    .build(&k)
-                    .key(format!("choice-{i}"))
+                b.key(format!("choice-{i}"))
                     // The keyboard drives the highlight only (a focused
                     // button would take Enter and Space for itself).
                     .focusable(false)
@@ -163,30 +179,27 @@ pub fn choose_view(s: &Choose, cx: &mut Cx<Choose>) -> El {
         .key("choose-window")
         .w_full()
         .h_full()
-        .padding(16.0)
+        .padding(PAD)
         .gap(space::S3)
         .justify_center()
         .items_center()
-        .fill(k.c.bg_base)
-        .child(
-            icon(&rune_kit::glyphs::MIC, 18.0)
-                .key("mark")
-                .color(k.c.text_weak),
-        )
+        .fill(look::screen())
+        .child(look::mark(MARK))
         .child(list)
 }
 
 /// The edit window's height for `text`: about 64 characters a line at
-/// 560 pt, 2 to 8 lines, the buttons under them.
+/// 560 pt, 2 to 8 lines of 17.5 pt in the box (8 pt of padding), and the
+/// buttons under it.
 pub fn edit_height(text: &str) -> f32 {
     let lines = text.chars().count().div_ceil(64).clamp(2, 8);
-    16.0 * 2.0 + 16.0 + lines as f32 * 20.0 + space::S3 + 32.0
+    PAD * 2.0 + 16.0 + lines as f32 * 17.5 + space::S3 + BUTTON
 }
 
-/// The choose window's height for `rows` buttons: padding, the mark, and
-/// a 32 pt button with an 8 pt gap per row.
+/// The choose window's height for `rows` buttons: the mark over a pill per
+/// row, 8 pt apart.
 pub fn choose_height(rows: usize) -> f32 {
-    16.0 * 2.0 + 18.0 + space::S3 + rows as f32 * 32.0 + rows.saturating_sub(1) as f32 * space::S2
+    PAD * 2.0 + MARK + space::S3 + rows as f32 * BUTTON + rows.saturating_sub(1) as f32 * space::S2
 }
 
 /// The choose dialog's keys: Escape dismisses; Up, Down and Tab move the
@@ -361,11 +374,30 @@ mod tests {
         s.edit.text = "synthetic\nfirst\r\n\nsecond".into();
         let mut rt = Runtime::new(s, edit_view, (520.0, 200.0), Env::new(true, 1.0));
         rt.frame(0.0);
-        press(&mut rt, "correct");
+        press(&mut rt, "fix");
         assert_eq!(
             rt.state.outcome,
             Some(Outcome::Accepted("synthetic first second".into()))
         );
+    }
+
+    #[test]
+    fn the_edit_buttons_sit_one_margin_above_the_bottom() {
+        for text in [
+            "synthetic",
+            "Synthetic dictation about a cluster, its pods and the plan for tomorrow morning, \
+             long enough to wrap onto a second and a third line of the box.",
+        ] {
+            let h = edit_height(text);
+            let mut rt = Runtime::new(Edit::new(text), edit_view, (560.0, h), Env::new(true, 1.0));
+            rt.frame(0.0);
+            let ([_, y, _, bh], _) = rt.presented("buttons").unwrap();
+            let under = h - (y + bh);
+            assert!(
+                (under - PAD).abs() < 0.5,
+                "{under} pt under the buttons in a {h} pt window"
+            );
+        }
     }
 
     #[test]

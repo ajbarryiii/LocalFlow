@@ -117,8 +117,9 @@ commands do not carry these fields.
   - Pending suggestions add `suggestion`.
   - With extra classes, `class` is an array: the state's class first, then
     `agent-approval` or `agent-input`, then `suggestion`.
-  - The text becomes the glyph, a space and approval + input, when that sum
-    is above zero.
+  - Approval + input, when that sum is above zero, goes in the text's last
+    two characters, after the glyph and a space (at most 99), so the text
+    keeps its width.
 - **While recording, transcribing or typing:** no extra classes, and the
   text is unchanged.
 - **Tooltip, in any state but offline:** the state's tooltip is followed by

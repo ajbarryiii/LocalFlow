@@ -11,6 +11,7 @@
 //! which render it headless.
 
 mod instance;
+mod look;
 mod prompt;
 mod settings;
 
@@ -85,7 +86,7 @@ fn run_edit() -> i32 {
         min_size: Some((360.0, 120.0)),
         on_key: Some(prompt::edit_key),
         ..AppSpec::new(
-            "Correct dictation",
+            "Fix dictation",
             (
                 560.0,
                 prompt::edit_height(INPUT.get().map_or("", String::as_str)),
@@ -158,7 +159,7 @@ fn run_settings() -> i32 {
     let app = rune::App::new(AppSpec::<settings::Settings> {
         min_size: Some((520.0, 400.0)),
         on_key: Some(settings::key),
-        ..AppSpec::new("LocalFlow Settings", (600.0, 760.0), init, settings::view)
+        ..AppSpec::new("LocalFlow Settings", (600.0, 880.0), init, settings::view)
     });
     if let Some(listener) = listener {
         let handle = app.handle();

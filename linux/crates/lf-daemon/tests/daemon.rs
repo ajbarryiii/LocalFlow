@@ -1398,9 +1398,9 @@ fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
     assert!(ctl(&rd, &["toggle"]).status.success());
     let v = object(&lines);
     assert_eq!(v["class"], "recording");
-    let graph = v["text"].as_str().unwrap();
-    assert_eq!(graph.chars().count(), 8);
-    assert!(graph.ends_with('▆'), "{graph}");
+    let wave = v["text"].as_str().unwrap();
+    assert_eq!(wave.chars().count(), lf_daemon::waybar::WIDTH);
+    assert!(wave.ends_with(lf_daemon::waybar::dot(50)), "{wave}");
     assert!(ctl(&rd, &["cancel"]).status.success());
     // Skip level lines still queued.
     while class(&lines) != "idle" {}

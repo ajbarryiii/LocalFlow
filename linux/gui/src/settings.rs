@@ -5,10 +5,14 @@
 //! - A change is a draft until **Apply**, which writes `settings.json` (only
 //!   the keys that differ from `config.json`) and restarts the daemon when a
 //!   key it reads changed. **Discard** drops the draft.
-//! - A setting the window changed has a reset icon, which takes it back to
-//!   `config.json`'s value (or the default).
-//! - Values that make an invalid configuration keep Apply disabled and show
-//!   the daemon's own message, which names the key and never the value.
+//! - A setting whose draft differs from what is saved has a glacier dot
+//!   beside its label. A setting the window changed has a reset icon, which
+//!   takes it back to `config.json`'s value (or the default).
+//! - A text field whose value makes an invalid configuration is marked, with
+//!   a few plain words under it (never the value), and Apply stays disabled.
+//! - If Apply saved the settings but could not restart the daemon, the
+//!   footer says so and offers to try the restart again.
+//! - Clicking anywhere on a switch's row flips the switch.
 //! - Escape closes the window. With changes not yet applied it asks first;
 //!   a second Escape closes without applying them.
 
@@ -18,10 +22,12 @@ use lf_daemon::config::{Config, Layers, write_settings};
 use rune::tok::space;
 use rune::{Cx, El, Icon, Key, KeyEvent, Mods, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{
-    Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, Switch,
+    Button, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, SelectAppearance, Switch,
     TextInput,
 };
 use serde_json::{Map, Value, json};
+
+use crate::look;
 
 /// Back to `config.json`'s value.
 static RESET: Icon = Icon {
@@ -79,7 +85,23 @@ pub struct Settings {
 pub enum Status {
     Idle,
     Applied,
+    /// The settings were saved, but the daemon did not restart (why, for
+    /// the footer's tooltip).
+    RestartFailed(String),
+    /// Nothing was saved.
     Failed(String),
+}
+
+/// A text field whose value is invalid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spot {
+    PromptTag,
+    Microphone,
+    /// A voice macro's row; `payload` for its "Type" field, else "Say".
+    Macro {
+        row: usize,
+        payload: bool,
+    },
 }
 
 /// Keys the daemon ignores (`localflowctl` reads them on each run).
@@ -214,15 +236,74 @@ impl Settings {
                 self.shown = config.clone();
                 self.config = Ok(config);
                 self.status = Status::Applied;
-                if daemon_reads
-                    && let Some(restart) = self.restart
-                    && let Err(e) = restart()
-                {
-                    self.status = Status::Failed(e);
+                if daemon_reads {
+                    self.restart_daemon();
                 }
             }
             Err(e) => self.status = Status::Failed(e),
         }
+    }
+
+    /// Restarts the daemon over saved settings: applied, or saved without
+    /// the restart. Also the restart-failed footer's Retry.
+    pub fn restart_daemon(&mut self) {
+        self.status = match self.restart.map_or(Ok(()), |restart| restart()) {
+            Ok(()) => Status::Applied,
+            Err(e) => Status::RestartFailed(e),
+        };
+    }
+
+    /// Whether `key`'s draft differs from what is saved.
+    pub fn unapplied(&self, key: &str) -> bool {
+        self.draft.get(key) != self.layers.settings.get(key)
+    }
+
+    /// The text field that makes the draft invalid, and what to do about it
+    /// in a few plain words (never its value).
+    pub fn problem(&self) -> Option<(Spot, &'static str)> {
+        let e = self.config.as_ref().err()?;
+        let breaks = |t: &str| t.chars().any(char::is_control);
+        if e.starts_with("prompt_tag") {
+            let fix = if breaks(&self.prompt_tag.text) {
+                "No tabs or line breaks"
+            } else {
+                "Use 64 characters or fewer"
+            };
+            return Some((Spot::PromptTag, fix));
+        }
+        if e.starts_with("input_device") {
+            let fix = if breaks(&self.input_device.text) {
+                "No tabs or line breaks"
+            } else {
+                "Use a shorter name"
+            };
+            return Some((Spot::Microphone, fix));
+        }
+        // `voice_macros[<i>].<field> ...`, counting only the rows that have
+        // something to say (see `sync_macros`).
+        let rest = e.strip_prefix("voice_macros[")?;
+        let (i, rest) = rest.split_once(']')?;
+        let row = self
+            .macros
+            .iter()
+            .enumerate()
+            .filter(|(_, (c, _))| !c.text.trim().is_empty())
+            .nth(i.parse().ok()?)?
+            .0;
+        let payload = rest.starts_with(".payload");
+        let fix = if rest.contains("never match") {
+            "Use words, not just punctuation"
+        } else {
+            "Use shorter text"
+        };
+        Some((Spot::Macro { row, payload }, fix))
+    }
+
+    /// The plain words for `spot`, when it is the invalid field.
+    fn problem_at(&self, spot: Spot) -> Option<&'static str> {
+        self.problem()
+            .filter(|(s, _)| *s == spot)
+            .map(|(_, fix)| fix)
     }
 
     fn sync_macros(&mut self) {
@@ -249,7 +330,9 @@ pub fn key(s: &mut Settings, e: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 /// `systemctl --user try-restart localflowd.service`: restarts the daemon
-/// if it runs as the usual user unit.
+/// if it runs as the usual user unit. It returns in about 20 ms (the daemon
+/// stops at once; systemd does not wait for the model to load), so Apply
+/// needs no "applying" state.
 pub fn restart_daemon() -> Result<(), String> {
     let status = std::process::Command::new("systemctl")
         .args(["--user", "try-restart", "localflowd.service"])
@@ -265,10 +348,9 @@ pub fn restart_daemon() -> Result<(), String> {
     }
 }
 
-/// A labelled row: the label, a reset icon when the window changed the
-/// key, and the control.
+/// A labelled row: the label, a glacier dot while its draft is not applied,
+/// a reset icon when the window changed the key, and the control.
 fn setting(k: &Kit, s: &Settings, key: &'static str, label: &str, control: El) -> El {
-    let changed = s.draft.contains_key(key);
     let mut left = row().key("left").gap(space::S2).center_y().grow(1.0).child(
         text(label.to_owned())
             .key("label")
@@ -276,16 +358,11 @@ fn setting(k: &Kit, s: &Settings, key: &'static str, label: &str, control: El) -
             .color(k.c.text_base)
             .a11y_hidden(),
     );
-    if changed {
-        left = left.child(
-            IconButton::new(&RESET)
-                .variant(IconButtonVariant::GhostMuted)
-                .label(format!("Reset {label}"))
-                .help("Back to config.json")
-                .on_press(move |s: &mut Settings| s.reset(key))
-                .build(k)
-                .key(format!("reset-{key}")),
-        );
+    if s.unapplied(key) {
+        left = left.child(look::dot(look::glacier()).key(format!("unapplied-{key}")));
+    }
+    if s.draft.contains_key(key) {
+        left = left.child(reset(k, key, label));
     }
     row()
         .key(key)
@@ -298,6 +375,19 @@ fn setting(k: &Kit, s: &Settings, key: &'static str, label: &str, control: El) -
         .child(control)
 }
 
+/// Takes `key` back to `config.json`'s value.
+fn reset(k: &Kit, key: &'static str, label: &str) -> El {
+    IconButton::new(&RESET)
+        .variant(IconButtonVariant::GhostMuted)
+        .label(format!("Reset {label}"))
+        .help("Back to default")
+        .on_press(move |s: &mut Settings| s.reset(key))
+        .build(k)
+        .key(format!("reset-{key}"))
+}
+
+/// A switch's row: a click anywhere on it flips the switch, which stays the
+/// row's only focus stop.
 fn toggle(k: &Kit, s: &Settings, key: &'static str, label: &str, on: bool) -> El {
     let control = Switch::new(on)
         .label(label.to_owned())
@@ -306,14 +396,26 @@ fn toggle(k: &Kit, s: &Settings, key: &'static str, label: &str, on: bool) -> El
         .build(k)
         .key(format!("switch-{key}"));
     setting(k, s, key, label, control)
+        .on_press(move |s: &mut Settings| s.set(key, Value::Bool(!on)))
+        .role("group")
 }
 
-fn card(k: &Kit, key: &str, title: &str, rows: Vec<El>) -> El {
+/// `field` with `fix` under it, when its value is the invalid one.
+fn with_fix(k: &Kit, field: El, key: String, fix: Option<&'static str>) -> El {
+    let Some(fix) = fix else { return field };
+    col()
+        .items_end()
+        .gap(space::S1)
+        .child(field)
+        .child(text(fix).key(key).font(k.ty.small).color(k.c.danger.fg))
+}
+
+fn card(k: &Kit, key: &str, title: &str, unapplied: bool, rows: Vec<El>) -> El {
     let mut body = col()
         .key("card")
         .padding(space::S1)
         .fill(k.c.layer_01)
-        .radius(10.0)
+        .radius(12.0)
         .box_shadow(rune::Shadow {
             spread: 0.5,
             color: k.c.border_base,
@@ -327,29 +429,97 @@ fn card(k: &Kit, key: &str, title: &str, rows: Vec<El>) -> El {
                 el().key(format!("sep{i}"))
                     .h(1.0)
                     .mx(space::S3)
-                    .fill(k.c.border_base)
+                    .fill(k.c.border_muted)
                     .a11y_hidden(),
             );
         }
     }
+    let mut header = row()
+        .key("header")
+        .gap(space::S2)
+        .center_y()
+        .ml(space::S3)
+        .child(
+            text(title.to_owned())
+                .font(k.ty.small_medium)
+                .color(k.c.text_muted),
+        );
+    if unapplied {
+        header = header.child(look::dot(look::glacier()).key(format!("unapplied-{key}")));
+    }
     col()
         .key(key.to_owned())
         .gap(space::S2)
-        .child(
-            text(title.to_owned())
-                .key("header")
-                .font(k.ty.small)
-                .color(k.c.text_weak)
-                .ml(space::S3),
-        )
+        .child(header)
         .child(body)
 }
 
-/// "Auto" is the model's default (no `precision` key).
-const PRECISION: [&str; 5] = ["Auto", "f32", "i8x1", "i8x2", "i8x3"];
+/// A menu for `key`: `options` are labels and values, a `None` value
+/// takes the key back to `config.json`'s. `Settings::open` names the open
+/// menu.
+fn menu(
+    k: &Kit,
+    s: &Settings,
+    key: &'static str,
+    label: &str,
+    options: &'static [(&'static str, Option<&'static str>)],
+    current: Option<&str>,
+    layer: &mut Vec<El>,
+) -> El {
+    let labels: Vec<&str> = options.iter().map(|(l, _)| *l).collect();
+    let now = options.iter().find(|(_, v)| *v == current).map(|(l, _)| *l);
+    Select::new(format!("{key}-select"), &labels)
+        .appearance(SelectAppearance::Field)
+        .current(now)
+        .label(label.to_owned())
+        .width(FIELD_WIDTH)
+        .open(s.open == Some(key))
+        .on_toggle(move |s: &mut Settings| s.open = if s.open.is_some() { None } else { Some(key) })
+        .on_close(|s: &mut Settings| s.open = None)
+        .on_choose(move |s: &mut Settings, v: &str, _: &mut Tx| {
+            s.open = None;
+            match options.iter().find(|(l, _)| *l == v) {
+                Some((_, Some(value))) => s.set(key, json!(value)),
+                Some((_, None)) => s.reset(key),
+                None => {}
+            }
+        })
+        .build(k, layer)
+}
 
-pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+/// Text fields and menus share one width, so their edges line up.
+const FIELD_WIDTH: f32 = 200.0;
+
+/// `precision`'s values, from the fastest. "Auto" is the model's own (no
+/// `precision` key): i8x1 for 1-bit models, i8x2 for ternary ones.
+const SPEED: [(&str, Option<&str>); 5] = [
+    ("Auto", None),
+    ("Fastest", Some("i8x1")),
+    ("Fast", Some("i8x2")),
+    ("Precise", Some("i8x3")),
+    ("Full precision", Some("f32")),
+];
+
+/// `output`'s values.
+const OUTPUT: [(&str, Option<&str>); 4] = [
+    ("Auto", Some("auto")),
+    ("Wayland", Some("wayland")),
+    ("Desktop portal", Some("portal")),
+    ("Kernel device", Some("uinput")),
+];
+
+const PICKERS: [(&str, Option<&str>); 6] = [
+    ("Auto", Some("auto")),
+    ("LocalFlow", Some("gui")),
+    ("rofi", Some("rofi")),
+    ("fuzzel", Some("fuzzel")),
+    ("wofi", Some("wofi")),
+    ("tofi", Some("tofi")),
+];
+
+pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
+    let k = look::kit();
+    let seg = look::segments(&k);
     let c = &s.shown;
     let mut layer = Vec::new();
 
@@ -357,6 +527,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         &k,
         "dictation",
         "Dictation",
+        false,
         vec![
             toggle(
                 &k,
@@ -390,10 +561,12 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         ],
     );
 
+    let tag_fix = s.problem_at(Spot::PromptTag);
     let tag = TextInput::new(&s.prompt_tag)
         .label("Prompt tag")
         .placeholder("Untagged")
-        .width(Some(160.0))
+        .width(Some(FIELD_WIDTH))
+        .invalid(tag_fix.is_some())
         .on_edit(|s: &mut Settings| &mut s.prompt_tag)
         .on_change(|s: &mut Settings, _: &mut Tx| {
             let v = s.prompt_tag.text.clone();
@@ -401,6 +574,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         })
         .build(&k)
         .key("prompt-tag-field");
+    let tag = with_fix(&k, tag, "error-prompt_tag".into(), tag_fix);
     static DOUBLE_TAP: [(&str, u64); 4] = [
         ("Off", 0),
         ("250 ms", 250),
@@ -415,107 +589,76 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         .on_pick(|s: &mut Settings, i: usize, _: &mut Tx| {
             s.set("double_tap_ms", json!(DOUBLE_TAP[i].1))
         })
-        .build(&k)
+        .build(&seg)
         .key("choice-double_tap_ms");
     let prompt = card(
         &k,
         "prompt",
-        "Hold to Prompt",
+        "Hold to prompt",
+        false,
         vec![
             setting(&k, s, "double_tap_ms", "Double-tap and hold", tap),
-            setting(&k, s, "prompt_tag", "Tag", tag),
+            setting(&k, s, "prompt_tag", "Prompt tag", tag),
         ],
     );
 
-    static OUTPUT: [(&str, &str); 4] = [
-        ("Auto", "auto"),
-        ("Wayland", "wayland"),
-        ("Portal", "portal"),
-        ("uinput", "uinput"),
-    ];
-    let out_labels: Vec<&str> = OUTPUT.iter().map(|(l, _)| *l).collect();
-    let out_current = OUTPUT.iter().position(|(_, v)| *v == output_name(c));
-    let output = SegmentedControl::new(&out_labels, out_current)
-        .label("Output")
-        .fit()
-        .on_pick(|s: &mut Settings, i: usize, _: &mut Tx| s.set("output", json!(OUTPUT[i].1)))
-        .build(&k)
-        .key("choice-output");
-    static DELAY: [(&str, u64); 4] = [("0", 0), ("1 ms", 1), ("5 ms", 5), ("10 ms", 10)];
+    let output = menu(
+        &k,
+        s,
+        "output",
+        "Type with",
+        &OUTPUT,
+        Some(output_name(c)),
+        &mut layer,
+    );
+    static DELAY: [(&str, u64); 4] = [("0 ms", 0), ("1 ms", 1), ("5 ms", 5), ("10 ms", 10)];
     let delay_labels: Vec<&str> = DELAY.iter().map(|(l, _)| *l).collect();
     let delay = SegmentedControl::new(
         &delay_labels,
         DELAY.iter().position(|(_, v)| *v == c.key_delay_ms),
     )
-    .label("Key delay")
+    .label("Pause between keys")
     .fit()
     .on_pick(|s: &mut Settings, i: usize, _: &mut Tx| s.set("key_delay_ms", json!(DELAY[i].1)))
-    .build(&k)
+    .build(&seg)
     .key("choice-key_delay_ms");
-    static PICKERS: [(&str, &str); 6] = [
-        ("Auto", "auto"),
-        ("LocalFlow", "gui"),
-        ("rofi", "rofi"),
-        ("fuzzel", "fuzzel"),
-        ("wofi", "wofi"),
-        ("tofi", "tofi"),
-    ];
-    let picker_labels: Vec<&str> = PICKERS.iter().map(|(l, _)| *l).collect();
-    let picker_now = PICKERS
-        .iter()
-        .find(|(_, v)| *v == picker_name(c))
-        .map(|(l, _)| *l);
-    let picker = Select::new("picker-select", &picker_labels)
-        .current(picker_now)
-        .label("Correction dialogs")
-        .width(140.0)
-        .open(s.open == Some("picker"))
-        .on_toggle(|s: &mut Settings| {
-            s.open = if s.open.is_some() {
-                None
-            } else {
-                Some("picker")
-            }
-        })
-        .on_close(|s: &mut Settings| s.open = None)
-        .on_choose(|s: &mut Settings, v: &str, _: &mut Tx| {
-            s.open = None;
-            if let Some((_, name)) = PICKERS.iter().find(|(l, _)| *l == v) {
-                s.set("picker", json!(name));
-            }
-        })
-        .build(&k, &mut layer);
+    let picker = menu(
+        &k,
+        s,
+        "picker",
+        "Correction dialogs",
+        &PICKERS,
+        Some(picker_name(c)),
+        &mut layer,
+    );
     let typing = card(
         &k,
         "typing",
         "Typing",
+        false,
         vec![
-            setting(&k, s, "output", "Output", output),
+            setting(&k, s, "output", "Type with", output),
             setting(&k, s, "key_delay_ms", "Pause between keys", delay),
             setting(&k, s, "picker", "Correction dialogs", picker),
         ],
     );
 
-    let precision_now = match c.precision {
-        None => 0,
-        Some(p) => PRECISION.iter().position(|n| *n == p.name()).unwrap_or(0),
-    };
-    let precision = SegmentedControl::new(&PRECISION, Some(precision_now))
-        .label("Precision")
-        .fit()
-        .on_pick(|s: &mut Settings, i: usize, _: &mut Tx| {
-            if i == 0 {
-                s.reset("precision");
-            } else {
-                s.set("precision", json!(PRECISION[i]));
-            }
-        })
-        .build(&k)
-        .key("choice-precision");
+    let precision = c.precision.map(|p| p.name());
+    let speed = menu(
+        &k,
+        s,
+        "precision",
+        "Speed",
+        &SPEED,
+        precision.as_deref(),
+        &mut layer,
+    );
+    let mic_fix = s.problem_at(Spot::Microphone);
     let device = TextInput::new(&s.input_device)
         .label("Microphone")
         .placeholder("Default")
-        .width(Some(200.0))
+        .width(Some(FIELD_WIDTH))
+        .invalid(mic_fix.is_some())
         .on_edit(|s: &mut Settings| &mut s.input_device)
         .on_change(|s: &mut Settings, _: &mut Tx| {
             let t = s.input_device.text.trim().to_owned();
@@ -528,23 +671,29 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                 },
             );
         })
-        .build(&k);
+        .build(&k)
+        .key("microphone-field");
+    let device = with_fix(&k, device, "error-input_device".into(), mic_fix);
     let recognition = card(
         &k,
         "recognition",
         "Recognition",
+        false,
         vec![
-            setting(&k, s, "precision", "Precision", precision),
+            setting(&k, s, "precision", "Speed", speed),
             setting(&k, s, "input_device", "Microphone", device),
         ],
     );
 
     let mut macro_rows = Vec::new();
     for i in 0..s.macros.len() {
+        let fix = |payload| s.problem_at(Spot::Macro { row: i, payload });
+        let (say_fix, type_fix) = (fix(false), fix(true));
         let command = TextInput::new(&s.macros[i].0)
             .label("Say")
             .placeholder("Say")
             .width(Some(150.0))
+            .invalid(say_fix.is_some())
             .on_edit(move |s: &mut Settings| &mut s.macros[i].0)
             .on_change(|s: &mut Settings, _: &mut Tx| s.sync_macros())
             .build(&k);
@@ -552,6 +701,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
             .label("Type")
             .placeholder("Type")
             .width(None)
+            .invalid(type_fix.is_some())
             .on_edit(move |s: &mut Settings| &mut s.macros[i].1)
             .on_change(|s: &mut Settings, _: &mut Tx| s.sync_macros())
             .build(&k)
@@ -564,18 +714,35 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                 s.sync_macros();
             })
             .build(&k);
-        macro_rows.push(
-            row()
-                .key(format!("macro-{i}"))
-                .min_h(40.0)
-                .px(space::S3)
-                .gap(space::S2)
-                .center_y()
-                .child(command)
-                .child(icon(&rune_kit::glyphs::ARROW_RIGHT, 14.0).color(k.c.text_weak))
-                .child(payload)
-                .child(remove),
-        );
+        let fields = row()
+            .key("fields")
+            .gap(space::S2)
+            .center_y()
+            .child(command)
+            .child(icon(&rune_kit::glyphs::ARROW_RIGHT, 14.0).color(k.c.text_muted))
+            .child(payload)
+            .child(remove);
+        let mut item = col()
+            .key(format!("macro-{i}"))
+            .px(space::S3)
+            .py(6.0)
+            .gap(space::S1)
+            .child(fields);
+        if let Some(fix) = say_fix.or(type_fix) {
+            item = item.child(
+                text(fix)
+                    .key(format!("error-macro-{i}"))
+                    .font(k.ty.small)
+                    .color(k.c.danger.fg)
+                    // Under the field it is about.
+                    .ml(if say_fix.is_some() {
+                        0.0
+                    } else {
+                        150.0 + 2.0 * space::S2 + 14.0
+                    }),
+            );
+        }
+        macro_rows.push(item);
     }
     let mut add_row = row()
         .key("macro-add")
@@ -595,18 +762,16 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         );
     add_row = add_row.child(el().grow(1.0));
     if s.draft.contains_key("voice_macros") {
-        add_row = add_row.child(
-            IconButton::new(&RESET)
-                .variant(IconButtonVariant::GhostMuted)
-                .label("Reset voice macros")
-                .help("Back to config.json")
-                .on_press(|s: &mut Settings| s.reset("voice_macros"))
-                .build(&k)
-                .key("reset-voice_macros"),
-        );
+        add_row = add_row.child(reset(&k, "voice_macros", "voice macros"));
     }
     macro_rows.push(add_row);
-    let macros = card(&k, "macros", "Voice macros", macro_rows);
+    let macros = card(
+        &k,
+        "voice_macros",
+        "Voice macros",
+        s.unapplied("voice_macros"),
+        macro_rows,
+    );
 
     let content = col()
         .key("content")
@@ -614,7 +779,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         .px(space::S6)
         .pt(16.0)
         .pb(space::S6)
-        .gap(space::S6)
+        .gap(20.0)
         .child(dictation)
         .child(prompt)
         .child(typing)
@@ -639,30 +804,66 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                     .shrink(),
             )
             .child(
-                Button::new("Keep Editing")
-                    .variant(ButtonVariant::Ghost)
-                    .on_press(|s: &mut Settings| s.asking_to_close = false)
-                    .build(&k)
-                    .key("keep-editing"),
+                look::secondary(
+                    &k,
+                    Button::new("Keep editing")
+                        .on_press(|s: &mut Settings| s.asking_to_close = false),
+                )
+                .key("keep-editing"),
             )
             .child(
-                Button::new("Close")
-                    .variant(ButtonVariant::Contrast)
-                    .on_press_tx(|s: &mut Settings, tx: &mut Tx| s.close(tx))
-                    .build(&k)
-                    .key("close-anyway"),
+                look::primary(
+                    &k,
+                    Button::new("Close").on_press_tx(|s: &mut Settings, tx: &mut Tx| s.close(tx)),
+                )
+                .key("close-anyway"),
+            );
+        return page(&k, content, footer, layer);
+    }
+    let note = |key: &'static str, words: String, color: rune::Color| {
+        text(words)
+            .key(key)
+            .font(k.ty.ui)
+            .color(color)
+            .grow(1.0)
+            .shrink()
+            .truncate()
+    };
+    // Saved, so nothing is left to apply or discard (any change clears
+    // this): the restart is the one thing to do.
+    if let Status::RestartFailed(why) = &s.status {
+        footer = footer
+            .child(look::dot(look::ember()).key("restart-failed"))
+            .child(
+                note(
+                    "restart-note",
+                    "Saved. LocalFlow didn\u{2019}t restart.".into(),
+                    k.c.text_base,
+                )
+                .help(why.clone()),
+            )
+            .child(
+                look::primary(
+                    &k,
+                    Button::new("Retry").on_press(|s: &mut Settings| s.restart_daemon()),
+                )
+                .key("retry"),
             );
         return page(&k, content, footer, layer);
     }
     footer = match (&s.config, &s.status) {
-        (Err(e), _) | (_, Status::Failed(e)) => footer.child(
-            text(e.clone())
-                .key("error")
-                .font(k.ty.small)
-                .color(k.c.danger.fg)
-                .grow(1.0)
-                .shrink(),
-        ),
+        (Err(e), _) => {
+            let words = match s.problem() {
+                Some((Spot::PromptTag, _)) => "Fix the prompt tag to apply".to_owned(),
+                Some((Spot::Microphone, _)) => "Fix the microphone to apply".to_owned(),
+                Some((Spot::Macro { row, .. }, _)) => {
+                    format!("Fix voice macro {} to apply", row + 1)
+                }
+                None => e.clone(),
+            };
+            footer.child(note("error", words, k.c.danger.fg))
+        }
+        (_, Status::Failed(e)) => footer.child(note("error", e.clone(), k.c.danger.fg)),
         (_, Status::Applied) => footer
             .child(icon(&CHECK, 16.0).key("applied").color(k.c.success.icon))
             .child(el().grow(1.0)),
@@ -671,20 +872,22 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let can_apply = s.dirty() && s.config.is_ok();
     footer = footer
         .child(
-            Button::new("Discard")
-                .variant(ButtonVariant::Ghost)
-                .disabled(!s.dirty())
-                .on_press(|s: &mut Settings| s.discard())
-                .build(&k)
-                .key("discard"),
+            look::secondary(
+                &k,
+                Button::new("Discard")
+                    .disabled(!s.dirty())
+                    .on_press(|s: &mut Settings| s.discard()),
+            )
+            .key("discard"),
         )
         .child(
-            Button::new("Apply")
-                .variant(ButtonVariant::Contrast)
-                .disabled(!can_apply)
-                .on_press(|s: &mut Settings| s.apply())
-                .build(&k)
-                .key("apply"),
+            look::primary(
+                &k,
+                Button::new("Apply")
+                    .disabled(!can_apply)
+                    .on_press(|s: &mut Settings| s.apply()),
+            )
+            .key("apply"),
         );
     page(&k, content, footer, layer)
 }
@@ -762,8 +965,11 @@ mod tests {
                 .map(|b| serde_json::from_slice(&b).unwrap())
         }
         fn window(&self) -> Runtime<Settings> {
+            self.window_with(None)
+        }
+        fn window_with(&self, restart: Restart) -> Runtime<Settings> {
             let layers = Layers::load(&self.config(), Path::new("/d")).unwrap();
-            let s = Settings::new(self.config(), "/d".into(), layers, None).unwrap();
+            let s = Settings::new(self.config(), "/d".into(), layers, restart).unwrap();
             // Tall enough that nothing needs scrolling.
             let mut rt = Runtime::new(s, view, (560.0, 1400.0), Env::new(true, 1.0));
             rt.on_key = Some(key);
@@ -867,6 +1073,180 @@ mod tests {
         assert_eq!(d.settings(), None);
         // The controls keep the last valid configuration.
         assert_eq!(rt.state.shown.prompt_tag, "[dictated]");
+    }
+
+    #[test]
+    fn a_switch_row_flips_from_anywhere_on_it_once() {
+        let d = Dir::new("row", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        let off = rt.state.shown.history;
+        // The row's middle, between its label and its switch.
+        press(&mut rt, "history");
+        assert_eq!(rt.state.shown.history, !off);
+        // The switch itself flips it once, not once for it and once for
+        // the row.
+        press(&mut rt, "switch-history");
+        assert_eq!(rt.state.shown.history, off);
+        press(&mut rt, "switch-history");
+        assert_eq!(rt.state.shown.history, !off);
+        // The reset icon in the row only resets.
+        press(&mut rt, "reset-history");
+        assert_eq!(rt.state.shown.history, off);
+        assert!(!rt.state.dirty());
+
+        // The keyboard has one stop per row: the switch.
+        let mut rt = d.window();
+        let (enter, numbers) = (rt.state.shown.press_enter, rt.state.shown.spoken_numbers);
+        for _ in 0..2 {
+            rt.key(KeyEvent {
+                key: Key::Tab,
+                mods: Mods::default(),
+            });
+            rt.key(KeyEvent {
+                key: Key::Text(" ".into()),
+                mods: Mods::default(),
+            });
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.shown.press_enter, !enter);
+        assert_eq!(rt.state.shown.spoken_numbers, !numbers);
+    }
+
+    #[test]
+    fn a_setting_not_applied_has_a_dot_until_apply() {
+        let d = Dir::new("unapplied", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        assert!(rt.find("unapplied-history").is_none());
+        press(&mut rt, "switch-history");
+        assert!(rt.find("unapplied-history").is_some());
+        assert!(rt.find("unapplied-pause_media").is_none());
+        press(&mut rt, "apply");
+        // Saved: no dot, but it still differs from config.json.
+        assert!(rt.find("unapplied-history").is_none());
+        assert!(rt.find("reset-history").is_some());
+        // Taking it back is a change not applied yet, too.
+        press(&mut rt, "reset-history");
+        assert!(rt.find("unapplied-history").is_some());
+        press(&mut rt, "discard");
+        assert!(rt.find("unapplied-history").is_none());
+
+        // Voice macros, on their card's title.
+        press(&mut rt, "add-macro");
+        assert!(
+            rt.find("unapplied-voice_macros").is_none(),
+            "an empty row is nothing yet"
+        );
+        rt.update(|s, _| {
+            s.macros[0].0 = TextEdit::new("synthetic sign off");
+            s.sync_macros();
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("unapplied-voice_macros").is_some());
+    }
+
+    #[test]
+    fn an_invalid_field_says_what_to_fix_under_it() {
+        let d = Dir::new("fix", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        let secret = "synthetic".repeat(8);
+        rt.update(|s, _| {
+            s.prompt_tag = TextEdit::new(secret.clone());
+            s.set("prompt_tag", Value::String(secret.clone()));
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.problem(),
+            Some((Spot::PromptTag, "Use 64 characters or fewer"))
+        );
+        assert!(rt.find("error-prompt_tag").is_some());
+        assert!(rt.find("error-input_device").is_none());
+        press(&mut rt, "apply");
+        assert_eq!(d.settings(), None, "Apply stays disabled");
+        // Fixed, the words go.
+        rt.update(|s, _| {
+            s.prompt_tag = TextEdit::new("[synthetic]");
+            s.set("prompt_tag", json!("[synthetic]"));
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.problem(), None);
+        assert!(rt.find("error-prompt_tag").is_none());
+
+        let mut rt = d.window();
+        rt.update(|s, _| {
+            s.input_device = TextEdit::new("synthetic\tmic");
+            s.set("input_device", json!("synthetic\tmic"));
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.problem(),
+            Some((Spot::Microphone, "No tabs or line breaks"))
+        );
+        assert!(rt.find("error-input_device").is_some());
+
+        // The second macro row, counting the empty first one, which is not
+        // saved.
+        let mut rt = d.window();
+        rt.update(|s, _| {
+            s.macros = vec![
+                (TextEdit::default(), TextEdit::default()),
+                (TextEdit::new("?!"), TextEdit::new("synthetic")),
+            ];
+            s.sync_macros();
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(
+            rt.state.problem(),
+            Some((
+                Spot::Macro {
+                    row: 1,
+                    payload: false
+                },
+                "Use words, not just punctuation"
+            ))
+        );
+        assert!(rt.find("error-macro-1").is_some());
+        assert!(rt.find("error-macro-0").is_none());
+        let (_, fix) = rt.state.problem().unwrap();
+        assert!(!fix.contains("synthetic") && !fix.contains("?!"));
+    }
+
+    fn restart_fails() -> Result<(), String> {
+        Err("synthetic restart failure".into())
+    }
+
+    fn restart_works() -> Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_restart_keeps_the_save_and_offers_retry() {
+        let d = Dir::new("restart", r#"{"version": 1}"#);
+        let mut rt = d.window_with(Some(restart_fails));
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert_eq!(d.settings(), Some(json!({"history": true})), "saved");
+        assert!(matches!(rt.state.status, Status::RestartFailed(_)));
+        assert!(!rt.state.dirty());
+        assert!(rt.find("restart-failed").is_some());
+        assert!(rt.find("error").is_none(), "not shown as a failed save");
+        assert!(rt.find("applied").is_none());
+
+        // Retry runs the restart again: still failing, then working.
+        press(&mut rt, "retry");
+        assert!(matches!(rt.state.status, Status::RestartFailed(_)));
+        rt.state.restart = Some(restart_works);
+        press(&mut rt, "retry");
+        assert_eq!(rt.state.status, Status::Applied);
+        assert!(rt.find("retry").is_none());
+        assert!(rt.find("applied").is_some());
+        assert_eq!(d.settings(), Some(json!({"history": true})));
+
+        // A key the daemon does not read needs no restart.
+        let mut rt = d.window_with(Some(restart_fails));
+        rt.update(|s, _| s.set("picker", json!("gui")));
+        rt.frame(1.0 / 60.0);
+        press(&mut rt, "apply");
+        assert_eq!(rt.state.status, Status::Applied);
     }
 
     #[test]

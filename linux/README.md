@@ -243,7 +243,13 @@ is a settings window and the correction dialogs:
 - `localflow-gui` opens the settings. Changes are kept until **Apply**,
   which writes them to `settings.json` beside `config.json` and restarts
   the daemon (`systemctl --user try-restart localflowd`) when a key it reads
-  changed. A reset icon next to a setting takes it back to `config.json`.
+  changed; a cyan dot marks each setting not applied yet. If the restart
+  fails, the settings are still saved and **Retry** tries it again. A reset
+  icon next to a setting takes it back to `config.json`. A text field with
+  an invalid value is outlined, with what to fix under it. **Speed** is
+  `precision`: Auto (the model's own), Fastest (`i8x1`), Fast (`i8x2`),
+  Precise (`i8x3`) and Full precision (`f32`). **Type with** is `output`:
+  Wayland, Desktop portal (`portal`) or Kernel device (`uinput`).
   Escape closes it, asking first when there are changes not applied. One
   settings window runs per user: launching it again brings that window
   forward (passing on `XDG_ACTIVATION_TOKEN` when the launcher sets it;
@@ -347,33 +353,64 @@ being the same package:
 ### Waybar indicator
 
 `localflowctl watch --waybar` prints one JSON object per change for a
-Waybar custom module. Classes (also the `alt`): `idle`, `loading` (model
-loading), `recording` (text is a scrolling level graph), `transcribing`,
-`typing`, `nomic` (idle with no microphone), `offline` (daemon not
-running). A prompt dictation (double-tap and hold; `tag=prompt` in
-`watch` lines) adds the class `prompt` while it records, transcribes and
-types (`"class": ["recording", "prompt"]`, tooltip "LocalFlow: recording
-(prompt)"). It keeps retrying every 2 s while the daemon is down, so Waybar
-never needs restarting. The default text uses Nerd Font glyphs; override
-them with `format-icons` keyed by `alt` if you like.
+Waybar custom module. Every text is six characters wide, so in a monospace
+Nerd Font (JetBrainsMono Nerd Font, say) the module and the clock beside it
+never move. Classes (also the `alt`) and what each shows:
+
+| Class | Text | Tooltip |
+|---|---|---|
+| `idle` | microphone | LocalFlow: ready |
+| `loading` | clock (the model is loading) | LocalFlow: loading the model |
+| `recording` | a wave of dots, newest on the right; small equal dots in silence | LocalFlow: listening |
+| `transcribing` | hourglass | LocalFlow: transcribing |
+| `typing` | keyboard | LocalFlow: typing |
+| `nomic` | microphone with a slash (idle with no microphone) | LocalFlow: no microphone |
+| `offline` | power-off (the daemon is not running) | LocalFlow isn’t running |
+
+A prompt dictation (double-tap and hold; `tag=prompt` in `watch` lines)
+puts `›` in the first character and adds the class `prompt` while it
+records, transcribes and types (`"class": ["recording", "prompt"]`, tooltip
+"LocalFlow: listening (prompt dictation)"). It keeps retrying every 2 s
+while the daemon is down, so Waybar never needs restarting. Override the
+glyphs with `format-icons` keyed by `alt` if you like. `min-length` and
+`align` keep the module's width with a proportional font too.
 
 ```jsonc
 "custom/localflow": {
     "exec": "localflowctl watch --waybar",
     "return-type": "json",
-    "restart-interval": 5
+    "restart-interval": 5,
+    "min-length": 6,
+    "align": 0.5
 }
 ```
 
+The LocalFlow colours (coral while recording, glacier while working or
+waiting on you, ember for a problem), including the agent classes (see
+[Coding agents](#coding-agents)):
+
 ```css
-#custom-localflow.recording { color: #f38ba8; }
+#custom-localflow {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+#custom-localflow.idle,
+#custom-localflow.offline {
+  color: rgba(255, 255, 255, 0.4);
+}
+#custom-localflow.recording {
+  color: #ff7d5e;
+}
+#custom-localflow.loading,
 #custom-localflow.transcribing,
-#custom-localflow.typing { color: #f9e2af; }
-#custom-localflow.nomic { color: #e64553; }
-#custom-localflow.offline,
-#custom-localflow.loading { opacity: 0.5; }
-/* A prompt dictation (double-tap and hold), after the rules above. */
-#custom-localflow.prompt { color: #89b4fa; }
+#custom-localflow.typing,
+#custom-localflow.agent-input {
+  color: #67e8f9;
+}
+#custom-localflow.nomic,
+#custom-localflow.agent-approval {
+  color: #f5c66b;
+}
 ```
 
 ### Tray icon
@@ -516,13 +553,9 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
 - **Waybar:**
   - Bind the module's `on-click` to `localflowctl dict review` to approve
     suggestions with a click.
-  - Style the new classes:
-
-    ```css
-    #custom-localflow.agent-approval { color: #fab387; }
-    #custom-localflow.agent-input { color: #a6e3a1; }
-    #custom-localflow.suggestion { font-weight: bold; }
-    ```
+  - The CSS under [Waybar indicator](#waybar-indicator) styles the agent
+    classes: `agent-approval` in ember, `agent-input` in glacier. The number
+    of agents needing you shows beside the microphone.
 
 ## Text output and desktops
 
@@ -855,12 +888,14 @@ your dictation key.
     from HFP to A2DP. `playerctl -l` (if installed) lists the players the
     daemon sees.
 17. Waybar indicator (`localflowctl watch --waybar` in a terminal, or the
-    custom module): idle shows the microphone; holding the key shows a moving
-    level graph that follows your voice; release shows the hourglass, then
-    idle. Disconnect the microphone (or turn the headset off): `nomic`
-    within a second or two, and back to idle when reconnected. With
-    `input_device` set, only that device counts. Stop the daemon: `offline`;
-    start it again: idle within about 2 s, without restarting Waybar.
+    custom module): idle shows the dim microphone; holding the key shows a
+    coral wave of dots that follows your voice; release shows the hourglass,
+    the keyboard, then idle. The clock beside it never moves. Disconnect the
+    microphone (or turn the headset off): `nomic` (the microphone with a
+    slash) within a second or two, and back to idle when reconnected. With
+    `input_device` set, only that device counts. Stop the daemon: `offline`
+    (power-off); start it again: idle within about 2 s, without restarting
+    Waybar.
     `journalctl --user -u localflowd` shows `microphone: absent/present`
     but no device names.
 18. Hold to Prompt: in a terminal or chat box, tap the key once quickly, then
