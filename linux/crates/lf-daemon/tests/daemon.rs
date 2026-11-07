@@ -1383,15 +1383,15 @@ fn localflowctl_waybar_shimmers_only_while_transcribing() {
     let first = object(soon).unwrap();
     assert_eq!(first["class"], "transcribing");
     assert_eq!(first["text"], shimmer(Duration::ZERO, false));
-    let began = Instant::now();
+    // Frames keep coming with no new line. Their timing is `Indicator::tick`'s
+    // (unit tests); here a generous deadline, since a loaded machine may skip
+    // frames by catching up.
     let mut texts = vec![first["text"].as_str().unwrap().to_owned()];
-    let span = Duration::from_secs(1);
-    while let Some(v) = object(span.saturating_sub(began.elapsed())) {
+    while texts.len() < 5 {
+        let v = object(soon).expect("the shimmer stopped drawing frames");
         assert_eq!(v["class"], "transcribing", "{v}");
         texts.push(v["text"].as_str().unwrap().to_owned());
     }
-    // Ten a second: allow for a loaded machine, but frames must come.
-    assert!(texts.len() >= 5, "{} frames in 1 s", texts.len());
     assert!(texts.windows(2).all(|w| w[0] != w[1]), "a frame repeated");
 
     // Each other state: its object, then nothing more.
