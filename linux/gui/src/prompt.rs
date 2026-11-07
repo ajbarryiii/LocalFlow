@@ -5,7 +5,9 @@
 //!   dictation is one line).
 //! - **Choose** (`localflow-gui choose`): one button per row, the first
 //!   highlighted. Pressing one prints its number; so do Enter or Space on
-//!   the highlighted row (Up, Down and Tab move it) and the digits 1-9.
+//!   the highlighted row (Up, Down and Tab move it) and the digits 1-9. The
+//!   buttons never take keyboard focus, so the keys always act on the
+//!   highlight the window shows.
 //!
 //! Escape, or closing the window, dismisses: exit status 1, no output.
 //! Nothing is written anywhere but stdout.
@@ -150,6 +152,9 @@ pub fn choose_view(s: &Choose, cx: &mut Cx<Choose>) -> El {
                     })
                     .build(&k)
                     .key(format!("choice-{i}"))
+                    // The keyboard drives the highlight only (a focused
+                    // button would take Enter and Space for itself).
+                    .focusable(false)
                     .grow(1.0),
             ),
         );
@@ -185,8 +190,8 @@ pub fn choose_height(rows: usize) -> f32 {
 }
 
 /// The choose dialog's keys: Escape dismisses; Up, Down and Tab move the
-/// highlight; Enter or Space chooses the focused button, else the
-/// highlighted row; 1-9 choose that row.
+/// highlight; Enter or Space choose the highlighted row; 1-9 choose that
+/// row.
 pub fn choose_key(s: &mut Choose, e: &KeyEvent, tx: &mut Tx) -> bool {
     let n = s.rows.len();
     if n == 0 {
@@ -198,14 +203,8 @@ pub fn choose_key(s: &mut Choose, e: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Up => s.selected = s.selected.saturating_sub(1),
         Key::Tab if e.mods.shift => s.selected = (s.selected + n - 1) % n,
         Key::Tab => s.selected = (s.selected + 1) % n,
-        Key::Enter => {
-            let i = focused_choice(tx).unwrap_or(s.selected);
-            finish(&mut s.outcome, Outcome::Chose(i), tx);
-        }
-        Key::Text(t) if t == " " => {
-            let i = focused_choice(tx).unwrap_or(s.selected);
-            finish(&mut s.outcome, Outcome::Chose(i), tx);
-        }
+        Key::Enter => finish(&mut s.outcome, Outcome::Chose(s.selected), tx),
+        Key::Text(t) if t == " " => finish(&mut s.outcome, Outcome::Chose(s.selected), tx),
         Key::Text(t) => match t.parse::<usize>() {
             Ok(d) if (1..=n.min(9)).contains(&d) => {
                 finish(&mut s.outcome, Outcome::Chose(d - 1), tx)
@@ -215,13 +214,6 @@ pub fn choose_key(s: &mut Choose, e: &KeyEvent, tx: &mut Tx) -> bool {
         _ => return false,
     }
     true
-}
-
-/// The row of the focused button, when one has focus.
-fn focused_choice(tx: &Tx) -> Option<usize> {
-    let key = tx.focused()?;
-    let last = key.rsplit('/').next()?;
-    last.strip_prefix("choice-")?.parse().ok()
 }
 
 pub fn edit_key(s: &mut Edit, e: &KeyEvent, tx: &mut Tx) -> bool {
@@ -290,6 +282,27 @@ mod tests {
         let mut rt = choose_window();
         type_key(&mut rt, Key::Text("3".into()));
         assert_eq!(rt.state.outcome, Some(Outcome::Chose(2)));
+
+        // A click cancelled by dragging off the button leaves nothing
+        // focused: the keys still act on the highlight.
+        let mut rt = choose_window();
+        let (x, y) = rt.find("choice-2").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_move(x, y + 400.0);
+        rt.pointer_up(x, y + 400.0);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.outcome, None, "the cancelled click chose nothing");
+        type_key(&mut rt, Key::Down);
+        type_key(&mut rt, Key::Enter);
+        assert_eq!(rt.state.outcome, Some(Outcome::Chose(1)));
+        let mut rt = choose_window();
+        let (x, y) = rt.find("choice-2").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_move(x, y + 400.0);
+        rt.pointer_up(x, y + 400.0);
+        rt.frame(1.0 / 60.0);
+        type_key(&mut rt, Key::Text(" ".into()));
+        assert_eq!(rt.state.outcome, Some(Outcome::Chose(0)));
 
         // A digit past the rows does nothing.
         let mut rt = choose_window();
