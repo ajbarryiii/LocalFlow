@@ -3,8 +3,9 @@
 //! - **Edit** (`localflow-gui edit`): the last dictation in a text box.
 //!   Enter accepts and prints the text; Shift+Enter is refused (a
 //!   dictation is one line).
-//! - **Choose** (`localflow-gui choose`): one button per row; the first is
-//!   the primary action. Pressing one prints its number.
+//! - **Choose** (`localflow-gui choose`): one button per row, the first
+//!   highlighted. Pressing one prints its number; so do Enter or Space on
+//!   the highlighted row (Up, Down and Tab move it) and the digits 1-9.
 //!
 //! Escape, or closing the window, dismisses: exit status 1, no output.
 //! Nothing is written anywhere but stdout.
@@ -116,14 +117,26 @@ pub fn edit_view(s: &Edit, cx: &mut Cx<Edit>) -> El {
 
 pub struct Choose {
     pub rows: Vec<String>,
+    /// The highlighted row, which Enter chooses.
+    pub selected: usize,
     pub outcome: Option<Outcome>,
+}
+
+impl Choose {
+    pub fn new(rows: Vec<String>) -> Choose {
+        Choose {
+            rows,
+            selected: 0,
+            outcome: None,
+        }
+    }
 }
 
 pub fn choose_view(s: &Choose, cx: &mut Cx<Choose>) -> El {
     let k = Kit::neutral(cx.system_dark());
     let mut list = col().key("rows").gap(space::S2).w_full();
     for (i, label) in s.rows.iter().enumerate() {
-        let variant = if i == 0 {
+        let variant = if i == s.selected {
             ButtonVariant::Contrast
         } else {
             ButtonVariant::Neutral
@@ -171,14 +184,44 @@ pub fn choose_height(rows: usize) -> f32 {
     16.0 * 2.0 + 18.0 + space::S3 + rows as f32 * 32.0 + rows.saturating_sub(1) as f32 * space::S2
 }
 
-/// Escape anywhere dismisses the choose dialog (the edit box handles its
-/// own keys).
+/// The choose dialog's keys: Escape dismisses; Up, Down and Tab move the
+/// highlight; Enter or Space chooses the focused button, else the
+/// highlighted row; 1-9 choose that row.
 pub fn choose_key(s: &mut Choose, e: &KeyEvent, tx: &mut Tx) -> bool {
-    if e.key == Key::Escape {
-        dismiss(&mut s.outcome, tx);
-        return true;
+    let n = s.rows.len();
+    if n == 0 {
+        return false;
     }
-    false
+    match &e.key {
+        Key::Escape => dismiss(&mut s.outcome, tx),
+        Key::Down => s.selected = (s.selected + 1).min(n - 1),
+        Key::Up => s.selected = s.selected.saturating_sub(1),
+        Key::Tab if e.mods.shift => s.selected = (s.selected + n - 1) % n,
+        Key::Tab => s.selected = (s.selected + 1) % n,
+        Key::Enter => {
+            let i = focused_choice(tx).unwrap_or(s.selected);
+            finish(&mut s.outcome, Outcome::Chose(i), tx);
+        }
+        Key::Text(t) if t == " " => {
+            let i = focused_choice(tx).unwrap_or(s.selected);
+            finish(&mut s.outcome, Outcome::Chose(i), tx);
+        }
+        Key::Text(t) => match t.parse::<usize>() {
+            Ok(d) if (1..=n.min(9)).contains(&d) => {
+                finish(&mut s.outcome, Outcome::Chose(d - 1), tx)
+            }
+            _ => return false,
+        },
+        _ => return false,
+    }
+    true
+}
+
+/// The row of the focused button, when one has focus.
+fn focused_choice(tx: &Tx) -> Option<usize> {
+    let key = tx.focused()?;
+    let last = key.rsplit('/').next()?;
+    last.strip_prefix("choice-")?.parse().ok()
 }
 
 pub fn edit_key(s: &mut Edit, e: &KeyEvent, tx: &mut Tx) -> bool {
@@ -206,6 +249,55 @@ pub fn parse_rows(input: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use rune::{Env, Mods, Runtime};
+
+    fn choose_window() -> Runtime<Choose> {
+        let rows = parse_rows("Add \u{201C}Zorblax\u{201D}\nNot now\nDon\u{2019}t suggest\n");
+        let mut rt = Runtime::new(
+            Choose::new(rows),
+            choose_view,
+            (420.0, 220.0),
+            Env::new(true, 1.0),
+        );
+        rt.on_key = Some(choose_key);
+        rt.frame(0.0);
+        rt
+    }
+
+    fn type_key(rt: &mut Runtime<Choose>, k: Key) {
+        rt.key(KeyEvent {
+            key: k,
+            mods: Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn the_keyboard_moves_the_highlight_and_chooses() {
+        let mut rt = choose_window();
+        type_key(&mut rt, Key::Down);
+        type_key(&mut rt, Key::Down);
+        type_key(&mut rt, Key::Down);
+        assert_eq!(rt.state.selected, 2, "Down stops at the last row");
+        type_key(&mut rt, Key::Up);
+        type_key(&mut rt, Key::Enter);
+        assert_eq!(rt.state.outcome, Some(Outcome::Chose(1)));
+
+        let mut rt = choose_window();
+        type_key(&mut rt, Key::Tab);
+        type_key(&mut rt, Key::Text(" ".into()));
+        assert_eq!(rt.state.outcome, Some(Outcome::Chose(1)));
+
+        let mut rt = choose_window();
+        type_key(&mut rt, Key::Text("3".into()));
+        assert_eq!(rt.state.outcome, Some(Outcome::Chose(2)));
+
+        // A digit past the rows does nothing.
+        let mut rt = choose_window();
+        type_key(&mut rt, Key::Text("4".into()));
+        assert_eq!(rt.state.outcome, None);
+        type_key(&mut rt, Key::Escape);
+        assert_eq!(rt.state.outcome, Some(Outcome::Dismissed));
+    }
 
     fn press<S: 'static>(rt: &mut Runtime<S>, key: &str) {
         let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no {key:?}"));
@@ -292,10 +384,7 @@ mod tests {
         let rows = parse_rows("Add \u{201C}Zorblax\u{201D}\nNot now\n\nDon\u{2019}t suggest\n");
         assert_eq!(rows.len(), 3);
         for i in 0..rows.len() {
-            let s = Choose {
-                rows: rows.clone(),
-                outcome: None,
-            };
+            let s = Choose::new(rows.clone());
             let mut rt = Runtime::new(s, choose_view, (420.0, 220.0), Env::new(true, 1.0));
             rt.frame(0.0);
             press(&mut rt, &format!("choice-{i}"));

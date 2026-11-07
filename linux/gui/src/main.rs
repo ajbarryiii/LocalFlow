@@ -106,10 +106,7 @@ fn run_choose() -> i32 {
         }
     }
     fn init() -> prompt::Choose {
-        prompt::Choose {
-            rows: prompt::parse_rows(INPUT.get().map_or("", String::as_str)),
-            outcome: None,
-        }
+        prompt::Choose::new(prompt::parse_rows(INPUT.get().map_or("", String::as_str)))
     }
     if init().rows.is_empty() {
         eprintln!("localflow-gui: no rows on stdin");
