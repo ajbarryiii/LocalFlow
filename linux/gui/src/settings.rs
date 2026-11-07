@@ -596,8 +596,14 @@ fn menu(
         .build(k, layer)
 }
 
-/// Text fields and menus share one width, so their edges line up.
-const FIELD_WIDTH: f32 = 200.0;
+/// Text fields, menus and segmented controls share one width, so the
+/// right side of every card is one column. Four segments need it: each is
+/// as wide as "250 ms" and its padding.
+const FIELD_WIDTH: f32 = 288.0;
+
+/// The window's smallest size: wide enough for the column of controls
+/// beside the longest label with its dot and reset button.
+pub const MIN_SIZE: (f32, f32) = (560.0, 400.0);
 
 /// `precision`'s values, from the fastest (README, `precision`), named for
 /// speed alone. "Auto" is the model's own (no `precision` key): i8x1 for
@@ -700,6 +706,7 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             s.set("double_tap_ms", json!(DOUBLE_TAP[i].1))
         })
         .build(&seg)
+        .min_w(FIELD_WIDTH)
         .key("choice-double_tap_ms");
     let prompt = card(
         &k,
@@ -736,6 +743,7 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
     .fit()
     .on_pick(|s: &mut Settings, i: usize, _: &mut Tx| s.set("key_delay_ms", json!(DELAY[i].1)))
     .build(&seg)
+    .min_w(FIELD_WIDTH)
     .key("choice-key_delay_ms");
     let picker = menu(
         &k,
@@ -1124,10 +1132,13 @@ mod tests {
             self.window_with(None)
         }
         fn window_with(&self, daemon: Option<Daemon>) -> Runtime<Settings> {
+            self.window_at(daemon, 560.0, 1.0)
+        }
+        fn window_at(&self, daemon: Option<Daemon>, width: f32, scale: f32) -> Runtime<Settings> {
             let layers = Layers::load(&self.config(), Path::new("/d")).unwrap();
             let s = Settings::new(self.config(), "/d".into(), layers, daemon).unwrap();
             // Tall enough that nothing needs scrolling.
-            let mut rt = Runtime::new(s, view, (560.0, 1400.0), Env::new(true, 1.0));
+            let mut rt = Runtime::new(s, view, (width, 1400.0), Env::new(true, scale));
             rt.on_key = Some(key);
             rt.frame(0.0);
             rt
@@ -1707,6 +1718,88 @@ mod tests {
         assert!(rt.find("close-anyway").is_none());
         escape(&mut rt);
         assert!(!rt.state.closed, "asks again");
+    }
+
+    #[test]
+    fn the_controls_share_one_column() {
+        // Segmented controls, menus and text fields start and end at the
+        // same x, so the right side of every card reads as one column. It
+        // holds at the smallest window too, with every row's label at its
+        // widest (changed, not applied: a dot and a reset button), and no
+        // control reaches past its row.
+        let d = Dir::new("column", r#"{"version": 1}"#);
+        let controls = [
+            ("double_tap_ms", "choice-double_tap_ms", json!(600)),
+            ("prompt_tag", "prompt-tag-field", json!("[synthetic]")),
+            ("output", "output-select-trigger", json!("portal")),
+            ("key_delay_ms", "choice-key_delay_ms", json!(10)),
+            ("picker", "picker-select-trigger", json!("gui")),
+            ("precision", "precision-select-trigger", json!("f32")),
+            ("input_device", "microphone-field", json!("Synthetic mic")),
+        ];
+        let widest = |scale: f32| {
+            let mut rt = d.window_at(None, MIN_SIZE.0, scale);
+            rt.update(|s, _| {
+                for (key, _, value) in &controls {
+                    s.set(key, value.clone());
+                }
+            });
+            rt.frame(1.0 / 60.0);
+            for (key, _, _) in &controls {
+                assert!(rt.find(&format!("reset-{key}")).is_some(), "{key}");
+                assert!(rt.find(&format!("unapplied-{key}")).is_some(), "{key}");
+            }
+            rt
+        };
+        // At 2x text is hinted, and a little wider.
+        for rt in [d.window(), widest(1.0), widest(2.0)] {
+            let rects: Vec<[f32; 4]> = controls
+                .iter()
+                .map(|(_, k, _)| rt.presented(k).unwrap_or_else(|| panic!("no {k}")).0)
+                .collect();
+            for ((key, k, _), r) in controls.iter().zip(&rects) {
+                assert!((r[0] - rects[0][0]).abs() < 0.5, "{k} starts at {r:?}");
+                let (right, first) = (r[0] + r[2], rects[0][0] + rects[0][2]);
+                assert!((right - first).abs() < 0.5, "{k} ends at {r:?}");
+                let row = rt.presented(key).unwrap().0;
+                assert!(
+                    right <= row[0] + row[2] - space::S3 + 0.5,
+                    "{k} {r:?} in {row:?}"
+                );
+            }
+        }
+        // Nothing is squeezed to get there: each segment is at least as
+        // wide as its label needs.
+        for scale in [1.0, 2.0] {
+            let rt = d.window_at(None, 560.0, scale);
+            for (key, labels) in [
+                (
+                    "choice-double_tap_ms",
+                    ["Off", "250 ms", "400 ms", "600 ms"],
+                ),
+                ("choice-key_delay_ms", ["0 ms", "1 ms", "5 ms", "10 ms"]),
+            ] {
+                // The same control, as wide as its labels make it.
+                let mut fit = Runtime::new(
+                    labels,
+                    |labels: &[&str; 4], _: &mut Cx<[&str; 4]>| {
+                        let seg = look::segments(&look::kit());
+                        row().child(
+                            SegmentedControl::new(labels, Some(0))
+                                .fit()
+                                .build(&seg)
+                                .key("fit"),
+                        )
+                    },
+                    (560.0, 100.0),
+                    Env::new(true, scale),
+                );
+                fit.frame(0.0);
+                let need = fit.presented("fit").unwrap().0[2];
+                let have = rt.presented(key).unwrap().0[2];
+                assert!(have + 0.5 >= need, "{key} at {scale}x: {have} < {need}");
+            }
+        }
     }
 
     #[test]

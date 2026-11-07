@@ -21,9 +21,10 @@
 //!   proportional bar font still gives them equal widths, and a dot dimmer
 //!   than full is `<span alpha="NN%">•</span>`. Its dots are standard
 //!   characters (U+2022, U+25CF), so it needs no Nerd Font. A full dot is a
-//!   little wider than its cell, so two never stand side by side: the
-//!   second of two loud cells, and a loud cell beside the anchor, show as
-//!   the brightest small dot ([`CAPPED`]).
+//!   little wider than its cell, so two never stand side by side: a loud
+//!   cell beside another full dot shows as the brightest small dot
+//!   ([`CAPPED`]) in every other slot, counted from the anchor, so loud
+//!   speech holds a steady `•●•●•●`.
 //! - Every other state shows its glyph in the third cell ([`GLYPH_CELL`]).
 //!   Glyphs are Font Awesome icons as Nerd Fonts carry them, drawn wider
 //!   than one cell, so the glyph sits about in the middle; a bar config can
@@ -102,8 +103,10 @@ pub const STEPS: [(char, u8); 5] = [
     (FULL_DOT, 100),
 ];
 /// The step a full dot shows instead beside another full dot (the anchor
-/// included): the brightest small dot, so the two stay apart and the cell
-/// still reads as loud.
+/// included), in the slots an odd distance from the anchor: the brightest
+/// small dot, so the two stay apart and the cell still reads as loud.
+/// Applied as the wave is drawn, not to the cells kept, so a loud run's
+/// pattern holds still on screen while its cells scroll through it.
 pub const CAPPED: usize = 2;
 
 /// Level lines (every 66 ms while recording) per cell of the wave: a
@@ -356,7 +359,7 @@ impl Counts {
 #[derive(Debug, Default)]
 pub struct Indicator {
     /// The current recording's recent cells, oldest first: [`STEPS`]
-    /// indices, a full dot after another already capped.
+    /// indices, as heard (capping is the drawing's, see `wave`).
     cells: VecDeque<usize>,
     /// Levels of the cell still being heard (fewer than
     /// [`LINES_PER_CELL`]), and the loudest of them.
@@ -453,28 +456,38 @@ impl Indicator {
         }
         self.follow = f32::from(self.loudest).max(self.follow * FALL);
         (self.heard, self.loudest) = (0, 0);
-        let mut s = step(self.follow.round() as u8);
-        if is_full(s) && self.cells.back().is_some_and(|&b| is_full(b)) {
-            s = CAPPED;
-        }
         if self.cells.len() == HISTORY {
             self.cells.pop_front();
         }
-        self.cells.push_back(s);
+        self.cells.push_back(step(self.follow.round() as u8));
     }
 
     /// `prefix`, the last `cells` cells, newest on the right and padded with
-    /// dots at rest, then the anchor, in the monospace span. The newest
-    /// cell sits beside the full anchor, so it is capped too.
+    /// dots at rest, then the anchor, in the monospace span. Full dots are
+    /// capped here, by the slot's distance from the anchor (1 beside it):
+    /// at an odd distance a full cell beside a full one (the anchor counts)
+    /// shows as [`CAPPED`]; at an even distance it always shows full. Even
+    /// slots never touch, so neither do full dots; a lone loud cell stays
+    /// full across the wave (bar the slot beside the anchor); and a run of
+    /// loud cells holds one steady wave instead of swapping sizes as it
+    /// scrolls.
     fn wave(&self, prefix: String, cells: usize) -> String {
         let shown = self.cells.len().min(cells);
-        let mut steps: Vec<usize> = std::iter::repeat_n(0, cells - shown)
+        let steps: Vec<usize> = std::iter::repeat_n(0, cells - shown)
             .chain(self.cells.iter().skip(self.cells.len() - shown).copied())
             .collect();
-        if let Some(newest) = steps.last_mut().filter(|s| is_full(**s)) {
-            *newest = CAPPED;
-        }
-        let dots: String = steps.into_iter().map(dot).collect();
+        let full_at = |i: usize| i == cells || steps.get(i).is_some_and(|&s| is_full(s));
+        let dots: String = (0..cells)
+            .map(|i| {
+                let odd = (cells - i) % 2 == 1;
+                let beside_full = full_at(i + 1) || (i > 0 && full_at(i - 1));
+                if is_full(steps[i]) && odd && beside_full {
+                    dot(CAPPED)
+                } else {
+                    dot(steps[i])
+                }
+            })
+            .collect();
         format!("<span font_family=\"{WAVE_FONT}\">{prefix}{dots}{FULL_DOT}</span>")
     }
 }
@@ -999,8 +1012,9 @@ mod tests {
     #[test]
     fn full_dots_never_touch() {
         // `●` is wider than its cell, so two side by side fuse into one
-        // blob at 1x: the second of two loud cells, and a loud cell beside
-        // the anchor, show as the brightest small dot instead.
+        // blob at 1x: a loud cell beside another full dot (the anchor
+        // included) shows as the brightest small dot instead, in every
+        // other slot from the anchor.
         let capped = (0..STEPS.len()).rfind(|&s| !full(s)).unwrap();
         assert_eq!(STEPS[capped], (SMALL_DOT, 100));
         let mut ind = Indicator::default();
@@ -1026,12 +1040,89 @@ mod tests {
         }
         // Loud speech still shows full dots.
         assert!(fulls > 500, "{fulls}");
-        // A lone loud syllable keeps its full dot all the way across.
-        let mut ind = Indicator::default();
-        feed(&mut ind, &[0, 0, 100, 100]);
-        for cell in (0..WIDTH - 2).rev() {
-            let t = feed(&mut ind, &[0, 0]);
-            assert_eq!(shown_steps(&t)[cell], STEPS.len() - 1, "{t}");
+    }
+
+    /// The watch line of a recording at `level`, a prompt dictation or not.
+    fn rec_line(prompt: bool, level: u8) -> String {
+        let tag = if prompt { " tag=prompt" } else { "" };
+        format!("state=recording mode=hold{tag} model=ready mic=present level={level}")
+    }
+
+    #[test]
+    fn sustained_loud_speech_holds_a_steady_wave() {
+        // Seconds of loud speech: every cell is loud. Full and small dots
+        // take turns, and every cell shows the same wave, so no dot swaps
+        // size in place while the wave scrolls.
+        let last = STEPS.len() - 1;
+        for prompt in [false, true] {
+            let mut ind = Indicator::default();
+            let mut waves = Vec::new();
+            for i in 0..60 {
+                let t = text(&ind.update(&rec_line(prompt, 100)).unwrap());
+                // Once the run fills the wave.
+                if i >= LINES_PER_CELL * HISTORY {
+                    waves.push(t);
+                }
+            }
+            assert!(waves.iter().all(|t| *t == waves[0]), "{waves:#?}");
+            let want = if prompt {
+                vec![last, CAPPED, last, CAPPED]
+            } else {
+                vec![CAPPED, last, CAPPED, last, CAPPED]
+            };
+            assert_eq!(shown_steps(&waves[0]), want, "{}", waves[0]);
+            let (marker, wave) = if prompt {
+                ("\u{203a}", "\u{25cf}\u{2022}\u{25cf}\u{2022}\u{25cf}")
+            } else {
+                ("", "\u{2022}\u{25cf}\u{2022}\u{25cf}\u{2022}\u{25cf}")
+            };
+            assert_eq!(plain(&waves[0]), format!("{marker}{wave}"));
+
+            // Loud speech that varies within the full dot's steps: the dots'
+            // sizes still hold still, cell after cell.
+            let mut ind = Indicator::default();
+            let mut sizes = Vec::new();
+            for (i, level) in [60, 100, 75, 90, 100, 65, 85]
+                .iter()
+                .cycle()
+                .take(70)
+                .enumerate()
+            {
+                let t = text(&ind.update(&rec_line(prompt, *level)).unwrap());
+                if i >= LINES_PER_CELL * HISTORY {
+                    sizes.push(plain(&t));
+                }
+            }
+            assert!(sizes.iter().all(|s| *s == sizes[0]), "{sizes:#?}");
+        }
+    }
+
+    #[test]
+    fn a_lone_peak_keeps_its_size_as_it_scrolls() {
+        // One loud syllable between quiet ones: beside the anchor it is the
+        // brightest small dot (full dots never touch), then a full dot in
+        // every cell it crosses, until it leaves the wave.
+        let last = STEPS.len() - 1;
+        for prompt in [false, true] {
+            let cells = if prompt { WIDTH - 2 } else { WIDTH - 1 };
+            let mut ind = Indicator::default();
+            for _ in 0..2 * LINES_PER_CELL {
+                ind.update(&rec_line(prompt, 0));
+            }
+            ind.update(&rec_line(prompt, 100));
+            let t = text(&ind.update(&rec_line(prompt, 100)).unwrap());
+            assert_eq!(shown_steps(&t)[cells - 1], CAPPED, "{t}");
+            for cell in (0..cells - 1).rev() {
+                ind.update(&rec_line(prompt, 0));
+                let t = text(&ind.update(&rec_line(prompt, 0)).unwrap());
+                let steps = shown_steps(&t);
+                assert_eq!(steps[cell], last, "{prompt} {t}");
+                // It is the only full dot.
+                assert_eq!(steps.iter().filter(|&&s| full(s)).count(), 1, "{t}");
+            }
+            ind.update(&rec_line(prompt, 0));
+            let t = text(&ind.update(&rec_line(prompt, 0)).unwrap());
+            assert!(shown_steps(&t).iter().all(|&s| !full(s)), "{t}");
         }
     }
 

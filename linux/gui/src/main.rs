@@ -157,7 +157,7 @@ fn run_settings() -> i32 {
             .expect("settings are made once, before the window")
     }
     let app = rune::App::new(AppSpec::<settings::Settings> {
-        min_size: Some((520.0, 400.0)),
+        min_size: Some(settings::MIN_SIZE),
         on_key: Some(settings::key),
         ..AppSpec::new("LocalFlow Settings", (600.0, 880.0), init, settings::view)
     });
