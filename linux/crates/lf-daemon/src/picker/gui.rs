@@ -7,6 +7,10 @@
 //! - Escape or closing the window exits 1 with no output.
 //! - It keeps no history or cache, reads no configuration of its own, and
 //!   is built without the accessibility bridge.
+//! - The edit box hands what is typed to the desktop's input method (fcitx5,
+//!   IBus) when one runs, as any window's text field does; Rune cannot turn
+//!   that off for one field. So `auto` never edits here: the user opts in
+//!   with `"picker": "gui"`.
 
 use super::{Dismissal, Invocation, Reply};
 

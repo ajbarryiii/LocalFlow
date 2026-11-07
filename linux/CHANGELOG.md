@@ -14,8 +14,8 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
   new `settings.json` beside `config.json`, whose keys replace
   `config.json`'s, so a read-only `config.json` from Home Manager can still
   be adjusted. `"picker": "gui"` uses its dialogs for `localflowctl correct`
-  and `dict review`; `auto` uses them only when no menu tool (rofi, fuzzel,
-  wofi, tofi) is installed.
+  and `dict review`; `auto` uses them only for the suggestion dialog, and only
+  when no menu tool (rofi, fuzzel, wofi, tofi) is installed.
 
 ### Changed
 

@@ -273,6 +273,13 @@ pub fn write_settings(
     let mut bytes = serde_json::to_vec_pretty(&Value::Object(settings.clone()))
         .map_err(|e| format!("settings: {e}"))?;
     bytes.push(b'\n');
+    // The daemon refuses a larger file.
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "settings {} would be larger than 1 MiB",
+            path.display()
+        ));
+    }
     write_atomic(&path, &bytes, SyncDir::Yes)
         .map_err(|e| format!("settings {}: {e}", path.display()))?;
     Ok(config)
@@ -1034,6 +1041,17 @@ mod tests {
         // Settings that make an invalid configuration are not written.
         let e = write_settings(&path, d, &settings(r#"{"key_delay_ms": 51}"#)).unwrap_err();
         assert!(e.contains("key_delay_ms"), "{e}");
+        assert!(Config::load(&path, d).unwrap().press_enter);
+
+        // Settings too large for the daemon to load are not written, though
+        // every value is valid.
+        let big: Vec<Value> = (0..300)
+            .map(|i| serde_json::json!({"command": format!("synthetic {i}"), "payload": "x".repeat(4000)}))
+            .collect();
+        let mut too_big = Map::new();
+        too_big.insert("voice_macros".into(), Value::Array(big));
+        let e = write_settings(&path, d, &too_big).unwrap_err();
+        assert!(e.contains("larger than 1 MiB"), "{e}");
         assert!(Config::load(&path, d).unwrap().press_enter);
 
         // No settings remove the file: back to the config file alone.

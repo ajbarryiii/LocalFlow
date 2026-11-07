@@ -32,12 +32,15 @@
 //! `"picker"` in `config.json` picks one: `"auto"` (the default) takes, for
 //! each operation, the first tool on `PATH` that supports it, in the order
 //! rofi, fuzzel, wofi, tofi, then gui (`localflow-gui`; last, so installing
-//! it changes nothing for a desktop that has a menu tool). Verdicts, from each
+//! it changes nothing for a desktop that has a menu tool, and for the
+//! suggestion dialog only: its edit box needs `"picker": "gui"`, see
+//! [`Kind::auto_ok`]). Verdicts, from each
 //! version's manual and source as packaged in nixpkgs, and run in a private
 //! headless sway:
 //!
 //! - **gui** (`localflow-gui`, LocalFlow's own windows): edit and choose.
-//!   See [`gui`].
+//!   Its edit box goes through the desktop's input method (fcitx5, IBus)
+//!   when one runs, so `auto` never edits in it. See [`gui`].
 //! - **rofi** (2.0.0): edit and choose. See [`rofi`].
 //! - **fuzzel** (1.14.1): choose only. It can prefill its box only with
 //!   `--search=TEXT` on its command line (its configuration file has no
@@ -136,6 +139,13 @@ impl Kind {
             Kind::Gui => "localflow-gui",
             k => k.name(),
         }
+    }
+
+    /// Whether `auto` may use it for `op`. The gui edit box hands what is
+    /// typed to the desktop's input method (Rune has no way to turn it
+    /// off), so it edits only when configured by name.
+    pub fn auto_ok(self, op: Op) -> bool {
+        !(self == Kind::Gui && op == Op::Edit)
     }
 
     pub fn supports(self, op: Op) -> bool {
@@ -267,7 +277,7 @@ pub fn select(choice: Choice, op: Op, probe: impl Fn(Kind) -> Probe) -> Result<P
         }
         Choice::Auto => Kind::ALL
             .into_iter()
-            .filter(|k| k.supports(op))
+            .filter(|k| k.supports(op) && k.auto_ok(op))
             .find_map(|k| match probe(k) {
                 Probe::Found(program) => Some(Picker::new(k, program)),
                 _ => None,
@@ -874,16 +884,20 @@ pub(crate) mod tests {
         let with_gui = &["localflow-gui", "rofi", "fuzzel", "wofi", "tofi"];
         for op in [Op::Edit, Op::Choose] {
             assert_eq!(pick(Choice::Auto, op, with_gui).unwrap().0, Kind::Rofi);
-            assert_eq!(
-                pick(Choice::Auto, op, &["localflow-gui"]),
-                Ok((Kind::Gui, p("/bin/localflow-gui")))
-            );
         }
+        // auto shows the suggestion dialog in it, but never edits there (its
+        // edit box goes through the input method); configured, it edits.
         assert_eq!(
-            pick(Choice::Auto, Op::Edit, &["localflow-gui", "fuzzel", "tofi"])
-                .unwrap()
-                .0,
-            Kind::Gui
+            pick(Choice::Auto, Op::Choose, &["localflow-gui"]),
+            Ok((Kind::Gui, p("/bin/localflow-gui")))
+        );
+        assert_eq!(
+            pick(Choice::Auto, Op::Edit, &["localflow-gui", "fuzzel", "tofi"]).unwrap_err(),
+            NoPicker::NoneFound(Op::Edit)
+        );
+        assert_eq!(
+            pick(Choice::Only(Kind::Gui), Op::Edit, &["localflow-gui"]),
+            Ok((Kind::Gui, p("/bin/localflow-gui")))
         );
         assert_eq!(
             pick(Choice::Only(Kind::Gui), Op::Edit, &["rofi"]).unwrap_err(),

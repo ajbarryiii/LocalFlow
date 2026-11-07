@@ -183,7 +183,13 @@ impl Settings {
         let daemon_reads = changed.iter().any(|k| !CLIENT_ONLY.contains(&k.as_str()));
         match write_settings(&self.config_path, &self.data_dir, &self.draft) {
             Ok(config) => {
-                self.layers.settings = self.draft.clone();
+                // config.json may have changed since the window opened (a
+                // Home Manager switch): work from both files as they are.
+                match Layers::load(&self.config_path, &self.data_dir) {
+                    Ok(layers) => self.layers = layers,
+                    Err(_) => self.layers.settings = self.draft.clone(),
+                }
+                self.draft = self.layers.settings.clone();
                 self.shown = config.clone();
                 self.config = Ok(config);
                 self.status = Status::Applied;
@@ -741,6 +747,31 @@ mod tests {
         assert!(rt.state.draft.is_empty() && rt.state.dirty());
         press(&mut rt, "apply");
         assert_eq!(d.settings(), None, "no settings left: the file is removed");
+    }
+
+    #[test]
+    fn apply_picks_up_a_changed_config_file() {
+        let d = Dir::new("rebase", r#"{"version": 1, "press_enter": false}"#);
+        let mut rt = d.window();
+        // A Home Manager switch replaces config.json while the window is open.
+        std::fs::remove_file(d.config()).unwrap();
+        std::fs::write(
+            d.0.join("new-store.json"),
+            r#"{"version": 1, "press_enter": true}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(d.0.join("new-store.json"), d.config()).unwrap();
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert!(rt.state.shown.press_enter, "the new config.json shows");
+        // Turning it off now is an override of the new value.
+        press(&mut rt, "switch-press_enter");
+        assert!(!rt.state.shown.press_enter && rt.state.dirty());
+        press(&mut rt, "apply");
+        assert_eq!(
+            d.settings(),
+            Some(json!({"history": true, "press_enter": false}))
+        );
     }
 
     #[test]

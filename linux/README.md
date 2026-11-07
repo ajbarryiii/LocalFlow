@@ -211,7 +211,8 @@ invalid values stop the daemon with an error. Defaults:
   `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"`, `"tofi"` or `"gui"`. `"gui"` is
   LocalFlow's own windows (`localflow-gui`, see "Settings window").
   `auto` takes, for each dialog, the first of rofi, fuzzel, wofi, tofi and
-  localflow-gui on `PATH` that can show it. fuzzel and tofi cannot prefill an input box without putting the
+  localflow-gui on `PATH` that can show it (localflow-gui only for the
+  suggestion dialog; see "Settings window"). fuzzel and tofi cannot prefill an input box without putting the
   text on their command line, so they only show the suggestion dialog
   (`dict review`, and the second step of `correct`); with one of them
   configured, `correct` says so and does nothing. wofi is not used while
@@ -252,7 +253,8 @@ is a settings window and the correction dialogs:
   the text comes on stdin and the answer goes to stdout; Escape or closing
   the window does nothing. They are built without Rune's accessibility
   bridge. An input method (fcitx5, IBus) sees what is typed in the edit
-  box, as in any other window.
+  box, as in any other window, so `auto` uses localflow-gui only for the
+  suggestion dialog; set `"picker": "gui"` to correct in it too.
 
 ## Run
 
