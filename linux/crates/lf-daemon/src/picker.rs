@@ -233,10 +233,10 @@ impl std::fmt::Display for NoPicker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NoPicker::NoneFound(Op::Edit) => f.write_str(
-                "no picker that can edit text was found (install rofi, wofi or localflow-gui)",
+                "no picker that can edit text was found (install rofi or wofi, or localflow-gui)",
             ),
             NoPicker::NoneFound(Op::Choose) => f.write_str(
-                "no picker was found (install rofi, fuzzel, wofi, tofi or localflow-gui)",
+                "no picker was found (install rofi, fuzzel, wofi or tofi, or localflow-gui)",
             ),
             NoPicker::Unsupported(k, _) => write!(
                 f,
