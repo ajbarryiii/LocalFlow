@@ -9,12 +9,14 @@
 //!   `config.json`'s value (or the default).
 //! - Values that make an invalid configuration keep Apply disabled and show
 //!   the daemon's own message, which names the key and never the value.
+//! - Escape closes the window. With changes not yet applied it asks first;
+//!   a second Escape closes without applying them.
 
 use std::path::PathBuf;
 
 use lf_daemon::config::{Config, Layers, write_settings};
 use rune::tok::space;
-use rune::{Cx, El, Icon, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
+use rune::{Cx, El, Icon, Key, KeyEvent, Mods, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{
     Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, Switch,
     TextInput,
@@ -67,6 +69,10 @@ pub struct Settings {
     pub open: Option<&'static str>,
     pub status: Status,
     pub restart: Restart,
+    /// Escape was pressed with changes not applied: the footer asks.
+    pub asking_to_close: bool,
+    /// The window quit.
+    pub closed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,6 +108,8 @@ impl Settings {
             open: None,
             status: Status::Idle,
             restart,
+            asking_to_close: false,
+            closed: false,
         };
         s.reset_fields();
         Ok(s)
@@ -156,6 +164,7 @@ impl Settings {
 
     fn recompute(&mut self) {
         self.status = Status::Idle;
+        self.asking_to_close = false;
         self.config = self.with(self.draft.clone());
         if let Ok(c) = &self.config {
             self.shown = c.clone();
@@ -172,8 +181,20 @@ impl Settings {
         self.reset_fields();
     }
 
+    /// Closes the window, unless changes are not applied and the window has
+    /// not asked yet: then it asks.
+    pub fn close(&mut self, tx: &mut Tx) {
+        if self.dirty() && !self.asking_to_close {
+            self.asking_to_close = true;
+            return;
+        }
+        self.closed = true;
+        tx.quit();
+    }
+
     /// Writes the draft and restarts the daemon if a key it reads changed.
     pub fn apply(&mut self) {
+        self.asking_to_close = false;
         let changed: Vec<&String> = self
             .draft
             .keys()
@@ -213,6 +234,15 @@ impl Settings {
             .collect();
         self.set("voice_macros", Value::Array(list));
     }
+}
+
+/// The window's keys: Escape closes (see [`Settings::close`]).
+pub fn key(s: &mut Settings, e: &KeyEvent, tx: &mut Tx) -> bool {
+    if e.key == Key::Escape && e.mods == Mods::default() {
+        s.close(tx);
+        return true;
+    }
+    false
 }
 
 /// `systemctl --user try-restart localflowd.service`: restarts the daemon
@@ -366,7 +396,8 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
             let v = s.prompt_tag.text.clone();
             s.set("prompt_tag", Value::String(v));
         })
-        .build(&k);
+        .build(&k)
+        .key("prompt-tag-field");
     static DOUBLE_TAP: [(&str, u64); 4] = [
         ("Off", 0),
         ("250 ms", 250),
@@ -594,6 +625,32 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         .gap(space::S2)
         .center_y()
         .fill(k.c.bg_base);
+    if s.asking_to_close {
+        footer = footer
+            .child(
+                text("Close without applying?")
+                    .key("asking")
+                    .font(k.ty.ui)
+                    .color(k.c.text_base)
+                    .grow(1.0)
+                    .shrink(),
+            )
+            .child(
+                Button::new("Keep Editing")
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut Settings| s.asking_to_close = false)
+                    .build(&k)
+                    .key("keep-editing"),
+            )
+            .child(
+                Button::new("Close")
+                    .variant(ButtonVariant::Contrast)
+                    .on_press_tx(|s: &mut Settings, tx: &mut Tx| s.close(tx))
+                    .build(&k)
+                    .key("close-anyway"),
+            );
+        return page(&k, content, footer, layer);
+    }
     footer = match (&s.config, &s.status) {
         (Err(e), _) | (_, Status::Failed(e)) => footer.child(
             text(e.clone())
@@ -626,7 +683,11 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                 .build(&k)
                 .key("apply"),
         );
+    page(&k, content, footer, layer)
+}
 
+/// The scrolling settings over the footer.
+fn page(k: &Kit, content: El, footer: El, layer: Vec<El>) -> El {
     let body = col()
         .key("window")
         .w_full()
@@ -671,7 +732,7 @@ fn picker_name(c: &Config) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rune::{Env, Runtime};
+    use rune::{Env, Key, KeyEvent, Mods, Runtime};
     use std::path::Path;
 
     /// A temporary directory with a read-only config.json, as Home Manager
@@ -702,6 +763,7 @@ mod tests {
             let s = Settings::new(self.config(), "/d".into(), layers, None).unwrap();
             // Tall enough that nothing needs scrolling.
             let mut rt = Runtime::new(s, view, (560.0, 1400.0), Env::new(true, 1.0));
+            rt.on_key = Some(key);
             rt.frame(0.0);
             rt
         }
@@ -832,6 +894,79 @@ mod tests {
         let rt = d.window();
         assert_eq!(rt.state.macros.len(), 2);
         assert!(rt.find("reset-voice_macros").is_some());
+    }
+
+    fn escape(rt: &mut Runtime<Settings>) {
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+    }
+
+    #[test]
+    fn escape_closes_a_window_with_nothing_to_apply() {
+        let d = Dir::new("escape", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        escape(&mut rt);
+        assert!(rt.state.closed);
+
+        // Also from a text field.
+        let mut rt = d.window();
+        press(&mut rt, "prompt-tag-field");
+        escape(&mut rt);
+        escape(&mut rt);
+        assert!(rt.state.closed);
+
+        // An open menu closes first.
+        let mut rt = d.window();
+        press(&mut rt, "picker-select-trigger");
+        assert_eq!(rt.state.open, Some("picker"));
+        escape(&mut rt);
+        assert_eq!(rt.state.open, None);
+        assert!(!rt.state.closed, "Escape only closed the menu");
+        escape(&mut rt);
+        assert!(rt.state.closed);
+    }
+
+    #[test]
+    fn escape_with_unapplied_changes_asks_before_closing() {
+        let d = Dir::new("escape-draft", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        press(&mut rt, "switch-history");
+        escape(&mut rt);
+        assert!(!rt.state.closed, "the draft is not dropped yet");
+        assert!(rt.find("close-anyway").is_some(), "the window asks");
+
+        // Keep editing: the draft stays, and the question goes.
+        press(&mut rt, "keep-editing");
+        assert!(rt.state.dirty() && !rt.state.closed);
+        assert!(rt.find("close-anyway").is_none());
+
+        // Escape twice closes without writing anything.
+        escape(&mut rt);
+        escape(&mut rt);
+        assert!(rt.state.closed);
+        assert_eq!(d.settings(), None);
+
+        // So does the close button.
+        let mut rt = d.window();
+        press(&mut rt, "switch-history");
+        escape(&mut rt);
+        press(&mut rt, "close-anyway");
+        assert!(rt.state.closed);
+        assert_eq!(d.settings(), None);
+
+        // A change after the question takes it back.
+        let mut rt = d.window();
+        press(&mut rt, "switch-history");
+        escape(&mut rt);
+        press(&mut rt, "switch-pause_media");
+        assert!(rt.find("close-anyway").is_none());
+        escape(&mut rt);
+        assert!(!rt.state.closed, "asks again");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! `localflow-gui`: LocalFlow's windows on Linux, drawn with Rune.
 //!
-//! - `localflow-gui [settings]`: the settings window.
+//! - `localflow-gui [settings]`: the settings window, one per user (a
+//!   second launch brings it forward; see [`instance`]).
 //! - `localflow-gui edit`: correct a dictation (text on stdin; the edit on
 //!   stdout). See [`prompt`].
 //! - `localflow-gui choose`: pick one of the rows on stdin (its number on
@@ -9,6 +10,7 @@
 //! Rune's own flags work on every window (`--snap out.png`, `--tree`),
 //! which render it headless.
 
+mod instance;
 mod prompt;
 mod settings;
 
@@ -130,6 +132,9 @@ fn run_choose() -> i32 {
 static SETTINGS: Mutex<Option<settings::Settings>> = Mutex::new(None);
 
 fn run_settings() -> i32 {
+    let Some(listener) = claim_settings() else {
+        return 0;
+    };
     let made = (|| -> Result<settings::Settings, String> {
         let config = lf_daemon::paths::config_file()?;
         let data = lf_daemon::paths::data_dir()?;
@@ -150,9 +155,35 @@ fn run_settings() -> i32 {
             .take()
             .expect("settings are made once, before the window")
     }
-    rune::run(AppSpec::<settings::Settings> {
+    let app = rune::App::new(AppSpec::<settings::Settings> {
         min_size: Some((520.0, 400.0)),
+        on_key: Some(settings::key),
         ..AppSpec::new("LocalFlow Settings", (600.0, 760.0), init, settings::view)
     });
+    if let Some(listener) = listener {
+        let handle = app.handle();
+        listener.serve(move |token| handle.activate(token));
+    }
+    app.run();
     0
+}
+
+/// Whether a settings window is already open: if so it is asked to come
+/// forward and this process has nothing to do (`None`). Headless renders
+/// skip this.
+fn claim_settings() -> Option<Option<instance::Listener>> {
+    if rune::is_headless() {
+        return Some(None);
+    }
+    let token = std::env::var("XDG_ACTIVATION_TOKEN").unwrap_or_default();
+    let claimed =
+        lf_daemon::paths::runtime_dir().and_then(|d| instance::claim(&d.join("localflow"), &token));
+    match claimed {
+        Ok(instance::Instance::First(l)) => Some(Some(l)),
+        Ok(instance::Instance::Forwarded) => None,
+        Err(e) => {
+            eprintln!("localflow-gui: {e}");
+            Some(None)
+        }
+    }
 }

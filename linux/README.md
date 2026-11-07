@@ -244,6 +244,10 @@ is a settings window and the correction dialogs:
   which writes them to `settings.json` beside `config.json` and restarts
   the daemon (`systemctl --user try-restart localflowd`) when a key it reads
   changed. A reset icon next to a setting takes it back to `config.json`.
+  Escape closes it, asking first when there are changes not applied. One
+  settings window runs per user: launching it again brings that window
+  forward (passing on `XDG_ACTIVATION_TOKEN` when the launcher sets it;
+  Hyprland otherwise needs the `focus_on_activate` window rule).
 - `settings.json` holds only keys whose value differs from `config.json`'s;
   its keys replace `config.json`'s wherever the configuration is read, so a
   `config.json` Home Manager links read-only into the Nix store still works.

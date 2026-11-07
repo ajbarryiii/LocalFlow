@@ -15,7 +15,8 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
   `config.json`'s, so a read-only `config.json` from Home Manager can still
   be adjusted. `"picker": "gui"` uses its dialogs for `localflowctl correct`
   and `dict review`; `auto` uses them only for the suggestion dialog, and only
-  when no menu tool (rofi, fuzzel, wofi, tofi) is installed.
+  when no menu tool (rofi, fuzzel, wofi, tofi) is installed. Escape closes
+  the settings window, and launching it again brings the open one forward.
 
 ### Changed
 
