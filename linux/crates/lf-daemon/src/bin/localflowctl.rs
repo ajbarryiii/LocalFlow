@@ -8,7 +8,7 @@
 //! killed.
 //!
 //! `localflowctl correct` teaches the custom dictionary from a correction of
-//! the last dictation, in a picker (localflow-gui, rofi or wofi; see `lf_daemon::picker`);
+//! the last dictation, in a picker (rofi, wofi or localflow-gui; see `lf_daemon::picker`);
 //! it never changes the text already typed. `localflowctl dict …` manages
 //! the dictionary; `dict suggest` queues a word for review (agents use it)
 //! and `dict review` offers each pending suggestion in a picker (rofi,
@@ -93,8 +93,8 @@ commands:
   correct   edit the last dictation in a picker (within two minutes of
             typing it) to teach the dictionary; the text already typed is not
             changed. A word the audio confirms is offered for adding.
-            The picker is the configuration's \"picker\": gui, rofi, fuzzel,
-            wofi or tofi (default auto: the first installed)
+            The picker is the configuration's \"picker\": rofi, fuzzel,
+            wofi, tofi or gui (default auto: the first installed)
   dict      add (strength 0.25 to 8, default 1), remove, list the custom
             dictionary; ignored lists words never suggested, unignore
             allows one again; suggest queues a word for review, review

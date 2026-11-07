@@ -208,10 +208,10 @@ invalid values stop the daemon with an error. Defaults:
     newlines; surrounding spaces are trimmed; `""` types prompts untagged.
   - `double_tap_ms`: 150-1000, or 0 to turn double-tap off.
 - `picker`: the menu `localflowctl correct` and `dict review` show text in:
-  `"auto"`, `"gui"`, `"rofi"`, `"fuzzel"`, `"wofi"` or `"tofi"`. `"gui"` is
+  `"auto"`, `"rofi"`, `"fuzzel"`, `"wofi"`, `"tofi"` or `"gui"`. `"gui"` is
   LocalFlow's own windows (`localflow-gui`, see "Settings window").
-  `auto` takes, for each dialog, the first of localflow-gui, rofi, fuzzel,
-  wofi and tofi on `PATH` that can show it. fuzzel and tofi cannot prefill an input box without putting the
+  `auto` takes, for each dialog, the first of rofi, fuzzel, wofi, tofi and
+  localflow-gui on `PATH` that can show it. fuzzel and tofi cannot prefill an input box without putting the
   text on their command line, so they only show the suggestion dialog
   (`dict review`, and the second step of `correct`); with one of them
   configured, `correct` says so and does nothing. wofi is not used while
@@ -422,7 +422,7 @@ localflowctl correct
 ```
 
 Bind it to a key (see the snippets in `packaging/`). Within two minutes of a
-dictation being typed, it opens a picker (localflow-gui, rofi or wofi; see `picker` above)
+dictation being typed, it opens a picker (rofi, wofi or localflow-gui; see `picker` above)
 with that dictation's text; edit it
 to what you meant and press Return (Escape does nothing). **It never
 changes the text already typed into the other app**: fix that there as
@@ -704,8 +704,8 @@ also works on compositors that have the protocol (Hyprland, below).
    LocalFlow asks for no particular key. Change them later in the
    desktop's shortcut settings (GNOME Settings > Keyboard > Keyboard
    Shortcuts; KDE System Settings > Keyboard > Shortcuts).
-3. `localflowctl correct` needs localflow-gui, or rofi or wofi, which need
-   layer-shell (KDE has it, GNOME does not); bind it as an ordinary custom
+3. `localflowctl correct` needs rofi or wofi, which need layer-shell
+   (or localflow-gui, which does not) (KDE has it, GNOME does not); bind it as an ordinary custom
    shortcut.
 
 Behaviour:

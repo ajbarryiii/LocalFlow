@@ -31,7 +31,8 @@
 //!
 //! `"picker"` in `config.json` picks one: `"auto"` (the default) takes, for
 //! each operation, the first tool on `PATH` that supports it, in the order
-//! gui (`localflow-gui`), rofi, fuzzel, wofi, tofi. Verdicts, from each
+//! rofi, fuzzel, wofi, tofi, then gui (`localflow-gui`; last, so installing
+//! it changes nothing for a desktop that has a menu tool). Verdicts, from each
 //! version's manual and source as packaged in nixpkgs, and run in a private
 //! headless sway:
 //!
@@ -116,7 +117,7 @@ pub enum Kind {
 
 impl Kind {
     /// In `auto` order.
-    pub const ALL: [Kind; 5] = [Kind::Gui, Kind::Rofi, Kind::Fuzzel, Kind::Wofi, Kind::Tofi];
+    pub const ALL: [Kind; 5] = [Kind::Rofi, Kind::Fuzzel, Kind::Wofi, Kind::Tofi, Kind::Gui];
 
     /// Its `picker` value.
     pub fn name(self) -> &'static str {
@@ -162,7 +163,7 @@ pub enum Choice {
 
 impl Choice {
     /// The accepted values, for error messages.
-    pub const VALUES: &str = "auto, gui, rofi, fuzzel, wofi, tofi";
+    pub const VALUES: &str = "auto, rofi, fuzzel, wofi, tofi, gui";
 
     pub fn parse(s: &str) -> Option<Choice> {
         if s == "auto" {
@@ -232,15 +233,15 @@ impl std::fmt::Display for NoPicker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NoPicker::NoneFound(Op::Edit) => f.write_str(
-                "no picker that can edit text was found (install localflow-gui, rofi or wofi)",
+                "no picker that can edit text was found (install rofi, wofi or localflow-gui)",
             ),
             NoPicker::NoneFound(Op::Choose) => f.write_str(
-                "no picker was found (install localflow-gui, rofi, fuzzel, wofi or tofi)",
+                "no picker was found (install rofi, fuzzel, wofi, tofi or localflow-gui)",
             ),
             NoPicker::Unsupported(k, _) => write!(
                 f,
                 "{} cannot edit text without putting it on its command line; \
-                 set \"picker\" to \"gui\", \"rofi\", \"wofi\" or \"auto\" to correct dictations",
+                 set \"picker\" to \"rofi\", \"wofi\", \"gui\" or \"auto\" to correct dictations",
                 k.name()
             ),
             NoPicker::Missing(k) => {
@@ -868,15 +869,22 @@ pub(crate) mod tests {
             }
         };
         let pick = |c, op, names| select(c, op, installed(names)).map(|p| (p.kind, p.program));
-        // auto: LocalFlow's own windows first, then rofi, fuzzel, wofi,
-        // tofi; edit skips those that cannot.
+        // auto: rofi, fuzzel, wofi, tofi, then LocalFlow's own windows
+        // last; edit skips those that cannot.
         let with_gui = &["localflow-gui", "rofi", "fuzzel", "wofi", "tofi"];
         for op in [Op::Edit, Op::Choose] {
+            assert_eq!(pick(Choice::Auto, op, with_gui).unwrap().0, Kind::Rofi);
             assert_eq!(
-                pick(Choice::Auto, op, with_gui),
+                pick(Choice::Auto, op, &["localflow-gui"]),
                 Ok((Kind::Gui, p("/bin/localflow-gui")))
             );
         }
+        assert_eq!(
+            pick(Choice::Auto, Op::Edit, &["localflow-gui", "fuzzel", "tofi"])
+                .unwrap()
+                .0,
+            Kind::Gui
+        );
         assert_eq!(
             pick(Choice::Only(Kind::Gui), Op::Edit, &["rofi"]).unwrap_err(),
             NoPicker::Missing(Kind::Gui)
