@@ -6,12 +6,15 @@
 //! ```
 //!
 //! Classes (and alts): idle, loading, recording, transcribing, typing,
-//! nomic, offline. The text is always [`WIDTH`] characters, each one cell
-//! of a monospace font, so the module and the clock beside it never move
-//! between states:
+//! nomic, offline. The text always shows [`WIDTH`] characters, each one
+//! cell of a monospace font, so the module and the clock beside it never
+//! move between states:
 //!
 //! - Recording shows the last input levels as a wave of round dots, newest
-//!   on the right; silence is a row of equal small dots.
+//!   on the right; silence is a row of small dim dots. The wave is Pango
+//!   markup (Waybar's default for custom modules): a dot dimmer than full
+//!   is `<span alpha="NN%">•</span>`. Its dots are standard characters
+//!   (U+2022, U+25CF), so it needs no Nerd Font.
 //! - Every other state shows its glyph in the third cell ([`GLYPH_CELL`]).
 //!   Glyphs are Font Awesome icons as Nerd Fonts carry them, drawn wider
 //!   than one cell, so the glyph sits about in the middle; a bar config can
@@ -21,11 +24,15 @@
 //!   classes, e.g. `"class": ["recording", "prompt"]`, the state's alt, and
 //!   a tooltip such as "LocalFlow: listening (prompt dictation)".
 //!
+//! Texts and tooltips hold nothing but fixed words, glyphs, digits and
+//! those spans: nothing in them ever needs escaping.
+//!
 //! The agent link's counts on watch lines (see `crate::protocol`):
 //!
 //! - While idle, loading or without a microphone, an agent needing approval
-//!   adds the class `agent-approval`, else one waiting for input
-//!   `agent-input`, and pending suggestions `suggestion` (in that order,
+//!   adds the class `agent-approval` and shows [`APPROVAL_GLYPH`] in place
+//!   of the state's glyph; else one waiting for input adds `agent-input`
+//!   (the glyph stays); pending suggestions add `suggestion` (in that order,
 //!   after the state's class: `class` is then an array). The number of
 //!   agents needing approval or input, when any, goes in the last two cells
 //!   (at most 99).
@@ -48,6 +55,8 @@ pub const TYPING_GLYPH: &str = "\u{f11c}";
 pub const NO_MIC_GLYPH: &str = "\u{f131}";
 /// nf-fa-power_off: the daemon is not running.
 pub const OFFLINE_GLYPH: &str = "\u{f011}";
+/// nf-fa-hand_paper_o (Font Awesome's raised hand): an agent needs you.
+pub const APPROVAL_GLYPH: &str = "\u{f256}";
 /// The first cell of a prompt dictation's text.
 pub const PROMPT_MARKER: char = '\u{203a}';
 
@@ -58,10 +67,26 @@ pub const GLYPH_CELL: usize = 2;
 /// Levels kept while recording: a full row of dots.
 pub const HISTORY: usize = WIDTH;
 
-/// The wave's dots, smallest (silence) to largest, each centred in its cell
-/// and narrower than it, so neighbours never touch: nf-md-circle_small,
-/// U+2022 bullet, nf-md-circle_medium, nf-cod-circle_filled.
-pub const DOTS: [char; 4] = ['\u{f09df}', '\u{2022}', '\u{f09de}', '\u{ea71}'];
+/// The wave's small dot, U+2022 bullet: in JetBrainsMono about 0.43 of a
+/// cell across, as a resting dot on the iPhone is about half a full one.
+pub const SMALL_DOT: char = '\u{2022}';
+/// The wave's full dot, U+25CF black circle: about a cell across, so full
+/// neighbours just touch, as at the top of the iPhone's swell.
+pub const FULL_DOT: char = '\u{25cf}';
+
+/// The wave's steps, quietest first: a dot and its alpha in percent. As the
+/// iPhone's DotWave, a dot at rest is half a full dot's size and brightness,
+/// and louder dots grow and brighten together. Monospace fonts such as
+/// JetBrainsMono and DejaVu Sans Mono draw both dots one cell wide, with no
+/// round dot between their sizes (`·` is smaller than a resting one), so
+/// alpha carries the steps between.
+pub const STEPS: [(char, u8); 5] = [
+    (SMALL_DOT, 50),
+    (SMALL_DOT, 75),
+    (SMALL_DOT, 100),
+    (FULL_DOT, 80),
+    (FULL_DOT, 100),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -149,14 +174,35 @@ impl Class {
     }
 }
 
-/// Levels up to this (in 0..=100) are room noise: silence's dot.
+/// Levels up to this (in 0..=100) are room noise: a dot at rest.
 const NOISE: f32 = 4.0;
 
-/// One dot for a level of 0..=100: silence up to [`NOISE`], then a
-/// square-root curve so quiet speech still shows.
-pub fn dot(level: u8) -> char {
+/// The [`STEPS`] index for a level of 0..=100: at rest up to [`NOISE`],
+/// then a square-root curve so quiet speech still shows.
+pub fn step(level: u8) -> usize {
     let v = ((f32::from(level.min(100)) - NOISE).max(0.0) / (100.0 - NOISE)).sqrt();
-    DOTS[(v * (DOTS.len() - 1) as f32).round() as usize]
+    (v * (STEPS.len() - 1) as f32).round() as usize
+}
+
+/// One cell of the wave for a level of 0..=100, as Pango markup: the
+/// step's dot, in a span with its alpha unless that is 100%.
+pub fn dot(level: u8) -> String {
+    match STEPS[step(level)] {
+        (glyph, 100) => glyph.to_string(),
+        (glyph, alpha) => format!("<span alpha=\"{alpha}%\">{glyph}</span>"),
+    }
+}
+
+/// A text as Waybar shows it: without the wave's markup.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        rest = rest[i..].split_once('>').map_or("", |(_, after)| after);
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A state's [`WIDTH`] cells: the prompt marker or a space, the glyph in
@@ -326,9 +372,11 @@ impl Indicator {
             tooltip += " (prompt dictation)";
         }
         let mut waiting = 0;
+        let mut glyph = class.glyph();
         if !busy {
             if n.approval > 0 {
                 classes.push(AGENT_APPROVAL_CLASS);
+                glyph = APPROVAL_GLYPH;
             } else if n.input > 0 {
                 classes.push(AGENT_INPUT_CLASS);
             }
@@ -340,7 +388,7 @@ impl Indicator {
         let text = match class {
             Class::Recording if prompt => format!("{PROMPT_MARKER}{}", self.wave(WIDTH - 1)),
             Class::Recording => self.wave(WIDTH),
-            _ => field(prompt, class.glyph(), waiting),
+            _ => field(prompt, glyph, waiting),
         };
         for line in n.tooltip_lines() {
             tooltip.push('\n');
@@ -356,16 +404,12 @@ impl Indicator {
     }
 
     /// The last `cells` levels as dots, newest on the right, padded with
-    /// silence.
+    /// dots at rest.
     fn wave(&self, cells: usize) -> String {
         let shown = self.levels.len().min(cells);
-        std::iter::repeat_n(dot(0), cells - shown)
-            .chain(
-                self.levels
-                    .iter()
-                    .skip(self.levels.len() - shown)
-                    .map(|&l| dot(l)),
-            )
+        std::iter::repeat_n(0, cells - shown)
+            .chain(self.levels.iter().skip(self.levels.len() - shown).copied())
+            .map(dot)
             .collect()
     }
 }
@@ -387,8 +431,6 @@ mod tests {
         levels.iter().map(|&l| dot(l)).collect()
     }
 
-    const SILENCE: char = DOTS[0];
-
     #[test]
     fn every_class_formats_as_waybar_json() {
         let mut ind = Indicator::default();
@@ -400,10 +442,6 @@ mod tests {
             (
                 "state=idle model=loading mic=unknown",
                 "{\"text\": \"  \u{f017}   \", \"alt\": \"loading\", \"class\": \"loading\", \"tooltip\": \"LocalFlow: loading the model\"}",
-            ),
-            (
-                "state=recording mode=hold model=ready mic=present level=100",
-                "{\"text\": \"\u{f09df}\u{f09df}\u{f09df}\u{f09df}\u{f09df}\u{ea71}\", \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\"}",
             ),
             (
                 "state=transcribing model=ready mic=present",
@@ -418,24 +456,35 @@ mod tests {
                 "{\"text\": \"  \u{f131}   \", \"alt\": \"nomic\", \"class\": \"nomic\", \"tooltip\": \"LocalFlow: no microphone\"}",
             ),
         ];
-        let mut seen = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for (fields, want) in cases {
             assert_eq!(ind.update(fields).as_deref(), Some(want), "{fields}");
-            seen.push(want);
+            seen.push(want.into());
         }
+        let recording = ind
+            .update("state=recording mode=hold model=ready mic=present level=100")
+            .unwrap();
+        assert_eq!(
+            recording,
+            format!(
+                "{{\"text\": {}, \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\"}}",
+                json_string(&dots(&[0, 0, 0, 0, 0, 100]))
+            )
+        );
+        seen.push(recording);
         let offline = ind.offline();
         assert_eq!(
             offline,
             "{\"text\": \"  \u{f011}   \", \"alt\": \"offline\", \"class\": \"offline\", \"tooltip\": \"LocalFlow isn\u{2019}t running\"}"
         );
-        seen.push(&offline);
+        seen.push(offline);
         // Every class appears, and every object is valid JSON with the four
         // fields.
         for class in Class::ALL {
             let tag = format!("\"class\": \"{}\"", class.name());
             assert!(seen.iter().any(|o| o.contains(&tag)), "{tag}");
         }
-        for o in seen {
+        for o in &seen {
             let v = json(o);
             assert_eq!(v["alt"], v["class"]);
             assert!(v["text"].as_str().is_some_and(|t| !t.trim().is_empty()));
@@ -455,13 +504,15 @@ mod tests {
             TYPING_GLYPH,
             NO_MIC_GLYPH,
             OFFLINE_GLYPH,
+            APPROVAL_GLYPH,
         ];
         for (i, a) in glyphs.iter().enumerate() {
             assert_eq!(a.chars().count(), 1);
             for b in &glyphs[i + 1..] {
                 assert_ne!(a, b);
             }
-            assert!(!DOTS.contains(&a.chars().next().unwrap()));
+            let c = a.chars().next().unwrap();
+            assert!(STEPS.iter().all(|&(d, _)| d != c));
             assert_ne!(a.chars().next(), Some(PROMPT_MARKER));
         }
     }
@@ -491,14 +542,15 @@ mod tests {
             .collect();
         texts.push(text(&ind.offline()));
         for t in &texts {
-            assert_eq!(t.chars().count(), WIDTH, "{t:?}");
-            let glyph = t.chars().nth(GLYPH_CELL).unwrap();
+            let shown = plain(t);
+            assert_eq!(shown.chars().count(), WIDTH, "{t:?}");
+            let glyph = shown.chars().nth(GLYPH_CELL).unwrap();
             assert_ne!(glyph, ' ', "{t:?}");
         }
         // The count stays in the last two cells, after a space.
-        assert_eq!(texts[11], format!("  {MIC_GLYPH} 1 "));
+        assert_eq!(texts[11], format!("  {APPROVAL_GLYPH} 1 "));
         assert_eq!(texts[12], format!("  {MIC_GLYPH} 12"));
-        assert_eq!(texts[13], format!("  {NO_MIC_GLYPH} 99"));
+        assert_eq!(texts[13], format!("  {APPROVAL_GLYPH} 99"));
     }
 
     #[test]
@@ -546,11 +598,11 @@ mod tests {
     #[test]
     fn agent_link_counts_add_classes_a_count_and_tooltip_lines() {
         let mut ind = Indicator::default();
-        let loud = format!("{SILENCE}{SILENCE}{SILENCE}{SILENCE}{SILENCE}\u{ea71}");
+        let loud = json_string(&dots(&[0, 0, 0, 0, 0, 100]));
         let cases = [
             (
                 "state=idle model=ready mic=present suggestions=3 words=12 agent-approval=2 agent-input=1 agent-working=1 agent-done=4".to_owned(),
-                "{\"text\": \"  \u{f130} 3 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\", \"suggestion\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 2 need approval, 1 waiting for input, 1 working, 4 done\\n3 dictionary suggestions from agents (localflowctl dict review)\\n12 project words boosted\"}".to_owned(),
+                "{\"text\": \"  \u{f256} 3 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\", \"suggestion\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 2 need approval, 1 waiting for input, 1 working, 4 done\\n3 dictionary suggestions from agents (localflowctl dict review)\\n12 project words boosted\"}".to_owned(),
             ),
             (
                 "state=idle model=loading mic=unknown agent-input=1".into(),
@@ -562,7 +614,7 @@ mod tests {
             ),
             (
                 "state=idle model=ready mic=present agent-approval=1".into(),
-                "{\"text\": \"  \u{f130} 1 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 1 needs approval\"}".into(),
+                "{\"text\": \"  \u{f256} 1 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 1 needs approval\"}".into(),
             ),
             // Working and done alone add no class and no count.
             (
@@ -572,7 +624,7 @@ mod tests {
             // Busy states keep their classes and text; only the tooltip grows.
             (
                 "state=recording mode=hold model=ready mic=present level=100 agent-approval=1 suggestions=2".into(),
-                format!("{{\"text\": \"{loud}\", \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\\nAgents: 1 needs approval\\n2 dictionary suggestions from agents (localflowctl dict review)\"}}"),
+                format!("{{\"text\": {loud}, \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\\nAgents: 1 needs approval\\n2 dictionary suggestions from agents (localflowctl dict review)\"}}"),
             ),
             (
                 "state=transcribing model=ready mic=present agent-input=3 words=2".into(),
@@ -622,17 +674,19 @@ mod tests {
 
     #[test]
     fn the_dot_wave_scrolls_and_restarts_per_recording() {
-        assert_eq!(dot(0), SILENCE);
-        assert_eq!(dot(100), DOTS[3]);
-        assert_eq!(dot(255), DOTS[3]);
-        // Room noise stays a row of silence; the square-root curve lifts
-        // quiet speech: 10% is already a dot up, 30% two.
-        assert_eq!(dot(4), SILENCE);
-        assert_eq!(dot(10), DOTS[1]);
-        assert_eq!(dot(30), DOTS[2]);
-        // Louder is never smaller.
-        assert!((0..100).all(|l| DOTS.iter().position(|&d| d == dot(l))
-            <= DOTS.iter().position(|&d| d == dot(l + 1))));
+        let last = STEPS.len() - 1;
+        assert_eq!(step(0), 0);
+        assert_eq!(step(100), last);
+        assert_eq!(step(255), last);
+        // Room noise stays at rest; the square-root curve lifts quiet
+        // speech: 10% is already a step up, 30% two, and half-loud speech
+        // reaches the full dot.
+        assert_eq!(step(4), 0);
+        assert_eq!(step(10), 1);
+        assert_eq!(step(30), 2);
+        assert_eq!(STEPS[step(50)].0, FULL_DOT);
+        // Louder is never smaller or dimmer.
+        assert!((0..100).all(|l| step(l) <= step(l + 1)));
         let mut ind = Indicator::default();
         let rec = |l: u8| format!("state=recording mode=toggle model=ready mic=present level={l}");
         // A recording starts as silence: a row of equal small dots.
@@ -641,7 +695,7 @@ mod tests {
                 &ind.update("state=recording mode=toggle model=ready mic=present")
                     .unwrap()
             ),
-            SILENCE.to_string().repeat(WIDTH)
+            dot(0).repeat(WIDTH)
         );
         assert_eq!(
             text(&ind.update(&rec(100)).unwrap()),
@@ -678,6 +732,146 @@ mod tests {
         );
         ind.offline();
         assert_eq!(text(&ind.update(&rec(0)).unwrap()), dots(&[0; WIDTH]));
+    }
+
+    #[test]
+    fn the_wave_rests_and_swells_as_the_iphones_does() {
+        // At rest: the small dot at half brightness; at the top of the
+        // swell: the full dot at full brightness.
+        assert_eq!(STEPS[0], (SMALL_DOT, 50));
+        assert_eq!(STEPS[STEPS.len() - 1], (FULL_DOT, 100));
+        // Dots grow and brighten together, step by step.
+        let size = |c: char| usize::from(c == FULL_DOT);
+        for w in STEPS.windows(2) {
+            let ((a, x), (b, y)) = (w[0], w[1]);
+            assert!(size(a) <= size(b), "{w:?}");
+            assert!(size(a) < size(b) || x < y, "{w:?}");
+            assert!(x <= 100 && y <= 100);
+        }
+        // Standard characters only: no Nerd Font needed.
+        for (c, _) in STEPS {
+            let c = c as u32;
+            assert!(!(0xe000..=0xf8ff).contains(&c) && c < 0xf0000);
+        }
+        assert_eq!(dot(0), "<span alpha=\"50%\">\u{2022}</span>");
+        assert_eq!(dot(100), "\u{25cf}");
+
+        // Silence is a calm row of equal resting dots; speech undulates,
+        // in size as well as brightness.
+        let mut ind = Indicator::default();
+        let rec = |l: u8| format!("state=recording mode=hold model=ready mic=present level={l}");
+        for l in [0, 3, 2, 4, 1, 0] {
+            ind.update(&rec(l));
+        }
+        assert_eq!(text(&ind.update(&rec(0)).unwrap()), dot(0).repeat(WIDTH));
+        let speech = [65, 40, 85, 50, 20, 55];
+        let mut wave = String::new();
+        for l in speech {
+            wave = text(&ind.update(&rec(l)).unwrap());
+        }
+        assert_eq!(wave, dots(&speech));
+        let shown = plain(&wave);
+        assert!(
+            shown.contains(SMALL_DOT) && shown.contains(FULL_DOT),
+            "{wave}"
+        );
+        let mut steps = speech.map(step).to_vec();
+        steps.sort();
+        steps.dedup();
+        assert!(steps.len() >= 3, "{steps:?}");
+    }
+
+    #[test]
+    fn nothing_in_a_text_or_tooltip_needs_escaping() {
+        // Every text and tooltip, across states, counts and levels.
+        let mut ind = Indicator::default();
+        let mut objects = vec![ind.offline()];
+        for state in ["idle", "recording", "transcribing", "typing", "exploding"] {
+            for extra in [
+                "",
+                " tag=prompt",
+                " mic=absent",
+                " model=loading",
+                " agent-approval=3 agent-input=200 agent-working=1 agent-done=7 suggestions=1 words=40",
+                " agent-input=1 suggestions=12 words=1",
+            ] {
+                for level in [0, 1, 4, 5, 9, 10, 29, 30, 49, 50, 77, 99, 100, 101, 255] {
+                    let line = format!(
+                        "state={state} mode=hold model=ready mic=present level={level}{extra}"
+                    );
+                    objects.extend(ind.update(&line));
+                }
+            }
+        }
+        assert!(objects.len() > 300);
+        for o in &objects {
+            let v = json(o);
+            let (t, tip) = (v["text"].as_str().unwrap(), v["tooltip"].as_str().unwrap());
+            // The only markup: alpha spans, each around one dot.
+            let mut rest = t;
+            while let Some(i) = rest.find('<') {
+                let (head, tail) = rest[i..].split_once("%\">").expect(t);
+                let alpha = head.strip_prefix("<span alpha=\"").expect(t);
+                assert!(alpha.parse::<u8>().is_ok_and(|a| a < 100), "{t:?}");
+                let mut chars = tail.chars();
+                let dot = chars.next();
+                assert!(STEPS.iter().any(|&(d, _)| Some(d) == dot), "{t:?}");
+                rest = chars.as_str().strip_prefix("</span>").expect(t);
+            }
+            let shown = plain(t);
+            assert_eq!(shown.chars().count(), WIDTH, "{t:?}");
+            for s in [shown.as_str(), tip] {
+                assert!(!s.contains(['<', '>', '&']), "{s:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_agent_needing_approval_shows_the_hand_instead_of_the_state_glyph() {
+        let mut ind = Indicator::default();
+        let cases = [
+            (
+                "idle model=ready mic=present agent-approval=1",
+                APPROVAL_GLYPH,
+                " 1 ",
+            ),
+            (
+                "idle model=ready mic=present agent-approval=2 agent-input=3",
+                APPROVAL_GLYPH,
+                " 5 ",
+            ),
+            (
+                "idle model=loading mic=present agent-approval=1",
+                APPROVAL_GLYPH,
+                " 1 ",
+            ),
+            (
+                "idle model=ready mic=absent agent-approval=1",
+                APPROVAL_GLYPH,
+                " 1 ",
+            ),
+            // Waiting for input only: the state's glyph and the count.
+            (
+                "idle model=ready mic=present agent-input=2",
+                MIC_GLYPH,
+                " 2 ",
+            ),
+            (
+                "idle model=loading mic=present agent-input=1",
+                LOADING_GLYPH,
+                " 1 ",
+            ),
+            // Busy states keep their own glyph.
+            (
+                "transcribing model=ready mic=present agent-approval=1",
+                TRANSCRIBING_GLYPH,
+                "   ",
+            ),
+        ];
+        for (fields, glyph, count) in cases {
+            let t = text(&ind.update(&format!("state={fields}")).unwrap());
+            assert_eq!(t, format!("  {glyph}{count}"), "{fields}");
+        }
     }
 
     #[test]

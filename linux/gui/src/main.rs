@@ -83,7 +83,7 @@ fn run_edit() -> i32 {
         prompt::Edit::new(INPUT.get().map_or("", String::as_str))
     }
     rune::run(AppSpec::<prompt::Edit> {
-        min_size: Some((360.0, 120.0)),
+        min_size: Some(prompt::edit_min_size()),
         on_key: Some(prompt::edit_key),
         ..AppSpec::new(
             "Fix dictation",
@@ -117,7 +117,7 @@ fn run_choose() -> i32 {
     }
     let rows = INPUT.get().map_or(0, |s| prompt::parse_rows(s).len());
     rune::run(AppSpec::<prompt::Choose> {
-        min_size: Some((320.0, 120.0)),
+        min_size: Some(prompt::choose_min_size(rows)),
         on_key: Some(prompt::choose_key),
         ..AppSpec::new(
             "LocalFlow",
@@ -140,7 +140,7 @@ fn run_settings() -> i32 {
         let config = lf_daemon::paths::config_file()?;
         let data = lf_daemon::paths::data_dir()?;
         let layers = lf_daemon::config::Layers::load(&config, &data)?;
-        settings::Settings::new(config, data, layers, Some(settings::restart_daemon))
+        settings::Settings::new(config, data, layers, Some(settings::Daemon::SYSTEM))
     })();
     match made {
         Ok(s) => *SETTINGS.lock().unwrap() = Some(s),

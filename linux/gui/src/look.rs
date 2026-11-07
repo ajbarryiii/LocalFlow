@@ -92,15 +92,25 @@ pub fn segments(k: &Kit) -> Kit {
     s
 }
 
+/// `k` for text fields: placeholders in secondary ink, not faint, since
+/// they carry meaning (the microphone's "Default").
+pub fn fields(k: &Kit) -> Kit {
+    let mut f = k.clone();
+    f.c.text_faint = k.c.text_muted;
+    f
+}
+
 /// A pill's height, as a large push button.
 const PILL_HEIGHT: f32 = 28.0;
 
 /// The main action: the iPhone's near-black pill with a hairline edge and
-/// white ink.
+/// white semibold ink (`PillLabel`).
 pub fn primary(k: &Kit, b: Button) -> El {
+    let mut k = k.clone();
+    k.ty.ui_medium.weight = 600.0;
     b.variant(ButtonVariant::Contrast)
         .control_size(ControlSize::Large)
-        .build(k)
+        .build(&k)
         .radius(PILL_HEIGHT / 2.0)
         .px(16.0)
         .gradient(Color::TRANSPARENT, Color::TRANSPARENT)

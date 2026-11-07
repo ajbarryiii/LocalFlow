@@ -99,6 +99,7 @@ pub fn edit_view(s: &Edit, _cx: &mut Cx<Edit>) -> El {
             _ => false,
         })
         .build(&boxed)
+        .key("correction")
         // A longer text than the window was sized for still fits: the box
         // takes the room, and the buttons stay at the bottom.
         .grow(1.0)
@@ -200,6 +201,17 @@ pub fn edit_height(text: &str) -> f32 {
 /// row, 8 pt apart.
 pub fn choose_height(rows: usize) -> f32 {
     PAD * 2.0 + MARK + space::S3 + rows as f32 * BUTTON + rows.saturating_sub(1) as f32 * space::S2
+}
+
+/// The edit window's smallest size: two lines of text and the buttons.
+pub fn edit_min_size() -> (f32, f32) {
+    (360.0, edit_height(""))
+}
+
+/// The choose window's smallest size for `rows` buttons: the mark and every
+/// row, unsquashed.
+pub fn choose_min_size(rows: usize) -> (f32, f32) {
+    (320.0, choose_height(rows))
 }
 
 /// The choose dialog's keys: Escape dismisses; Up, Down and Tab move the
@@ -422,6 +434,59 @@ mod tests {
         rt.frame(0.0);
         press(&mut rt, "cancel");
         assert_eq!(rt.state.outcome, Some(Outcome::Dismissed));
+    }
+
+    /// `key`'s drawn rect lies inside the window's margins.
+    fn inside_margins<S: 'static>(rt: &Runtime<S>, key: &str, (w, h): (f32, f32)) -> [f32; 4] {
+        let ([x, y, bw, bh], _) = rt.presented(key).unwrap_or_else(|| panic!("no {key:?}"));
+        assert!(
+            x >= PAD - 0.5 && y >= PAD - 0.5 && x + bw <= w - PAD + 0.5 && y + bh <= h - PAD + 0.5,
+            "{key} at ({x}, {y}) {bw}x{bh} in a {w}x{h} window"
+        );
+        [x, y, bw, bh]
+    }
+
+    #[test]
+    fn the_choose_dialog_fits_the_mark_and_every_row_at_its_minimum_size() {
+        let labels = [
+            "Add \u{201C}Zorblax\u{201D} to your dictionary",
+            "Not now",
+            "Don\u{2019}t suggest \u{201C}Zorblax\u{201D}",
+            "Synthetic fourth row",
+            "Synthetic fifth row",
+        ];
+        for n in 1..=labels.len() {
+            let rows: Vec<String> = labels[..n].iter().map(|l| l.to_string()).collect();
+            let size = choose_min_size(n);
+            let mut rt = Runtime::new(Choose::new(rows), choose_view, size, Env::new(true, 1.0));
+            rt.frame(0.0);
+            inside_margins(&rt, "mark", size);
+            for i in 0..n {
+                let [_, _, _, h] = inside_margins(&rt, &format!("choice-{i}"), size);
+                assert!(
+                    (h - BUTTON).abs() < 0.5,
+                    "row {i} of {n} squashed to {h} pt"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_edit_dialog_fits_two_lines_and_its_buttons_at_its_minimum_size() {
+        let size = edit_min_size();
+        for text in [
+            "synthetic",
+            "Synthetic dictation about a cluster, its pods and the plan for tomorrow morning, \
+             long enough to wrap onto a second and a third line of the box.",
+        ] {
+            let mut rt = Runtime::new(Edit::new(text), edit_view, size, Env::new(true, 1.0));
+            rt.frame(0.0);
+            for key in ["mark", "cancel", "fix"] {
+                inside_margins(&rt, key, size);
+            }
+            let [_, _, _, h] = inside_margins(&rt, "correction", size);
+            assert!(h >= 16.0 + 2.0 * 17.5 - 0.5, "the box is {h} pt tall");
+        }
     }
 
     #[test]

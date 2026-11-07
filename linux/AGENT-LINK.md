@@ -112,8 +112,10 @@ commands do not carry these fields.
 `watch --waybar` adds to its usual classes, glyphs and texts:
 
 - **While idle, loading or without a microphone:**
-  - A live report with `agent-approval` adds the class `agent-approval`;
-    with `agent-input` (and no approval), `agent-input`.
+  - A live report with `agent-approval` adds the class `agent-approval`
+    and shows a raised hand (Font Awesome U+F256) in place of the state's
+    glyph; with `agent-input` (and no approval), `agent-input`, and the
+    glyph stays.
   - Pending suggestions add `suggestion`.
   - With extra classes, `class` is an array: the state's class first, then
     `agent-approval` or `agent-input`, then `suggestion`.

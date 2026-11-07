@@ -10,8 +10,11 @@
 //!   takes it back to `config.json`'s value (or the default).
 //! - A text field whose value makes an invalid configuration is marked, with
 //!   a few plain words under it (never the value), and Apply stays disabled.
-//! - If Apply saved the settings but could not restart the daemon, the
-//!   footer says so and offers to try the restart again.
+//! - If Apply saved the settings but the daemon did not restart, the footer
+//!   says so until a restart works: with Retry when the restart failed, or
+//!   asking for a restart by hand when the daemon runs outside its user
+//!   unit (which `try-restart` would silently skip). Later changes keep the
+//!   warning, and their Apply restarts the daemon whatever the keys.
 //! - Clicking anywhere on a switch's row flips the switch.
 //! - Escape closes the window. With changes not yet applied it asks first;
 //!   a second Escape closes without applying them.
@@ -55,8 +58,60 @@ static CHECK: Icon = Icon {
     body: r#"<path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
-/// Restarts the daemon after Apply; `None` in tests.
-pub type Restart = Option<fn() -> Result<(), String>>;
+/// How Apply reaches the daemon: [`Daemon::SYSTEM`] in the app, stand-ins in
+/// tests.
+#[derive(Clone, Copy)]
+pub struct Daemon {
+    /// Whether it runs as the active user unit.
+    pub unit_active: fn() -> bool,
+    /// Restarts the user unit.
+    pub restart_unit: fn() -> Result<(), String>,
+    /// Whether a daemon answers on the control socket.
+    pub answers: fn() -> bool,
+}
+
+/// What restarting the daemon over saved settings did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Restarted {
+    /// It restarted, or none runs (it reads the settings when it starts).
+    Done,
+    /// It runs outside its user unit, so only its user can restart it.
+    Manual,
+    /// The restart failed (why).
+    Failed(String),
+}
+
+impl Daemon {
+    pub const SYSTEM: Daemon = Daemon {
+        unit_active,
+        restart_unit,
+        answers,
+    };
+
+    /// Restarts the daemon if it runs as the user unit. `try-restart` alone
+    /// would succeed and do nothing for one started some other way.
+    pub fn restart(&self) -> Restarted {
+        if (self.unit_active)() {
+            match (self.restart_unit)() {
+                Ok(()) => Restarted::Done,
+                Err(e) => Restarted::Failed(e),
+            }
+        } else if (self.answers)() {
+            Restarted::Manual
+        } else {
+            Restarted::Done
+        }
+    }
+}
+
+/// Saved settings the daemon does not run yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pending {
+    /// The restart failed (why, for the footer's tooltip).
+    Failed(String),
+    /// The daemon runs outside its user unit.
+    Manual,
+}
 
 pub struct Settings {
     pub config_path: PathBuf,
@@ -73,8 +128,12 @@ pub struct Settings {
     pub input_device: TextEdit,
     pub macros: Vec<(TextEdit, TextEdit)>,
     pub open: Option<&'static str>,
+    /// What the last Apply did.
     pub status: Status,
-    pub restart: Restart,
+    /// A restart the saved settings still need, kept until one works.
+    pub pending: Option<Pending>,
+    /// `None`: no daemon to restart.
+    pub daemon: Option<Daemon>,
     /// Escape was pressed with changes not applied: the footer asks.
     pub asking_to_close: bool,
     /// The window quit.
@@ -84,10 +143,8 @@ pub struct Settings {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Idle,
+    /// Saved (and restarted, unless [`Settings::pending`] says otherwise).
     Applied,
-    /// The settings were saved, but the daemon did not restart (why, for
-    /// the footer's tooltip).
-    RestartFailed(String),
     /// Nothing was saved.
     Failed(String),
 }
@@ -114,7 +171,7 @@ impl Settings {
         config_path: PathBuf,
         data_dir: PathBuf,
         layers: Layers,
-        restart: Restart,
+        daemon: Option<Daemon>,
     ) -> Result<Settings, String> {
         let config = layers.config(&data_dir)?;
         let mut s = Settings {
@@ -129,7 +186,8 @@ impl Settings {
             macros: Vec::new(),
             open: None,
             status: Status::Idle,
-            restart,
+            pending: None,
+            daemon,
             asking_to_close: false,
             closed: false,
         };
@@ -214,7 +272,8 @@ impl Settings {
         tx.quit();
     }
 
-    /// Writes the draft and restarts the daemon if a key it reads changed.
+    /// Writes the draft and restarts the daemon if a key it reads changed,
+    /// or if earlier saved settings still wait for a restart.
     pub fn apply(&mut self) {
         self.asking_to_close = false;
         let changed: Vec<&String> = self
@@ -236,7 +295,7 @@ impl Settings {
                 self.shown = config.clone();
                 self.config = Ok(config);
                 self.status = Status::Applied;
-                if daemon_reads {
+                if daemon_reads || self.pending.is_some() {
                     self.restart_daemon();
                 }
             }
@@ -244,12 +303,14 @@ impl Settings {
         }
     }
 
-    /// Restarts the daemon over saved settings: applied, or saved without
-    /// the restart. Also the restart-failed footer's Retry.
+    /// Restarts the daemon over saved settings; until that works, the
+    /// restart stays pending. Also the restart-failed footer's Retry.
     pub fn restart_daemon(&mut self) {
-        self.status = match self.restart.map_or(Ok(()), |restart| restart()) {
-            Ok(()) => Status::Applied,
-            Err(e) => Status::RestartFailed(e),
+        self.status = Status::Applied;
+        self.pending = match self.daemon.map_or(Restarted::Done, |d| d.restart()) {
+            Restarted::Done => None,
+            Restarted::Manual => Some(Pending::Manual),
+            Restarted::Failed(e) => Some(Pending::Failed(e)),
         };
     }
 
@@ -329,23 +390,66 @@ pub fn key(s: &mut Settings, e: &KeyEvent, tx: &mut Tx) -> bool {
     false
 }
 
-/// `systemctl --user try-restart localflowd.service`: restarts the daemon
-/// if it runs as the usual user unit. It returns in about 20 ms (the daemon
-/// stops at once; systemd does not wait for the model to load), so Apply
-/// needs no "applying" state.
-pub fn restart_daemon() -> Result<(), String> {
-    let status = std::process::Command::new("systemctl")
-        .args(["--user", "try-restart", "localflowd.service"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+/// `systemctl --user` with `args`, quietly: whether it succeeded.
+fn systemctl(args: &[&str]) -> Result<bool, String> {
+    use std::process::{Command, Stdio};
+    Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("could not restart the daemon: {e}"))?;
-    if status.success() {
+        .map(|s| s.success())
+        .map_err(|e| format!("could not run systemctl: {e}"))
+}
+
+/// Whether `localflowd.service` is the active user unit (no systemctl:
+/// it is not).
+fn unit_active() -> bool {
+    systemctl(&["--quiet", "is-active", "localflowd.service"]).unwrap_or(false)
+}
+
+/// `systemctl --user try-restart localflowd.service`. It returns in about
+/// 20 ms (the daemon stops at once; systemd does not wait for the model to
+/// load), so Apply needs no "applying" state.
+fn restart_unit() -> Result<(), String> {
+    if systemctl(&["try-restart", "localflowd.service"])? {
         Ok(())
     } else {
         Err("could not restart the daemon (systemctl --user try-restart localflowd)".into())
     }
+}
+
+/// Whether this user's daemon answers a `status` request on the control
+/// socket within half a second.
+fn answers() -> bool {
+    use lf_daemon::protocol::{ClientReply, Command, MAX_LINE, Request, parse_reply, request_line};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let Ok(path) = lf_daemon::paths::socket_path_for_client() else {
+        return false;
+    };
+    let Ok(mut stream) = UnixStream::connect(path) else {
+        return false;
+    };
+    let wait = Some(std::time::Duration::from_millis(500));
+    let mine = lf_daemon::server::peer_uid(&stream).ok() == Some(lf_daemon::paths::euid());
+    if !mine
+        || stream.set_read_timeout(wait).is_err()
+        || stream.set_write_timeout(wait).is_err()
+        || stream
+            .write_all(request_line(&Request::new(Command::Status)).as_bytes())
+            .is_err()
+    {
+        return false;
+    }
+    let mut line = Vec::new();
+    let read = BufReader::new(stream.take(MAX_LINE as u64)).read_until(b'\n', &mut line);
+    read.is_ok()
+        && line.pop() == Some(b'\n')
+        && matches!(parse_reply(&line), Some(ClientReply::Ok(_)))
 }
 
 /// A labelled row: the label, a glacier dot while its draft is not applied,
@@ -400,14 +504,19 @@ fn toggle(k: &Kit, s: &Settings, key: &'static str, label: &str, on: bool) -> El
         .role("group")
 }
 
-/// `field` with `fix` under it, when its value is the invalid one.
-fn with_fix(k: &Kit, field: El, key: String, fix: Option<&'static str>) -> El {
-    let Some(fix) = fix else { return field };
-    col()
-        .items_end()
-        .gap(space::S1)
-        .child(field)
-        .child(text(fix).key(key).font(k.ty.small).color(k.c.danger.fg))
+/// A text field's `row` with `fix` under its field, when its value is the
+/// invalid one. The label stays on the field's line.
+fn with_fix(k: &Kit, row: El, key: &str, fix: Option<&'static str>) -> El {
+    let Some(fix) = fix else { return row };
+    col().child(row).child(
+        text(fix)
+            .key(format!("error-{key}"))
+            .font(k.ty.small)
+            .color(k.c.danger.fg)
+            .self_end()
+            .px(space::S3)
+            .pb(space::S2),
+    )
 }
 
 fn card(k: &Kit, key: &str, title: &str, unapplied: bool, rows: Vec<El>) -> El {
@@ -490,14 +599,15 @@ fn menu(
 /// Text fields and menus share one width, so their edges line up.
 const FIELD_WIDTH: f32 = 200.0;
 
-/// `precision`'s values, from the fastest. "Auto" is the model's own (no
-/// `precision` key): i8x1 for 1-bit models, i8x2 for ternary ones.
+/// `precision`'s values, from the fastest (README, `precision`), named for
+/// speed alone. "Auto" is the model's own (no `precision` key): i8x1 for
+/// 1-bit models, i8x2 for ternary ones.
 const SPEED: [(&str, Option<&str>); 5] = [
     ("Auto", None),
     ("Fastest", Some("i8x1")),
     ("Fast", Some("i8x2")),
-    ("Precise", Some("i8x3")),
-    ("Full precision", Some("f32")),
+    ("Slow", Some("i8x3")),
+    ("Slowest", Some("f32")),
 ];
 
 /// `output`'s values.
@@ -520,6 +630,7 @@ const PICKERS: [(&str, Option<&str>); 6] = [
 pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
     let k = look::kit();
     let seg = look::segments(&k);
+    let fields = look::fields(&k);
     let c = &s.shown;
     let mut layer = Vec::new();
 
@@ -572,9 +683,8 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             let v = s.prompt_tag.text.clone();
             s.set("prompt_tag", Value::String(v));
         })
-        .build(&k)
+        .build(&fields)
         .key("prompt-tag-field");
-    let tag = with_fix(&k, tag, "error-prompt_tag".into(), tag_fix);
     static DOUBLE_TAP: [(&str, u64); 4] = [
         ("Off", 0),
         ("250 ms", 250),
@@ -598,7 +708,12 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
         false,
         vec![
             setting(&k, s, "double_tap_ms", "Double-tap and hold", tap),
-            setting(&k, s, "prompt_tag", "Prompt tag", tag),
+            with_fix(
+                &k,
+                setting(&k, s, "prompt_tag", "Prompt tag", tag),
+                "prompt_tag",
+                tag_fix,
+            ),
         ],
     );
 
@@ -671,9 +786,8 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
                 },
             );
         })
-        .build(&k)
+        .build(&fields)
         .key("microphone-field");
-    let device = with_fix(&k, device, "error-input_device".into(), mic_fix);
     let recognition = card(
         &k,
         "recognition",
@@ -681,7 +795,12 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
         false,
         vec![
             setting(&k, s, "precision", "Speed", speed),
-            setting(&k, s, "input_device", "Microphone", device),
+            with_fix(
+                &k,
+                setting(&k, s, "input_device", "Microphone", device),
+                "input_device",
+                mic_fix,
+            ),
         ],
     );
 
@@ -696,7 +815,7 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             .invalid(say_fix.is_some())
             .on_edit(move |s: &mut Settings| &mut s.macros[i].0)
             .on_change(|s: &mut Settings, _: &mut Tx| s.sync_macros())
-            .build(&k);
+            .build(&fields);
         let payload = TextInput::new(&s.macros[i].1)
             .label("Type")
             .placeholder("Type")
@@ -704,7 +823,7 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             .invalid(type_fix.is_some())
             .on_edit(move |s: &mut Settings| &mut s.macros[i].1)
             .on_change(|s: &mut Settings, _: &mut Tx| s.sync_macros())
-            .build(&k)
+            .build(&fields)
             .grow(1.0);
         let remove = IconButton::new(&REMOVE)
             .variant(IconButtonVariant::GhostMuted)
@@ -829,46 +948,52 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             .shrink()
             .truncate()
     };
-    // Saved, so nothing is left to apply or discard (any change clears
-    // this): the restart is the one thing to do.
-    if let Status::RestartFailed(why) = &s.status {
-        footer = footer
-            .child(look::dot(look::ember()).key("restart-failed"))
-            .child(
-                note(
-                    "restart-note",
-                    "Saved. LocalFlow didn\u{2019}t restart.".into(),
-                    k.c.text_base,
-                )
-                .help(why.clone()),
-            )
-            .child(
-                look::primary(
-                    &k,
-                    Button::new("Retry").on_press(|s: &mut Settings| s.restart_daemon()),
-                )
-                .key("retry"),
-            );
-        return page(&k, content, footer, layer);
-    }
-    footer = match (&s.config, &s.status) {
-        (Err(e), _) => {
-            let words = match s.problem() {
-                Some((Spot::PromptTag, _)) => "Fix the prompt tag to apply".to_owned(),
-                Some((Spot::Microphone, _)) => "Fix the microphone to apply".to_owned(),
-                Some((Spot::Macro { row, .. }, _)) => {
-                    format!("Fix voice macro {} to apply", row + 1)
-                }
-                None => e.clone(),
-            };
-            footer.child(note("error", words, k.c.danger.fg))
-        }
-        (_, Status::Failed(e)) => footer.child(note("error", e.clone(), k.c.danger.fg)),
-        (_, Status::Applied) => footer
-            .child(icon(&CHECK, 16.0).key("applied").color(k.c.success.icon))
-            .child(el().grow(1.0)),
-        _ => footer.child(el().grow(1.0)),
+    // A restart the saved settings still need stays in the footer until
+    // one works, whatever else changes (only a failed save goes first).
+    let pending = match &s.pending {
+        _ if matches!(s.status, Status::Failed(_)) => None,
+        Some(Pending::Failed(why)) => Some((
+            "restart-failed",
+            if s.dirty() {
+                "LocalFlow didn\u{2019}t restart."
+            } else {
+                "Saved. LocalFlow didn\u{2019}t restart."
+            },
+            why.clone(),
+        )),
+        Some(Pending::Manual) => Some((
+            "restart-manual",
+            if s.dirty() {
+                "LocalFlow needs a restart."
+            } else {
+                "Saved. Restart LocalFlow to use it."
+            },
+            "LocalFlow doesn\u{2019}t run as its systemd service, so this window can\u{2019}t restart it."
+                .to_owned(),
+        )),
+        None => None,
     };
+    if let Some((key, words, why)) = pending {
+        footer = footer
+            .child(look::dot(look::ember()).key(key))
+            .child(note("restart-note", words.into(), k.c.text_base).help(why));
+        // Saved, with nothing left to apply: the restart is the one thing
+        // to do (Apply restarts too, once there are changes).
+        if !s.dirty() {
+            if matches!(s.pending, Some(Pending::Failed(_))) {
+                footer = footer.child(
+                    look::primary(
+                        &k,
+                        Button::new("Retry").on_press(|s: &mut Settings| s.restart_daemon()),
+                    )
+                    .key("retry"),
+                );
+            }
+            return page(&k, content, footer, layer);
+        }
+    } else {
+        footer = feedback(&k, s, footer, note);
+    }
     let can_apply = s.dirty() && s.config.is_ok();
     footer = footer
         .child(
@@ -890,6 +1015,34 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
             .key("apply"),
         );
     page(&k, content, footer, layer)
+}
+
+/// The footer's left side without a pending restart: what to fix, a failed
+/// save, or the check after Apply.
+fn feedback(
+    k: &Kit,
+    s: &Settings,
+    footer: El,
+    note: impl Fn(&'static str, String, rune::Color) -> El,
+) -> El {
+    match (&s.config, &s.status) {
+        (Err(e), _) => {
+            let words = match s.problem() {
+                Some((Spot::PromptTag, _)) => "Fix the prompt tag to apply".to_owned(),
+                Some((Spot::Microphone, _)) => "Fix the microphone to apply".to_owned(),
+                Some((Spot::Macro { row, .. }, _)) => {
+                    format!("Fix voice macro {} to apply", row + 1)
+                }
+                None => e.clone(),
+            };
+            footer.child(note("error", words, k.c.danger.fg))
+        }
+        (_, Status::Failed(e)) => footer.child(note("error", e.clone(), k.c.danger.fg)),
+        (_, Status::Applied) => footer
+            .child(icon(&CHECK, 16.0).key("applied").color(k.c.success.icon))
+            .child(el().grow(1.0)),
+        _ => footer.child(el().grow(1.0)),
+    }
 }
 
 /// The scrolling settings over the footer.
@@ -967,9 +1120,9 @@ mod tests {
         fn window(&self) -> Runtime<Settings> {
             self.window_with(None)
         }
-        fn window_with(&self, restart: Restart) -> Runtime<Settings> {
+        fn window_with(&self, daemon: Option<Daemon>) -> Runtime<Settings> {
             let layers = Layers::load(&self.config(), Path::new("/d")).unwrap();
-            let s = Settings::new(self.config(), "/d".into(), layers, restart).unwrap();
+            let s = Settings::new(self.config(), "/d".into(), layers, daemon).unwrap();
             // Tall enough that nothing needs scrolling.
             let mut rt = Runtime::new(s, view, (560.0, 1400.0), Env::new(true, 1.0));
             rt.on_key = Some(key);
@@ -1210,22 +1363,117 @@ mod tests {
         assert!(!fix.contains("synthetic") && !fix.contains("?!"));
     }
 
+    thread_local! {
+        /// Restarts of the user unit this test thread asked for.
+        static RESTARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn restarts() -> usize {
+        RESTARTS.with(|n| n.get())
+    }
+
+    #[test]
+    fn an_invalid_fields_label_stays_on_the_fields_line() {
+        let d = Dir::new("invalid-line", r#"{"version": 1}"#);
+        let mut rt = d.window();
+        let centre = |rt: &Runtime<Settings>, key: &str| rt.find(key).unwrap().1;
+        let before = centre(&rt, "prompt_tag/left/label");
+        rt.update(|s, _| {
+            s.prompt_tag = TextEdit::new("x".repeat(65));
+            s.set("prompt_tag", Value::String("x".repeat(65)));
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("error-prompt_tag").is_some());
+        let (label, field) = (
+            centre(&rt, "prompt_tag/left/label"),
+            centre(&rt, "prompt-tag-field"),
+        );
+        assert!((label - field).abs() < 0.5, "label {label}, field {field}");
+        assert!(
+            (label - before).abs() < 0.5,
+            "the label moved: {before} to {label}"
+        );
+    }
+
+    #[test]
+    fn the_speed_menu_goes_from_fastest_to_slowest() {
+        let values: Vec<_> = SPEED.iter().map(|(_, v)| *v).collect();
+        assert_eq!(
+            values,
+            [None, Some("i8x1"), Some("i8x2"), Some("i8x3"), Some("f32")]
+        );
+        assert_eq!(SPEED[0].0, "Auto");
+        // Speed words only: nothing about accuracy.
+        for (label, _) in SPEED {
+            let l = label.to_lowercase();
+            assert!(!l.contains("precis") && !l.contains("accura"), "{label}");
+        }
+    }
+
     fn restart_fails() -> Result<(), String> {
+        RESTARTS.with(|n| n.set(n.get() + 1));
         Err("synthetic restart failure".into())
     }
 
     fn restart_works() -> Result<(), String> {
+        RESTARTS.with(|n| n.set(n.get() + 1));
         Ok(())
+    }
+
+    fn yes() -> bool {
+        true
+    }
+
+    fn no() -> bool {
+        false
+    }
+
+    /// The user unit runs, and restarting it fails.
+    const FAILING: Daemon = Daemon {
+        unit_active: yes,
+        restart_unit: restart_fails,
+        answers: yes,
+    };
+    const WORKING: Daemon = Daemon {
+        unit_active: yes,
+        restart_unit: restart_works,
+        answers: yes,
+    };
+    /// Started some other way (`exec-once`): the unit is not active, but the
+    /// daemon answers on its socket.
+    const OUTSIDE_SYSTEMD: Daemon = Daemon {
+        unit_active: no,
+        restart_unit: restart_works,
+        answers: yes,
+    };
+    const NOT_RUNNING: Daemon = Daemon {
+        unit_active: no,
+        restart_unit: restart_works,
+        answers: no,
+    };
+
+    #[test]
+    fn a_restart_is_done_failed_or_left_to_the_user() {
+        let before = restarts();
+        assert_eq!(WORKING.restart(), Restarted::Done);
+        assert!(matches!(FAILING.restart(), Restarted::Failed(_)));
+        assert_eq!(restarts(), before + 2);
+        // Not the user unit: try-restart would do nothing and succeed, so
+        // it is not run.
+        assert_eq!(OUTSIDE_SYSTEMD.restart(), Restarted::Manual);
+        // Nothing running reads the settings when it starts.
+        assert_eq!(NOT_RUNNING.restart(), Restarted::Done);
+        assert_eq!(restarts(), before + 2);
     }
 
     #[test]
     fn a_failed_restart_keeps_the_save_and_offers_retry() {
         let d = Dir::new("restart", r#"{"version": 1}"#);
-        let mut rt = d.window_with(Some(restart_fails));
+        let mut rt = d.window_with(Some(FAILING));
         press(&mut rt, "switch-history");
         press(&mut rt, "apply");
         assert_eq!(d.settings(), Some(json!({"history": true})), "saved");
-        assert!(matches!(rt.state.status, Status::RestartFailed(_)));
+        assert!(matches!(rt.state.pending, Some(Pending::Failed(_))));
         assert!(!rt.state.dirty());
         assert!(rt.find("restart-failed").is_some());
         assert!(rt.find("error").is_none(), "not shown as a failed save");
@@ -1233,20 +1481,105 @@ mod tests {
 
         // Retry runs the restart again: still failing, then working.
         press(&mut rt, "retry");
-        assert!(matches!(rt.state.status, Status::RestartFailed(_)));
-        rt.state.restart = Some(restart_works);
+        assert!(matches!(rt.state.pending, Some(Pending::Failed(_))));
+        rt.state.daemon = Some(WORKING);
         press(&mut rt, "retry");
+        assert_eq!(rt.state.pending, None);
         assert_eq!(rt.state.status, Status::Applied);
         assert!(rt.find("retry").is_none());
+        assert!(rt.find("restart-failed").is_none());
         assert!(rt.find("applied").is_some());
         assert_eq!(d.settings(), Some(json!({"history": true})));
 
         // A key the daemon does not read needs no restart.
-        let mut rt = d.window_with(Some(restart_fails));
+        let mut rt = d.window_with(Some(FAILING));
+        let before = restarts();
         rt.update(|s, _| s.set("picker", json!("gui")));
         rt.frame(1.0 / 60.0);
         press(&mut rt, "apply");
         assert_eq!(rt.state.status, Status::Applied);
+        assert_eq!(rt.state.pending, None);
+        assert_eq!(restarts(), before);
+    }
+
+    #[test]
+    fn a_failed_restart_stays_until_a_restart_works() {
+        let d = Dir::new("pending", r#"{"version": 1}"#);
+        let mut rt = d.window_with(Some(FAILING));
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert!(rt.find("restart-failed").is_some());
+
+        // Another change keeps the warning; Apply, which restarts too,
+        // takes Retry's place.
+        press(&mut rt, "switch-pause_media");
+        assert!(rt.find("restart-failed").is_some());
+        assert!(rt.find("retry").is_none());
+        assert!(rt.find("apply").is_some());
+        // So does Discard, which brings Retry back.
+        press(&mut rt, "discard");
+        assert!(rt.find("restart-failed").is_some());
+        assert!(rt.find("retry").is_some());
+        // And an invalid value.
+        rt.update(|s, _| s.set("prompt_tag", Value::String("x".repeat(65))));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("restart-failed").is_some());
+        press(&mut rt, "discard");
+
+        // Applying a key the daemon does not read still retries the restart
+        // the saved settings need.
+        let before = restarts();
+        rt.update(|s, _| s.set("picker", json!("gui")));
+        rt.frame(1.0 / 60.0);
+        press(&mut rt, "apply");
+        assert_eq!(restarts(), before + 1);
+        assert_eq!(
+            d.settings(),
+            Some(json!({"history": true, "picker": "gui"}))
+        );
+        assert!(matches!(rt.state.pending, Some(Pending::Failed(_))));
+        assert!(rt.find("restart-failed").is_some());
+        assert!(rt.find("applied").is_none());
+
+        // Once a restart works, the warning goes.
+        rt.state.daemon = Some(WORKING);
+        press(&mut rt, "switch-pause_media");
+        press(&mut rt, "apply");
+        assert_eq!(rt.state.pending, None);
+        assert!(rt.find("restart-failed").is_none());
+        assert!(rt.find("applied").is_some());
+    }
+
+    #[test]
+    fn a_daemon_started_outside_systemd_needs_a_restart_by_hand() {
+        let d = Dir::new("manual", r#"{"version": 1}"#);
+        let mut rt = d.window_with(Some(OUTSIDE_SYSTEMD));
+        let before = restarts();
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert_eq!(d.settings(), Some(json!({"history": true})), "saved");
+        assert_eq!(restarts(), before, "try-restart would do nothing");
+        assert_eq!(rt.state.pending, Some(Pending::Manual));
+        assert!(rt.find("restart-manual").is_some());
+        assert!(rt.find("applied").is_none(), "no claim it took effect");
+        assert!(rt.find("error").is_none(), "not shown as a failed save");
+        // The window cannot restart it: no Retry.
+        assert!(rt.find("retry").is_none());
+        // Still there after another change.
+        press(&mut rt, "switch-pause_media");
+        assert!(rt.find("restart-manual").is_some());
+    }
+
+    #[test]
+    fn with_no_daemon_running_saving_is_enough() {
+        let d = Dir::new("nodaemon", r#"{"version": 1}"#);
+        let mut rt = d.window_with(Some(NOT_RUNNING));
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert_eq!(d.settings(), Some(json!({"history": true})));
+        assert_eq!(rt.state.pending, None);
+        assert_eq!(rt.state.status, Status::Applied);
+        assert!(rt.find("applied").is_some());
     }
 
     #[test]

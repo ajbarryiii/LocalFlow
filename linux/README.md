@@ -160,7 +160,10 @@ invalid values stop the daemon with an error. Defaults:
   less time per utterance (LibriSpeech 15.7 vs 23.7 ms on average). On
   kea-t, i8x2 matched f32's WER over 32,560 dev/test utterances (six
   near-tie transcript changes) and is 25-28% faster than i8x3, which tracks
-  f32 to rounding. To
+  f32 to rounding. `f32` is the slowest: `lf-gemm-bench` on synthetic
+  binary weights (8 threads of a 9950X3D, 3 s of audio) timed the encoder
+  projections at 5.5 ms for `i8x1`, 10.0 for `i8x2`, 14.6 for `i8x3` and
+  21.0 for `f32`. To
   re-check a new export, save hypotheses at each precision with
   `lf-transcribe --save-hyps` and compare them with `lf-hypcompare` (both in
   `lf-bench`).
@@ -244,11 +247,15 @@ is a settings window and the correction dialogs:
   which writes them to `settings.json` beside `config.json` and restarts
   the daemon (`systemctl --user try-restart localflowd`) when a key it reads
   changed; a cyan dot marks each setting not applied yet. If the restart
-  fails, the settings are still saved and **Retry** tries it again. A reset
+  fails, the settings are still saved, and the window says so, with
+  **Retry**, until a restart works (a later **Apply** restarts too). A
+  daemon that answers but doesn't run as the `localflowd` user unit (one
+  started by `exec-once`, say) is left running, and the window asks you to
+  restart it; with no daemon running, saving is enough. A reset
   icon next to a setting takes it back to `config.json`. A text field with
   an invalid value is outlined, with what to fix under it. **Speed** is
-  `precision`: Auto (the model's own), Fastest (`i8x1`), Fast (`i8x2`),
-  Precise (`i8x3`) and Full precision (`f32`). **Type with** is `output`:
+  `precision`, from the fastest: Auto (the model's own), Fastest (`i8x1`),
+  Fast (`i8x2`), Slow (`i8x3`) and Slowest (`f32`). **Type with** is `output`:
   Wayland, Desktop portal (`portal`) or Kernel device (`uinput`).
   Escape closes it, asking first when there are changes not applied. One
   settings window runs per user: launching it again brings that window
@@ -361,7 +368,7 @@ never move. Classes (also the `alt`) and what each shows:
 |---|---|---|
 | `idle` | microphone | LocalFlow: ready |
 | `loading` | clock (the model is loading) | LocalFlow: loading the model |
-| `recording` | a wave of dots, newest on the right; small equal dots in silence | LocalFlow: listening |
+| `recording` | a wave of dots, newest on the right, growing and brightening with your voice; a row of small dim dots in silence | LocalFlow: listening |
 | `transcribing` | hourglass | LocalFlow: transcribing |
 | `typing` | keyboard | LocalFlow: typing |
 | `nomic` | microphone with a slash (idle with no microphone) | LocalFlow: no microphone |
@@ -370,10 +377,20 @@ never move. Classes (also the `alt`) and what each shows:
 A prompt dictation (double-tap and hold; `tag=prompt` in `watch` lines)
 puts `›` in the first character and adds the class `prompt` while it
 records, transcribes and types (`"class": ["recording", "prompt"]`, tooltip
-"LocalFlow: listening (prompt dictation)"). It keeps retrying every 2 s
-while the daemon is down, so Waybar never needs restarting. Override the
-glyphs with `format-icons` keyed by `alt` if you like. `min-length` and
-`align` keep the module's width with a proportional font too.
+"LocalFlow: listening (prompt dictation)"). While an agent needs your
+approval (see [Coding agents](#coding-agents)), a raised hand takes the
+glyph's place. It keeps retrying every 2 s while the daemon is down, so
+Waybar never needs restarting. Override the glyphs with `format-icons`
+keyed by `alt` if you like. `min-length` and `align` keep the module's
+width with a proportional font too.
+
+The wave's dots are `•` and `●` (U+2022, U+25CF), which common fonts such
+as DejaVu have, and the glyphs are Font Awesome's, which stock Waybar's
+style asks for, so with Font Awesome installed no Nerd Font is needed (a
+proportional font does let the module's width vary). Dimmer dots are
+Pango markup (`<span alpha="50%">•</span>`), which Waybar reads in custom
+modules by default; leave the module's `escape` off, or the tags show as
+text.
 
 ```jsonc
 "custom/localflow": {
@@ -555,7 +572,8 @@ localflowctl agents t3                               # T3 Code bridge (runs unti
     suggestions with a click.
   - The CSS under [Waybar indicator](#waybar-indicator) styles the agent
     classes: `agent-approval` in ember, `agent-input` in glacier. The number
-    of agents needing you shows beside the microphone.
+    of agents needing you shows beside the microphone, or beside a raised
+    hand while one needs approval.
 
 ## Text output and desktops
 
