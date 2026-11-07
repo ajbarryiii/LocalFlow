@@ -392,8 +392,8 @@ and fades within a few dots, so it crosses the row as a pulse. It rises out
 of the line at its left end, as on the keyboard. As on the keyboard too, the
 dots follow your own voice rather than a fixed scale: they are measured
 against the recording's recent loudest moment (held for 1.2 s, then sinking
-6 dB a second, never below -30 dBFS), down to 27 dB under it and never below
--45 dBFS. So a soft, a normal and a loud voice all swell to full dots on
+6 dB a second, never below −30 dBFS), down to 27 dB under it and never below
+−45 dBFS. So a soft, a normal and a loud voice all swell to full dots on
 their syllables and dip between them, and a quiet room stays at rest.
 
 While transcribing, `localflowctl` itself draws the shimmer ten frames a
