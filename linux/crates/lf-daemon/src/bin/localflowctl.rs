@@ -43,8 +43,6 @@
 //! - 128 + N: interrupted by signal N (`fetch-model`, after cleaning up).
 
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -58,7 +56,7 @@ use lf_daemon::protocol::{
     monotonic_ns, parse_dec, parse_reply, printable_fields, reply_field, request_line,
     valid_set_name,
 };
-use lf_daemon::server::peer_uid;
+use lf_daemon::server::{self, ConnectError, peer_uid};
 use lf_daemon::tray::{Tray, TrayError};
 use lf_daemon::waybar::{Class, Indicator};
 use lf_daemon::{dictionary, paths, t3};
@@ -1211,74 +1209,17 @@ fn io_failure(e: std::io::Error) -> Failure {
     }
 }
 
-/// Connects without blocking past `deadline` (a Unix stream connect blocks
-/// while the listen backlog is full).
+/// Connects without blocking past `deadline` (see [`server::connect`]).
 fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, Failure> {
-    let bytes = path.as_os_str().as_bytes();
-    // SAFETY: zeroed sockaddr_un is valid; the path fits (checked below).
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.len() >= addr.sun_path.len() {
-        return Err(Failure::Unreachable(format!(
-            "socket path {} is too long",
-            path.display()
-        )));
-    }
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    for (dst, &src) in addr.sun_path.iter_mut().zip(bytes) {
-        *dst = src as libc::c_char;
-    }
-    // SAFETY: plain socket creation; the descriptor is owned immediately.
-    let fd = unsafe {
-        libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
-            0,
-        )
-    };
-    if fd < 0 {
-        return Err(Failure::Protocol(
-            std::io::Error::last_os_error().to_string(),
-        ));
-    }
-    // SAFETY: `fd` is a fresh descriptor owned by nothing else.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    loop {
-        use std::os::fd::AsRawFd;
-        // SAFETY: `addr` is a valid sockaddr_un of `len` bytes.
-        let rc = unsafe {
-            libc::connect(
-                fd.as_raw_fd(),
-                (&addr as *const libc::sockaddr_un).cast(),
-                len,
-            )
-        };
-        if rc == 0 {
-            break;
+    server::connect(path, deadline).map_err(|e| match e {
+        ConnectError::Absent => Failure::Unreachable("localflowd is not running".into()),
+        ConnectError::Timeout => Failure::Timeout,
+        ConnectError::TooLong => {
+            Failure::Unreachable(format!("socket path {} is too long", path.display()))
         }
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(libc::EINTR) => continue,
-            Some(libc::EAGAIN) => {
-                if Instant::now() >= deadline {
-                    return Err(Failure::Timeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Some(libc::ENOENT | libc::ECONNREFUSED) => {
-                return Err(Failure::Unreachable("localflowd is not running".into()));
-            }
-            _ => {
-                return Err(Failure::Unreachable(format!(
-                    "cannot connect to {}: {err}",
-                    path.display()
-                )));
-            }
+        ConnectError::Socket(e) => Failure::Protocol(e.to_string()),
+        ConnectError::Connect(e) => {
+            Failure::Unreachable(format!("cannot connect to {}: {e}", path.display()))
         }
-    }
-    let stream = UnixStream::from(fd);
-    stream
-        .set_nonblocking(false)
-        .map_err(|e| Failure::Protocol(e.to_string()))?;
-    Ok(stream)
+    })
 }

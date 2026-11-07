@@ -22,8 +22,10 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
   daemon does not restart after **Apply**, the window says the settings
   were saved and keeps saying so, with **Retry**, until a restart works; a
   daemon started outside its systemd user unit is not silently skipped,
-  the window asks you to restart it. **Speed** names `precision` from
-  Fastest to Slowest. The dialogs' smallest size fits every choice.
+  the window asks you to restart it (also when it is busy or does not
+  answer within half a second). **Speed** names `precision` from
+  Fastest to Slowest. Adding a voice macro puts the cursor in its Say
+  field. The dialogs' smallest size fits every choice.
 
 ### Changed
 

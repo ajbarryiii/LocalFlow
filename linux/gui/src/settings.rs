@@ -66,8 +66,20 @@ pub struct Daemon {
     pub unit_active: fn() -> bool,
     /// Restarts the user unit.
     pub restart_unit: fn() -> Result<(), String>,
-    /// Whether a daemon answers on the control socket.
-    pub answers: fn() -> bool,
+    /// Asks for the daemon's status on the control socket.
+    pub probe: fn() -> Probe,
+}
+
+/// What asking for the daemon's status on the control socket found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// A daemon answered.
+    Answered,
+    /// None runs: there is no socket, or nothing listens on it.
+    Absent,
+    /// Something may be there, but no proper answer came in time: a
+    /// timeout, `error busy` or another error, a malformed reply.
+    Unclear,
 }
 
 /// What restarting the daemon over saved settings did.
@@ -85,21 +97,23 @@ impl Daemon {
     pub const SYSTEM: Daemon = Daemon {
         unit_active,
         restart_unit,
-        answers,
+        probe,
     };
 
     /// Restarts the daemon if it runs as the user unit. `try-restart` alone
-    /// would succeed and do nothing for one started some other way.
+    /// would succeed and do nothing for one started some other way. Only a
+    /// daemon known to be absent needs nothing: one that did not answer
+    /// properly may still run the old settings.
     pub fn restart(&self) -> Restarted {
         if (self.unit_active)() {
             match (self.restart_unit)() {
                 Ok(()) => Restarted::Done,
                 Err(e) => Restarted::Failed(e),
             }
-        } else if (self.answers)() {
-            Restarted::Manual
-        } else {
+        } else if (self.probe)() == Probe::Absent {
             Restarted::Done
+        } else {
+            Restarted::Manual
         }
     }
 }
@@ -421,24 +435,52 @@ fn restart_unit() -> Result<(), String> {
     }
 }
 
-/// Whether this user's daemon answers a `status` request on the control
-/// socket within half a second.
-fn answers() -> bool {
-    use lf_daemon::protocol::{ClientReply, Command, MAX_LINE, Request, parse_reply, request_line};
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::os::unix::net::UnixStream;
+/// How long Apply waits for the daemon's status, connecting included. It
+/// runs on the window's thread, on Apply only.
+const PROBE_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
-    let Ok(path) = lf_daemon::paths::socket_path_for_client() else {
-        return false;
+/// Asks this user's daemon for its status on the control socket. Without a
+/// socket path to ask, it cannot tell that none runs.
+fn probe() -> Probe {
+    match lf_daemon::paths::socket_path_for_client() {
+        Ok(path) => probe_at(&path, std::time::Instant::now() + PROBE_WAIT),
+        Err(_) => Probe::Unclear,
+    }
+}
+
+/// Asks for the status on the socket at `path`, until `deadline` at most.
+/// Only a missing socket, or one nothing listens on, is [`Probe::Absent`]:
+/// a timeout, `error busy`, any other error, a malformed reply or another
+/// user's socket may still be a daemon.
+fn probe_at(path: &std::path::Path, deadline: std::time::Instant) -> Probe {
+    use lf_daemon::server::{ConnectError, connect};
+    let mut stream = match connect(path, deadline) {
+        Ok(stream) => stream,
+        Err(ConnectError::Absent) => return Probe::Absent,
+        Err(_) => return Probe::Unclear,
     };
-    let Ok(mut stream) = UnixStream::connect(path) else {
-        return false;
+    if status_ok(&mut stream, deadline) {
+        Probe::Answered
+    } else {
+        Probe::Unclear
+    }
+}
+
+/// Whether `stream` is this user's daemon and replies `ok` to `status`
+/// before `deadline`.
+fn status_ok(stream: &mut std::os::unix::net::UnixStream, deadline: std::time::Instant) -> bool {
+    use lf_daemon::protocol::{ClientReply, Command, MAX_LINE, Request, parse_reply, request_line};
+    use std::io::{ErrorKind, Read, Write};
+
+    // `None` once the deadline has passed (a `None` timeout would block).
+    let left = || {
+        Some(deadline.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero())
     };
-    let wait = Some(std::time::Duration::from_millis(500));
-    let mine = lf_daemon::server::peer_uid(&stream).ok() == Some(lf_daemon::paths::euid());
-    if !mine
-        || stream.set_read_timeout(wait).is_err()
-        || stream.set_write_timeout(wait).is_err()
+    if lf_daemon::server::peer_uid(stream).ok() != Some(lf_daemon::paths::euid()) {
+        return false;
+    }
+    let Some(wait) = left() else { return false };
+    if stream.set_write_timeout(Some(wait)).is_err()
         || stream
             .write_all(request_line(&Request::new(Command::Status)).as_bytes())
             .is_err()
@@ -446,10 +488,26 @@ fn answers() -> bool {
         return false;
     }
     let mut line = Vec::new();
-    let read = BufReader::new(stream.take(MAX_LINE as u64)).read_until(b'\n', &mut line);
-    read.is_ok()
-        && line.pop() == Some(b'\n')
-        && matches!(parse_reply(&line), Some(ClientReply::Ok(_)))
+    let mut chunk = [0u8; 512];
+    let end = loop {
+        if let Some(end) = line.iter().position(|&b| b == b'\n') {
+            break end;
+        }
+        if line.len() >= MAX_LINE {
+            return false;
+        }
+        let Some(wait) = left() else { return false };
+        if stream.set_read_timeout(Some(wait)).is_err() {
+            return false;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => return false,
+            Ok(n) => line.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    };
+    end < MAX_LINE && matches!(parse_reply(&line[..end]), Some(ClientReply::Ok(_)))
 }
 
 /// A labelled row: the label, a glacier dot while its draft is not applied,
@@ -882,7 +940,10 @@ pub fn view(s: &Settings, _cx: &mut Cx<Settings>) -> El {
                 .variant(IconButtonVariant::Ghost)
                 .label("Add macro")
                 .on_press(|s: &mut Settings| {
-                    s.macros.push((TextEdit::default(), TextEdit::default()))
+                    // Typing goes straight into the new row's "Say".
+                    let mut say = TextEdit::default();
+                    say.focused = true;
+                    s.macros.push((say, TextEdit::default()))
                 })
                 .build(&k)
                 .key("add-macro"),
@@ -1449,28 +1510,47 @@ mod tests {
         false
     }
 
+    fn answered() -> Probe {
+        Probe::Answered
+    }
+
+    fn absent() -> Probe {
+        Probe::Absent
+    }
+
+    fn unclear() -> Probe {
+        Probe::Unclear
+    }
+
     /// The user unit runs, and restarting it fails.
     const FAILING: Daemon = Daemon {
         unit_active: yes,
         restart_unit: restart_fails,
-        answers: yes,
+        probe: answered,
     };
     const WORKING: Daemon = Daemon {
         unit_active: yes,
         restart_unit: restart_works,
-        answers: yes,
+        probe: answered,
     };
     /// Started some other way (`exec-once`): the unit is not active, but the
     /// daemon answers on its socket.
     const OUTSIDE_SYSTEMD: Daemon = Daemon {
         unit_active: no,
         restart_unit: restart_works,
-        answers: yes,
+        probe: answered,
+    };
+    /// Started some other way, and its socket is there, but it did not
+    /// answer properly (it timed out, was busy, or replied with an error).
+    const OUTSIDE_SYSTEMD_SILENT: Daemon = Daemon {
+        unit_active: no,
+        restart_unit: restart_works,
+        probe: unclear,
     };
     const NOT_RUNNING: Daemon = Daemon {
         unit_active: no,
         restart_unit: restart_works,
-        answers: no,
+        probe: absent,
     };
 
     #[test]
@@ -1482,9 +1562,105 @@ mod tests {
         // Not the user unit: try-restart would do nothing and succeed, so
         // it is not run.
         assert_eq!(OUTSIDE_SYSTEMD.restart(), Restarted::Manual);
-        // Nothing running reads the settings when it starts.
+        // Only a daemon known to be absent reads the settings when it
+        // starts; one that may be there but did not answer is still left
+        // to the user.
         assert_eq!(NOT_RUNNING.restart(), Restarted::Done);
+        assert_eq!(OUTSIDE_SYSTEMD_SILENT.restart(), Restarted::Manual);
         assert_eq!(restarts(), before + 2);
+    }
+
+    #[test]
+    fn a_daemon_that_does_not_answer_properly_still_needs_a_restart() {
+        let d = Dir::new("unclear", r#"{"version": 1}"#);
+        let mut rt = d.window_with(Some(OUTSIDE_SYSTEMD_SILENT));
+        press(&mut rt, "switch-history");
+        press(&mut rt, "apply");
+        assert_eq!(d.settings(), Some(json!({"history": true})), "saved");
+        assert_eq!(rt.state.pending, Some(Pending::Manual));
+        assert!(rt.find("restart-manual").is_some());
+        assert!(rt.find("applied").is_none(), "no claim it took effect");
+    }
+
+    /// A private directory for synthetic control sockets.
+    struct Sockets(PathBuf);
+    impl Sockets {
+        fn new(name: &str) -> Sockets {
+            use std::os::unix::fs::DirBuilderExt;
+            let d = std::env::temp_dir().join(format!("lf-gui-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::DirBuilder::new().mode(0o700).create(&d).unwrap();
+            Sockets(d)
+        }
+        /// A socket that answers one connection's request with `reply`
+        /// (`None`: closes without a word), on its own thread.
+        fn replying(&self, name: &str, reply: Option<&'static str>) -> PathBuf {
+            use std::io::{BufRead, BufReader, Write};
+            let path = self.0.join(name);
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            std::thread::spawn(move || {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut line = Vec::new();
+                let _ = BufReader::new(&stream).read_until(b'\n', &mut line);
+                if let Some(reply) = reply {
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            });
+            path
+        }
+    }
+    impl Drop for Sockets {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_probe_tells_an_absent_daemon_from_one_that_did_not_answer() {
+        use std::time::{Duration, Instant};
+        let dir = Sockets::new("probe");
+        let soon = || Instant::now() + Duration::from_millis(300);
+
+        // Absent: no socket file, or nothing listening on it.
+        assert_eq!(probe_at(&dir.0.join("missing"), soon()), Probe::Absent);
+        let stale = dir.0.join("stale");
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        assert!(stale.exists());
+        assert_eq!(probe_at(&stale, soon()), Probe::Absent);
+
+        // A proper status reply.
+        let ok = dir.replying("ok", Some("localflow/1 ok state=idle model=ready\n"));
+        assert_eq!(probe_at(&ok, soon()), Probe::Answered);
+
+        // Anything else may be a daemon: busy, another error, a malformed
+        // reply, or none.
+        for (name, reply) in [
+            ("busy", Some("localflow/1 error busy\n")),
+            ("bad-request", Some("localflow/1 error bad-request\n")),
+            ("garbage", Some("synthetic nonsense\n")),
+            (
+                "unterminated",
+                Some("localflow/1 ok state=idle model=ready"),
+            ),
+            ("closed", None),
+        ] {
+            let path = dir.replying(name, reply);
+            assert_eq!(probe_at(&path, soon()), Probe::Unclear, "{name}");
+        }
+
+        // Accepted (the backlog takes it) but never answered: it times out
+        // at the deadline, not before and not long after.
+        let silent = dir.0.join("silent");
+        let _listener = std::os::unix::net::UnixListener::bind(&silent).unwrap();
+        let t0 = Instant::now();
+        assert_eq!(probe_at(&silent, soon()), Probe::Unclear);
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_millis(250) && took < Duration::from_secs(2),
+            "took {took:?}"
+        );
     }
 
     #[test]
@@ -1631,6 +1807,33 @@ mod tests {
         let rt = d.window();
         assert_eq!(rt.state.macros.len(), 2);
         assert!(rt.find("reset-voice_macros").is_some());
+    }
+
+    #[test]
+    fn typing_after_adding_a_macro_fills_its_say_field() {
+        let d = Dir::new(
+            "macro-focus",
+            r#"{"version": 1, "voice_macros": [{"command": "sign off", "payload": "Synthetic regards"}]}"#,
+        );
+        let type_text = |rt: &mut Runtime<Settings>, text: &str| {
+            rt.ime(rune::Ime::Commit(text.into()));
+            rt.frame(1.0 / 60.0);
+        };
+        let mut rt = d.window();
+        press(&mut rt, "add-macro");
+        type_text(&mut rt, "synthetic hello");
+        assert_eq!(rt.state.macros.len(), 2);
+        assert_eq!(rt.state.macros[1].0.text, "synthetic hello");
+        assert_eq!(rt.state.macros[1].1.text, "");
+        assert_eq!(rt.state.macros[0].0.text, "sign off");
+
+        // From another text field too: the new row takes the keyboard.
+        let mut rt = d.window();
+        press(&mut rt, "prompt-tag-field");
+        press(&mut rt, "add-macro");
+        type_text(&mut rt, "synthetic bye");
+        assert_eq!(rt.state.macros[1].0.text, "synthetic bye");
+        assert_eq!(rt.state.prompt_tag.text, "[dictated]");
     }
 
     fn escape(rt: &mut Runtime<Settings>) {

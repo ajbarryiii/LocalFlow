@@ -221,6 +221,87 @@ impl Server {
     }
 }
 
+/// Why [`connect`] failed.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// No daemon runs: there is no socket at the path, or nothing listens
+    /// on it.
+    Absent,
+    /// The deadline passed while the daemon's listen backlog was full.
+    Timeout,
+    /// The path does not fit a Unix socket address.
+    TooLong,
+    /// The client's socket could not be created.
+    Socket(std::io::Error),
+    /// Any other failure to connect.
+    Connect(std::io::Error),
+}
+
+/// Connects a client to the control socket at `path` without blocking past
+/// `deadline`: a blocking Unix stream connect waits as long as the listen
+/// backlog stays full. The stream it returns blocks again.
+pub fn connect(path: &Path, deadline: Instant) -> Result<UnixStream, ConnectError> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: zeroed sockaddr_un is valid; the path fits (checked below).
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(ConnectError::TooLong);
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, &src) in addr.sun_path.iter_mut().zip(bytes) {
+        *dst = src as libc::c_char;
+    }
+    // SAFETY: plain socket creation; the descriptor is owned immediately.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(ConnectError::Socket(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `fd` is a fresh descriptor owned by nothing else.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    loop {
+        // SAFETY: `addr` is a valid sockaddr_un of `len` bytes.
+        let rc = unsafe {
+            libc::connect(
+                fd.as_raw_fd(),
+                (&addr as *const libc::sockaddr_un).cast(),
+                len,
+            )
+        };
+        if rc == 0 {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            // The backlog is full.
+            Some(libc::EAGAIN) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(ConnectError::Timeout);
+                }
+                std::thread::sleep(left.min(Duration::from_millis(10)));
+            }
+            Some(libc::ENOENT | libc::ECONNREFUSED) => return Err(ConnectError::Absent),
+            _ => return Err(ConnectError::Connect(err)),
+        }
+    }
+    let stream = UnixStream::from(fd);
+    stream
+        .set_nonblocking(false)
+        .map_err(ConnectError::Socket)?;
+    Ok(stream)
+}
+
 /// The uid of the process on the other end of `stream`.
 pub fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
     let mut cred = libc::ucred {
@@ -381,4 +462,72 @@ fn is_text_frame(frame: &[u8]) -> bool {
             .ok()
             .and_then(crate::protocol::Command::parse)
             .is_some_and(crate::protocol::Command::is_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    /// A socket at `path` listening with a backlog of 0, which never
+    /// accepts.
+    fn never_accepting(path: &Path) -> OwnedFd {
+        // SAFETY: plain socket(2); the descriptor is owned at once.
+        let fd = unsafe {
+            OwnedFd::from_raw_fd(libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                0,
+            ))
+        };
+        // SAFETY: an all-zero sockaddr_un is valid.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (dst, &src) in addr.sun_path.iter_mut().zip(path.as_os_str().as_bytes()) {
+            *dst = src as libc::c_char;
+        }
+        let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+        // SAFETY: `addr` is a valid sockaddr_un of `len` bytes; `fd` is open.
+        unsafe {
+            assert_eq!(
+                libc::bind(
+                    fd.as_raw_fd(),
+                    (&addr as *const libc::sockaddr_un).cast(),
+                    len
+                ),
+                0
+            );
+            assert_eq!(libc::listen(fd.as_raw_fd(), 0), 0);
+        }
+        fd
+    }
+
+    #[test]
+    fn a_client_connect_ends_at_its_deadline_or_says_no_daemon_runs() {
+        let dir = crate::testing::TempDir::new("connect-deadline");
+        let soon = || Instant::now() + Duration::from_millis(300);
+
+        assert!(matches!(
+            connect(&dir.path().join("missing"), soon()),
+            Err(ConnectError::Absent)
+        ));
+        let stale = dir.path().join("stale");
+        drop(UnixListener::bind(&stale).unwrap());
+        assert!(matches!(connect(&stale, soon()), Err(ConnectError::Absent)));
+
+        // A full backlog: a blocking connect would wait for an accept that
+        // never comes.
+        let full = dir.path().join("full");
+        let _listener = never_accepting(&full);
+        // A backlog of 0 admits one pending connection.
+        let _filler = connect(&full, soon()).unwrap();
+        let t0 = Instant::now();
+        assert!(matches!(connect(&full, soon()), Err(ConnectError::Timeout)));
+        let took = t0.elapsed();
+        assert!(
+            took >= Duration::from_millis(250) && took < Duration::from_secs(2),
+            "took {took:?}"
+        );
+    }
 }
