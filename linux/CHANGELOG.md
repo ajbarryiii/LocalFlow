@@ -37,7 +37,10 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
   silence. Your voice crosses the row in about half a second: a syllable
   rises at once beside the aurora dot and fades within a few dots, so
   syllables read as separate pulses, and the row rises out of the line at
-  its left end; in silence the dots rest small and dim. While transcribing,
+  its left end; in silence the dots rest small and dim. As on the keyboard,
+  the dots follow your own voice, measured against the recording's recent
+  loudest moment, so a soft, a normal and a loud voice all swell to full
+  dots on their syllables and a quiet room stays at rest. While transcribing,
   the row rests without the aurora dot and a glacier-white spot sweeps
   across it every 1.1 s, drawn by `localflowctl` itself ten times a second
   and only in that state. The dots are standard characters with Pango

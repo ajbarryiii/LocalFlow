@@ -389,9 +389,16 @@ keyed by `alt` if you like.
 The wave shows about the last half second of your voice: each level line
 from the daemon (every 66 ms) moves it one dot, and a syllable rises at once
 and fades within a few dots, so it crosses the row as a pulse. It rises out
-of the line at its left end, as on the keyboard. While transcribing,
-`localflowctl` itself draws the shimmer ten frames a second, a sweep every
-1.1 s; in every other state it writes only when the state changes.
+of the line at its left end, as on the keyboard. As on the keyboard too, the
+dots follow your own voice rather than a fixed scale: they are measured
+against the recording's recent loudest moment (held for 1.2 s, then sinking
+6 dB a second, never below -30 dBFS), down to 27 dB under it and never below
+-45 dBFS. So a soft, a normal and a loud voice all swell to full dots on
+their syllables and dip between them, and a quiet room stays at rest.
+
+While transcribing, `localflowctl` itself draws the shimmer ten frames a
+second, a sweep every 1.1 s; in every other state it writes only when the
+state changes.
 
 The dots are `•` and `●` (U+2022, U+25CF), which common fonts such as DejaVu
 have, and the glyphs are Font Awesome's, which stock Waybar's style asks

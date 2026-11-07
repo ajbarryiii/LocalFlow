@@ -15,13 +15,19 @@
 //!   the middle line, the voice's last half second, newest on the right
 //!   beside the anchor. Each level line (every 66 ms) moves the row one dot
 //!   to the left, through a follower that rises at once and falls quickly,
-//!   so a syllable is a pulse that crosses the row and leaves it. Louder
-//!   dots grow and brighten; in silence the row is calm, equal resting
-//!   dots. As on the keyboard, the row rises out of the line at its left
-//!   end ([`ENVELOPE`]). The anchor is always lit, so silence still reads
-//!   as listening; its colour is set in the markup, so it is aurora on any
-//!   bar, with or without the README's CSS. The wave's dots take the
-//!   module's colour (white in the README's CSS).
+//!   so a syllable is a pulse that crosses the row and leaves it. (The
+//!   keyboard's row spans 0.75 s; one dot a line makes 0.53 s, still
+//!   quicker than the 1.1 s shimmer as on the keyboard, where two lines a
+//!   dot would be as slow as it.) Each level is placed in the keyboard's
+//!   meter window ([`Window`]), which runs up to the recording's recent
+//!   loudest moment, so a soft, a normal and a loud voice alike swell to
+//!   full dots on their syllables and dip between them, and a quiet room
+//!   rests. Louder dots grow and brighten ([`voice`]); in silence the row
+//!   is calm, equal resting dots. As on the keyboard, the row rises out of
+//!   the line at its left end ([`ENVELOPE`]). The anchor is always lit, so
+//!   silence still reads as listening; its colour is set in the markup, so
+//!   it is aurora on any bar, with or without the README's CSS. The wave's
+//!   dots take the module's colour (white in the README's CSS).
 //! - Transcribing shows the keyboard's wait: the row at rest, without the
 //!   anchor, with a brighter, larger spot sweeping it left to right every
 //!   1.1 s ([`shimmer`]). `localflowctl` draws a frame every
@@ -265,14 +271,99 @@ impl Class {
     }
 }
 
-/// Levels up to this (in 0..=100) are room noise: a dot at rest.
-const NOISE: f32 = 4.0;
+/// The keyboard's meter window (`LevelMeter`), in dBFS: below the gate is
+/// the room, not a voice.
+pub const GATE_DB: f32 = -45.0;
+/// The window's top never sinks below this, so a murmur just over the gate
+/// is never stretched to a full dot.
+pub const PEAK_FLOOR_DB: f32 = -30.0;
+/// How long the top holds after the loudest moment, and how fast it then
+/// sinks.
+pub const PEAK_HOLD: Duration = Duration::from_millis(1200);
+pub const PEAK_DECAY_DB_PER_SECOND: f32 = 6.0;
+/// The window's depth under its top at most, so a loud speaker's gaps
+/// between syllables still read as gaps.
+pub const RANGE_DB: f32 = 27.0;
 
-/// The [`STEPS`] index for a level of 0..=100: at rest up to [`NOISE`],
-/// then a square-root curve so quiet speech still shows.
-pub fn step(level: u8) -> usize {
-    let v = ((f32::from(level.min(100)) - NOISE).max(0.0) / (100.0 - NOISE)).sqrt();
-    (v * (STEPS.len() - 1) as f32).round() as usize
+/// A level line's level (the latest capture block's RMS x 100) in dBFS: 1
+/// is -40, 100 full scale; 0 (silence) is far under [`GATE_DB`].
+pub fn dbfs(level: u8) -> f32 {
+    match level {
+        0 => -100.0,
+        l => 20.0 * (f32::from(l.min(100)) / 100.0).log10(),
+    }
+}
+
+/// The keyboard's meter window (`LevelMeter`), run on the level lines with
+/// their spacing ([`LEVEL_INTERVAL`]) as its clock: it maps each level onto
+/// the speaker's own range, so a soft, a normal and a loud voice (-32, -22,
+/// -12 dBFS) all reach the top on their syllables and dip between them, and
+/// a quiet room stays under the bottom. The top is the recording's recent
+/// loudest moment, never below [`PEAK_FLOOR_DB`]; the bottom is
+/// [`RANGE_DB`] under it, never below [`GATE_DB`]. One per recording.
+#[derive(Clone, Copy, Debug)]
+pub struct Window {
+    /// The top, in dBFS.
+    peak: f32,
+    /// Seconds since the top was set.
+    since: f32,
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Window {
+            peak: PEAK_FLOOR_DB,
+            since: 0.0,
+        }
+    }
+}
+
+impl Window {
+    /// Hears one level line, [`LEVEL_INTERVAL`] after the last: where it
+    /// falls in the window, 0 at or under the bottom, 1 at the top.
+    pub fn hear(&mut self, level: u8) -> f32 {
+        let db = dbfs(level);
+        let line = LEVEL_INTERVAL.as_secs_f32();
+        self.since += line;
+        let hold = PEAK_HOLD.as_secs_f32();
+        if self.since > hold {
+            self.peak -= PEAK_DECAY_DB_PER_SECOND * (self.since - hold).min(line);
+        }
+        if db >= self.peak {
+            self.peak = db;
+            self.since = 0.0;
+        }
+        self.peak = self.peak.max(PEAK_FLOOR_DB);
+        let low = self.bottom();
+        ((db - low) / (self.peak - low)).clamp(0.0, 1.0)
+    }
+
+    /// The window's top, in dBFS.
+    pub fn top(&self) -> f32 {
+        self.peak
+    }
+
+    /// The window's bottom, in dBFS.
+    pub fn bottom(&self) -> f32 {
+        GATE_DB.max(self.peak - RANGE_DB)
+    }
+}
+
+/// How much of the swell a place in the window (0..=1) takes, as the
+/// keyboard's `DotWave.voice`: nothing below 0.15 (a background murmur),
+/// then rising faster than the level (a 1.5 power), so a loud word looks
+/// clearly larger than a quiet one.
+pub fn voice(x: f32) -> f32 {
+    if x.is_nan() {
+        return 0.0;
+    }
+    ((x.clamp(0.0, 1.0) - 0.15).max(0.0) / 0.85).powf(1.5)
+}
+
+/// The [`STEPS`] index for a place in the window (0..=1): its [`voice`],
+/// to the nearest step.
+pub fn step(x: f32) -> usize {
+    (voice(x) * (STEPS.len() - 1) as f32).round() as usize
 }
 
 /// One dot of a row for a [`STEPS`] index, as Pango markup: the dot at
@@ -494,7 +585,9 @@ pub struct Indicator {
     /// The current recording's recent dots, oldest first: [`STEPS`] indices
     /// of the followed level, one per level line.
     cells: VecDeque<usize>,
-    /// The followed level, 0..=100.
+    /// The current recording's meter window.
+    window: Window,
+    /// The followed place in the window, 0..=1.
     follow: f32,
     recording: bool,
     /// While transcribing: the shimmer's frame shown, counted from the
@@ -615,11 +708,15 @@ impl Indicator {
         render(class, &classes, &text, &tooltip)
     }
 
-    /// One level line while recording: the follower moves towards it (fast
-    /// up, quickly down, over one [`LEVEL_INTERVAL`]), and its step is the
-    /// row's newest dot.
+    /// One level line while recording: the follower moves towards its place
+    /// in the window (fast up, quickly down, over one [`LEVEL_INTERVAL`]),
+    /// and its step is the row's newest dot. The keyboard's meter also
+    /// blends each level in (0.8 up, 0.55 down per 100 ms buffer) ahead of
+    /// its follower; here the follower alone: at one dot per line, the two
+    /// in a row shrink a syllable one line long to a small dot and fill the
+    /// dips between syllables.
     fn hear(&mut self, level: u8) {
-        let target = f32::from(level.min(100));
+        let target = self.window.hear(level);
         let constant = if target > self.follow {
             RISE_TIME
         } else {
@@ -630,7 +727,7 @@ impl Indicator {
         if self.cells.len() == WAVE_DOTS {
             self.cells.pop_front();
         }
-        self.cells.push_back(step(self.follow.round() as u8));
+        self.cells.push_back(step(self.follow));
     }
 
     /// The recording's text: the prompt marker if any, the newest dots
@@ -678,6 +775,46 @@ mod tests {
     /// The watch line of a plain recording at `level`.
     fn rec(level: u8) -> String {
         rec_line(false, level)
+    }
+
+    /// A level line's level for `db` dBFS of RMS, rounded as the daemon
+    /// does (RMS x 100).
+    fn level_of(db: f32) -> u8 {
+        (100.0 * 10f32.powf(db / 20.0)).round().min(100.0) as u8
+    }
+
+    /// A quiet room at a desk (about -45 dBFS): levels 0 and 1, as the
+    /// daemon sends them.
+    fn room(n: usize) -> Vec<u8> {
+        (0..n).map(|i| u8::from(i % 3 != 1)).collect()
+    }
+
+    /// A soft, a normal and a loud voice: their RMS over a phrase, in dBFS,
+    /// as on the keyboard (`LevelMeter`).
+    const VOICES: [f32; 3] = [-32.0, -22.0, -12.0];
+
+    /// An invented phrase's syllables, one level line (66 ms) each, in dB
+    /// around the voice's level: as measured on a synthesised sentence,
+    /// each rises, peaks 2 to 7 dB over it and falls 12 to 18 dB under it
+    /// between syllables. With the index of each syllable's peak.
+    const SYLLABLES: [(&[f32], usize); 6] = [
+        (&[-9.0, 7.0, 1.0, -4.0, -16.0], 1),
+        (&[-8.0, 3.0, -2.0, -14.0], 1),
+        (&[-6.0, 5.0, 0.0, -15.0], 1),
+        (&[-10.0, 2.0, -3.0, -17.0], 1),
+        (&[-7.0, 6.0, 2.0, -5.0, -18.0], 1),
+        (&[-5.0, 4.0, -12.0], 1),
+    ];
+
+    /// The phrase's level lines for a voice of `voice` dBFS, and the line of
+    /// each syllable's peak.
+    fn phrase(voice: f32) -> (Vec<u8>, Vec<usize>) {
+        let (mut levels, mut peaks) = (Vec::new(), Vec::new());
+        for (syllable, peak) in SYLLABLES {
+            peaks.push(levels.len() + peak);
+            levels.extend(syllable.iter().map(|db| level_of(voice + db)));
+        }
+        (levels, peaks)
     }
 
     /// Feeds `levels` as recording lines; the text after the last.
@@ -1102,17 +1239,23 @@ mod tests {
     #[test]
     fn the_wave_is_white_dots_that_rest_and_swell_as_the_keyboards_do() {
         let last = STEPS.len() - 1;
-        assert_eq!(step(0), 0);
-        assert_eq!(step(100), last);
-        assert_eq!(step(255), last);
-        // Room noise stays at rest; the square-root curve lifts quiet
-        // speech: 10% is already a step up, 30% two, and half-loud speech
-        // reaches the full dot.
-        assert_eq!(step(4), 0);
-        assert_eq!(step(10), 1);
-        assert_eq!(step(30), 2);
-        assert_eq!(STEPS[step(50)].0, FULL_DOT);
-        assert!((0..100).all(|l| step(l) <= step(l + 1)));
+        // The keyboard's swell (`DotWave.voice`) of a level in its window:
+        // nothing below 0.15 (a murmur), then a 1.5 power, so a loud word
+        // looks clearly larger than a quiet one. Each dot is its nearest
+        // step.
+        for i in 0..=100 {
+            let x = i as f32 / 100.0;
+            let want = (((x - 0.15).max(0.0)) / 0.85).powf(1.5);
+            assert!((voice(x) - want).abs() < 1e-6, "{x}");
+            assert_eq!(step(x), (want * last as f32).round() as usize, "{x}");
+        }
+        assert_eq!(voice(-1.0), 0.0);
+        assert_eq!(voice(2.0), 1.0);
+        assert_eq!(voice(f32::NAN), 0.0);
+        assert_eq!(step(0.0), 0);
+        assert_eq!(step(0.15), 0);
+        assert_eq!(step(1.0), last);
+        assert!((0..100).all(|i| step(i as f32 / 100.0) <= step((i + 1) as f32 / 100.0)));
         // At rest: the small dot, dimmed (60% keeps 3:1 on the black pill
         // at 1x); at the top of the swell: the full dot at full brightness.
         assert_eq!(STEPS[0], (SMALL_DOT, 60));
@@ -1132,11 +1275,11 @@ mod tests {
 
         // Silence is a calm row of equal resting dots before the anchor.
         let mut ind = Indicator::default();
-        let quiet = feed(&mut ind, &[0, 3, 2, 4, 1, 0, 2, 3, 0, 1, 4, 2]);
+        let quiet = feed(&mut ind, &room(12));
         assert_eq!(dots(&quiet), [0; WAVE_DOTS]);
         // The wave's dots take the bar's ink (white in the README's CSS):
         // only the anchor carries a colour of its own.
-        let speech = feed(&mut ind, &[40, 85, 6, 9, 30, 20, 2, 5, 60, 55, 30, 9]);
+        let speech = feed(&mut ind, &[5, 18, 8, 1, 7, 6, 11, 3, 2, 11, 9, 4]);
         for g in glyphs(&speech) {
             if g.step().is_some() && g.size.as_deref() == Some(DOT_SIZE) {
                 assert_eq!(g.foreground, None, "{speech}");
@@ -1238,16 +1381,16 @@ mod tests {
         for prompt in [false, true] {
             let n = if prompt { PROMPT_WAVE_DOTS } else { WAVE_DOTS };
             let mut ind = Indicator::default();
-            let rest = feed_line(&mut ind, prompt, &[0; 10]);
+            let rest = feed_line(&mut ind, prompt, &room(10));
             assert_eq!(dots(&rest), vec![0; n]);
             // Every line changes the row (none is held back for a pair).
-            let t = feed_line(&mut ind, prompt, &[100]);
+            let t = feed_line(&mut ind, prompt, &[12]);
             assert_ne!(t, rest);
             assert_eq!(peak(&t), n - 1, "{t}");
             // Then it moves left one dot per line, through the row (until
             // it sinks into the line at the left end).
             for k in 1..n - 3 {
-                let t = feed_line(&mut ind, prompt, &[0]);
+                let t = feed_line(&mut ind, prompt, &[1]);
                 assert_eq!(peak(&t), n - 1 - k, "{prompt} {k} {t}");
             }
         }
@@ -1257,30 +1400,34 @@ mod tests {
     fn syllables_rise_at_once_and_fall_quickly() {
         // The keyboard's follower: 25 ms up, 90 ms down. A syllable shows
         // in the very next dot, and its tail is gone within four lines.
+        // At every loudness, a syllable shows in full in the very next dot.
+        for voice in VOICES {
+            let mut ind = Indicator::default();
+            feed(&mut ind, &room(10));
+            let onset = feed(&mut ind, &[level_of(voice + 3.0)]);
+            assert!(full(dots(&onset)[WAVE_DOTS - 1]), "{voice} {onset}");
+        }
         let mut ind = Indicator::default();
-        feed(&mut ind, &[0; 10]);
-        let onset = feed(&mut ind, &[60]);
-        assert!(dots(&onset)[WAVE_DOTS - 1] > 0, "{onset}");
-        let mut ind = Indicator::default();
-        feed(&mut ind, &[0; 10]);
-        feed(&mut ind, &[100]);
+        feed(&mut ind, &room(10));
+        feed(&mut ind, &[12]);
         let mut tail = Vec::new();
         for _ in 0..5 {
-            tail.push(dots(&feed(&mut ind, &[0]))[WAVE_DOTS - 1]);
+            tail.push(dots(&feed(&mut ind, &[1]))[WAVE_DOTS - 1]);
         }
         assert!(tail[0] > 0, "{tail:?}");
         assert!(tail.windows(2).all(|w| w[1] <= w[0]), "{tail:?}");
         assert_eq!(tail[3..], [0, 0], "{tail:?}");
-        // Two syllables 130 ms apart read as two pulses: a dip between them.
+        // Two syllables 200 ms apart read as two pulses: a dip between them,
+        // though the voice falls only 15 dB there.
         let mut ind = Indicator::default();
-        feed(&mut ind, &[0; 10]);
-        let t = feed(&mut ind, &[100, 0, 0, 100, 0]);
+        feed(&mut ind, &room(10));
+        let t = feed(&mut ind, &[12, 2, 2, 12, 2]);
         let d = dots(&t);
         let (a, b) = (WAVE_DOTS - 5, WAVE_DOTS - 2);
         assert!(full(d[a]) && full(d[b]), "{d:?}");
         assert!((a + 1..b).any(|i| d[i] < d[a].min(d[b])), "{d:?}");
         // Speech rises at once even while the row is falling.
-        let up = feed(&mut ind, &[100]);
+        let up = feed(&mut ind, &[12]);
         assert!(full(dots(&up)[WAVE_DOTS - 1]), "{up}");
     }
 
@@ -1302,7 +1449,10 @@ mod tests {
                 assert_eq!(d[0], 0, "{t}");
                 assert!(d[1] <= 1, "{t}");
             }
-            let loud = feed_line(&mut ind, prompt, &[100; 12]);
+            // A held vowel, loud enough for every dot to be full: the row
+            // is the envelope itself.
+            let mut ind = Indicator::default();
+            let loud = feed_line(&mut ind, prompt, &[30; 12]);
             let want: &[usize] = if prompt {
                 &[0, 1, 3, 4, 4, 3]
             } else {
@@ -1331,6 +1481,141 @@ mod tests {
     }
 
     #[test]
+    fn the_window_is_the_keyboards_meter() {
+        // `LevelMeter`: an absolute noise gate, a top that is the
+        // recording's recent loudest moment (held 1.2 s, then sinking 6 dB
+        // a second, never below a floor), and a bottom 27 dB under it.
+        assert_eq!(GATE_DB, -45.0);
+        assert_eq!(PEAK_FLOOR_DB, -30.0);
+        assert_eq!(PEAK_HOLD, Duration::from_millis(1200));
+        assert_eq!(PEAK_DECAY_DB_PER_SECOND, 6.0);
+        assert_eq!(RANGE_DB, 27.0);
+        // A level line's level is the RMS x 100, so in dBFS: 100 is full
+        // scale, 1 is -40 dBFS, and 0 (silence) is under the gate.
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert_eq!(dbfs(100), 0.0);
+        assert_eq!(dbfs(255), 0.0);
+        assert!(close(dbfs(10), -20.0) && close(dbfs(1), -40.0));
+        assert!(close(dbfs(3), -30.46));
+        assert!(dbfs(0) < GATE_DB);
+
+        // A fresh window runs from the gate to the floor.
+        let mut w = Window::default();
+        assert_eq!((w.bottom(), w.top()), (GATE_DB, PEAK_FLOOR_DB));
+        assert_eq!(w.hear(0), 0.0);
+        assert!(close(w.hear(1), 5.0 / 15.0));
+        // A louder moment is the top at once, the bottom 27 dB under it.
+        let top = dbfs(50);
+        assert_eq!(w.hear(50), 1.0);
+        assert!(close(w.top(), top) && close(w.bottom(), top - RANGE_DB));
+        // In between, a level falls where its dBFS does.
+        assert!(close(w.hear(10), (-20.0 - (top - RANGE_DB)) / RANGE_DB));
+        assert_eq!(w.hear(2), 0.0);
+        // The top holds for 1.2 s of level lines after the moment, then
+        // sinks 6 dB a second, down to the floor, where the gate is the
+        // bottom again.
+        let line = LEVEL_INTERVAL.as_secs_f32();
+        for k in 3..=200 {
+            let x = w.hear(1);
+            let since = k as f32 * line;
+            let want = (top - 6.0 * (since - 1.2).max(0.0)).max(PEAK_FLOOR_DB);
+            assert!(close(w.top(), want), "{k}: {} {want}", w.top());
+            assert!(close(w.bottom(), (want - RANGE_DB).max(GATE_DB)), "{k}");
+            let at = ((-40.0 - w.bottom()) / (w.top() - w.bottom())).clamp(0.0, 1.0);
+            assert!(close(x, at), "{k}: {x} {at}");
+        }
+        assert_eq!((w.bottom(), w.top()), (GATE_DB, PEAK_FLOOR_DB));
+        // A new loudest moment holds again from its own line.
+        assert_eq!(w.hear(20), 1.0);
+        for _ in 0..18 {
+            w.hear(5);
+        }
+        assert!(close(w.top(), dbfs(20)));
+        w.hear(5);
+        assert!(w.top() < dbfs(20) - 0.1);
+    }
+
+    #[test]
+    fn soft_normal_and_loud_voices_all_reach_full_dots_and_dip_between_syllables() {
+        // As the keyboard's meter: the window follows the speaker, so a soft
+        // voice (levels 0 to 6), a normal one (1 to 18) and a loud one (3
+        // to 56) all swell to full dots on their stressed syllables and
+        // fall between them, from the first syllable on. A syllable 5 dB or
+        // more under the phrase's loudest swells less, as on the keyboard
+        // (a loud word looks larger than a quiet one), but still lifts.
+        let loudest = SYLLABLES
+            .iter()
+            .map(|(s, p)| s[*p])
+            .fold(f32::MIN, f32::max);
+        for voice in VOICES {
+            for prompt in [false, true] {
+                let n = if prompt { PROMPT_WAVE_DOTS } else { WAVE_DOTS };
+                let mut ind = Indicator::default();
+                feed_line(&mut ind, prompt, &room(8));
+                let (levels, peaks) = phrase(voice);
+                let mut last: Option<usize> = None;
+                let mut stressed = 0;
+                for (i, &level) in levels.iter().enumerate() {
+                    let t = feed_line(&mut ind, prompt, &[level]);
+                    let Some(k) = peaks.iter().position(|&p| p == i) else {
+                        continue;
+                    };
+                    let d = dots(&t);
+                    let (syllable, peak) = SYLLABLES[k];
+                    if syllable[peak] >= loudest - 4.0 {
+                        // A stressed syllable: a full dot beside the anchor.
+                        assert!(full(d[n - 1]), "{voice} {levels:?} {i}: {d:?}");
+                        stressed += 1;
+                    } else {
+                        assert!(d[n - 1] >= 2, "{voice} {levels:?} {i}: {d:?}");
+                    }
+                    // Since the last syllable's peak: a dip, a small dot.
+                    if let Some(p) = last {
+                        let back = i - p;
+                        assert!(back < n);
+                        assert!(
+                            d[n - back..n - 1].iter().any(|&s| !full(s)),
+                            "{voice} {levels:?} {i}: {d:?}"
+                        );
+                    }
+                    last = Some(i);
+                }
+                assert_eq!(stressed, SYLLABLES.len() - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_quiet_room_stays_at_rest() {
+        // A room at a desk, levels 0 and 1 (up to about -37 dBFS, over the
+        // gate): the row rests from the start of a recording, and again
+        // once the last word has crossed it, while the window sinks back to
+        // its floor.
+        for prompt in [false, true] {
+            let n = if prompt { PROMPT_WAVE_DOTS } else { WAVE_DOTS };
+            let mut ind = Indicator::default();
+            let mut seed = 5u32;
+            let mut noise = || {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                ((seed >> 16) % 2) as u8
+            };
+            for _ in 0..400 {
+                let t = feed_line(&mut ind, prompt, &[noise()]);
+                assert_eq!(dots(&t), vec![0; n], "{t}");
+            }
+            for voice in VOICES {
+                feed_line(&mut ind, prompt, &phrase(voice).0);
+                for i in 0..400 {
+                    let t = feed_line(&mut ind, prompt, &[noise()]);
+                    if i >= n + 3 {
+                        assert_eq!(dots(&t), vec![0; n], "{voice} {i}: {t}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_new_recording_starts_from_silence() {
         let mut ind = Indicator::default();
         feed(&mut ind, &[100, 100, 100]);
@@ -1345,6 +1630,23 @@ mod tests {
         feed(&mut ind, &[100, 100]);
         ind.offline();
         assert_eq!(dots(&feed(&mut ind, &[0])), [0; WAVE_DOTS]);
+
+        // Its window starts afresh too: after a shout, the next dictation's
+        // soft voice reaches full dots on its first syllable, as it would
+        // have without the shout. Within one recording, the shout's window
+        // holds a moment longer.
+        let soft = [2, 4];
+        let mut ind = Indicator::default();
+        feed(&mut ind, &[50, 40, 1, 1]);
+        let after_shout = feed(&mut ind, &soft);
+        assert!(!full(dots(&after_shout)[WAVE_DOTS - 1]), "{after_shout}");
+        ind.update("state=transcribing model=ready mic=present");
+        ind.update("state=idle model=ready mic=present");
+        feed(&mut ind, &[1]);
+        let fresh = feed(&mut ind, &soft);
+        assert!(full(dots(&fresh)[WAVE_DOTS - 1]), "{fresh}");
+        let mut alone = Indicator::default();
+        assert_eq!(feed(&mut alone, &[1, 2, 4]), fresh);
     }
 
     #[test]
@@ -1397,23 +1699,33 @@ mod tests {
 
     #[test]
     fn sustained_loud_speech_holds_a_steady_wave() {
-        // Seconds of loud speech: no dot changes size or brightness while
-        // the row scrolls.
-        for prompt in [false, true] {
+        // Seconds of loud speech (a held vowel, or a shout): no dot changes
+        // size or brightness while the row scrolls. The same for a softer
+        // voice held as steadily: the window makes it as large.
+        for (prompt, level) in [
+            (false, 40),
+            (true, 40),
+            (false, 12),
+            (false, 4),
+            (true, 100),
+        ] {
             let mut ind = Indicator::default();
             let mut waves = Vec::new();
             for i in 0..60 {
-                let t = text(&ind.update(&rec_line(prompt, 100)).unwrap());
+                let t = text(&ind.update(&rec_line(prompt, level)).unwrap());
                 if i >= WAVE_DOTS {
                     waves.push(t);
                 }
             }
             assert!(waves.iter().all(|t| *t == waves[0]), "{waves:#?}");
-            // Loud speech that varies within the full dot's steps: the dots'
-            // sizes hold still too.
+            assert!(dots(&waves[0]).iter().any(|&s| full(s)), "{level}");
+        }
+        for prompt in [false, true] {
+            // Loud speech that varies by 2 dB or so (levels 40 to 50, -8 to
+            // -6 dBFS): the dots' sizes hold still too.
             let mut ind = Indicator::default();
             let mut sizes = Vec::new();
-            for (i, level) in [60, 100, 75, 90, 100, 65, 85]
+            for (i, level) in [40, 50, 44, 47, 50, 41, 46]
                 .iter()
                 .cycle()
                 .take(70)
@@ -1436,10 +1748,10 @@ mod tests {
         for prompt in [false, true] {
             let n = if prompt { PROMPT_WAVE_DOTS } else { WAVE_DOTS };
             let mut ind = Indicator::default();
-            feed_line(&mut ind, prompt, &[0; 10]);
-            let mut at = vec![dots(&feed_line(&mut ind, prompt, &[100]))[n - 1]];
+            feed_line(&mut ind, prompt, &room(10));
+            let mut at = vec![dots(&feed_line(&mut ind, prompt, &[12]))[n - 1]];
             for k in 1..n {
-                at.push(dots(&feed_line(&mut ind, prompt, &[0]))[n - 1 - k]);
+                at.push(dots(&feed_line(&mut ind, prompt, &[1]))[n - 1 - k]);
             }
             // at[k]: the peak's dot k lines later, from the anchor leftwards.
             assert!(at[..n - 3].iter().all(|&s| full(s)), "{prompt} {at:?}");
