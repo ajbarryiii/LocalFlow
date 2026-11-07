@@ -114,8 +114,9 @@ commands do not carry these fields.
 - **While idle, loading or without a microphone:**
   - A live report with `agent-approval` adds the class `agent-approval`
     and shows a raised hand (Font Awesome U+F256) in place of the state's
-    glyph; with `agent-input` (and no approval), `agent-input`, and the
-    glyph stays.
+    glyph, except without a microphone, whose slashed microphone stays;
+    with `agent-input` (and no approval), `agent-input`, and the glyph
+    stays.
   - Pending suggestions add `suggestion`.
   - With extra classes, `class` is an array: the state's class first, then
     `agent-approval` or `agent-input`, then `suggestion`.
@@ -128,8 +129,8 @@ commands do not carry these fields.
   these lines, each only when it applies:
   - `Agents: <a> need approval, <i> waiting for input, <w> working, <d> done`.
     Only the non-zero parts are listed, and the singular is used for 1.
-  - `<n> dictionary suggestions from agents (localflowctl dict review)`, or
-    `1 dictionary suggestion from an agent (…)`.
+  - `<n> dictionary suggestions waiting`, or `1 dictionary suggestion
+    waiting`.
   - `<n> project words boosted`.
 
 ## CLI

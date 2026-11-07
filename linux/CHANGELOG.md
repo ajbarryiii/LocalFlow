@@ -30,16 +30,22 @@ releases are tagged `linux-vX.Y.Z`, separately from the macOS app's tags.
 - The Waybar indicator (`localflowctl watch --waybar`) looks like the
   iPhone app's: a wave of round dots while recording instead of bars, and
   every state six characters wide, so the module and the clock beside it
-  no longer move. The wave's dots grow and brighten with your voice and
-  rest as a row of small dim dots in silence; they are standard characters
-  with Pango alpha markup, so the wave needs no Nerd Font (keep the
-  module's `escape` off). Each state has its own glyph: a clock while the
-  model loads, the hourglass while transcribing, a keyboard while typing,
-  the microphone with a slash without a microphone, power-off when
-  LocalFlow isn’t running, and a raised hand while an agent needs your
-  approval. A prompt dictation shows `›` before the wave.
-  Tooltips use plain words ("LocalFlow: ready"). The README's CSS uses the
-  iPhone app's colours and adds `min-length` and `align` to the module.
+  no longer move. The wave ends in a full, bright dot, so it reads as
+  listening from the first moment, even in silence. The dots before it
+  grow and brighten with your voice at the iPhone's pace, a syllable
+  crossing in about two thirds of a second, and fade over a couple of
+  cells after a word; in silence they rest as a row of small dim dots.
+  They are standard characters with Pango markup, set in the `monospace`
+  font so the clock holds still while you speak even when the bar's font
+  is proportional, and need no Nerd Font (keep the module's `escape` off).
+  Each state has its own glyph: a clock while the model loads, the
+  hourglass while transcribing, a keyboard while typing, the microphone
+  with a slash without a microphone, power-off when LocalFlow isn’t
+  running, and a raised hand while an agent needs your approval (unless
+  there is no microphone). A prompt dictation shows `›` before the wave.
+  Tooltips use plain words ("LocalFlow: ready", "2 dictionary suggestions
+  waiting"). The README's CSS uses the iPhone app's colours and adds
+  `min-length` and `align` to the module.
 - The recommended model is now
   [Kea-B 0.1](https://huggingface.co/wildernesslabs/kea-b-0.1): `kea-b` in
   `localflowctl fetch-model` and the flake installs it instead of Kea-B 0.0.

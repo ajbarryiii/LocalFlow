@@ -1403,7 +1403,11 @@ fn localflowctl_waybar_shows_states_and_survives_daemon_restarts() {
         lf_daemon::waybar::plain(wave).chars().count(),
         lf_daemon::waybar::WIDTH
     );
-    assert!(wave.ends_with(&lf_daemon::waybar::dot(50)), "{wave}");
+    // Listening shows at once: the wave ends in its full anchor dot.
+    assert!(
+        lf_daemon::waybar::plain(wave).ends_with(lf_daemon::waybar::FULL_DOT),
+        "{wave}"
+    );
     assert!(ctl(&rd, &["cancel"]).status.success());
     // Skip level lines still queued.
     while class(&lines) != "idle" {}

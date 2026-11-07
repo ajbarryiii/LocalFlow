@@ -10,11 +10,20 @@
 //! cell of a monospace font, so the module and the clock beside it never
 //! move between states:
 //!
-//! - Recording shows the last input levels as a wave of round dots, newest
-//!   on the right; silence is a row of small dim dots. The wave is Pango
-//!   markup (Waybar's default for custom modules): a dot dimmer than full
-//!   is `<span alpha="NN%">•</span>`. Its dots are standard characters
-//!   (U+2022, U+25CF), so it needs no Nerd Font.
+//! - Recording shows a wave of round dots that comes to rest in a full,
+//!   bright anchor dot in the last cell, as the iPhone's wave ends in the
+//!   mark's dot, so silence still reads as listening. The cells before it
+//!   show the voice, newest on the right: one cell per two level lines
+//!   ([`LINES_PER_CELL`]), the louder of the pair, through a follower that
+//!   rises at once and falls by [`FALL`] a cell; silence is a row of small
+//!   dim dots. The wave is Pango markup (Waybar's default for custom
+//!   modules): one `<span font_family="monospace">` around its cells, so a
+//!   proportional bar font still gives them equal widths, and a dot dimmer
+//!   than full is `<span alpha="NN%">•</span>`. Its dots are standard
+//!   characters (U+2022, U+25CF), so it needs no Nerd Font. A full dot is a
+//!   little wider than its cell, so two never stand side by side: the
+//!   second of two loud cells, and a loud cell beside the anchor, show as
+//!   the brightest small dot ([`CAPPED`]).
 //! - Every other state shows its glyph in the third cell ([`GLYPH_CELL`]).
 //!   Glyphs are Font Awesome icons as Nerd Fonts carry them, drawn wider
 //!   than one cell, so the glyph sits about in the middle; a bar config can
@@ -30,8 +39,10 @@
 //! The agent link's counts on watch lines (see `crate::protocol`):
 //!
 //! - While idle, loading or without a microphone, an agent needing approval
-//!   adds the class `agent-approval` and shows [`APPROVAL_GLYPH`] in place
-//!   of the state's glyph; else one waiting for input adds `agent-input`
+//!   adds the class `agent-approval` and, unless the microphone is missing,
+//!   shows [`APPROVAL_GLYPH`] in place of the state's glyph (no microphone
+//!   comes first: nothing can be dictated until one is back); else one
+//!   waiting for input adds `agent-input`
 //!   (the glyph stays); pending suggestions add `suggestion` (in that order,
 //!   after the state's class: `class` is then an array). The number of
 //!   agents needing approval or input, when any, goes in the last two cells
@@ -64,29 +75,50 @@ pub const PROMPT_MARKER: char = '\u{203a}';
 pub const WIDTH: usize = 6;
 /// The cell of a state's glyph; the agent count takes the last two.
 pub const GLYPH_CELL: usize = 2;
-/// Levels kept while recording: a full row of dots.
-pub const HISTORY: usize = WIDTH;
+/// Cells of the voice kept while recording: every cell but the anchor's.
+pub const HISTORY: usize = WIDTH - 1;
 
 /// The wave's small dot, U+2022 bullet: in JetBrainsMono about 0.43 of a
 /// cell across, as a resting dot on the iPhone is about half a full one.
 pub const SMALL_DOT: char = '\u{2022}';
-/// The wave's full dot, U+25CF black circle: about a cell across, so full
-/// neighbours just touch, as at the top of the iPhone's swell.
+/// The wave's full dot, U+25CF black circle: 620 units of ink in a 600-unit
+/// cell in JetBrainsMono (1221 in 1233 in DejaVu Sans Mono), so two side by
+/// side would fuse; see [`CAPPED`]. Also the anchor in the last cell.
 pub const FULL_DOT: char = '\u{25cf}';
 
 /// The wave's steps, quietest first: a dot and its alpha in percent. As the
-/// iPhone's DotWave, a dot at rest is half a full dot's size and brightness,
-/// and louder dots grow and brighten together. Monospace fonts such as
-/// JetBrainsMono and DejaVu Sans Mono draw both dots one cell wide, with no
-/// round dot between their sizes (`·` is smaller than a resting one), so
-/// alpha carries the steps between.
+/// iPhone's DotWave, a dot at rest is half a full dot's size and dimmer,
+/// and louder dots grow and brighten together. At rest it is 60%: at 50%
+/// the 3 px dot was 2.6:1 on the black pill at 1x, darker than the idle
+/// microphone; 60% is 3.4:1. Monospace fonts such as JetBrainsMono and
+/// DejaVu Sans Mono draw both dots one cell wide, with no round dot between
+/// their sizes (`·` is smaller than a resting one), so alpha carries the
+/// steps between.
 pub const STEPS: [(char, u8); 5] = [
-    (SMALL_DOT, 50),
-    (SMALL_DOT, 75),
+    (SMALL_DOT, 60),
+    (SMALL_DOT, 80),
     (SMALL_DOT, 100),
     (FULL_DOT, 80),
     (FULL_DOT, 100),
 ];
+/// The step a full dot shows instead beside another full dot (the anchor
+/// included): the brightest small dot, so the two stay apart and the cell
+/// still reads as loud.
+pub const CAPPED: usize = 2;
+
+/// Level lines (every 66 ms while recording) per cell of the wave: a
+/// syllable crosses its five cells in about 0.66 s, near the iPhone's
+/// 0.75 s, instead of rushing through in 0.33 s.
+pub const LINES_PER_CELL: usize = 2;
+/// How far the followed level can fall in one cell (132 ms): to 35% of
+/// itself, about the iPhone's 90 ms fall plus its softening. It rises at
+/// once, so onsets show in the next cell, but a dip between syllables no
+/// longer drops to rest and the end of a word fades over two cells.
+pub const FALL: f32 = 0.35;
+
+/// The font of the wave's cells: equal advances even in a proportional bar
+/// font. On a monospace bar it is usually the same font.
+pub const WAVE_FONT: &str = "monospace";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -184,13 +216,18 @@ pub fn step(level: u8) -> usize {
     (v * (STEPS.len() - 1) as f32).round() as usize
 }
 
-/// One cell of the wave for a level of 0..=100, as Pango markup: the
-/// step's dot, in a span with its alpha unless that is 100%.
-pub fn dot(level: u8) -> String {
-    match STEPS[step(level)] {
+/// One cell of the wave for a [`STEPS`] index, as Pango markup: the step's
+/// dot, in a span with its alpha unless that is 100%.
+pub fn dot(step: usize) -> String {
+    match STEPS[step.min(STEPS.len() - 1)] {
         (glyph, 100) => glyph.to_string(),
         (glyph, alpha) => format!("<span alpha=\"{alpha}%\">{glyph}</span>"),
     }
+}
+
+/// Whether a step shows the full dot.
+fn is_full(step: usize) -> bool {
+    STEPS[step].0 == FULL_DOT
 }
 
 /// A text as Waybar shows it: without the wave's markup.
@@ -303,11 +340,8 @@ impl Counts {
         }
         match self.suggestions {
             0 => {}
-            1 => lines
-                .push("1 dictionary suggestion from an agent (localflowctl dict review)".into()),
-            n => lines.push(format!(
-                "{n} dictionary suggestions from agents (localflowctl dict review)"
-            )),
+            1 => lines.push("1 dictionary suggestion waiting".into()),
+            n => lines.push(format!("{n} dictionary suggestions waiting")),
         }
         match self.words {
             0 => {}
@@ -321,8 +355,15 @@ impl Counts {
 /// Turns a stream of watch lines into Waybar objects.
 #[derive(Debug, Default)]
 pub struct Indicator {
-    /// Recent levels of the current recording, oldest first.
-    levels: VecDeque<u8>,
+    /// The current recording's recent cells, oldest first: [`STEPS`]
+    /// indices, a full dot after another already capped.
+    cells: VecDeque<usize>,
+    /// Levels of the cell still being heard (fewer than
+    /// [`LINES_PER_CELL`]), and the loudest of them.
+    heard: usize,
+    loudest: u8,
+    /// The followed level, 0..=100.
+    follow: f32,
     recording: bool,
 }
 
@@ -350,13 +391,10 @@ impl Indicator {
         }
         if class == Class::Recording {
             if !self.recording {
-                self.levels.clear();
+                *self = Indicator::default();
             }
             if let Some(l) = level {
-                if self.levels.len() == HISTORY {
-                    self.levels.pop_front();
-                }
-                self.levels.push_back(l);
+                self.hear(l);
             }
         }
         self.recording = class == Class::Recording;
@@ -376,7 +414,9 @@ impl Indicator {
         if !busy {
             if n.approval > 0 {
                 classes.push(AGENT_APPROVAL_CLASS);
-                glyph = APPROVAL_GLYPH;
+                if class != Class::NoMic {
+                    glyph = APPROVAL_GLYPH;
+                }
             } else if n.input > 0 {
                 classes.push(AGENT_INPUT_CLASS);
             }
@@ -386,8 +426,8 @@ impl Indicator {
             waiting = n.approval.saturating_add(n.input);
         }
         let text = match class {
-            Class::Recording if prompt => format!("{PROMPT_MARKER}{}", self.wave(WIDTH - 1)),
-            Class::Recording => self.wave(WIDTH),
+            Class::Recording if prompt => self.wave(PROMPT_MARKER.to_string(), WIDTH - 2),
+            Class::Recording => self.wave(String::new(), WIDTH - 1),
             _ => field(prompt, glyph, waiting),
         };
         for line in n.tooltip_lines() {
@@ -403,14 +443,39 @@ impl Indicator {
         object(Class::Offline, &field(false, Class::Offline.glyph(), 0))
     }
 
-    /// The last `cells` levels as dots, newest on the right, padded with
-    /// dots at rest.
-    fn wave(&self, cells: usize) -> String {
-        let shown = self.levels.len().min(cells);
-        std::iter::repeat_n(0, cells - shown)
-            .chain(self.levels.iter().skip(self.levels.len() - shown).copied())
-            .map(dot)
-            .collect()
+    /// One level line while recording: every [`LINES_PER_CELL`] lines, the
+    /// loudest of them goes through the follower into a new cell.
+    fn hear(&mut self, level: u8) {
+        self.loudest = self.loudest.max(level.min(100));
+        self.heard += 1;
+        if self.heard < LINES_PER_CELL {
+            return;
+        }
+        self.follow = f32::from(self.loudest).max(self.follow * FALL);
+        (self.heard, self.loudest) = (0, 0);
+        let mut s = step(self.follow.round() as u8);
+        if is_full(s) && self.cells.back().is_some_and(|&b| is_full(b)) {
+            s = CAPPED;
+        }
+        if self.cells.len() == HISTORY {
+            self.cells.pop_front();
+        }
+        self.cells.push_back(s);
+    }
+
+    /// `prefix`, the last `cells` cells, newest on the right and padded with
+    /// dots at rest, then the anchor, in the monospace span. The newest
+    /// cell sits beside the full anchor, so it is capped too.
+    fn wave(&self, prefix: String, cells: usize) -> String {
+        let shown = self.cells.len().min(cells);
+        let mut steps: Vec<usize> = std::iter::repeat_n(0, cells - shown)
+            .chain(self.cells.iter().skip(self.cells.len() - shown).copied())
+            .collect();
+        if let Some(newest) = steps.last_mut().filter(|s| is_full(**s)) {
+            *newest = CAPPED;
+        }
+        let dots: String = steps.into_iter().map(dot).collect();
+        format!("<span font_family=\"{WAVE_FONT}\">{prefix}{dots}{FULL_DOT}</span>")
     }
 }
 
@@ -426,9 +491,55 @@ mod tests {
         json(o)["text"].as_str().unwrap().to_owned()
     }
 
-    /// Dots for levels, oldest first.
-    fn dots(levels: &[u8]) -> String {
-        levels.iter().map(|&l| dot(l)).collect()
+    /// A recording's text: `prefix` (the prompt marker or nothing), the
+    /// wave's cells for `steps` (oldest first), then the anchor, in the
+    /// monospace span.
+    fn wave_text(prefix: &str, steps: &[usize]) -> String {
+        let cells: String = steps.iter().map(|&s| dot(s)).collect();
+        format!("<span font_family=\"monospace\">{prefix}{cells}{FULL_DOT}</span>")
+    }
+
+    /// A plain recording's text for `steps`, one per wave cell.
+    fn rec_text(steps: [usize; WIDTH - 1]) -> String {
+        wave_text("", &steps)
+    }
+
+    /// The watch line of a plain recording at `level`.
+    fn rec(level: u8) -> String {
+        format!("state=recording mode=hold model=ready mic=present level={level}")
+    }
+
+    /// Feeds `levels` as recording lines; the text after the last.
+    fn feed(ind: &mut Indicator, levels: &[u8]) -> String {
+        let mut t = String::new();
+        for &l in levels {
+            t = text(&ind.update(&rec(l)).unwrap());
+        }
+        t
+    }
+
+    /// The step of each cell a text shows (the anchor and any prompt marker
+    /// left out), read back from its markup.
+    fn shown_steps(t: &str) -> Vec<usize> {
+        let inner = t
+            .strip_prefix("<span font_family=\"monospace\">")
+            .and_then(|t| t.strip_suffix(&format!("{FULL_DOT}</span>")))
+            .expect(t);
+        let inner = inner.strip_prefix(PROMPT_MARKER).unwrap_or(inner);
+        let mut out = Vec::new();
+        let mut rest = inner;
+        while !rest.is_empty() {
+            let s = (0..STEPS.len())
+                .find(|&s| rest.starts_with(&dot(s)))
+                .expect(t);
+            out.push(s);
+            rest = &rest[dot(s).len()..];
+        }
+        out
+    }
+
+    fn full(s: usize) -> bool {
+        STEPS[s].0 == FULL_DOT
     }
 
     #[test]
@@ -461,6 +572,7 @@ mod tests {
             assert_eq!(ind.update(fields).as_deref(), Some(want), "{fields}");
             seen.push(want.into());
         }
+        // A recording's first line: listening, the wave still at rest.
         let recording = ind
             .update("state=recording mode=hold model=ready mic=present level=100")
             .unwrap();
@@ -468,7 +580,7 @@ mod tests {
             recording,
             format!(
                 "{{\"text\": {}, \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\"}}",
-                json_string(&dots(&[0, 0, 0, 0, 0, 100]))
+                json_string(&rec_text([0; WIDTH - 1]))
             )
         );
         seen.push(recording);
@@ -550,7 +662,7 @@ mod tests {
         // The count stays in the last two cells, after a space.
         assert_eq!(texts[11], format!("  {APPROVAL_GLYPH} 1 "));
         assert_eq!(texts[12], format!("  {MIC_GLYPH} 12"));
-        assert_eq!(texts[13], format!("  {APPROVAL_GLYPH} 99"));
+        assert_eq!(texts[13], format!("  {NO_MIC_GLYPH} 99"));
     }
 
     #[test]
@@ -565,7 +677,7 @@ mod tests {
         assert_eq!(v["tooltip"], "LocalFlow: listening (prompt dictation)");
         assert_eq!(
             v["text"],
-            format!("{PROMPT_MARKER}{}", dots(&[0, 0, 0, 0, 100]))
+            wave_text(&PROMPT_MARKER.to_string(), &[0; WIDTH - 2])
         );
         for (state, glyph, tooltip) in [
             ("transcribing", TRANSCRIBING_GLYPH, "transcribing"),
@@ -598,11 +710,12 @@ mod tests {
     #[test]
     fn agent_link_counts_add_classes_a_count_and_tooltip_lines() {
         let mut ind = Indicator::default();
-        let loud = json_string(&dots(&[0, 0, 0, 0, 0, 100]));
+        // A fresh recording's first line: the wave at rest.
+        let loud = json_string(&rec_text([0; WIDTH - 1]));
         let cases = [
             (
                 "state=idle model=ready mic=present suggestions=3 words=12 agent-approval=2 agent-input=1 agent-working=1 agent-done=4".to_owned(),
-                "{\"text\": \"  \u{f256} 3 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\", \"suggestion\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 2 need approval, 1 waiting for input, 1 working, 4 done\\n3 dictionary suggestions from agents (localflowctl dict review)\\n12 project words boosted\"}".to_owned(),
+                "{\"text\": \"  \u{f256} 3 \", \"alt\": \"idle\", \"class\": [\"idle\", \"agent-approval\", \"suggestion\"], \"tooltip\": \"LocalFlow: ready\\nAgents: 2 need approval, 1 waiting for input, 1 working, 4 done\\n3 dictionary suggestions waiting\\n12 project words boosted\"}".to_owned(),
             ),
             (
                 "state=idle model=loading mic=unknown agent-input=1".into(),
@@ -610,7 +723,7 @@ mod tests {
             ),
             (
                 "state=idle model=ready mic=absent suggestions=1".into(),
-                "{\"text\": \"  \u{f131}   \", \"alt\": \"nomic\", \"class\": [\"nomic\", \"suggestion\"], \"tooltip\": \"LocalFlow: no microphone\\n1 dictionary suggestion from an agent (localflowctl dict review)\"}".into(),
+                "{\"text\": \"  \u{f131}   \", \"alt\": \"nomic\", \"class\": [\"nomic\", \"suggestion\"], \"tooltip\": \"LocalFlow: no microphone\\n1 dictionary suggestion waiting\"}".into(),
             ),
             (
                 "state=idle model=ready mic=present agent-approval=1".into(),
@@ -624,7 +737,7 @@ mod tests {
             // Busy states keep their classes and text; only the tooltip grows.
             (
                 "state=recording mode=hold model=ready mic=present level=100 agent-approval=1 suggestions=2".into(),
-                format!("{{\"text\": {loud}, \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\\nAgents: 1 needs approval\\n2 dictionary suggestions from agents (localflowctl dict review)\"}}"),
+                format!("{{\"text\": {loud}, \"alt\": \"recording\", \"class\": \"recording\", \"tooltip\": \"LocalFlow: listening\\nAgents: 1 needs approval\\n2 dictionary suggestions waiting\"}}"),
             ),
             (
                 "state=transcribing model=ready mic=present agent-input=3 words=2".into(),
@@ -632,7 +745,7 @@ mod tests {
             ),
             (
                 "state=typing tag=prompt model=ready mic=present agent-input=2 suggestions=1".into(),
-                "{\"text\": \"\u{203a} \u{f11c}   \", \"alt\": \"typing\", \"class\": [\"typing\", \"prompt\"], \"tooltip\": \"LocalFlow: typing (prompt dictation)\\nAgents: 2 waiting for input\\n1 dictionary suggestion from an agent (localflowctl dict review)\"}".into(),
+                "{\"text\": \"\u{203a} \u{f11c}   \", \"alt\": \"typing\", \"class\": [\"typing\", \"prompt\"], \"tooltip\": \"LocalFlow: typing (prompt dictation)\\nAgents: 2 waiting for input\\n1 dictionary suggestion waiting\"}".into(),
             ),
         ];
         for (fields, want) in cases {
@@ -688,57 +801,49 @@ mod tests {
         // Louder is never smaller or dimmer.
         assert!((0..100).all(|l| step(l) <= step(l + 1)));
         let mut ind = Indicator::default();
-        let rec = |l: u8| format!("state=recording mode=toggle model=ready mic=present level={l}");
         // A recording starts as silence: a row of equal small dots.
         assert_eq!(
             text(
                 &ind.update("state=recording mode=toggle model=ready mic=present")
                     .unwrap()
             ),
-            dot(0).repeat(WIDTH)
+            rec_text([0; WIDTH - 1])
         );
-        assert_eq!(
-            text(&ind.update(&rec(100)).unwrap()),
-            dots(&[0, 0, 0, 0, 0, 100])
-        );
-        assert_eq!(
-            text(&ind.update(&rec(25)).unwrap()),
-            dots(&[0, 0, 0, 0, 100, 25])
-        );
-        for _ in 0..HISTORY {
-            ind.update(&rec(0));
-        }
-        assert_eq!(
-            text(&ind.update(&rec(100)).unwrap()),
-            dots(&[0, 0, 0, 0, 0, 100])
-        );
+        // Each new cell comes in on the right, beside the anchor.
+        assert_eq!(feed(&mut ind, &[0, 30]), rec_text([0, 0, 0, 0, 2]));
+        assert_eq!(feed(&mut ind, &[10, 10]), rec_text([0, 0, 0, 2, 1]));
+        // Silence scrolls it out.
+        feed(&mut ind, &[0; 4 * HISTORY]);
+        assert_eq!(feed(&mut ind, &[30, 0]), rec_text([0, 0, 0, 0, 2]));
         // A recording line without a level keeps the wave.
         assert_eq!(
             text(&ind.update("state=recording mode=hold model=ready").unwrap()),
-            dots(&[0, 0, 0, 0, 0, 100])
+            rec_text([0, 0, 0, 0, 2])
         );
-        // A prompt dictation shows the newest levels after its marker.
+        // A prompt dictation shows the newest cells after its marker.
         let prompt =
             |l: u8| format!("state=recording tag=prompt model=ready mic=present level={l}");
+        ind.update(&prompt(10));
         assert_eq!(
-            text(&ind.update(&prompt(25)).unwrap()),
-            format!("{PROMPT_MARKER}{}", dots(&[0, 0, 0, 100, 25]))
+            text(&ind.update(&prompt(10)).unwrap()),
+            wave_text(&PROMPT_MARKER.to_string(), &[0, 0, 2, 1])
         );
-        // The next recording starts from silence.
+        // The next recording starts from silence: neither the last
+        // recording's cells nor half a pair of its levels carry over.
+        ind.update(&rec(100));
         ind.update("state=transcribing model=ready mic=present");
-        assert_eq!(
-            text(&ind.update(&rec(25)).unwrap()),
-            dots(&[0, 0, 0, 0, 0, 25])
-        );
+        assert_eq!(feed(&mut ind, &[0, 0]), rec_text([0; WIDTH - 1]));
         ind.offline();
-        assert_eq!(text(&ind.update(&rec(0)).unwrap()), dots(&[0; WIDTH]));
+        assert_eq!(feed(&mut ind, &[0, 0]), rec_text([0; WIDTH - 1]));
     }
 
     #[test]
     fn the_wave_rests_and_swells_as_the_iphones_does() {
-        // At rest: the small dot at half brightness; at the top of the
-        // swell: the full dot at full brightness.
-        assert_eq!(STEPS[0], (SMALL_DOT, 50));
+        // At rest: the small dot, dimmed (about half as bright as a full
+        // dot on the iPhone; 60% is the least that keeps a 3:1 contrast
+        // on the black pill at 1x); at the top of the swell: the full dot
+        // at full brightness.
+        assert_eq!(STEPS[0], (SMALL_DOT, 60));
         assert_eq!(STEPS[STEPS.len() - 1], (FULL_DOT, 100));
         // Dots grow and brighten together, step by step.
         let size = |c: char| usize::from(c == FULL_DOT);
@@ -753,32 +858,181 @@ mod tests {
             let c = c as u32;
             assert!(!(0xe000..=0xf8ff).contains(&c) && c < 0xf0000);
         }
-        assert_eq!(dot(0), "<span alpha=\"50%\">\u{2022}</span>");
-        assert_eq!(dot(100), "\u{25cf}");
+        assert_eq!(dot(0), "<span alpha=\"60%\">\u{2022}</span>");
+        assert_eq!(dot(STEPS.len() - 1), "\u{25cf}");
 
-        // Silence is a calm row of equal resting dots; speech undulates,
-        // in size as well as brightness.
+        // Silence is a calm row of equal resting dots before the anchor.
         let mut ind = Indicator::default();
-        let rec = |l: u8| format!("state=recording mode=hold model=ready mic=present level={l}");
-        for l in [0, 3, 2, 4, 1, 0] {
-            ind.update(&rec(l));
-        }
-        assert_eq!(text(&ind.update(&rec(0)).unwrap()), dot(0).repeat(WIDTH));
-        let speech = [65, 40, 85, 50, 20, 55];
-        let mut wave = String::new();
-        for l in speech {
-            wave = text(&ind.update(&rec(l)).unwrap());
-        }
-        assert_eq!(wave, dots(&speech));
-        let shown = plain(&wave);
-        assert!(
-            shown.contains(SMALL_DOT) && shown.contains(FULL_DOT),
-            "{wave}"
+        let quiet = feed(&mut ind, &[0, 3, 2, 4, 1, 0, 2, 3, 0, 1, 4, 2]);
+        assert_eq!(quiet, rec_text([0; WIDTH - 1]));
+        assert_eq!(
+            plain(&quiet),
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{25cf}"
         );
-        let mut steps = speech.map(step).to_vec();
-        steps.sort();
-        steps.dedup();
-        assert!(steps.len() >= 3, "{steps:?}");
+        // Speech undulates, in size as well as brightness.
+        let speech = feed(&mut ind, &[40, 85, 6, 9, 30, 20, 2, 5, 60, 55, 30, 9]);
+        let steps = shown_steps(&speech);
+        assert!(
+            steps.iter().any(|&s| full(s)) && steps.iter().any(|&s| !full(s)),
+            "{speech}"
+        );
+        let mut distinct = steps.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert!(distinct.len() >= 3, "{steps:?}");
+    }
+
+    #[test]
+    fn a_recording_always_ends_in_the_full_anchor_dot() {
+        // Silence reads as listening: whatever the voice, the last cell is
+        // the full dot at full brightness, as the iPhone's wave comes to
+        // rest in the mark's dot; the wave takes the cells before it.
+        let mut ind = Indicator::default();
+        let first = text(
+            &ind.update("state=recording mode=hold model=ready mic=present")
+                .unwrap(),
+        );
+        assert_eq!(
+            plain(&first),
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{25cf}"
+        );
+        let prompt = text(
+            &ind.update("state=recording tag=prompt model=ready mic=present level=0")
+                .unwrap(),
+        );
+        assert_eq!(
+            plain(&prompt),
+            "\u{203a}\u{2022}\u{2022}\u{2022}\u{2022}\u{25cf}"
+        );
+        let mut ind = Indicator::default();
+        let mut seed = 7u32;
+        for _ in 0..400 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let t = text(&ind.update(&rec((seed >> 16) as u8 % 101)).unwrap());
+            assert!(t.ends_with(&format!("{FULL_DOT}</span>")), "{t}");
+            assert_eq!(shown_steps(&t).len(), WIDTH - 1, "{t}");
+        }
+    }
+
+    #[test]
+    fn the_wave_is_set_in_one_monospace_span() {
+        // A proportional bar font draws `•` and `●` at different widths;
+        // the span gives every cell of the wave the same advance, so the
+        // clock beside the module holds still while you speak.
+        let mut ind = Indicator::default();
+        for line in [
+            "state=recording mode=hold model=ready mic=present",
+            "state=recording mode=hold model=ready mic=present level=90",
+            "state=recording mode=hold tag=prompt model=ready mic=present level=40",
+        ] {
+            let t = text(&ind.update(line).unwrap());
+            assert!(t.starts_with("<span font_family=\"monospace\">"), "{t}");
+            assert!(t.ends_with("</span>"), "{t}");
+            assert_eq!(t.matches("font_family").count(), 1, "{t}");
+        }
+        // Other states keep the bar's font, for Font Awesome's glyphs.
+        for line in [
+            "state=idle model=ready mic=present",
+            "state=transcribing model=ready mic=present",
+        ] {
+            assert!(!text(&ind.update(line).unwrap()).contains('<'));
+        }
+    }
+
+    #[test]
+    fn one_cell_per_two_level_lines_with_the_louder_of_the_pair() {
+        // Level lines come every 66 ms; a cell every second one makes a
+        // syllable cross the wave in about 0.66 s, near the iPhone's 0.75 s.
+        let silent = rec_text([0; WIDTH - 1]);
+        for pair in [[30, 0], [0, 30], [30, 10]] {
+            let mut ind = Indicator::default();
+            assert_eq!(feed(&mut ind, &[0, 0, 0, 0]), silent);
+            // The first line of a pair changes nothing: the same object,
+            // which `watch --waybar` does not write again.
+            let before = ind.update(&rec(0)).unwrap();
+            assert_eq!(ind.update(&rec(0)).unwrap(), before);
+            let held = ind.update(&rec(pair[0])).unwrap();
+            assert_eq!(text(&held), silent, "{pair:?}");
+            // The second adds one cell for the louder of the two.
+            assert_eq!(
+                feed(&mut ind, &[pair[1]]),
+                rec_text([0, 0, 0, 0, 2]),
+                "{pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn onsets_show_within_one_cell_and_silence_after_speech_decays() {
+        // Speech arriving on either line of a pair shows by the line after
+        // it at the latest: within one cell.
+        for lines in [[60, 0], [0, 60]] {
+            let mut ind = Indicator::default();
+            feed(&mut ind, &[0, 0, 0, 0]);
+            let t = feed(&mut ind, &lines);
+            assert!(shown_steps(&t)[WIDTH - 2] > 0, "{lines:?} {t}");
+        }
+        // A loud cell beside the anchor is the brightest small dot, and
+        // grows to the full dot one cell later (full dots never touch).
+        let mut ind = Indicator::default();
+        let loud = feed(&mut ind, &[0, 0, 100, 100]);
+        assert_eq!(STEPS[shown_steps(&loud)[WIDTH - 2]], (SMALL_DOT, 100));
+        let next = feed(&mut ind, &[0, 0]);
+        assert_eq!(shown_steps(&next)[WIDTH - 3], STEPS.len() - 1);
+
+        // After speech the wave falls a step or two a cell: the first cell
+        // of silence is still lit, and it is at rest within three cells.
+        let mut ind = Indicator::default();
+        feed(&mut ind, &[100, 100]);
+        let mut tail = Vec::new();
+        for _ in 0..4 {
+            tail.push(*shown_steps(&feed(&mut ind, &[0, 0])).last().unwrap());
+        }
+        assert!(tail[0] > 0, "{tail:?}");
+        assert!(tail.windows(2).all(|w| w[1] <= w[0]), "{tail:?}");
+        assert_eq!(tail[2..], [0, 0], "{tail:?}");
+        // Speech rises at once even while the wave is falling.
+        let up = feed(&mut ind, &[0, 0, 100, 0]);
+        assert!(shown_steps(&up)[WIDTH - 2] >= 2, "{up}");
+    }
+
+    #[test]
+    fn full_dots_never_touch() {
+        // `●` is wider than its cell, so two side by side fuse into one
+        // blob at 1x: the second of two loud cells, and a loud cell beside
+        // the anchor, show as the brightest small dot instead.
+        let capped = (0..STEPS.len()).rfind(|&s| !full(s)).unwrap();
+        assert_eq!(STEPS[capped], (SMALL_DOT, 100));
+        let mut ind = Indicator::default();
+        let mut seed = 99u32;
+        let mut fulls = 0;
+        for i in 0..2000 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let level = match i % 300 {
+                // Stretches of sustained loud speech, and of silence.
+                0..40 => 100,
+                40..60 => 0,
+                _ => (seed >> 16) as u8 % 101,
+            };
+            let line = if i % 500 < 250 {
+                rec(level)
+            } else {
+                format!("state=recording tag=prompt model=ready mic=present level={level}")
+            };
+            let t = text(&ind.update(&line).unwrap());
+            let shown: Vec<char> = plain(&t).chars().collect();
+            assert!(shown.windows(2).all(|w| w != [FULL_DOT, FULL_DOT]), "{t}");
+            fulls += shown.iter().filter(|&&c| c == FULL_DOT).count() - 1;
+        }
+        // Loud speech still shows full dots.
+        assert!(fulls > 500, "{fulls}");
+        // A lone loud syllable keeps its full dot all the way across.
+        let mut ind = Indicator::default();
+        feed(&mut ind, &[0, 0, 100, 100]);
+        for cell in (0..WIDTH - 2).rev() {
+            let t = feed(&mut ind, &[0, 0]);
+            assert_eq!(shown_steps(&t)[cell], STEPS.len() - 1, "{t}");
+        }
     }
 
     #[test]
@@ -807,8 +1061,12 @@ mod tests {
         for o in &objects {
             let v = json(o);
             let (t, tip) = (v["text"].as_str().unwrap(), v["tooltip"].as_str().unwrap());
-            // The only markup: alpha spans, each around one dot.
-            let mut rest = t;
+            // The only markup: the wave's one monospace span, and inside
+            // it alpha spans, each around one dot.
+            let mut rest = match t.strip_prefix("<span font_family=\"monospace\">") {
+                Some(inner) => inner.strip_suffix("</span>").expect(t),
+                None => t,
+            };
             while let Some(i) = rest.find('<') {
                 let (head, tail) = rest[i..].split_once("%\">").expect(t);
                 let alpha = head.strip_prefix("<span alpha=\"").expect(t);
@@ -827,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_needing_approval_shows_the_hand_instead_of_the_state_glyph() {
+    fn an_agent_needing_approval_shows_the_hand_unless_the_microphone_is_missing() {
         let mut ind = Indicator::default();
         let cases = [
             (
@@ -845,9 +1103,11 @@ mod tests {
                 APPROVAL_GLYPH,
                 " 1 ",
             ),
+            // Without a microphone, its glyph stays: nothing can be
+            // dictated until one is back. The count still shows.
             (
                 "idle model=ready mic=absent agent-approval=1",
-                APPROVAL_GLYPH,
+                NO_MIC_GLYPH,
                 " 1 ",
             ),
             // Waiting for input only: the state's glyph and the count.

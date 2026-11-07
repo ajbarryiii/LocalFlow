@@ -1035,7 +1035,10 @@ fn feedback(
                 }
                 None => e.clone(),
             };
-            footer.child(note("error", words, k.c.danger.fg))
+            // The same cue as a pending restart: an ember dot, plain ink.
+            footer
+                .child(look::dot(look::ember()).key("fix-dot"))
+                .child(note("error", words, k.c.text_base))
         }
         (_, Status::Failed(e)) => footer.child(note("error", e.clone(), k.c.danger.fg)),
         (_, Status::Applied) => footer
@@ -1220,6 +1223,13 @@ mod tests {
         rt.update(|s, _| s.set("prompt_tag", Value::String("x".repeat(65))));
         rt.frame(1.0 / 60.0);
         assert!(rt.find("error").is_some(), "the error is shown");
+        // Led by the ember dot, as the restart notes are.
+        let dot = rt.find("fix-dot").expect("the footer's dot");
+        let note = rt.find("error").unwrap();
+        assert!(
+            dot.0 < note.0 && (dot.1 - note.1).abs() < 0.5,
+            "dot {dot:?}, note {note:?}"
+        );
         let e = rt.state.config.clone().unwrap_err();
         assert!(e.contains("prompt_tag") && !e.contains("xxxx"), "{e}");
         press(&mut rt, "apply");

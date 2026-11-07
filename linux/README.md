@@ -368,7 +368,7 @@ never move. Classes (also the `alt`) and what each shows:
 |---|---|---|
 | `idle` | microphone | LocalFlow: ready |
 | `loading` | clock (the model is loading) | LocalFlow: loading the model |
-| `recording` | a wave of dots, newest on the right, growing and brightening with your voice; a row of small dim dots in silence | LocalFlow: listening |
+| `recording` | a row of dots ending in a full, bright dot; the dots before it grow and brighten with your voice, newest on the right, and rest small and dim in silence | LocalFlow: listening |
 | `transcribing` | hourglass | LocalFlow: transcribing |
 | `typing` | keyboard | LocalFlow: typing |
 | `nomic` | microphone with a slash (idle with no microphone) | LocalFlow: no microphone |
@@ -379,18 +379,28 @@ puts `›` in the first character and adds the class `prompt` while it
 records, transcribes and types (`"class": ["recording", "prompt"]`, tooltip
 "LocalFlow: listening (prompt dictation)"). While an agent needs your
 approval (see [Coding agents](#coding-agents)), a raised hand takes the
-glyph's place. It keeps retrying every 2 s while the daemon is down, so
+glyph's place, except without a microphone, which keeps its slashed
+microphone. It keeps retrying every 2 s while the daemon is down, so
 Waybar never needs restarting. Override the glyphs with `format-icons`
-keyed by `alt` if you like. `min-length` and `align` keep the module's
-width with a proportional font too.
+keyed by `alt` if you like.
 
 The wave's dots are `•` and `●` (U+2022, U+25CF), which common fonts such
 as DejaVu have, and the glyphs are Font Awesome's, which stock Waybar's
-style asks for, so with Font Awesome installed no Nerd Font is needed (a
-proportional font does let the module's width vary). Dimmer dots are
-Pango markup (`<span alpha="50%">•</span>`), which Waybar reads in custom
-modules by default; leave the module's `escape` off, or the tags show as
-text.
+style asks for, so with Font Awesome installed no Nerd Font is needed. The
+wave is Pango markup, which Waybar reads in custom modules by default: it
+is set in the `monospace` font (`<span font_family="monospace">`), so its
+six cells are equally wide even in a proportional bar font, and dimmer
+dots are `<span alpha="60%">•</span>`. Leave the module's `escape` off, or
+the tags show as text.
+
+`min-length: 6` makes the module at least six average characters of the
+bar's font wide, and `align: 0.5` centres the text in that width. A text
+that fits leaves the width alone; a wider one widens the module and moves
+the clock. In a monospace bar font that is also fontconfig's `monospace`
+(`fc-match monospace`), every text is exactly six cells, so nothing moves.
+In a proportional font, such as stock Waybar's DejaVu
+Sans, the wave and most glyphs fit; the keyboard and the slashed
+microphone are a little wider and move the clock by about a pixel.
 
 ```jsonc
 "custom/localflow": {
@@ -907,7 +917,8 @@ your dictation key.
     daemon sees.
 17. Waybar indicator (`localflowctl watch --waybar` in a terminal, or the
     custom module): idle shows the dim microphone; holding the key shows a
-    coral wave of dots that follows your voice; release shows the hourglass,
+    coral wave of dots ending in a full dot at once, and the dots before it
+    follow your voice, calmly; release shows the hourglass,
     the keyboard, then idle. The clock beside it never moves. Disconnect the
     microphone (or turn the headset off): `nomic` (the microphone with a
     slash) within a second or two, and back to idle when reconnected. With
